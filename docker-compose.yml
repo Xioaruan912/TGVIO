@@ -1,0 +1,9 @@
+services:
+  bot:
+    build: .
+    container_name: telegram-video-forwarder
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      - ./session:/app/session
+      - ./downloads:/app/downloads
