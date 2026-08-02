@@ -16,6 +16,7 @@ logger = logging.getLogger(__name__)
 _COMMANDS = [
     types.BotCommand("start", "使用说明"),
     types.BotCommand("status", "查看队列状态"),
+    types.BotCommand("progress", "查看下载/上传进度"),
 ]
 
 
@@ -23,7 +24,7 @@ async def _setup_commands(client: TelegramClient) -> None:
     await client(
         functions.bots.SetBotCommandsRequest(
             scope=types.BotCommandScopeDefault(),
-            lang_code="zh",
+            lang_code="",
             commands=_COMMANDS,
         )
     )
