@@ -25,6 +25,7 @@ from .config import (
     DOWNLOAD_CONCURRENCY,
     DOWNLOAD_DIR,
     DOWNLOAD_TIMEOUT,
+    FORWARD_CAPTION,
     MAX_FILE_SIZE,
     UPLOAD_TIMEOUT,
 )
@@ -544,7 +545,7 @@ class _Pipeline:
         )
 
         caption = None
-        if job.kind == "media":
+        if FORWARD_CAPTION and job.kind == "media":
             caption = job.message.message[:1024] or None
         await self._send_media(path, caption, job.spoiler, job.seq)
         await job.status.edit(f"✅ 已发布到 {DEST_CHANNEL}")
@@ -569,7 +570,10 @@ class _Pipeline:
             f"{label}，正在上传{suffix}..."
         )
 
-        captions = [m.message[:1024] or "" for m in job.album]
+        if FORWARD_CAPTION:
+            captions = [m.message[:1024] or "" for m in job.album]
+        else:
+            captions = [""] * len(paths)
         await self._send_album(paths, captions, job.spoiler, seq)
         await job.status.edit(f"✅ 相册已发布到 {DEST_CHANNEL}")
 

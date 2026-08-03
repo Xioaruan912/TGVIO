@@ -19,6 +19,13 @@ def _env_float(key: str, default: float) -> float:
         return default
 
 
+def _env_bool(key: str, default: bool) -> bool:
+    val = os.environ.get(key)
+    if val is None:
+        return default
+    return val.strip().lower() in ("1", "true", "yes", "on")
+
+
 API_ID = _env_int("API_ID", 0)
 API_HASH = os.environ.get("API_HASH", "")
 BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
@@ -35,3 +42,4 @@ DOWNLOAD_TIMEOUT = _env_int("DOWNLOAD_TIMEOUT", 20 * 60)
 CONFIRM_TIMEOUT = _env_int("CONFIRM_TIMEOUT", 60)
 ALBUM_GATHER_SECONDS = _env_float("ALBUM_GATHER_SECONDS", 1.0)
 UPLOAD_TIMEOUT = _env_int("UPLOAD_TIMEOUT", 30 * 60)
+FORWARD_CAPTION = _env_bool("FORWARD_CAPTION", False)

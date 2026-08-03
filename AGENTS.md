@@ -44,7 +44,8 @@ telegram-video-forwarder/
 - **并行下载 + 顺序上传**：下载并发（`DOWNLOAD_CONCURRENCY`），上传严格按发送顺序（`_upload_worker` 维护 `next_seq`）。
 - **seq 预留机制**：媒体消息到达时先 `reserve_seq()`，等 18+ 确认后再入队；未确认的任务超时后 `_set_cancelled` 跳过，保证后续 seq 不卡死。
 - **18+ 确认**：内联按钮 `confirm:{seq}:1|0`。确认后**删除按钮消息**，另发新状态消息作为任务 status，后续「下载中/上传中/已发布」都编辑同一条消息。`CONFIRM_TIMEOUT`（默认 60s）内未点按钮 → 任务取消并 `_set_cancelled`。
-- **相册聚合**：同 `grouped_id` 的消息在 `ALBUM_GATHER_SECONDS`（默认 1s）内聚合为**一个任务、一次询问**，发布为**单个相册消息**（逐张保留原 caption）。`_send_album` 用 `UploadMediaRequest` 保存媒体后转 `InputMediaPhoto/Document(spoiler=...)` 再 `SendMultiMediaRequest`。
+- **相册聚合**：同 `grouped_id` 的消息在 `ALBUM_GATHER_SECONDS`（默认 1s）内聚合为**一个任务、一次询问**，发布为**单个相册消息**。`_send_album` 用 `UploadMediaRequest` 保存媒体后转 `InputMediaPhoto/Document(spoiler=...)` 再 `SendMultiMediaRequest`。
+- **纯媒体转发（v5）**：`FORWARD_CAPTION`（默认 false）控制是否转发原消息文字——false 时单条 `caption=None`、相册 `captions=[""]*N`，只发视频/图片本身；true 时保留 caption（相册逐张）。
 
 ### 命令与状态
 
@@ -93,6 +94,7 @@ telegram-video-forwarder/
 | `CONFIRM_TIMEOUT` | `60` | 18+ 弹窗超时，超时取消 |
 | `ALBUM_GATHER_SECONDS` | `1.0` | 相册聚合等待秒数 |
 | `UPLOAD_TIMEOUT` | `1800` (30min) | 单任务上传超时 |
+| `FORWARD_CAPTION` | `false` | 是否转发原消息文字（false=纯媒体转发） |
 
 ## 5. 已踩过的坑（重要）
 
