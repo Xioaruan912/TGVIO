@@ -43,16 +43,35 @@ telegram-video-forwarder/
 
 - **并行下载 + 顺序上传**：下载并发（`DOWNLOAD_CONCURRENCY`），上传严格按发送顺序（`_upload_worker` 维护 `next_seq`）。
 - **seq 预留机制**：媒体消息到达时先 `reserve_seq()`，等 18+ 确认后再入队；未确认的任务超时后 `_set_cancelled` 跳过，保证后续 seq 不卡死。
-- **18+ 确认**：内联按钮 `confirm:{seq}:1|0`。确认后**删除按钮消息**，另发新状态消息作为任务 status，后续「下载中/上传中/已发布」都编辑同一条消息。`CONFIRM_TIMEOUT`（默认 60s）内未点按钮 → 任务取消并 `_set_cancelled`。
+- **18+ 确认**：内联按钮 `confirm:{seq}:1|0`，另有 `cancel:{seq}`「❌ 取消」按钮（第二行）丢弃任务——pop pending + 取消超时任务 + `_set_cancelled(seq)` + 弹窗改「❌ 已取消该任务」。确认后**删除按钮消息**，另发新状态消息作为任务 status，后续「下载中/上传中/已发布」都编辑同一条消息。`CONFIRM_TIMEOUT`（默认 60s）内未点按钮 → 任务取消并 `_set_cancelled`。
 - **相册聚合**：同 `grouped_id` 的消息在 `ALBUM_GATHER_SECONDS`（默认 1s）内聚合为**一个任务、一次询问**，发布为**单个相册消息**。`_send_album` 用 `UploadMediaRequest` 保存媒体后转 `InputMediaPhoto/Document(spoiler=...)` 再 `SendMultiMediaRequest`。
 - **纯媒体转发（v5）**：`FORWARD_CAPTION`（默认 false）控制是否转发原消息文字——false 时单条 `caption=None`、相册 `captions=[""]*N`，只发视频/图片本身；true 时保留 caption（相册逐张）。
 
 ### 命令与状态
 
-- **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/status`、`/progress`（**`lang_code=""`，空串对所有语言生效**；早期用 `"zh"` 导致非中文客户端打 `/` 无提示），并 `SetBotMenuButtonRequest` 设默认菜单按钮（聊天框旁 ☰）。
-- **`/status`**：`_Pipeline.status_text(user_id)` 输出**队列全貌**（v4，一次性快照）——逐个列出活跃任务的「队列第 N 位 + 阶段 + 进度条」，附「其他」区（等待确认/相册聚合中）。尊重进度条偏好。
+- **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/about`、`/status`、`/progress`、`/mode`、`/queue`、`/pause`、`/resume`（**`lang_code=""` + `lang_code="zh"` 都注册**——早期只更新默认语言表导致中文客户端 `zh` 表残留旧命令；必须两个语言位都更新），并 `SetBotMenuButtonRequest` 设默认菜单按钮。
+- **`/status`**：`_Pipeline.status_text(user_id)` 输出**队列全貌**（一次性只读快照）——逐个列出活跃任务的「队列第 N 位 + 阶段 + 进度条」，附「其他」区（等待确认/相册聚合中）。尊重进度条偏好；暂停时标题带「⏸」。
 - **`/progress`**：汇总显示所有进行中任务的下载/上传进度条（读 `_Pipeline.active` 登记表）。
-- **命令消息双触发防护**：通用 `on_private_message` 检测 `MessageEntityBotCommand` 实体则 return（避免 `/` 命令多出一条"请发送视频或链接…"）。
+- **`/queue`（管理视图，v7）**：列出进行中任务（每项 `q_cancel:{seq}` 按钮）+ 待确认（每项 `cancel:{seq}` 按钮）+ 底部 `q_pause`/`q_resume`。**真正可控制所有阶段**：
+  - `_cancel_seq(seq)` + `_cancel_marked` 集合：待确认→`_cancel_pending`；下载/上传中→`task.cancel()`；**排队等待下载**→标记后下载 worker 取件时跳过；**等待上传**→上传 worker 发布前跳过。
+  - `_cancel_marked` 生命周期：由下载 worker 跳过路径/`CancelledError` 路径、上传 worker "cancelled before upload"/`CancelledError` 路径消费；`_finish_seq` **不**清除（避免与队列取件竞态导致已取消任务被重复下载泄漏）。
+- **取消即撤回（v7.1）**：用户取消任务（确认 ❌ `_cancel_pending`、停止下载/上传 `CancelledError`、`/queue` 取消 `_cancel_seq`、下载 worker 跳过已取消排队任务）时，**删除**对应状态/确认消息（`_delete_status`/`pending.status.delete()`），不再保留"已取消"文案。**确认超时（`_confirm_timeout`）同样删除消息（v7.2）**。**点「↩️ 撤销」= 删除频道视频 + `event.delete()` 立即删除状态消息（v7.2）**。失败消息仍编辑保留（带重试按钮）。取消发生在发布前，频道无视频可撤。
+- **`/cancel <N>`**：取消第 N 个待确认项（复用 `_cancel_pending(seq)`）。
+- **`/pause` / `/resume`**：`_pipeline._paused` 标志；下载 worker 在 `input_q.get()` 前、上传 worker 在循环顶部/发布前检查。**注意：上传 worker 看门狗在暂停时跳过强制取消**（`continue` 不推进 `next_seq`）。
+- **命令消息双触发防护**：通用 `on_private_message` 检测 `MessageEntityBotCommand` 实体则 return。
+
+### 偏好持久化（v6 统一为 prefs.json）
+
+- 文件 `session/prefs.json`：`{"<user_id>": {"show_progress": bool, "spoiler_mode": "ask|always_spoiler|always_normal"}}`
+- 旧 `progress_prefs.json` 仅作迁移读取（show_progress）
+- `_MODE_NAMES` / `_mode_buttons()`；`/start` 首次未设 `spoiler_mode` 时引导设置；`/mode` 随时改
+- 模式 `always_*` 时：`on_private_message` 单条 与 `_finalize_album` 跳过询问，走 `_auto_enqueue`（状态「已按偏好自动处理」）
+- **未设置模式先暂存（v7）**：`spoiler_mode` 未设置（`not _has_pref`）时，转发内容走 `hold_item()` 暂存到 `_Pipeline.held[user_id]`（首次发模式引导按钮、其余提示"已暂存"，并启动超时任务）。`mode:` 回调设置后 `take_held()` + `_release_held()` 按模式释放（`always_*`→`_auto_enqueue`，`ask`→逐条 `_show_ask`）。`HELD_TIMEOUT`（默认 300s，可配）未设置则 `_held_timeout` 按 `force_normal=True`（正常/非18+）自动入队并提示。`_show_ask(seq, kind, message, album, user_id, chat_id)` 为统一"问 18+"入口（pending 注册 + 按钮消息 + 失败结算）。
+
+### 撤销发布 / 重试（v6）
+
+- **撤销**：`_send_media` 返回 msg id、`_send_album` 解析 `SendMultiMediaRequest` 结果收集 ids → `_remember_published(seq, ids)`（上限 50 条）→ 成功消息带 `undo:{seq}` 按钮 → 回调 `delete_messages(DEST_CHANNEL, ids)`。
+- **重试**：`_reply_error(seq, text, retry_job)` 把任务快照存入 `self.retryable[seq]` 并附 `retry:{seq}` 按钮 → 回调分配**新 seq** 重建任务入队。大小超限不提供重试。
 
 ### 进度条（v3 新增）
 
@@ -64,13 +83,18 @@ telegram-video-forwarder/
 - **队列排位显示（v4）**：用户侧不再显示全局递增序号 `#N`，改为「队列第 N 位」。`_Pipeline` 维护 `active_seqs` 集合（`enqueue` 时加入、`_upload_worker` finally 移除），`_queue_position(seq)=1+更小活跃 seq 数`，`task_label(seq)` 生成文案。**待确认的 pending 不计入排位**（用户决定）。完成/错误/停止/超时消息不显示排位。
 - **`/status` 队列全貌（v4）**：重写 `status_text(user_id)`——按 `active_seqs` 排序逐行显示「队列第 N 位 + 阶段 + 进度条」，状态判定：`_download_tasks` 含→下载中、`==_uploading`→上传中、`jobs` 含→等待上传、否则→等待下载；附「其他」区（等待确认/相册聚合中）。一次性快照（用户否决了动态刷新方案）。尊重进度条偏好。
 
-### 可靠性机制（v2 新增）
+### 可靠性机制（v2 新增 + v6.1 限流修复）
 
 - **下载看门狗**：`_do_download` 外层 `asyncio.wait_for(DOWNLOAD_TIMEOUT)`。
 - **上传看门狗**：`_publish` 外层 `asyncio.wait_for(UPLOAD_TIMEOUT)`，超时报错并继续，防止 `SendMultiMediaRequest` 无限挂起。
-- **上传队列看门狗**：`_upload_worker` 等待某 seq 的 future 超过 `DOWNLOAD_TIMEOUT+60s` 仍无结果 → `_set_cancelled` 强制跳过并继续（根治"某 seq 永未结算导致后续全部卡死"）。
+- **上传队列看门狗**：`_upload_worker` 等待某 seq 的 future 超过 `DOWNLOAD_TIMEOUT+60s` 仍无结果 → `_reply_error("处理超时", retry_job)`（**提供重试按钮，v7.3**）+ `_set_cancelled` 强制跳过并继续（根治"某 seq 永未结算导致后续全部卡死"）。下载/上传 timeout 本就走 `_reply_error` 带重试。
 - **回调兜底**：确认回调中 `event.answer()` 等异常不再影响流程；enqueue 失败也会 `_set_cancelled(seq)`，保证 seq 必然被结算。
 - **下载进度日志**：每 10% 打印 `Job #N download progress: r/t (%)`，区分"卡死"与"慢"。
+- **限流（FloodWait）防护（v6.1）**：
+  - 进度条编辑**全局节流** `PROGRESS_MIN_INTERVAL`（默认 2.0s）：`_update_progress_status` 顶部全局时间闸，所有任务合计最多 ~0.5 次编辑/秒（此前每任务 1s 编辑 × 并发 → EditMessage FloodWait 2000+s，全账号瘫痪）
+  - `_auto_enqueue` 发状态消息失败时**先 `_set_cancelled(seq)` 再抛出**（否则留下幽灵 seq → 上传 worker 永久卡死，所有任务停在"等待上传"）
+  - 状态编辑统一走 `_safe_edit(job, text, buttons)`（try/except 吞异常）：`_do_download`/`_publish`/`_publish_album` 的编辑失败**不再误判"上传失败"**（发布已成功仍算成功）
+  - 命令 handler 响应统一走 `_respond(event, text, **kwargs)`（防 FloodWait 时刷 "Unhandled exception"）
 
 ### 关键发布逻辑 `_upload_media_input` / `_send_album`
 
@@ -95,6 +119,9 @@ telegram-video-forwarder/
 | `ALBUM_GATHER_SECONDS` | `1.0` | 相册聚合等待秒数 |
 | `UPLOAD_TIMEOUT` | `1800` (30min) | 单任务上传超时 |
 | `FORWARD_CAPTION` | `false` | 是否转发原消息文字（false=纯媒体转发） |
+| `PROGRESS_MIN_INTERVAL` | `2.0` | 进度条编辑全局最小间隔（秒，防限流） |
+| `HELD_TIMEOUT` | `300` | 未设 18+ 模式时暂存超时（秒），超时按"正常"处理 |
+| `AUTO_DELETE_SECONDS` | `10` | 命令回复/提示消息自动撤回秒数（0=关闭） |
 
 ## 5. 已踩过的坑（重要）
 
@@ -106,6 +133,7 @@ telegram-video-forwarder/
 6. **缩略图要求**：Telegram 接受 .jpg、≤320x320、尽量 <20-40KB；过大直接丢弃缩略图避免整条发送失败。
 7. **队列死锁（重要）**：上传 worker 按 seq 严格顺序处理，若某 seq 永不"结算"（如确认回调在 enqueue 前抛异常），后续所有任务下载完成后状态永远停在"正在下载"。**症状：所有任务卡在正在下载，/status 全 0。**已修复（回调兜底 + 上传队列看门狗）。
 8. **Telethon 无 `request_timeout` 参数**（1.44 构造器只有 `timeout=10` 连接超时 + `request_retries=5`）：请求可能无限挂起，必须靠外层 `asyncio.wait_for` 兜底（下载/上传看门狗）。
+9. **禁止两个实例同时跑同一 bot 账号**：本地 + VPS 同时运行 → 同一条命令两个 bot 都收到都回复 → 触发瞬时 SendMessage 限流 → 旧版 `_respond` 静默吞错 → **所有命令零响应**（日志只有 `NewMessage`，无报错）。症状：命令无响应但账号能发消息。修复：只跑一个实例 + `_respond` 记录日志。排查命令无响应时：查 `_respond` 的 `Respond failed` 日志。
 
 ## 6. VPS 故障排查记录（重要）
 

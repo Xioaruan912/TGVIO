@@ -20,13 +20,16 @@ from telethon.utils import get_input_document, get_input_photo
 from .config import (
     ALBUM_GATHER_SECONDS,
     ALLOWED_USERS,
+    AUTO_DELETE_SECONDS,
     CONFIRM_TIMEOUT,
     DEST_CHANNEL,
     DOWNLOAD_CONCURRENCY,
     DOWNLOAD_DIR,
     DOWNLOAD_TIMEOUT,
     FORWARD_CAPTION,
+    HELD_TIMEOUT,
     MAX_FILE_SIZE,
+    PROGRESS_MIN_INTERVAL,
     UPLOAD_TIMEOUT,
 )
 from .downloader import download_video
@@ -39,13 +42,38 @@ MEDIA_TYPES = (MessageMediaPhoto, MessageMediaDocument)
 
 _CANCELLED = object()
 
-PREFS_FILE = os.path.join("session", "progress_prefs.json")
+PREFS_FILE = os.path.join("session", "prefs.json")
+LEGACY_PREFS_FILE = os.path.join("session", "progress_prefs.json")
 PROGRESS_REFRESH_SECONDS = 1.0
+
+_MODE_NAMES = {
+    "ask": "每次询问",
+    "always_spoiler": "总是雪花遮挡",
+    "always_normal": "总是正常",
+}
+
+
+def _mode_buttons():
+    return [
+        [Button.inline("🟡 每次询问", "mode:ask")],
+        [Button.inline("🔞 总是雪花遮挡", "mode:always_spoiler")],
+        [Button.inline("✅ 总是正常", "mode:always_normal")],
+    ]
 
 
 def render_bar(pct: int, width: int = 10) -> str:
     filled = max(0, min(width, round(pct * width / 100)))
     return "█" * filled + "░" * (width - filled)
+
+
+async def _delete_after(message: object, seconds: float) -> None:
+    if not seconds or seconds <= 0:
+        return
+    await asyncio.sleep(seconds)
+    try:
+        await message.delete()
+    except Exception:
+        pass
 
 _START_TEXT = (
     "📤 视频转发机器人\n\n"
@@ -57,7 +85,25 @@ _START_TEXT = (
     "一次转发的一批图片（相册）会合并为一个任务、只询问一次，发布为单个相册消息。\n\n"
     "选「是（雪花遮挡）」时，用 Telegram 内置雪花效果遮挡发布，文件内容不被修改。\n\n"
     f"⚠️ 确认弹窗 {CONFIRM_TIMEOUT} 秒内未回复将自动取消该任务。\n"
-    f"⚠️ 单个上传文件上限 {MAX_FILE_SIZE // (1024 * 1024)}MB（平台上限）"
+    f"⚠️ 单个上传文件上限 {MAX_FILE_SIZE // (1024 * 1024)}MB（平台上限）\n\n"
+    "ℹ️ 关于：视频转发机器人，把转发内容处理后发布到频道。输入 /about 查看全部命令说明。"
+)
+
+_ABOUT_TEXT = (
+    "ℹ️ 关于 · 视频转发机器人\n\n"
+    f"把转发的视频/图片/链接处理后发布到 {DEST_CHANNEL}。\n"
+    "支持 18+ 雪花遮挡、相册聚合、并行下载/顺序上传队列、\n"
+    "进度条、撤销发布与失败重试。\n\n"
+    "📖 命令说明：\n"
+    "/start    使用说明（首次运行设置 18+ 模式）\n"
+    "/about    关于/命令说明\n"
+    "/status   查看队列全貌（排位/阶段/进度）\n"
+    "/progress 查看所有任务的下载/上传进度条\n"
+    "/mode     设置 18+ 处理方式（每次询问/总是雪花/总是正常）\n"
+    "/queue    管理队列（逐项取消/暂停/恢复）\n"
+    "/cancel N 取消第 N 个待确认项\n"
+    "/pause    暂停队列\n"
+    "/resume   恢复队列"
 )
 
 
@@ -92,6 +138,14 @@ class _AlbumBuffer:
     task: object = None
 
 
+@dataclass
+class _HeldItem:
+    kind: str
+    message: object = None
+    album: list = None
+    chat_id: int = 0
+
+
 class _Pipeline:
     def __init__(self, client: TelegramClient) -> None:
         self.client = client
@@ -109,32 +163,66 @@ class _Pipeline:
         self._uploading: int | None = None
         self._download_tasks: dict[int, asyncio.Task] = {}
         self._upload_tasks: dict[int, asyncio.Task] = {}
-        self.progress_prefs: dict[int, bool] = {}
-        self._load_progress_prefs()
+        self.prefs: dict[int, dict] = {}
+        self.published: dict[int, list] = {}
+        self.retryable: dict[int, _Job] = {}
+        self._paused = False
+        self._last_progress_edit = 0.0
+        self._cancel_marked: set[int] = set()
+        self.held: dict[int, list[_HeldItem]] = {}
+        self._held_timers: dict[int, asyncio.Task] = {}
+        self._load_prefs()
 
-    def _load_progress_prefs(self) -> None:
+    def _load_prefs(self) -> None:
         try:
             with open(PREFS_FILE) as f:
                 data = json.load(f)
-            self.progress_prefs = {int(k): bool(v) for k, v in data.items()}
+            self.prefs = {int(k): dict(v) for k, v in data.items()}
         except Exception:
-            self.progress_prefs = {}
+            self.prefs = {}
+        if not self.prefs:
+            try:
+                with open(LEGACY_PREFS_FILE) as f:
+                    legacy = json.load(f)
+                for uid, show in legacy.items():
+                    self.prefs.setdefault(int(uid), {})["show_progress"] = bool(show)
+                if self.prefs:
+                    self._save_prefs()
+            except Exception:
+                pass
 
-    def _save_progress_prefs(self) -> None:
+    def _save_prefs(self) -> None:
         try:
             with open(PREFS_FILE, "w") as f:
-                json.dump({str(k): v for k, v in self.progress_prefs.items()}, f)
+                json.dump(
+                    {str(k): v for k, v in self.prefs.items()}, f, ensure_ascii=False
+                )
         except Exception:
             pass
 
+    def _get_pref(self, user_id: int, key: str, default):
+        return self.prefs.get(user_id, {}).get(key, default)
+
+    def _has_pref(self, user_id: int, key: str) -> bool:
+        return key in self.prefs.get(user_id, {})
+
+    def _set_pref(self, user_id: int, key: str, value) -> None:
+        self.prefs.setdefault(user_id, {})[key] = value
+        self._save_prefs()
+
     def _show_progress(self, user_id: int) -> bool:
-        return self.progress_prefs.get(user_id, True)
+        return self._get_pref(user_id, "show_progress", True)
 
     def toggle_progress_pref(self, user_id: int) -> bool:
         current = self._show_progress(user_id)
-        self.progress_prefs[user_id] = not current
-        self._save_progress_prefs()
-        return self.progress_prefs[user_id]
+        self._set_pref(user_id, "show_progress", not current)
+        return not current
+
+    def _spoiler_mode(self, user_id: int) -> str:
+        return self._get_pref(user_id, "spoiler_mode", "ask")
+
+    def set_spoiler_mode(self, user_id: int, mode: str) -> None:
+        self._set_pref(user_id, "spoiler_mode", mode)
 
     def start(self) -> None:
         loop = asyncio.get_running_loop()
@@ -149,7 +237,9 @@ class _Pipeline:
 
     def status_text(self, user_id: int = 0) -> str:
         show = self._show_progress(user_id) if user_id else True
-        lines = ["📊 队列状态"]
+        lines = [
+            "📊 队列状态" + ("（⏸ 已暂停）" if self._paused else "")
+        ]
         active_lines = []
         for seq in sorted(self.active_seqs):
             pos = self.task_label(seq)
@@ -261,24 +351,43 @@ class _Pipeline:
     async def _finalize_album(self, buf: _AlbumBuffer) -> None:
         await asyncio.sleep(ALBUM_GATHER_SECONDS)
         self.albums.pop(buf.grouped_id, None)
-        seq = self.reserve_seq()
-        self.register_pending(
-            seq, "album", album=list(buf.messages), user_id=buf.chat_id
-        )
-        try:
-            status = await self.client.send_message(
-                buf.chat_id,
-                f"⚠️ 该相册（{len(buf.messages)} 张）是否为 18+？",
-                buttons=[
-                    Button.inline("🔞 是（雪花遮挡）", f"confirm:{seq}:1"),
-                    Button.inline("✅ 否", f"confirm:{seq}:0"),
-                ],
+        if not self._has_pref(buf.chat_id, "spoiler_mode"):
+            first = self.hold_item(
+                buf.chat_id, "album", album=list(buf.messages), chat_id=buf.chat_id
             )
-            self.set_pending_status(seq, status)
+            try:
+                if first:
+                    await self.client.send_message(
+                        buf.chat_id,
+                        "📌 请先设置 18+ 处理方式，再继续处理相册：",
+                        buttons=_mode_buttons(),
+                    )
+                else:
+                    msg = await self.client.send_message(
+                        buf.chat_id, "⏳ 已暂存，等待你设置 18+ 模式"
+                    )
+                    if AUTO_DELETE_SECONDS > 0:
+                        asyncio.get_running_loop().create_task(
+                            _delete_after(msg, AUTO_DELETE_SECONDS)
+                        )
+            except Exception as exc:
+                logger.exception("Failed to prompt mode for album: %s", exc)
+            return
+        if self._spoiler_mode(buf.chat_id) != "ask":
+            try:
+                await self._auto_enqueue(
+                    "album", None, list(buf.messages), buf.chat_id
+                )
+            except Exception as exc:
+                logger.exception("Failed to auto-enqueue album: %s", exc)
+            return
+        seq = self.reserve_seq()
+        try:
+            await self._show_ask(
+                seq, "album", None, list(buf.messages), buf.chat_id, buf.chat_id
+            )
         except Exception as exc:
-            logger.exception("Failed to ask album confirmation #%s", seq)
-            self.pending.pop(seq, None)
-            self._set_cancelled(seq)
+            logger.exception("Failed to ask album confirmation #%s: %s", seq, exc)
 
     async def _confirm_timeout(self, seq: int) -> None:
         await asyncio.sleep(CONFIRM_TIMEOUT)
@@ -289,13 +398,20 @@ class _Pipeline:
         logger.info("Job #%s cancelled by confirmation timeout", seq)
         if pending.status is not None:
             try:
-                await pending.status.edit("⏰ 确认超时，任务已取消")
+                await pending.status.delete()
             except Exception:
                 pass
 
     async def _download_worker(self) -> None:
         while True:
+            while self._paused:
+                await asyncio.sleep(1)
             job = await self.input_q.get()
+            if job.seq in self._cancel_marked:
+                self._cancel_marked.discard(job.seq)
+                await self._delete_status(job)
+                self.input_q.task_done()
+                continue
             self.jobs[job.seq] = job
             self._active_downloads += 1
             task = asyncio.get_running_loop().create_task(self._do_download(job))
@@ -310,11 +426,9 @@ class _Pipeline:
                 )
             except asyncio.CancelledError:
                 logger.info("Job #%s download stopped by user", job.seq)
+                self._cancel_marked.discard(job.seq)
                 self._set_cancelled(job.seq)
-                try:
-                    await job.status.edit("⏹ 已停止下载")
-                except Exception:
-                    pass
+                await self._delete_status(job)
             except Exception as exc:
                 logger.exception("Download failed for job #%s", job.seq)
                 self._set_exception(job.seq, exc)
@@ -389,6 +503,10 @@ class _Pipeline:
         return progress
 
     async def _update_progress_status(self, seq: int) -> None:
+        now = time.time()
+        if now - self._last_progress_edit < PROGRESS_MIN_INTERVAL:
+            return
+        self._last_progress_edit = now
         job = self.jobs.get(seq)
         info = self.active.get(seq)
         if job is None or info is None:
@@ -431,10 +549,26 @@ class _Pipeline:
         except Exception:
             pass
 
+    async def _safe_edit(self, job, text: str, buttons=None) -> None:
+        if job is None:
+            return
+        try:
+            await job.status.edit(text, buttons=buttons)
+        except Exception:
+            pass
+
+    async def _delete_status(self, job) -> None:
+        if job is None:
+            return
+        try:
+            await job.status.delete()
+        except Exception:
+            pass
+
     async def _do_download(self, job: _Job):
         workdir = self._workdir(job.seq)
         os.makedirs(workdir, exist_ok=True)
-        await job.status.edit(f"🔄 {self.task_label(job.seq)} 正在下载...")
+        await self._safe_edit(job, f"🔄 {self.task_label(job.seq)} 正在下载...")
         if job.kind == "album":
             paths = []
             total = len(job.album)
@@ -464,6 +598,8 @@ class _Pipeline:
     async def _upload_worker(self) -> None:
         watchdog = DOWNLOAD_TIMEOUT + 60
         while True:
+            while self._paused:
+                await asyncio.sleep(1)
             seq = self._next_seq
             fut = self.results.get(seq)
             if fut is None:
@@ -474,16 +610,31 @@ class _Pipeline:
                     asyncio.shield(fut), timeout=watchdog
                 )
             except asyncio.TimeoutError:
+                if self._paused:
+                    continue
                 logger.error(
                     "Job #%s unresolved for %ss, forcing cancel", seq, watchdog
                 )
+                await self._reply_error(
+                    seq,
+                    f"处理超时（{watchdog} 秒）",
+                    retry_job=self.jobs.get(seq),
+                )
                 self._set_cancelled(seq)
             except Exception as exc:
-                await self._reply_error(seq, f"下载失败: {exc}")
+                await self._reply_error(
+                    seq, f"下载失败: {exc}", retry_job=self.jobs.get(seq)
+                )
             else:
                 if path is _CANCELLED:
                     logger.info("Job #%s skipped (cancelled)", seq)
+                elif seq in self._cancel_marked:
+                    logger.info("Job #%s cancelled before upload", seq)
+                    self._cancel_marked.discard(seq)
+                    await self._delete_status(self.jobs.get(seq))
                 else:
+                    while self._paused:
+                        await asyncio.sleep(1)
                     self._uploading = seq
                     task = asyncio.get_running_loop().create_task(
                         self._publish(seq, path)
@@ -498,29 +649,37 @@ class _Pipeline:
                             UPLOAD_TIMEOUT,
                         )
                         await self._reply_error(
-                            seq, f"上传超时（{UPLOAD_TIMEOUT} 秒）"
+                            seq,
+                            f"上传超时（{UPLOAD_TIMEOUT} 秒）",
+                            retry_job=self.jobs.get(seq),
                         )
                     except asyncio.CancelledError:
                         logger.info("Job #%s upload stopped by user", seq)
-                        job = self.jobs.get(seq)
-                        if job is not None:
-                            try:
-                                await job.status.edit("⏹ 已停止上传")
-                            except Exception:
-                                pass
+                        self._cancel_marked.discard(seq)
+                        await self._delete_status(self.jobs.get(seq))
                     except Exception as exc:
                         logger.exception("Upload failed for job #%s", seq)
-                        await self._reply_error(seq, f"上传失败: {exc}")
+                        await self._reply_error(
+                            seq, f"上传失败: {exc}", retry_job=self.jobs.get(seq)
+                        )
                     finally:
                         self._upload_tasks.pop(seq, None)
                         self._uploading = None
-            finally:
-                self._next_seq += 1
-                self.results.pop(seq, None)
-                self.jobs.pop(seq, None)
-                self.active.pop(seq, None)
-                self.active_seqs.discard(seq)
-                shutil.rmtree(self._workdir(seq), ignore_errors=True)
+            self._finish_seq(seq)
+
+    def _finish_seq(self, seq: int) -> None:
+        self._next_seq += 1
+        self.results.pop(seq, None)
+        self.jobs.pop(seq, None)
+        self.active.pop(seq, None)
+        self.active_seqs.discard(seq)
+        shutil.rmtree(self._workdir(seq), ignore_errors=True)
+
+    def _remember_published(self, seq: int, ids: list) -> None:
+        self.published[seq] = ids
+        if len(self.published) > 50:
+            for old_seq in sorted(self.published)[:-50]:
+                self.published.pop(old_seq, None)
 
     async def _publish(self, seq: int, payload) -> None:
         job = self.jobs[seq]
@@ -531,33 +690,45 @@ class _Pipeline:
         path = payload
         size = os.path.getsize(path)
         if size > MAX_FILE_SIZE:
-            await job.status.edit(
+            await self._safe_edit(
+                job,
                 f"❌ 文件 {size / 1024 / 1024:.1f}MB 超过 "
-                f"{MAX_FILE_SIZE // (1024 * 1024)}MB 上限"
+                f"{MAX_FILE_SIZE // (1024 * 1024)}MB 上限",
             )
             return
 
         waiting = sum(1 for s, f in self.results.items() if s != seq and f.done())
         suffix = f"（另有 {waiting} 个待上传）" if waiting else ""
         label = "🔞 雪花遮挡" if job.spoiler else ""
-        await job.status.edit(
-            f"✅ 下载完成（{size / 1024 / 1024:.1f}MB）{label}，正在上传{suffix}..."
+        await self._safe_edit(
+            job,
+            f"✅ 下载完成（{size / 1024 / 1024:.1f}MB）{label}，正在上传{suffix}...",
         )
 
         caption = None
         if FORWARD_CAPTION and job.kind == "media":
             caption = job.message.message[:1024] or None
-        await self._send_media(path, caption, job.spoiler, job.seq)
-        await job.status.edit(f"✅ 已发布到 {DEST_CHANNEL}")
+        msg_id = await self._send_media(path, caption, job.spoiler, job.seq)
+        self._remember_published(seq, [msg_id])
+        await self._safe_edit(
+            job,
+            f"✅ 已发布到 {DEST_CHANNEL}",
+            buttons=[Button.inline("↩️ 撤销", f"undo:{seq}")],
+        )
+        if AUTO_DELETE_SECONDS > 0:
+            asyncio.get_running_loop().create_task(
+                _delete_after(job.status, AUTO_DELETE_SECONDS)
+            )
 
     async def _publish_album(self, seq: int, paths: list) -> None:
         job = self.jobs[seq]
         for path in paths:
             size = os.path.getsize(path)
             if size > MAX_FILE_SIZE:
-                await job.status.edit(
+                await self._safe_edit(
+                    job,
                     f"❌ 相册中有文件 {size / 1024 / 1024:.1f}MB 超过 "
-                    f"{MAX_FILE_SIZE // (1024 * 1024)}MB 上限"
+                    f"{MAX_FILE_SIZE // (1024 * 1024)}MB 上限",
                 )
                 return
 
@@ -565,21 +736,32 @@ class _Pipeline:
         waiting = sum(1 for s, f in self.results.items() if s != seq and f.done())
         suffix = f"（另有 {waiting} 个待上传）" if waiting else ""
         label = "🔞 雪花遮挡" if job.spoiler else ""
-        await job.status.edit(
+        await self._safe_edit(
+            job,
             f"✅ 相册下载完成（{len(paths)} 张，共 {total / 1024 / 1024:.1f}MB）"
-            f"{label}，正在上传{suffix}..."
+            f"{label}，正在上传{suffix}...",
         )
 
         if FORWARD_CAPTION:
             captions = [m.message[:1024] or "" for m in job.album]
         else:
             captions = [""] * len(paths)
-        await self._send_album(paths, captions, job.spoiler, seq)
-        await job.status.edit(f"✅ 相册已发布到 {DEST_CHANNEL}")
+        ids = await self._send_album(paths, captions, job.spoiler, seq)
+        self._remember_published(seq, ids)
+        await self._safe_edit(
+            job,
+            f"✅ 相册已发布到 {DEST_CHANNEL}",
+            buttons=[Button.inline("↩️ 撤销", f"undo:{seq}")],
+        )
+        if AUTO_DELETE_SECONDS > 0:
+            asyncio.get_running_loop().create_task(
+                _delete_after(job.status, AUTO_DELETE_SECONDS)
+            )
 
-    async def _send_media(self, path: str, caption: str | None, spoiler: bool, seq: int) -> None:
+    async def _send_media(self, path: str, caption: str | None, spoiler: bool, seq: int) -> int:
         media = await self._upload_media_input(path, spoiler, seq)
-        await self.client.send_file(DEST_CHANNEL, media, caption=caption)
+        msg = await self.client.send_file(DEST_CHANNEL, media, caption=caption)
+        return msg.id
 
     async def _upload_media_input(
         self, path: str, spoiler: bool, seq: int, item: int = 1, items: int = 1
@@ -634,7 +816,7 @@ class _Pipeline:
 
     async def _send_album(
         self, paths: list, captions: list, spoiler: bool, seq: int
-    ) -> None:
+    ) -> list:
         dest = await self._get_dest_input()
         single_media = []
         total = len(paths)
@@ -665,11 +847,18 @@ class _Pipeline:
                 types.InputSingleMedia(reference, message=caption)
             )
 
-        await self.client(
+        result = await self.client(
             functions.messages.SendMultiMediaRequest(
                 dest, multi_media=single_media
             )
         )
+        ids = []
+        for update in getattr(result, "updates", []) or []:
+            if isinstance(update, types.UpdateNewChannelMessage):
+                ids.append(update.message.id)
+            elif isinstance(update, types.UpdateNewMessage):
+                ids.append(update.message.id)
+        return ids
 
     async def _get_dest_input(self):
         if self._dest_input is None:
@@ -703,11 +892,192 @@ class _Pipeline:
         if not fut.done():
             fut.set_result(_CANCELLED)
 
-    async def _reply_error(self, seq: int, text: str) -> None:
+    async def _cancel_pending(self, seq: int) -> bool:
+        pending = self.pending.pop(seq, None)
+        if pending is None:
+            return False
+        if pending.timeout_task is not None:
+            pending.timeout_task.cancel()
+        self._set_cancelled(seq)
+        logger.info("Job #%s cancelled by user", seq)
+        if pending.status is not None:
+            try:
+                await pending.status.delete()
+            except Exception:
+                pass
+        return True
+
+    async def _cancel_seq(self, seq: int) -> bool:
+        if seq in self.pending:
+            return await self._cancel_pending(seq)
+        if (
+            seq not in self.active_seqs
+            and seq not in self._download_tasks
+            and seq not in self._upload_tasks
+            and seq not in self.jobs
+        ):
+            return False
+        self._cancel_marked.add(seq)
+        self._set_cancelled(seq)
+        task = self._download_tasks.get(seq)
+        if task is not None and not task.done():
+            task.cancel()
+        task = self._upload_tasks.get(seq)
+        if task is not None and not task.done():
+            task.cancel()
         job = self.jobs.get(seq)
         if job is not None:
+            await self._delete_status(job)
+        logger.info("Job #%s cancellation requested", seq)
+        return True
+
+    async def _auto_enqueue(
+        self,
+        kind: str,
+        message: object,
+        album: list,
+        user_id: int,
+        force_normal: bool = False,
+    ) -> int:
+        mode = self._spoiler_mode(user_id)
+        if force_normal:
+            spoiler = False
+            label = "✅ 正常"
+        else:
+            spoiler = mode == "always_spoiler"
+            label = "🔞 雪花遮挡" if spoiler else "✅ 正常"
+        seq = self.reserve_seq()
+        self.active_seqs.add(seq)
+        try:
+            status = await self.client.send_message(
+                user_id,
+                f"🔄 {self.task_label(seq)} 已按偏好自动处理：{label}",
+            )
+        except Exception:
+            self._set_cancelled(seq)
+            logger.error("Auto-enqueue failed for job #%s, seq settled", seq)
+            raise
+        self.enqueue(
+            _Job(
+                seq=seq,
+                kind=kind,
+                status=status,
+                message=message,
+                album=album,
+                spoiler=spoiler,
+                user_id=user_id,
+            )
+        )
+        logger.info("Job #%s auto-enqueued spoiler=%s (mode=%s)", seq, spoiler, mode)
+        return seq
+
+    async def _show_ask(
+        self,
+        seq: int,
+        kind: str,
+        message: object,
+        album: list,
+        user_id: int,
+        chat_id: int,
+    ) -> None:
+        self.register_pending(seq, kind, message, album=album, user_id=user_id)
+        text = (
+            f"⚠️ 该相册（{len(album)} 张）是否为 18+？"
+            if kind == "album"
+            else "⚠️ 该内容是否为 18+？"
+        )
+        try:
+            status = await self.client.send_message(
+                chat_id,
+                text,
+                buttons=[
+                    [
+                        Button.inline("🔞 是（雪花遮挡）", f"confirm:{seq}:1"),
+                        Button.inline("✅ 否", f"confirm:{seq}:0"),
+                    ],
+                    [Button.inline("❌ 取消", f"cancel:{seq}")],
+                ],
+            )
+            self.set_pending_status(seq, status)
+        except Exception:
+            self.pending.pop(seq, None)
+            self._set_cancelled(seq)
+            raise
+
+    def hold_item(
+        self, user_id: int, kind: str, message: object = None,
+        album: list = None, chat_id: int = 0,
+    ) -> bool:
+        items = self.held.setdefault(user_id, [])
+        items.append(_HeldItem(kind=kind, message=message, album=album, chat_id=chat_id))
+        if len(items) == 1:
+            self._held_timers[user_id] = asyncio.get_running_loop().create_task(
+                self._held_timeout(user_id)
+            )
+            return True
+        return False
+
+    def take_held(self, user_id: int) -> list:
+        timer = self._held_timers.pop(user_id, None)
+        if timer is not None and not timer.done():
+            timer.cancel()
+        return self.held.pop(user_id, [])
+
+    async def _held_timeout(self, user_id: int) -> None:
+        await asyncio.sleep(HELD_TIMEOUT)
+        items = self.take_held(user_id)
+        if not items:
+            return
+        logger.info("Held items for %s released by timeout as normal", user_id)
+        for item in items:
             try:
-                await job.status.edit(f"❌ {text}")
+                await self._auto_enqueue(
+                    item.kind, item.message, item.album, user_id, force_normal=True
+                )
+            except Exception as exc:
+                logger.exception("Held item timeout auto-enqueue failed: %s", exc)
+        try:
+            msg = await self.client.send_message(
+                user_id,
+                f"⏰ 未设置 18+ 模式，{len(items)} 个暂存内容已按「正常（非18+）」自动处理",
+            )
+            if AUTO_DELETE_SECONDS > 0:
+                asyncio.get_running_loop().create_task(
+                    _delete_after(msg, AUTO_DELETE_SECONDS)
+                )
+        except Exception:
+            pass
+
+    async def _release_held(self, user_id: int, mode: str, items: list) -> int:
+        count = 0
+        for item in items:
+            try:
+                if mode != "ask":
+                    await self._auto_enqueue(
+                        item.kind, item.message, item.album, user_id
+                    )
+                else:
+                    seq = self.reserve_seq()
+                    await self._show_ask(
+                        seq, item.kind, item.message, item.album, user_id, item.chat_id
+                    )
+                count += 1
+            except Exception as exc:
+                logger.exception("Release held item failed: %s", exc)
+        return count
+
+    async def _reply_error(
+        self, seq: int, text: str, retry_job: _Job = None
+    ) -> None:
+        job = self.jobs.get(seq)
+        if retry_job is not None:
+            self.retryable[seq] = retry_job
+        buttons = None
+        if retry_job is not None:
+            buttons = [Button.inline("🔄 重试", f"retry:{seq}")]
+        if job is not None:
+            try:
+                await job.status.edit(f"❌ {text}", buttons=buttons)
             except Exception:
                 pass
 
@@ -719,24 +1089,71 @@ def register_handlers(client: TelegramClient) -> None:
     def _authorized(event: events.NewMessage.Event) -> bool:
         return event.sender_id in ALLOWED_USERS
 
+    async def _respond(
+        event: events.NewMessage.Event,
+        text: str,
+        auto_delete: bool = True,
+        **kwargs,
+    ) -> None:
+        try:
+            msg = await event.respond(text, **kwargs)
+            if auto_delete and AUTO_DELETE_SECONDS > 0:
+                asyncio.get_running_loop().create_task(
+                    _delete_after(msg, AUTO_DELETE_SECONDS)
+                )
+        except Exception as exc:
+            logger.warning("Respond failed: %s", exc)
+
     @client.on(events.NewMessage(pattern="/start"))
     async def on_start(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /start from %s", event.sender_id)
         if not _authorized(event):
             return
-        await event.respond(_START_TEXT)
+        if not pipeline._has_pref(event.sender_id, "spoiler_mode"):
+            await _respond(event, 
+                "📌 首次使用，请选择 18+ 处理方式（之后可用 /mode 修改）：",
+                buttons=_mode_buttons(),
+                auto_delete=False,
+            )
+            return
+        mode = pipeline._spoiler_mode(event.sender_id)
+        await _respond(event, 
+            _START_TEXT + f"\n\n当前 18+ 模式：{_MODE_NAMES[mode]}（/mode 可修改）"
+        )
+
+    @client.on(events.NewMessage(pattern="/about"))
+    async def on_about(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /about from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        await _respond(event, _ABOUT_TEXT)
+
+    @client.on(events.NewMessage(pattern="/mode"))
+    async def on_mode(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /mode from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        mode = pipeline._spoiler_mode(event.sender_id)
+        await _respond(event, 
+            f"当前 18+ 模式：{_MODE_NAMES[mode]}\n请选择新的处理方式：",
+            buttons=_mode_buttons(),
+            auto_delete=False,
+        )
 
     @client.on(events.NewMessage(pattern="/status"))
     async def on_status(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /status from %s", event.sender_id)
         if not _authorized(event):
             return
-        await event.respond(pipeline.status_text(event.sender_id))
+        await _respond(event, pipeline.status_text(event.sender_id))
 
     @client.on(events.NewMessage(pattern="/progress"))
     async def on_progress(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /progress from %s", event.sender_id)
         if not _authorized(event):
             return
         if not pipeline._show_progress(event.sender_id):
-            await event.respond(
+            await _respond(event, 
                 "🔕 进度条显示已关闭。点击任意任务状态消息的"
                 "「🔔 显示进度」按钮可重新开启。"
             )
@@ -763,9 +1180,107 @@ def register_handlers(client: TelegramClient) -> None:
                 )
             lines.append(f"{label} {render_bar(pct)} {pct:3d}%")
         if not lines:
-            await event.respond("📊 暂无进行中的任务")
+            await _respond(event, "📊 暂无进行中的任务")
         else:
-            await event.respond("📊 进行中任务\n" + "\n".join(lines))
+            await _respond(event, "📊 进行中任务\n" + "\n".join(lines))
+
+    @client.on(events.NewMessage(pattern="/pause"))
+    async def on_pause(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /pause from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        pipeline._paused = True
+        await _respond(event, "⏸ 已暂停队列（当前步骤完成后暂停，新的任务不再开始）")
+
+    @client.on(events.NewMessage(pattern="/resume"))
+    async def on_resume(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /resume from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        pipeline._paused = False
+        await _respond(event, "▶ 已恢复队列")
+
+    @client.on(events.NewMessage(pattern="/queue"))
+    async def on_queue(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /queue from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        lines = ["📋 队列管理"]
+        buttons = []
+
+        active_lines = []
+        for seq in sorted(pipeline.active_seqs):
+            pos = pipeline.task_label(seq)
+            info = pipeline.active.get(seq)
+            show = pipeline._show_progress(event.sender_id)
+            if seq in pipeline._download_tasks:
+                if info and show:
+                    prefix = (
+                        f"⬇ 下载 {info['item']}/{info['items']}"
+                        if info["items"] > 1
+                        else "🔄 正在下载"
+                    )
+                    state = f"{pos} {prefix} {render_bar(info['pct'])} {info['pct']:3d}%"
+                else:
+                    state = f"{pos} 🔄 正在下载"
+            elif seq == pipeline._uploading:
+                if info and show:
+                    prefix = (
+                        f"📤 上传 {info['item']}/{info['items']}"
+                        if info["items"] > 1
+                        else "📤 正在上传"
+                    )
+                    state = f"{pos} {prefix} {render_bar(info['pct'])} {info['pct']:3d}%"
+                else:
+                    state = f"{pos} 📤 正在上传"
+            elif seq in pipeline.jobs:
+                state = f"{pos} ✅ 等待上传"
+            else:
+                state = f"{pos} ⏳ 等待下载"
+            active_lines.append(state)
+            buttons.append([Button.inline("⏹ 取消", f"q_cancel:{seq}")])
+
+        if active_lines:
+            lines.append(f"\n▶ 进行中（{len(active_lines)}）")
+            lines.extend(active_lines)
+        else:
+            lines.append("\n▶ 进行中：无")
+
+        pending_lines = []
+        for seq in sorted(pipeline.pending):
+            p = pipeline.pending[seq]
+            kind_label = "相册" if p.kind == "album" else "媒体"
+            pending_lines.append(f"⏳ 待确认（{kind_label}）")
+            buttons.append([Button.inline("❌ 取消", f"cancel:{seq}")])
+        if pending_lines:
+            lines.append("\n❓ 待确认")
+            lines.extend(pending_lines)
+
+        buttons.append(
+            [
+                Button.inline("⏸ 暂停", "q_pause"),
+                Button.inline("▶ 恢复", "q_resume"),
+            ]
+        )
+        await _respond(
+            event, "\n".join(lines), buttons=buttons, auto_delete=False
+        )
+
+    @client.on(events.NewMessage(pattern=r"/cancel\s+(\d+)"))
+    async def on_cancel(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /cancel from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        n = int(event.pattern_match.group(1))
+        pendings = sorted(pipeline.pending)
+        if n < 1 or n > len(pendings):
+            await _respond(event, 
+                f"❌ 没有第 {n} 个待确认项（当前 {len(pendings)} 个）"
+            )
+            return
+        seq = pendings[n - 1]
+        await pipeline._cancel_pending(seq)
+        await _respond(event, f"❌ 已取消第 {n} 个待确认项")
 
     @client.on(events.CallbackQuery())
     async def on_callback(event: events.CallbackQuery.Event) -> None:
@@ -780,6 +1295,58 @@ def register_handlers(client: TelegramClient) -> None:
             return
 
         data_text = event.data.decode(errors="replace")
+        if data_text.startswith("mode:"):
+            mode = data_text.split(":", 1)[1]
+            if mode not in _MODE_NAMES:
+                await _answer("无效操作")
+                return
+            pipeline.set_spoiler_mode(event.sender_id, mode)
+            held = pipeline.take_held(event.sender_id)
+            released = 0
+            if held:
+                released = await pipeline._release_held(
+                    event.sender_id, mode, held
+                )
+            await _answer(f"已设置：{_MODE_NAMES[mode]}")
+            try:
+                text = f"✅ 已设置 18+ 模式：{_MODE_NAMES[mode]}"
+                if released:
+                    text += f"\n已处理 {released} 个暂存内容"
+                await event.edit(text)
+            except Exception:
+                pass
+            return
+
+        if data_text.startswith("cancel:"):
+            try:
+                seq = int(data_text.split(":", 1)[1])
+            except (ValueError, IndexError):
+                await _answer("无效操作")
+                return
+            ok = await pipeline._cancel_pending(seq)
+            await _answer("已取消" if ok else "该确认已失效")
+            return
+
+        if data_text.startswith("q_cancel:"):
+            try:
+                seq = int(data_text.split(":", 1)[1])
+            except (ValueError, IndexError):
+                await _answer("无效操作")
+                return
+            ok = await pipeline._cancel_seq(seq)
+            await _answer("已取消" if ok else "无法取消")
+            return
+
+        if event.data == b"q_pause":
+            pipeline._paused = True
+            await _answer("已暂停")
+            return
+
+        if event.data == b"q_resume":
+            pipeline._paused = False
+            await _answer("已恢复")
+            return
+
         if data_text.startswith("stop:"):
             try:
                 seq = int(data_text.split(":", 1)[1])
@@ -794,6 +1361,68 @@ def register_handlers(client: TelegramClient) -> None:
                 await _answer("正在停止...")
             else:
                 await _answer("该任务不在下载/上传中")
+            return
+
+        if data_text.startswith("undo:"):
+            try:
+                seq = int(data_text.split(":", 1)[1])
+            except (ValueError, IndexError):
+                await _answer("无效操作")
+                return
+            ids = pipeline.published.pop(seq, None)
+            if not ids:
+                await _answer("该发布已无法撤销")
+                return
+            try:
+                await event.client.delete_messages(DEST_CHANNEL, ids)
+            except Exception as exc:
+                await _answer(f"撤销失败: {exc}")
+                return
+            logger.info("Undo published job #%s ids=%s", seq, ids)
+            try:
+                await event.delete()
+            except Exception:
+                pass
+            await _answer("已撤销")
+            return
+
+        if data_text.startswith("retry:"):
+            try:
+                seq = int(data_text.split(":", 1)[1])
+            except (ValueError, IndexError):
+                await _answer("无效操作")
+                return
+            old_job = pipeline.retryable.pop(seq, None)
+            if old_job is None:
+                await _answer("该任务已失效（可能已重试）")
+                return
+            new_seq = pipeline.reserve_seq()
+            new_job = _Job(
+                seq=new_seq,
+                kind=old_job.kind,
+                status=old_job.status,
+                message=old_job.message,
+                album=old_job.album,
+                url=old_job.url,
+                spoiler=old_job.spoiler,
+                user_id=old_job.user_id,
+            )
+            pipeline.active_seqs.add(new_seq)
+            try:
+                new_status = await event.client.send_message(
+                    event.chat_id,
+                    f"🔄 {pipeline.task_label(new_seq)} 已重新入队",
+                )
+            except Exception:
+                new_status = old_job.status
+            new_job.status = new_status
+            pipeline.enqueue(new_job)
+            try:
+                await event.edit("🔄 已重新入队")
+            except Exception:
+                pass
+            await _answer("已重新入队")
+            logger.info("Job #%s retried as #%s", seq, new_seq)
             return
 
         if event.data == b"toggle_progress":
@@ -880,24 +1509,39 @@ def register_handlers(client: TelegramClient) -> None:
                 logger.info("Album message -> collect_album gid=%s", grouped_id)
                 pipeline.collect_album(grouped_id, event.message, event.chat_id)
                 return
-            seq = pipeline.reserve_seq()
-            pipeline.register_pending(
-                seq, "media", event.message, user_id=event.sender_id
-            )
-            logger.info("Sending 18+ question for #%s", seq)
-            try:
-                status = await event.reply(
-                    f"⚠️ 该内容是否为 18+？",
-                    buttons=[
-                        Button.inline("🔞 是（雪花遮挡）", f"confirm:{seq}:1"),
-                        Button.inline("✅ 否", f"confirm:{seq}:0"),
-                    ],
+            if not pipeline._has_pref(event.sender_id, "spoiler_mode"):
+                first = pipeline.hold_item(
+                    event.sender_id, "media",
+                    message=event.message, chat_id=event.chat_id,
                 )
-                logger.info("18+ question sent for #%s (msg id=%s)", seq, status.id)
+                if first:
+                    await _respond(
+                        event,
+                        "📌 请先设置 18+ 处理方式，再继续处理视频：",
+                        buttons=_mode_buttons(),
+                        auto_delete=False,
+                    )
+                else:
+                    await _respond(event, "⏳ 已暂存，等待你设置 18+ 模式")
+                return
+            if pipeline._spoiler_mode(event.sender_id) != "ask":
+                try:
+                    await pipeline._auto_enqueue(
+                        "media", event.message, None, event.sender_id
+                    )
+                except Exception as exc:
+                    logger.exception("Auto-enqueue failed: %s", exc)
+                    await _respond(event, f"自动处理失败: {exc}")
+                return
+            seq = pipeline.reserve_seq()
+            try:
+                await pipeline._show_ask(
+                    seq, "media", event.message, None,
+                    event.sender_id, event.chat_id,
+                )
             except Exception as exc:
-                logger.exception("18+ question FAILED for #%s", seq)
-                await event.respond(f"发送确认失败: {exc}")
-            pipeline.set_pending_status(seq, status)
+                logger.exception("18+ question FAILED for #%s: %s", seq, exc)
+                await _respond(event, f"发送确认失败: {exc}")
             return
 
         url_match = URL_RE.search(event.raw_text or "")
@@ -910,4 +1554,4 @@ def register_handlers(client: TelegramClient) -> None:
             await status.edit(f"⏳ {pipeline.task_label(seq)} 已加入队列")
             return
 
-        await event.respond("请发送视频或链接，或使用 /start 查看使用说明。")
+        await _respond(event, "请发送视频或链接，或使用 /start 查看使用说明。")

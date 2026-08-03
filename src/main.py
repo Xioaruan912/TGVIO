@@ -15,19 +15,26 @@ logger = logging.getLogger(__name__)
 
 _COMMANDS = [
     types.BotCommand("start", "使用说明"),
+    types.BotCommand("about", "关于/命令说明"),
     types.BotCommand("status", "查看队列状态"),
     types.BotCommand("progress", "查看下载/上传进度"),
+    types.BotCommand("mode", "设置 18+ 处理方式"),
+    types.BotCommand("queue", "管理队列"),
+    types.BotCommand("cancel", "取消待确认项"),
+    types.BotCommand("pause", "暂停队列"),
+    types.BotCommand("resume", "恢复队列"),
 ]
 
 
 async def _setup_commands(client: TelegramClient) -> None:
-    await client(
-        functions.bots.SetBotCommandsRequest(
-            scope=types.BotCommandScopeDefault(),
-            lang_code="",
-            commands=_COMMANDS,
+    for lang in ("", "zh"):
+        await client(
+            functions.bots.SetBotCommandsRequest(
+                scope=types.BotCommandScopeDefault(),
+                lang_code=lang,
+                commands=_COMMANDS,
+            )
         )
-    )
     await client(
         functions.bots.SetBotMenuButtonRequest(
             user_id="me",
