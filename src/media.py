@@ -378,7 +378,9 @@ class MediaPublisher:
         self._note_group_id(comment_id)
         return group, comment_id
 
-    async def _post_album_comment(self, paths, root_msg, spoiler, seq, caption="") -> tuple:
+    async def _post_album_comment(
+        self, paths, root_msg, spoiler, seq, caption="", item_offset=0, total_items=None
+    ) -> tuple:
         group = await self._get_discussion_group()
         root_id = getattr(root_msg, "id", root_msg)
         thread_root = await self._find_thread_root(root_id)
@@ -386,10 +388,10 @@ class MediaPublisher:
         if thread_root is not None:
             reply_to = types.InputReplyToMessage(reply_to_msg_id=thread_root)
         single_media = []
-        total = len(paths)
+        total = total_items or len(paths)
         for index, path in enumerate(paths):
             fm = await self._upload_media_input(
-                path, spoiler, seq, item=index + 1, items=total
+                path, spoiler, seq, item=item_offset + index + 1, items=total
             )
             result = await self.client(
                 functions.messages.UploadMediaRequest(group, fm)
@@ -497,17 +499,18 @@ class MediaPublisher:
                     refs.append((group_peer, comment_id))
                 else:
                     group_peer, cids = await self._post_album_comment(
-                        chunk, root_msg, job.spoiler, job.seq, caption=caption
+                        chunk, root_msg, job.spoiler, job.seq, caption=caption,
+                        item_offset=start, total_items=len(video_paths),
                     )
                     refs.extend((group_peer, cid) for cid in cids)
             except Exception as exc:
                 logger.warning(
                     "Album comment publish failed (%s), fallback direct", exc
                 )
-                for _p in chunk:
+                for index, _p in enumerate(chunk):
                     media = await self._upload_media_input(
                         _p, job.spoiler, job.seq,
-                        item=start + 1, items=len(video_paths),
+                        item=start + index + 1, items=len(video_paths),
                     )
                     msg = await self.client.send_file(self.dest, media)
                     refs.append((dest_input, msg.id))

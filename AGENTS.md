@@ -63,6 +63,7 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
   1. **宽窗口**：10s 窗口内任何新媒体组到达都重置计时，一次转发（Telegram 几秒内送达）必然收拢。
   2. **队列级合并**：`_auto_enqueue(kind="album")` 时若同用户已有"入队未下载"的相册任务（`pending_albums[user_id]→seq` + `album_jobs[seq]→job`），把新消息按 `message.id` 去重后**追加进那个任务的 album**，不新建任务/不发新封面。`_download_worker` 取件时清除 `album_jobs`/`pending_albums` 并置 `job.started=True`。即使窗口拆了，只要后续任务入队时第一个未开始下载就合并。
   3. **`/pack`（或 `/打包`）命令**：立即 finalize 当前聚合缓冲（取消计时任务 + 直接 `_finalize_album`），用户转发完合集可手动定稿。已注册命令菜单（`/pack`），`_ABOUT_TEXT` 同步。
+  - **上传进度用全局计数（v10.9）**：`_post_album_comment(paths, root_msg, spoiler, seq, caption, item_offset, total_items)` 把 `_upload_media_input` 的 `item/items` 改为**整个合集的视频总数**（`item_offset=start`、`total_items=len(video_paths)`），上传进度显示 `上传 3/100` 而非每 10 条分块 `3/10`。fallback 直发路径的 `item` 也改为 `start+index+1`（原为 `start+1` 导致同 chunk 全显示同一序号）。
 - **纯媒体转发（v5）**：`FORWARD_CAPTION`（默认 false）控制是否转发原消息文字——false 时单条 `caption=None`、相册 `captions=[""]*N`，只发视频/图片本身；true 时保留 caption（相册逐张）。
 - **封面模式（v10.6）**：`COVER_MODE=true`（默认 false）时频道只发封面图，视频发进频道关联**讨论组**的评论区线程（观看者点帖子 💬 图标看视频）：
   - 单视频：`make_cover`（ffmpeg 截帧，`COVER_WIDTH` 默认 1280）发频道（带 caption，**无雪花**）→ 视频（`job.spoiler` 雪花）发评论。
