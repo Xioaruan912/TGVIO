@@ -59,12 +59,32 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **并行下载 + 顺序上传**：下载并发（`DOWNLOAD_CONCURRENCY`），上传严格按发送顺序（`_upload_worker` 维护 `next_seq`）。
 - **seq 预留机制**：媒体消息到达时先 `reserve_seq()`，等 18+ 确认后再入队；未确认的任务超时后 `_set_cancelled` 跳过，保证后续 seq 不卡死。
 - **18+ 确认**：内联按钮 `confirm:{seq}:1|0`，另有 `cancel:{seq}`「❌ 取消」按钮（第二行）丢弃任务——pop pending + 取消超时任务 + `_set_cancelled(seq)` + **删除确认消息**（v7.1 起不保留文案）。确认后**删除按钮消息**，另发新状态消息作为任务 status，后续「下载中/上传中/已发布」都编辑同一条消息。`CONFIRM_TIMEOUT`（默认 60s）内未点按钮 → 任务取消 + **删除确认消息**。
-- **相册聚合**：同 `grouped_id` 的消息在 `ALBUM_GATHER_SECONDS`（默认 1s）内聚合为**一个任务、一次询问**，发布为**单个相册消息**。`_send_album` 用 `UploadMediaRequest` 保存媒体后转 `InputMediaPhoto/Document(spoiler=...)` 再 `SendMultiMediaRequest`。
+- **相册聚合（v10.9 合集合并 + 队列级合并 + /pack）**：`collect_album` 按 `chat_id` 聚合（`COLLECTION_GATHER_SECONDS` 默认 **10s**），同一用户短时间到达的多个媒体组合并为一个合集任务。**三重保障**：
+  1. **宽窗口**：10s 窗口内任何新媒体组到达都重置计时，一次转发（Telegram 几秒内送达）必然收拢。
+  2. **队列级合并**：`_auto_enqueue(kind="album")` 时若同用户已有"入队未下载"的相册任务（`pending_albums[user_id]→seq` + `album_jobs[seq]→job`），把新消息按 `message.id` 去重后**追加进那个任务的 album**，不新建任务/不发新封面。`_download_worker` 取件时清除 `album_jobs`/`pending_albums` 并置 `job.started=True`。即使窗口拆了，只要后续任务入队时第一个未开始下载就合并。
+  3. **`/pack`（或 `/打包`）命令**：立即 finalize 当前聚合缓冲（取消计时任务 + 直接 `_finalize_album`），用户转发完合集可手动定稿。已注册命令菜单（`/pack`），`_ABOUT_TEXT` 同步。
 - **纯媒体转发（v5）**：`FORWARD_CAPTION`（默认 false）控制是否转发原消息文字——false 时单条 `caption=None`、相册 `captions=[""]*N`，只发视频/图片本身；true 时保留 caption（相册逐张）。
+- **封面模式（v10.6）**：`COVER_MODE=true`（默认 false）时频道只发封面图，视频发进频道关联**讨论组**的评论区线程（观看者点帖子 💬 图标看视频）：
+  - 单视频：`make_cover`（ffmpeg 截帧，`COVER_WIDTH` 默认 1280）发频道（带 caption，**无雪花**）→ 视频（`job.spoiler` 雪花）发评论。
+  - 相册：拆分图片/视频——有图片→图片组发频道做封面（无雪花，各自 caption）；全视频→首视频截帧发频道做封面；**视频按 10 条一组 `SendMultiMediaRequest` 合并成媒体组评论**（`_post_album_comment`，全部进**同一线程根**；第一组首条带 `合集共 N 个视频` caption；单条时走 `_post_comment`；雪花=job.spoiler）。
+  - **⚠️ 频道封面相册 ≤10 张（v10.8 修复）**：`MAX_COVER_IMAGES`（默认 10）限制封面相册图片数，超出的**整批丢弃**（不发布）；`_send_album_media` 仍按 10 条一组分块兜底。`root_msg = cover_ids[0]`（首图）仍是评论线程根。
+  - **⚠️ 图片文件名覆盖（v10.8 修复）**：`_media_filename(media, item)` 对图片返回 `photo_{item}.jpg`（旧代码固定 `photo.jpg` → 相册多张图片下载互相覆盖 → 同一张图被上传 N 次）。`_download_media_concurrent` 传入 `item` 序号。
+  - 发布器返回值：直发=`[msg_id]`；封面模式=`[(peer, msg_id), ...]`（封面在频道、评论在讨论组）。`_publish` 不再二次包 list。
+  - **撤销适配**：`_remember_published` 直接存发布器返回；`undo:` 回调检测 `ids[0]` 是否为 tuple——是则逐对 `delete_messages(peer, mid)`（评论在讨论组、封面在频道，必须分开删），否则照旧 `delete_messages(DEST_CHANNEL, ids)`。
+  - **回退兜底**：封面生成失败 / 频道未关联讨论组 / 相册评论发布失败 → **回退直发频道**（记 warning，不丢视频）。`_publish_media` 的 `try/except` 包住 `_publish_cover_video`。
+  - **⚠️ 评论必须回复"群组线程根"（v10.6 关键，推翻 v10.5）**：
+    - Telethon `comment_to`/`_get_comment_data` 走 `GetDiscussionMessageRequest`，对 **bot 受限**（`cannot be executed as a bot`）。
+    - **跨聊天回复**（`reply_to_peer_id=频道`）虽能发出且 `reply_from.channel_post` 正确，但**不会显示在帖子评论区**（真机验证：用户看到的帖子仍"还没有留言"）。
+    - **正确做法**：评论 `SendMediaRequest(peer=讨论组, reply_to=InputReplyToMessage(reply_to_msg_id=<群组线程根id>))`——与用户 UI 评论结构一致（`reply_to_msg=镜像id, rpeer=None, top=None`）。
+    - **线程根（镜像）**：频道帖发布后 Telegram 在讨论组自动创建镜像消息（`fwd_from.channel_post=频道帖id`），id 是群组消息计数器（与频道帖 id **无关**）。`_find_thread_root(cover_id)` 用 `channels.GetMessagesRequest` 按 id 批量扫描群组找 `fwd_from.channel_post==cover_id`。
+    - **⚠️ 群组消息被清空后 `_group_max_id` 会失效（v10.7 修复）**：用户清空讨论组消息后现存 max 掉到 1，窄窗口 `[max, max+20]` 会漏掉高 id 的镜像。修复：`_group_max_id` 持久化到 `session/group_counter.txt`（跨重启保留，消息 id 计数器清空不回退），扫描窗口放宽为 `[max-10, max+400]`（`_scan_group` 按 100 条分块），失败自动扩窗重试。`_note_group_id()` 每次观察到更高群组消息 id 即更新并持久化。
+    - 视频上传前会 `UploadMediaRequest(讨论组, media)` 拿引用 → `SendMultiMediaRequest(讨论组, multi_media, reply_to=线程根)` 发媒体组评论。
+    - bot 受限方法：`GetDiscussionMessageRequest`/`GetHistory`/`Search`/`GetDialogs`/`messages.getMessages`；可用：`GetFullChannelRequest`/`GetMessagesRequest`（按 id 取）/`SendMediaRequest`/`SendMultiMediaRequest`/`UploadMediaRequest`。
+  - 前置（用户手动）：建群组 → 频道设置→讨论关联 → 机器人加群并设管理员。
 
 ### 命令与状态
 
-- **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/about`、`/status`、`/mode`、`/queue`（**`lang_code=""` + `lang_code="zh"` 都注册**——早期只更新默认语言表导致中文客户端 `zh` 表残留旧命令；必须两个语言位都更新），并 `SetBotMenuButtonRequest` 设默认菜单按钮。已移除的命令：`/progress`、`/pause`、`/resume`、`/cancel`（对应功能仍在 `/queue` 按钮与内联回调中提供）。
+- **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/about`、`/mode`、`/queue`（**`lang_code=""` + `lang_code="zh"` 都注册**——早期只更新默认语言表导致中文客户端 `zh` 表残留旧命令；必须两个语言位都更新），并 `SetBotMenuButtonRequest` 设默认菜单按钮。已移除的命令：`/progress`、`/pause`、`/resume`、`/cancel`、`/status`（对应功能仍在 `/queue` 按钮与内联回调中提供）。
 - **`/status`**：`_Pipeline.status_text(user_id)` 输出**队列全貌**（一次性只读快照）——逐个列出活跃任务的「队列第 N 位 + 阶段 + 进度条」，附「其他」区（等待确认/相册聚合中）。尊重进度条偏好；暂停时标题带「⏸」。
 - **下载优先调度（v9）**：`_upload_worker` 顶部有**下载闸门**——`input_q` 非空或 `_active_downloads > 0` 时挂起上传，全部缓存到本地后按 `_pick_next_upload()`（最小就绪 seq，跳过 `_paused_files`）顺序上传；上传中新到内容会触发闸门先下载再续传。
 - **逐文件上传控制（v9）**：
@@ -77,7 +97,8 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **`/queue`（管理视图，v7；按钮布局 v10.2）**：每个按钮带**位置序号（①②③…）**对应文本「队列第 N 位」——进行中项 `[N ⏸暂停][N ⏹取消]`，暂停项 `[N ▶继续][N 🗑删除]`，待确认 `[N ❌取消]`，底部 `[⏸全局暂停][▶全局恢复]`。`_pos_token(n)` 生成 ①-⑨（9 以上回退数字）。
   - `_cancel_seq(seq)` + `_cancel_marked` 集合：待确认→`_cancel_pending`；下载/上传中→`task.cancel()`；**排队等待下载**→标记后下载 worker 取件时跳过；**等待上传**→上传 worker 发布前跳过。
   - `_cancel_marked` 生命周期：由下载 worker 跳过路径/`CancelledError` 路径、上传 worker "cancelled before upload"/`CancelledError` 路径消费；`_finish_seq` **不**清除（避免与队列取件竞态导致已取消任务被重复下载泄漏）。
-- **取消即撤回（v7.1）**：用户取消任务（确认 ❌ `_cancel_pending`、停止下载/上传 `CancelledError`、`/queue` 取消 `_cancel_seq`、下载 worker 跳过已取消排队任务）时，**删除**对应状态/确认消息（`_delete_status`/`pending.status.delete()`），不再保留"已取消"文案。**确认超时（`_confirm_timeout`）同样删除消息（v7.2）**。**点「↩️ 撤销」= 删除频道视频 + `event.delete()` 立即删除状态消息（v7.2）**。失败消息仍编辑保留（带重试按钮）。取消发生在发布前，频道无视频可撤。
+- **取消即撤回（v7.1）**：用户取消任务（确认 ❌ `_cancel_pending`、停止下载/上传 `CancelledError`、`/queue` 取消 `_cancel_seq`、下载 worker 跳过已取消排队任务）时，**删除**对应状态/确认消息（`_delete_status`/`pending.status.delete()`）。**点「↩️ 撤销」= 删除频道视频 + `event.delete()` 立即删除状态消息**。失败消息保留（带重试按钮）。
+- **确认超时自动处理（v10.3）**：`_confirm_timeout` 不再丢弃视频——超时后 `_auto_enqueue(force_normal=True)` **按"总是正常"自动处理**并删除确认消息（匹配"mode 超时完自动选择总是正常"）。取消（❌/`/queue`）仍为丢弃+删缓存。
 - **全局暂停（保留逻辑）**：`_pipeline._paused` 标志仍由 `/queue` 底部的 `q_pause`/`q_resume` 按钮控制；下载 worker 在 `input_q.get()` 前、上传 worker 在循环顶部/发布前检查。**注意：上传 worker 看门狗在暂停时跳过强制取消**（`continue` 不推进）。
 - **命令消息双触发防护**：通用 `on_private_message` 检测 `MessageEntityBotCommand` 实体则 return。
 
@@ -147,6 +168,8 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 | `DOWNLOAD_WORKERS` | `8` | 并发下载分片数（单文件） |
 | `UPLOAD_WORKERS` | `16` | 并发上传分片数（单文件） |
 | `PART_SIZE_KB` | `512` | 传输分片大小（KB，Telegram 上限 512） |
+| `COVER_MODE` | `false` | 封面模式：频道只发封面图，视频进讨论组评论区 |
+| `COVER_WIDTH` | `1280` | 封面图最大宽/高像素 |
 
 ## 5. 已踩过的坑（重要）
 
@@ -156,9 +179,10 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 4. **频繁新建 bot 会话会触发 FloodWait**（`ImportBotAuthorizationRequest`，约 18 分钟）：调试不要每个脚本新建 session。
 5. **Telethon `_send_album` 丢 spoiler**：必须自定义 `SendMultiMediaRequest` 并显式给 `InputMediaPhoto/Document` 设 `spoiler`。
 6. **缩略图要求**：Telegram 接受 .jpg、≤320x320、尽量 <20-40KB；过大直接丢弃缩略图避免整条发送失败。
-7. **队列死锁（重要）**：上传 worker 按 seq 严格顺序处理，若某 seq 永不"结算"（如确认回调在 enqueue 前抛异常），后续所有任务下载完成后状态永远停在"正在下载"。**症状：所有任务卡在正在下载，/status 全 0。**已修复（回调兜底 + 上传队列看门狗）。
-8. **Telethon 无 `request_timeout` 参数**（1.44 构造器只有 `timeout=10` 连接超时 + `request_retries=5`）：请求可能无限挂起，必须靠外层 `asyncio.wait_for` 兜底（下载/上传看门狗）。
-9. **禁止两个实例同时跑同一 bot 账号**：本地 + VPS 同时运行 → 同一条命令两个 bot 都收到都回复 → 触发瞬时 SendMessage 限流 → 旧版 `_respond` 静默吞错 → **所有命令零响应**（日志只有 `NewMessage`，无报错）。症状：命令无响应但账号能发消息。修复：只跑一个实例 + `_respond` 记录日志。排查命令无响应时：查 `_respond` 的 `Respond failed` 日志。
+7. **`PhotoSizeProgressive` 无 `size` 字段（v10.8 修复）**：`_media_size` 取照片大小时 `photo.sizes[-1]` 可能是 `PhotoSizeProgressive`（字段是 `sizes` 列表不是 `size`），直接 `.size` 报 `AttributeError` 导致「❌ 下载失败」。修复：遍历所有 size，Progressive 取 `sizes[-1]`、其余取 `size`，取最大作为文件大小（仅用于进度条总量）。
+8. **队列死锁（重要）**：上传 worker 按 seq 严格顺序处理，若某 seq 永不"结算"（如确认回调在 enqueue 前抛异常），后续所有任务下载完成后状态永远停在"正在下载"。**症状：所有任务卡在正在下载，/status 全 0。**已修复（回调兜底 + 上传队列看门狗）。
+9. **Telethon 无 `request_timeout` 参数**（1.44 构造器只有 `timeout=10` 连接超时 + `request_retries=5`）：请求可能无限挂起，必须靠外层 `asyncio.wait_for` 兜底（下载/上传看门狗）。
+10. **禁止两个实例同时跑同一 bot 账号**：本地 + VPS 同时运行 → 同一条命令两个 bot 都收到都回复 → 触发瞬时 SendMessage 限流 → 旧版 `_respond` 静默吞错 → **所有命令零响应**（日志只有 `NewMessage`，无报错）。症状：命令无响应但账号能发消息。修复：只跑一个实例 + `_respond` 记录日志。排查命令无响应时：查 `_respond` 的 `Respond failed` 日志。
 
 ## 6. VPS 故障排查记录（重要）
 

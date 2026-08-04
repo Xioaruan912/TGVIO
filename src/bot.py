@@ -15,10 +15,12 @@ from telethon.tl.types import (
 )
 
 from .config import (
-    ALBUM_GATHER_SECONDS,
     ALLOWED_USERS,
     AUTO_DELETE_SECONDS,
+    COLLECTION_GATHER_SECONDS,
     CONFIRM_TIMEOUT,
+    COVER_MODE,
+    COVER_WIDTH,
     DEST_CHANNEL,
     DOWNLOAD_AUTO_RETRY,
     DOWNLOAD_CONCURRENCY,
@@ -27,6 +29,7 @@ from .config import (
     DOWNLOAD_WORKERS,
     FORWARD_CAPTION,
     HELD_TIMEOUT,
+    MAX_COVER_IMAGES,
     MAX_FILE_SIZE,
     PART_SIZE_KB,
     PROGRESS_MIN_INTERVAL,
@@ -102,9 +105,9 @@ _ABOUT_TEXT = (
     "📖 命令说明：\n"
     "/start    使用说明（首次运行设置 18+ 模式）\n"
     "/about    关于/命令说明\n"
-    "/status   查看队列全貌（排位/阶段/进度）\n"
     "/mode     设置 18+ 处理方式（每次询问/总是雪花/总是正常）\n"
-    "/queue    管理队列（逐项取消/暂停/恢复）"
+    "/queue    管理队列（逐项取消/暂停/恢复）\n"
+    "/pack     打包当前合集立即处理（转发完可发 /pack 或 /打包）"
 )
 
 
@@ -120,6 +123,7 @@ class _Job:
     user_id: int = 0
     cached_path: str = ""
     cleanup_extra: str = ""
+    started: bool = False
 
 
 @dataclass
@@ -141,9 +145,9 @@ class _PendingJob:
 
 @dataclass
 class _AlbumBuffer:
-    grouped_id: int
-    messages: list
     chat_id: int
+    messages: list
+    grouped_ids: set
     task: object = None
 
 
@@ -162,6 +166,8 @@ class _Pipeline:
         self.jobs: dict[int, _Job] = {}
         self.pending: dict[int, _PendingJob] = {}
         self.albums: dict[int, _AlbumBuffer] = {}
+        self.album_jobs: dict[int, _Job] = {}
+        self.pending_albums: dict[int, int] = {}
         self.results: dict[int, asyncio.Future] = {}
         self.active: dict[int, dict] = {}
         self.active_seqs: set[int] = set()
@@ -195,6 +201,10 @@ class _Pipeline:
             FORWARD_CAPTION,
             UPLOAD_WORKERS,
             PART_SIZE_KB,
+            cover_mode=COVER_MODE,
+            cover_width=COVER_WIDTH,
+            max_cover_images=MAX_COVER_IMAGES,
+            group_counter_file=os.path.join("session", "group_counter.txt"),
         )
         self.downloader.pre_download_hooks.append(self._on_pre_download)
         self.downloader.progress_hooks.append(self._on_download_progress)
@@ -370,10 +380,13 @@ class _Pipeline:
             self.pending[seq].status = status
 
     def collect_album(self, grouped_id: int, message: object, chat_id: int) -> None:
-        buf = self.albums.get(grouped_id)
+        buf = self.albums.get(chat_id)
         if buf is None:
-            buf = _AlbumBuffer(grouped_id=grouped_id, messages=[], chat_id=chat_id)
-            self.albums[grouped_id] = buf
+            buf = _AlbumBuffer(
+                chat_id=chat_id, messages=[], grouped_ids=set()
+            )
+            self.albums[chat_id] = buf
+        buf.grouped_ids.add(grouped_id)
         if not any(m.id == message.id for m in buf.messages):
             buf.messages.append(message)
         if buf.task is not None:
@@ -381,8 +394,8 @@ class _Pipeline:
         buf.task = asyncio.get_running_loop().create_task(self._finalize_album(buf))
 
     async def _finalize_album(self, buf: _AlbumBuffer) -> None:
-        await asyncio.sleep(ALBUM_GATHER_SECONDS)
-        self.albums.pop(buf.grouped_id, None)
+        await asyncio.sleep(COLLECTION_GATHER_SECONDS)
+        self.albums.pop(buf.chat_id, None)
         if not self._has_pref(buf.chat_id, "spoiler_mode"):
             first = self.hold_item(
                 buf.chat_id, "album", album=list(buf.messages), chat_id=buf.chat_id
@@ -426,8 +439,19 @@ class _Pipeline:
         pending = self.pending.pop(seq, None)
         if pending is None:
             return
-        self._set_cancelled(seq)
-        logger.info("Job #%s cancelled by confirmation timeout", seq)
+        logger.info("Job #%s confirmation timeout, auto as normal", seq)
+        self.active_seqs.add(seq)
+        try:
+            await self._auto_enqueue(
+                pending.kind,
+                pending.message,
+                pending.album,
+                pending.user_id,
+                force_normal=True,
+            )
+        except Exception as exc:
+            logger.exception("Auto-process timeout job failed: %s", exc)
+            self._set_cancelled(seq)
         if pending.status is not None:
             try:
                 await pending.status.delete()
@@ -439,6 +463,10 @@ class _Pipeline:
             while self._paused:
                 await asyncio.sleep(1)
             job = await self.input_q.get()
+            self.album_jobs.pop(job.seq, None)
+            if self.pending_albums.get(job.user_id) == job.seq:
+                del self.pending_albums[job.user_id]
+            job.started = True
             if job.seq in self._cancel_marked:
                 self._cancel_marked.discard(job.seq)
                 await self._delete_status(job)
@@ -870,6 +898,30 @@ class _Pipeline:
         user_id: int,
         force_normal: bool = False,
     ) -> int:
+        # 队列级合并：同一用户已有"入队未下载"的相册任务时，追加消息而非新建任务
+        if kind == "album" and album:
+            existing_seq = self.pending_albums.get(user_id)
+            if existing_seq is not None:
+                existing = self.album_jobs.get(existing_seq)
+                if existing is not None and not existing.started:
+                    seen = {m.id for m in (existing.album or [])}
+                    added = [m for m in album if getattr(m, "id", None) not in seen]
+                    if added:
+                        existing.album.extend(added)
+                        try:
+                            await existing.status.edit(
+                                f"🔄 相册已合并，共 {len(existing.album)} 条，等待处理"
+                            )
+                        except Exception:
+                            pass
+                        logger.info(
+                            "Album merged into job #%s (+%d 条, 共 %d)",
+                            existing_seq,
+                            len(added),
+                            len(existing.album),
+                        )
+                    return existing_seq
+
         mode = self._spoiler_mode(user_id)
         if force_normal:
             spoiler = False
@@ -888,17 +940,19 @@ class _Pipeline:
             self._set_cancelled(seq)
             logger.error("Auto-enqueue failed for job #%s, seq settled", seq)
             raise
-        self.enqueue(
-            _Job(
-                seq=seq,
-                kind=kind,
-                status=status,
-                message=message,
-                album=album,
-                spoiler=spoiler,
-                user_id=user_id,
-            )
+        job = _Job(
+            seq=seq,
+            kind=kind,
+            status=status,
+            message=message,
+            album=album,
+            spoiler=spoiler,
+            user_id=user_id,
         )
+        if kind == "album":
+            self.album_jobs[seq] = job
+            self.pending_albums[user_id] = seq
+        self.enqueue(job)
         logger.info("Job #%s auto-enqueued spoiler=%s (mode=%s)", seq, spoiler, mode)
         return seq
 
@@ -1075,12 +1129,24 @@ def register_handlers(client: TelegramClient) -> None:
             auto_delete=False,
         )
 
-    @client.on(events.NewMessage(pattern="/status"))
-    async def on_status(event: events.NewMessage.Event) -> None:
-        logger.info("CMD /status from %s", event.sender_id)
+    @client.on(events.NewMessage(pattern=r"/pack|/打包"))
+    async def on_pack(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /pack from %s", event.sender_id)
         if not _authorized(event):
             return
-        await _respond(event, pipeline.status_text(event.sender_id))
+        buf = pipeline.albums.get(event.chat_id)
+        if buf is None or not buf.messages:
+            await _respond(event, "当前没有正在聚合的相册")
+            return
+        if buf.task is not None:
+            buf.task.cancel()
+        try:
+            await pipeline._finalize_album(buf)
+        except Exception as exc:
+            logger.exception("Pack failed: %s", exc)
+            await _respond(event, f"打包失败: {exc}")
+            return
+        await _respond(event, f"✅ 已打包 {len(buf.messages)} 条，正在处理")
 
     @client.on(events.NewMessage(pattern="/queue"))
     async def on_queue(event: events.NewMessage.Event) -> None:
@@ -1163,7 +1229,7 @@ def register_handlers(client: TelegramClient) -> None:
             ]
         )
         await _respond(
-            event, "\n".join(lines), buttons=buttons, auto_delete=False
+            event, "\n".join(lines), buttons=buttons, auto_delete=True
         )
 
     @client.on(events.CallbackQuery())
@@ -1258,7 +1324,11 @@ def register_handlers(client: TelegramClient) -> None:
                 await _answer("该发布已无法撤销")
                 return
             try:
-                await event.client.delete_messages(DEST_CHANNEL, ids)
+                if ids and isinstance(ids[0], tuple):
+                    for peer, mid in ids:
+                        await event.client.delete_messages(peer, mid)
+                else:
+                    await event.client.delete_messages(DEST_CHANNEL, ids)
             except Exception as exc:
                 await _answer(f"撤销失败: {exc}")
                 return

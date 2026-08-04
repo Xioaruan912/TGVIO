@@ -16,9 +16,9 @@ logger = logging.getLogger(__name__)
 _COMMANDS = [
     types.BotCommand("start", "使用说明"),
     types.BotCommand("about", "关于/命令说明"),
-    types.BotCommand("status", "查看队列状态"),
     types.BotCommand("mode", "设置 18+ 处理方式"),
     types.BotCommand("queue", "管理队列"),
+    types.BotCommand("pack", "打包当前合集立即处理"),
 ]
 
 

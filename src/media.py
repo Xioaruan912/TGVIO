@@ -18,7 +18,7 @@ from telethon.tl import types
 from telethon.utils import get_input_document, get_input_photo
 
 from .downloader import download_video
-from .video import guess_mime, is_photo_path, is_video_path, make_thumb, probe_video
+from .video import guess_mime, is_photo_path, is_video_path, make_cover, make_thumb, probe_video
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +98,18 @@ class MediaDownloader:
             return doc.size
         photo = getattr(media, "photo", None)
         if photo and photo.sizes:
-            return photo.sizes[-1].size
+            total = 0
+            for sz in photo.sizes:
+                if isinstance(sz, types.PhotoSizeProgressive):
+                    if sz.sizes:
+                        total = max(total, sz.sizes[-1])
+                else:
+                    total = max(total, getattr(sz, "size", 0) or 0)
+            if total:
+                return total
         raise RuntimeError("不支持的媒体类型")
 
-    def _media_filename(self, media) -> str:
+    def _media_filename(self, media, item: int = 1) -> str:
         doc = getattr(media, "document", None)
         if doc:
             for attr in doc.attributes:
@@ -111,7 +119,7 @@ class MediaDownloader:
             if doc.mime_type:
                 ext = doc.mime_type.split("/")[-1]
             return f"media.{ext}"
-        return "photo.jpg"
+        return f"photo_{item}.jpg"
 
     async def _download_media_concurrent(
         self, message, workdir: str, seq: int, item: int, items: int
@@ -119,7 +127,7 @@ class MediaDownloader:
         """并发分片下载（iter_download + 多路 offset/stride），单文件接近带宽上限。"""
         media = message.media
         file_size = self._media_size(media)
-        filename = self._media_filename(media)
+        filename = self._media_filename(media, item)
         out = os.path.join(workdir, filename)
         request_size = int(self.part_size_kb * 1024)
         workers = self.download_workers
@@ -179,6 +187,10 @@ class MediaPublisher:
         forward_caption: bool,
         upload_workers: int = 16,
         part_size_kb: int = 512,
+        cover_mode: bool = False,
+        cover_width: int = 1280,
+        max_cover_images: int = 10,
+        group_counter_file: str = "",
     ):
         self.client = client
         self.dest = dest
@@ -188,10 +200,18 @@ class MediaPublisher:
         self.forward_caption = forward_caption
         self.upload_workers = max(1, upload_workers)
         self.part_size_kb = part_size_kb
+        self.cover_mode = cover_mode
+        self.cover_width = cover_width
+        self.max_cover_images = max(1, max_cover_images)
         self.pre_publish_hooks = []   # async (job, payload) -> None
         self.post_publish_hooks = []  # async (job, ids) -> None
         self.progress_hooks = []      # async (seq, received, total, item, items) -> None
         self._dest_input = None
+        self._group_input = None
+        self._group_id = None
+        self.group_counter_file = group_counter_file
+        self._group_max_id = self._load_group_max()
+        self._thread_root = None
 
     def _workdir(self, seq: int) -> str:
         return self._workdir_fn(seq)
@@ -207,9 +227,9 @@ class MediaPublisher:
     async def _publish(self, job, payload):
         if isinstance(payload, list):
             return await self._publish_album(job, payload)
-        return [await self._publish_media(job, payload)]
+        return await self._publish_media(job, payload)
 
-    async def _publish_media(self, job, path: str) -> int:
+    async def _publish_media(self, job, path) -> list:
         size = os.path.getsize(path)
         if size > self.max_file_size:
             raise FileTooLargeError(size, self.max_file_size)
@@ -217,45 +237,179 @@ class MediaPublisher:
         if self.forward_caption and job.kind == "media":
             caption = job.message.message[:1024] or None
         media = await self._upload_media_input(path, job.spoiler, job.seq)
+        if self.cover_mode and is_video_path(path):
+            try:
+                return await self._publish_cover_video(job, path, media, caption)
+            except Exception as exc:
+                logger.warning(
+                    "Cover publish failed (%s), fallback direct publish", exc
+                )
         msg = await self.client.send_file(self.dest, media, caption=caption)
-        return msg.id
+        return [msg.id]
 
-    async def _publish_album(self, job, paths: list) -> list:
-        for path in paths:
-            size = os.path.getsize(path)
-            if size > self.max_file_size:
-                raise FileTooLargeError(size, self.max_file_size)
+    async def _publish_cover_video(self, job, video_path, media, caption) -> list:
+        workdir = self._workdir(job.seq)
+        os.makedirs(workdir, exist_ok=True)
+        cover = await make_cover(video_path, workdir, self.cover_width)
+        cover_media = await self._upload_media_input(cover, False, job.seq)
+        cover_msg = await self.client.send_file(self.dest, cover_media, caption=caption)
         dest_input = await self._get_dest_input()
-        total = len(paths)
-        if self.forward_caption:
-            captions = [m.message[:1024] or "" for m in job.album]
-        else:
-            captions = [""] * total
+        group_peer, comment_id = await self._post_comment(media, cover_msg)
+        return [(dest_input, cover_msg.id), (group_peer, comment_id)]
+
+    async def _get_discussion_group(self):
+        if self._group_input is not None:
+            return self._group_input
+        dest_input = await self._get_dest_input()
+        full = await self.client(
+            functions.channels.GetFullChannelRequest(channel=dest_input)
+        )
+        lid = full.full_chat.linked_chat_id
+        if not lid:
+            raise RuntimeError("频道未关联讨论群组，无法发布评论")
+        chat = await self.client.get_entity(types.PeerChannel(channel_id=lid))
+        self._group_input = await self.client.get_input_entity(chat)
+        self._group_id = lid
+        return self._group_input
+
+    async def _scan_group(self, lo: int, hi: int) -> list:
+        if self._group_id is None:
+            await self._get_discussion_group()
+        found = []
+        for start in range(lo, hi, 100):
+            ids = list(range(start, min(start + 100, hi)))
+            if not ids:
+                break
+            res = await self.client(
+                functions.channels.GetMessagesRequest(
+                    channel=self._group_id,
+                    id=[types.InputMessageID(id=i) for i in ids],
+                )
+            )
+            found.extend(
+                m for m in res.messages if not isinstance(m, types.MessageEmpty)
+            )
+        return found
+
+    def _load_group_max(self):
+        if not self.group_counter_file:
+            return None
+        try:
+            with open(self.group_counter_file) as f:
+                return int(f.read().strip())
+        except Exception:
+            return None
+
+    def _persist_group_max(self) -> None:
+        if not self.group_counter_file or self._group_max_id is None:
+            return
+        try:
+            os.makedirs(os.path.dirname(self.group_counter_file), exist_ok=True)
+            with open(self.group_counter_file, "w") as f:
+                f.write(str(self._group_max_id))
+        except Exception as ex:
+            logger.warning("无法持久化群组计数: %s", ex)
+
+    def _note_group_id(self, mid) -> None:
+        if mid is not None and (
+            self._group_max_id is None or mid > self._group_max_id
+        ):
+            self._group_max_id = mid
+            self._persist_group_max()
+
+    async def _find_thread_root(self, cover_id: int):
+        """定位群组线程根（频道帖镜像）消息 id，找不到返回 None。
+
+        群组消息被清空后消息 id 计数器不回退，因此用「最高已见 id」做
+        下界扫描窗口（持久化到 group_counter_file，跨重启保留）。
+        """
+        await self._get_discussion_group()
+        if self._thread_root and self._thread_root[0] == cover_id:
+            return self._thread_root[1]
+        if self._group_max_id is None:
+            msgs = await self._scan_group(1, 501)
+            if msgs:
+                self._note_group_id(max(m.id for m in msgs))
+        await asyncio.sleep(1.0)
+        base = self._group_max_id or 1
+        root = None
+        for attempt in range(6):
+            lo = max(1, base - 10)
+            hi = base + 400 * (attempt + 1)
+            msgs = await self._scan_group(lo, hi)
+            for m in msgs:
+                self._note_group_id(m.id)
+                cp = getattr(getattr(m, "fwd_from", None), "channel_post", None)
+                if cp == cover_id:
+                    root = m.id
+                    break
+            if root is not None:
+                break
+            await asyncio.sleep(1.5)
+        if root is None:
+            logger.warning("Cover #%s 未找到讨论组线程根，评论将回退为群组直发", cover_id)
+        self._thread_root = (cover_id, root)
+        return root
+
+    async def _post_comment(self, media, channel_msg):
+        group = await self._get_discussion_group()
+        mid = getattr(channel_msg, "id", channel_msg)
+        root = await self._find_thread_root(mid)
+        reply_to = None
+        if root is not None:
+            reply_to = types.InputReplyToMessage(reply_to_msg_id=root)
+        result = await self.client(
+            functions.messages.SendMediaRequest(
+                peer=group,
+                media=media,
+                message="",
+                reply_to=reply_to,
+                random_id=helpers.generate_random_long(),
+            )
+        )
+        comment_id = None
+        for update in getattr(result, "updates", []) or []:
+            if isinstance(update, types.UpdateNewMessage):
+                comment_id = update.message.id
+            elif isinstance(update, types.UpdateNewChannelMessage):
+                comment_id = update.message.id
+        if comment_id is None:
+            raise RuntimeError("评论消息发送后未取到 id")
+        self._note_group_id(comment_id)
+        return group, comment_id
+
+    async def _post_album_comment(self, paths, root_msg, spoiler, seq, caption="") -> tuple:
+        group = await self._get_discussion_group()
+        root_id = getattr(root_msg, "id", root_msg)
+        thread_root = await self._find_thread_root(root_id)
+        reply_to = None
+        if thread_root is not None:
+            reply_to = types.InputReplyToMessage(reply_to_msg_id=thread_root)
         single_media = []
+        total = len(paths)
         for index, path in enumerate(paths):
             fm = await self._upload_media_input(
-                path, job.spoiler, job.seq, item=index + 1, items=total
+                path, spoiler, seq, item=index + 1, items=total
             )
             result = await self.client(
-                functions.messages.UploadMediaRequest(dest_input, fm)
+                functions.messages.UploadMediaRequest(group, fm)
             )
             if isinstance(result, types.MessageMediaPhoto):
                 reference = types.InputMediaPhoto(
-                    id=get_input_photo(result.photo), spoiler=job.spoiler or None
+                    id=get_input_photo(result.photo), spoiler=spoiler or None
                 )
             elif isinstance(result, types.MessageMediaDocument):
                 reference = types.InputMediaDocument(
                     id=get_input_document(result.document),
-                    spoiler=job.spoiler or None,
+                    spoiler=spoiler or None,
                 )
             else:
-                raise RuntimeError(f"无法为相册媒体 #{(index + 1)} 构建引用")
-            caption = captions[index] if index < len(captions) else ""
-            single_media.append(types.InputSingleMedia(reference, message=caption))
-
+                raise RuntimeError(f"无法为评论相册媒体 #{(index + 1)} 构建引用")
+            msg_text = caption if index == 0 else ""
+            single_media.append(types.InputSingleMedia(reference, message=msg_text))
         result = await self.client(
             functions.messages.SendMultiMediaRequest(
-                dest_input, multi_media=single_media
+                group, multi_media=single_media, reply_to=reply_to
             )
         )
         ids = []
@@ -264,6 +418,147 @@ class MediaPublisher:
                 ids.append(update.message.id)
             elif isinstance(update, types.UpdateNewMessage):
                 ids.append(update.message.id)
+        if not ids:
+            raise RuntimeError("评论相册发送后未取到 id")
+        for cid in ids:
+            self._note_group_id(cid)
+        return group, ids
+
+    def _album_captions(self, job, paths) -> list:
+        if not self.forward_caption:
+            return [""] * len(paths)
+        album_msgs = job.album or []
+        caps = []
+        for index, _path in enumerate(paths):
+            m = album_msgs[index] if index < len(album_msgs) else None
+            caps.append((m.message[:1024] or "") if m is not None else "")
+        return caps
+
+    async def _publish_album(self, job, paths: list) -> list:
+        for path in paths:
+            size = os.path.getsize(path)
+            if size > self.max_file_size:
+                raise FileTooLargeError(size, self.max_file_size)
+        dest_input = await self._get_dest_input()
+        captions = self._album_captions(job, paths)
+        photo_idx = [i for i, p in enumerate(paths) if is_photo_path(p)]
+        video_idx = [i for i, p in enumerate(paths) if not is_photo_path(p)]
+
+        if self.cover_mode and len(photo_idx) > self.max_cover_images:
+            dropped = len(photo_idx) - self.max_cover_images
+            photo_idx = photo_idx[: self.max_cover_images]
+            logger.info(
+                "封面相册超过 %s 张，丢弃多余 %s 张图片",
+                self.max_cover_images,
+                dropped,
+            )
+
+        if not self.cover_mode or not video_idx:
+            limited = [paths[i] for i in photo_idx] if self.cover_mode else paths
+            return await self._send_album_media(job, limited, dest_input, job.spoiler)
+
+        refs = []
+        if photo_idx:
+            photo_paths = [paths[i] for i in photo_idx]
+            photo_caps = [captions[i] for i in photo_idx]
+            cover_ids = await self._send_album_media(
+                job, photo_paths, dest_input, None, forced_captions=photo_caps
+            )
+            refs.extend((dest_input, mid) for mid in cover_ids)
+            root_msg = cover_ids[0]
+        else:
+            workdir = self._workdir(job.seq)
+            os.makedirs(workdir, exist_ok=True)
+            first = paths[video_idx[0]]
+            cover = await make_cover(first, workdir, self.cover_width)
+            cover_media = await self._upload_media_input(cover, False, job.seq)
+            cover_msg = await self.client.send_file(
+                self.dest,
+                cover_media,
+                caption=captions[video_idx[0]] or None,
+            )
+            refs.append((dest_input, cover_msg.id))
+            root_msg = cover_msg.id
+
+        video_paths = [paths[i] for i in video_idx]
+        first_chunk = True
+        for start in range(0, len(video_paths), 10):
+            chunk = video_paths[start : start + 10]
+            caption = ""
+            if first_chunk and len(chunk) > 1:
+                caption = f"合集共 {len(video_paths)} 个视频"
+            try:
+                if len(chunk) == 1:
+                    media = await self._upload_media_input(
+                        chunk[0], job.spoiler, job.seq,
+                        item=start + 1, items=len(video_paths),
+                    )
+                    group_peer, comment_id = await self._post_comment(media, root_msg)
+                    refs.append((group_peer, comment_id))
+                else:
+                    group_peer, cids = await self._post_album_comment(
+                        chunk, root_msg, job.spoiler, job.seq, caption=caption
+                    )
+                    refs.extend((group_peer, cid) for cid in cids)
+            except Exception as exc:
+                logger.warning(
+                    "Album comment publish failed (%s), fallback direct", exc
+                )
+                for _p in chunk:
+                    media = await self._upload_media_input(
+                        _p, job.spoiler, job.seq,
+                        item=start + 1, items=len(video_paths),
+                    )
+                    msg = await self.client.send_file(self.dest, media)
+                    refs.append((dest_input, msg.id))
+            first_chunk = False
+        return refs
+
+    async def _send_album_media(self, job, paths, dest_input, spoiler, forced_captions=None) -> list:
+        total = len(paths)
+        if forced_captions is not None:
+            captions = list(forced_captions)
+        elif self.forward_caption:
+            captions = [m.message[:1024] or "" for m in (job.album or [])]
+        else:
+            captions = [""] * total
+        while len(captions) < total:
+            captions.append("")
+        ids = []
+        for start in range(0, total, 10):
+            chunk = paths[start : start + 10]
+            single_media = []
+            for index, path in enumerate(chunk):
+                item_index = start + index
+                fm = await self._upload_media_input(
+                    path, spoiler, job.seq, item=item_index + 1, items=total
+                )
+                result = await self.client(
+                    functions.messages.UploadMediaRequest(dest_input, fm)
+                )
+                if isinstance(result, types.MessageMediaPhoto):
+                    reference = types.InputMediaPhoto(
+                        id=get_input_photo(result.photo), spoiler=spoiler or None
+                    )
+                elif isinstance(result, types.MessageMediaDocument):
+                    reference = types.InputMediaDocument(
+                        id=get_input_document(result.document),
+                        spoiler=spoiler or None,
+                    )
+                else:
+                    raise RuntimeError(f"无法为相册媒体 #{(item_index + 1)} 构建引用")
+                caption = captions[item_index] if item_index < len(captions) else ""
+                single_media.append(types.InputSingleMedia(reference, message=caption))
+            result = await self.client(
+                functions.messages.SendMultiMediaRequest(
+                    dest_input, multi_media=single_media
+                )
+            )
+            for update in getattr(result, "updates", []) or []:
+                if isinstance(update, types.UpdateNewChannelMessage):
+                    ids.append(update.message.id)
+                elif isinstance(update, types.UpdateNewMessage):
+                    ids.append(update.message.id)
         return ids
 
     async def _upload_media_input(self, path, spoiler, seq, item=1, items=1):

@@ -55,6 +55,37 @@ def _probe_video_sync(path: str) -> tuple[int, int, int]:
     return duration, int(width or 1), int(height or 1)
 
 
+async def make_cover(path: str, workdir: str, max_w: int = 1280) -> str:
+    return await asyncio.to_thread(_make_cover_sync, path, workdir, max_w)
+
+
+def _make_cover_sync(path: str, workdir: str, max_w: int = 1280) -> str:
+    out = os.path.join(workdir, "cover.jpg")
+    for seek in ("1", "0"):
+        cmd = [
+            "ffmpeg",
+            "-y",
+            "-v",
+            "error",
+            "-ss",
+            seek,
+            "-i",
+            path,
+            "-frames:v",
+            "1",
+            "-vf",
+            f"scale={max_w}:{max_w}:force_original_aspect_ratio=decrease",
+            "-q:v",
+            "3",
+            out,
+        ]
+        result = subprocess.run(cmd, capture_output=True, text=True)
+        if result.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0:
+            return out
+    detail = result.stderr.strip()[-500:] if result.stderr.strip() else "no frames"
+    raise RuntimeError(f"生成封面图失败: {detail}")
+
+
 async def make_thumb(path: str, workdir: str) -> str | None:
     return await asyncio.to_thread(_make_thumb_sync, path, workdir)
 
