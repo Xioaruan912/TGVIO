@@ -24,11 +24,14 @@ from .config import (
     DOWNLOAD_CONCURRENCY,
     DOWNLOAD_DIR,
     DOWNLOAD_TIMEOUT,
+    DOWNLOAD_WORKERS,
     FORWARD_CAPTION,
     HELD_TIMEOUT,
     MAX_FILE_SIZE,
+    PART_SIZE_KB,
     PROGRESS_MIN_INTERVAL,
     UPLOAD_TIMEOUT,
+    UPLOAD_WORKERS,
 )
 from .media import FileTooLargeError, MediaDownloader, MediaPublisher
 
@@ -178,7 +181,9 @@ class _Pipeline:
         self._held_timers: dict[int, asyncio.Task] = {}
         self._load_prefs()
 
-        self.downloader = MediaDownloader(client, self._workdir, DOWNLOAD_TIMEOUT)
+        self.downloader = MediaDownloader(
+            client, self._workdir, DOWNLOAD_TIMEOUT, DOWNLOAD_WORKERS, PART_SIZE_KB
+        )
         self.publisher = MediaPublisher(
             client,
             DEST_CHANNEL,
@@ -186,6 +191,8 @@ class _Pipeline:
             UPLOAD_TIMEOUT,
             MAX_FILE_SIZE,
             FORWARD_CAPTION,
+            UPLOAD_WORKERS,
+            PART_SIZE_KB,
         )
         self.downloader.pre_download_hooks.append(self._on_pre_download)
         self.downloader.progress_hooks.append(self._on_download_progress)
@@ -718,6 +725,8 @@ class _Pipeline:
                             retry_path=path if not isinstance(path, list) else "",
                         )
                         self._finish_seq(seq, keep_cache=True)
+                    else:
+                        self._finish_seq(seq)
                 else:
                     task.cancel()
                     logger.error(

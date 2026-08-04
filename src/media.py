@@ -9,10 +9,11 @@
 """
 
 import asyncio
+import hashlib
 import logging
 import os
 
-from telethon import TelegramClient, functions
+from telethon import TelegramClient, custom, functions, helpers
 from telethon.tl import types
 from telethon.utils import get_input_document, get_input_photo
 
@@ -34,10 +35,19 @@ class FileTooLargeError(Exception):
 class MediaDownloader:
     """独立下载器：消息 / 相册 / URL → 本地文件。"""
 
-    def __init__(self, client: TelegramClient, workdir_fn, download_timeout: int):
+    def __init__(
+        self,
+        client: TelegramClient,
+        workdir_fn,
+        download_timeout: int,
+        download_workers: int = 8,
+        part_size_kb: int = 512,
+    ):
         self.client = client
         self._workdir_fn = workdir_fn
         self.download_timeout = download_timeout
+        self.download_workers = max(1, download_workers)
+        self.part_size_kb = part_size_kb
         self.pre_download_hooks = []   # async (job) -> None
         self.post_download_hooks = []  # async (job, paths) -> None
         self.progress_hooks = []       # async (seq, received, total, item, items) -> None
@@ -65,24 +75,82 @@ class MediaDownloader:
             total = len(job.album)
             for index, message in enumerate(job.album, start=1):
                 logger.info("Job #%s downloading album item %s", job.seq, message.id)
-                path = await message.download_media(
-                    file=workdir,
-                    progress_callback=self._progress(job.seq, index, total),
+                path = await self._download_media_concurrent(
+                    message, workdir, job.seq, index, total
                 )
                 if not path:
                     raise RuntimeError("未能下载相册媒体文件")
                 paths.append(path)
             return paths
         if job.kind == "media":
-            path = await job.message.download_media(
-                file=workdir,
-                progress_callback=self._progress(job.seq, 1, 1),
+            path = await self._download_media_concurrent(
+                job.message, workdir, job.seq, 1, 1
             )
         else:
             path, _ = await download_video(job.url, workdir)
         if not path:
             raise RuntimeError("未能下载媒体文件")
         return path
+
+    def _media_size(self, media) -> int:
+        doc = getattr(media, "document", None)
+        if doc:
+            return doc.size
+        photo = getattr(media, "photo", None)
+        if photo and photo.sizes:
+            return photo.sizes[-1].size
+        raise RuntimeError("不支持的媒体类型")
+
+    def _media_filename(self, media) -> str:
+        doc = getattr(media, "document", None)
+        if doc:
+            for attr in doc.attributes:
+                if isinstance(attr, types.DocumentAttributeFilename):
+                    return attr.file_name
+            ext = "bin"
+            if doc.mime_type:
+                ext = doc.mime_type.split("/")[-1]
+            return f"media.{ext}"
+        return "photo.jpg"
+
+    async def _download_media_concurrent(
+        self, message, workdir: str, seq: int, item: int, items: int
+    ) -> str:
+        """并发分片下载（iter_download + 多路 offset/stride），单文件接近带宽上限。"""
+        media = message.media
+        file_size = self._media_size(media)
+        filename = self._media_filename(media)
+        out = os.path.join(workdir, filename)
+        request_size = int(self.part_size_kb * 1024)
+        workers = self.download_workers
+        stride = workers * request_size
+        progress = self._progress(seq, item, items)
+        received = 0
+
+        with open(out, "wb") as f:
+            f.truncate(file_size)
+
+            async def consume(w: int) -> None:
+                nonlocal received
+                k = 0
+                it = self.client.iter_download(
+                    media,
+                    offset=w * request_size,
+                    stride=stride,
+                    request_size=request_size,
+                    file_size=file_size,
+                )
+                async for chunk in it:
+                    f.seek(w * request_size + k * stride)
+                    f.write(chunk)
+                    k += 1
+                    received += len(chunk)
+                    await progress(received, file_size)
+
+            await asyncio.gather(*(consume(w) for w in range(workers)))
+
+        logger.info("Job #%s downloaded concurrently %d bytes", seq, file_size)
+        return out
 
     def _progress(self, seq: int, item: int, items: int):
         last = {"pct": -1}
@@ -109,6 +177,8 @@ class MediaPublisher:
         upload_timeout: int,
         max_file_size: int,
         forward_caption: bool,
+        upload_workers: int = 16,
+        part_size_kb: int = 512,
     ):
         self.client = client
         self.dest = dest
@@ -116,6 +186,8 @@ class MediaPublisher:
         self.upload_timeout = upload_timeout
         self.max_file_size = max_file_size
         self.forward_caption = forward_caption
+        self.upload_workers = max(1, upload_workers)
+        self.part_size_kb = part_size_kb
         self.pre_publish_hooks = []   # async (job, payload) -> None
         self.post_publish_hooks = []  # async (job, ids) -> None
         self.progress_hooks = []      # async (seq, received, total, item, items) -> None
@@ -195,8 +267,7 @@ class MediaPublisher:
         return ids
 
     async def _upload_media_input(self, path, spoiler, seq, item=1, items=1):
-        progress = self._make_upload_progress(seq, item, items)
-        uploaded = await self.client.upload_file(path, progress_callback=progress)
+        uploaded = await self._upload_concurrent(path, seq, item, items)
         if is_photo_path(path):
             return types.InputMediaUploadedPhoto(file=uploaded, spoiler=spoiler or None)
 
@@ -236,6 +307,58 @@ class MediaPublisher:
             thumb=thumb_input,
             spoiler=spoiler or None,
             nosound_video=nosound,
+        )
+
+    async def _upload_concurrent(self, path, seq, item, items):
+        """并发分片上传（saveFilePart 按索引无序并发），单文件接近带宽上限。"""
+        file_size = os.path.getsize(path)
+        part_size = int(self.part_size_kb * 1024)
+        is_big = file_size > 10 * 1024 * 1024
+        part_count = (file_size + part_size - 1) // part_size or 1
+        file_id = helpers.generate_random_long()
+        file_name = os.path.basename(path)
+        progress = self._make_upload_progress(seq, item, items)
+
+        md5 = None
+        if not is_big:
+            md5 = hashlib.md5()
+            with open(path, "rb") as f:
+                while True:
+                    part = f.read(part_size)
+                    if not part:
+                        break
+                    md5.update(part)
+
+        sem = asyncio.Semaphore(self.upload_workers)
+        received = 0
+
+        async def send_part(index: int) -> None:
+            nonlocal received
+            async with sem:
+                with open(path, "rb") as f:
+                    f.seek(index * part_size)
+                    part = f.read(part_size)
+                if is_big:
+                    request = functions.upload.SaveBigFilePartRequest(
+                        file_id, index, part_count, part
+                    )
+                else:
+                    request = functions.upload.SaveFilePartRequest(
+                        file_id, index, part
+                    )
+                ok = await self.client(request)
+                if not ok:
+                    raise RuntimeError(f"上传分片 {index} 失败")
+                received += len(part)
+                await progress(received, file_size)
+
+        await asyncio.gather(*(send_part(i) for i in range(part_count)))
+
+        logger.info("Job #%s uploaded concurrently %d bytes", seq, file_size)
+        if is_big:
+            return types.InputFileBig(file_id, part_count, file_name)
+        return custom.InputSizedFile(
+            file_id, part_count, file_name, md5=md5, size=file_size
         )
 
     def _make_upload_progress(self, seq, item, items):

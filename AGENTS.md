@@ -49,6 +49,11 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **`MediaPublisher`**（src/media.py）：本地文件 → 频道消息（雪花/缩略图/相册/大小校验）；`pre/post_publish_hooks`、`progress_hooks`；`FileTooLargeError`
 - **扩展方式**：新下载源 → `_download` 加 kind 分支；新发布目标/格式 → `_publish` 分支；压缩/水印/通知 → 订阅钩子，不改队列层
 - **超时恢复（v8）**：下载/上传用 `asyncio.wait`（超时立即结算 future 并继续，卡死的 `download_media`/`upload_file` 不再永久卡死 worker）；下载超时**自动重试** `DOWNLOAD_AUTO_RETRY`（默认 1 次）
+- **并发传输加速（v10）**：Telethon 1.44 默认传输是**串行 128KB 小包**，1G 带宽发挥不出。已改为：
+  - **并发下载**：`MediaDownloader._download_media_concurrent` 用 `client.iter_download(offset/stride)` 起 `DOWNLOAD_WORKERS`（默认 8）条分片流并发拉取（`PART_SIZE_KB`=512），按偏移写盘 → 单文件接近带宽上限
+  - **并发上传**：`MediaPublisher._upload_concurrent` 用 `asyncio.Semaphore(UPLOAD_WORKERS` 默认 16) 并发提交 `saveFilePart`/`SaveBigFilePart`（按索引无序，`asyncio.gather`）；小文件(≤10MB)先顺序算 md5 再并发传，构造 `InputSizedFile`/`InputFileBig`
+  - **`cryptg`** 已加入 requirements（C 级 MTProto AES 加解密，Telethon 官方推荐）
+  - 注意：`iter_download` 分片写入偏移 = `w*request_size + k*stride`（stride=workers*request_size）；上传 md5 必须按序预计算
 - 进度钩子由 `_Pipeline` 订阅（`_on_download_progress`/`_on_upload_progress`/`_on_pre_publish`/`_on_published`），驱动 `active` 登记表 + 节流状态编辑 + `_remember_published` + 自动撤回
 
 - **并行下载 + 顺序上传**：下载并发（`DOWNLOAD_CONCURRENCY`），上传严格按发送顺序（`_upload_worker` 维护 `next_seq`）。
@@ -69,6 +74,7 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
   - **取消 = 删除缓存**（`_cancel_seq` → 结算 + `_finish_seq` rmtree）
   - **重试 = 缓存重传**：`_reply_error` 存 `_RetryInfo(job, path)`；`retry:` 回调用 `cached_path` 重建任务（`MediaDownloader` 检测 `cached_path` 免重下），`cleanup_extra` 记录旧缓存目录
 - **缓存生命周期（v9）**：`_finish_seq(seq, keep_cache=False)`——上传失败 `keep_cache=True` 保留缓存；成功/取消/跳过清理（含 `cleanup_extra` 旧缓存目录）。`_next_seq` 已移除，改由扫描 `results` 就绪 future 推进。
+- **⚠️ v10.1 关键修复**：`_upload_worker` 上传**成功路径**曾漏调 `_finish_seq`（v9 重构引入）→ 成功后 seq 留在 `results`，`_pick_next_upload` 永远返回同一 seq → **同一个相册/视频无限重复上传**，后续任务永远轮不到。修复：`await task` 成功分支补 `else: self._finish_seq(seq)`。排查"同一任务反复上传"先检查这里。
 - **`/queue`（管理视图，v7）**：列出进行中任务（含暂停态，每项控制按钮）+ 待确认 + 底部 `q_pause`/`q_resume`：
   - `_cancel_seq(seq)` + `_cancel_marked` 集合：待确认→`_cancel_pending`；下载/上传中→`task.cancel()`；**排队等待下载**→标记后下载 worker 取件时跳过；**等待上传**→上传 worker 发布前跳过。
   - `_cancel_marked` 生命周期：由下载 worker 跳过路径/`CancelledError` 路径、上传 worker "cancelled before upload"/`CancelledError` 路径消费；`_finish_seq` **不**清除（避免与队列取件竞态导致已取消任务被重复下载泄漏）。
@@ -140,6 +146,9 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 | `HELD_TIMEOUT` | `300` | 未设 18+ 模式时暂存超时（秒），超时按"正常"处理 |
 | `AUTO_DELETE_SECONDS` | `10` | 命令回复/提示消息自动撤回秒数（0=关闭） |
 | `DOWNLOAD_AUTO_RETRY` | `1` | 下载超时自动重试次数（0=关闭） |
+| `DOWNLOAD_WORKERS` | `8` | 并发下载分片数（单文件） |
+| `UPLOAD_WORKERS` | `16` | 并发上传分片数（单文件） |
+| `PART_SIZE_KB` | `512` | 传输分片大小（KB，Telegram 上限 512） |
 
 ## 5. 已踩过的坑（重要）
 
