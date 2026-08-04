@@ -1,21 +1,18 @@
 import asyncio
 import json
 import logging
-import mimetypes
 import os
 import re
 import shutil
 import time
 from dataclasses import dataclass
 
-from telethon import Button, TelegramClient, events, functions
-from telethon.tl import types
+from telethon import Button, TelegramClient, events
 from telethon.tl.types import (
     MessageEntityBotCommand,
     MessageMediaDocument,
     MessageMediaPhoto,
 )
-from telethon.utils import get_input_document, get_input_photo
 
 from .config import (
     ALBUM_GATHER_SECONDS,
@@ -23,6 +20,7 @@ from .config import (
     AUTO_DELETE_SECONDS,
     CONFIRM_TIMEOUT,
     DEST_CHANNEL,
+    DOWNLOAD_AUTO_RETRY,
     DOWNLOAD_CONCURRENCY,
     DOWNLOAD_DIR,
     DOWNLOAD_TIMEOUT,
@@ -32,8 +30,7 @@ from .config import (
     PROGRESS_MIN_INTERVAL,
     UPLOAD_TIMEOUT,
 )
-from .downloader import download_video
-from .video import guess_mime, is_photo_path, is_video_path, make_thumb, probe_video
+from .media import FileTooLargeError, MediaDownloader, MediaPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -44,7 +41,6 @@ _CANCELLED = object()
 
 PREFS_FILE = os.path.join("session", "prefs.json")
 LEGACY_PREFS_FILE = os.path.join("session", "progress_prefs.json")
-PROGRESS_REFRESH_SECONDS = 1.0
 
 _MODE_NAMES = {
     "ask": "每次询问",
@@ -117,6 +113,14 @@ class _Job:
     url: str = ""
     spoiler: bool = False
     user_id: int = 0
+    cached_path: str = ""
+    cleanup_extra: str = ""
+
+
+@dataclass
+class _RetryInfo:
+    job: object
+    path: str = ""
 
 
 @dataclass
@@ -156,7 +160,6 @@ class _Pipeline:
         self.results: dict[int, asyncio.Future] = {}
         self.active: dict[int, dict] = {}
         self.active_seqs: set[int] = set()
-        self._next_seq = 0
         self._counter = 0
         self._dest_input = None
         self._active_downloads = 0
@@ -169,9 +172,27 @@ class _Pipeline:
         self._paused = False
         self._last_progress_edit = 0.0
         self._cancel_marked: set[int] = set()
+        self._paused_files: set[int] = set()
+        self._future_created: dict[int, float] = {}
         self.held: dict[int, list[_HeldItem]] = {}
         self._held_timers: dict[int, asyncio.Task] = {}
         self._load_prefs()
+
+        self.downloader = MediaDownloader(client, self._workdir, DOWNLOAD_TIMEOUT)
+        self.publisher = MediaPublisher(
+            client,
+            DEST_CHANNEL,
+            self._workdir,
+            UPLOAD_TIMEOUT,
+            MAX_FILE_SIZE,
+            FORWARD_CAPTION,
+        )
+        self.downloader.pre_download_hooks.append(self._on_pre_download)
+        self.downloader.progress_hooks.append(self._on_download_progress)
+        self.downloader.post_download_hooks.append(self._on_download_done)
+        self.publisher.progress_hooks.append(self._on_upload_progress)
+        self.publisher.pre_publish_hooks.append(self._on_pre_publish)
+        self.publisher.post_publish_hooks.append(self._on_published)
 
     def _load_prefs(self) -> None:
         try:
@@ -270,6 +291,8 @@ class _Pipeline:
                     )
                 else:
                     active_lines.append(f"{pos} 📤 正在上传")
+            elif seq in self._paused_files:
+                active_lines.append(f"{pos} ⏸ 已暂停")
             elif seq in self.jobs:
                 active_lines.append(f"{pos} ✅ 等待上传")
             else:
@@ -414,93 +437,150 @@ class _Pipeline:
                 continue
             self.jobs[job.seq] = job
             self._active_downloads += 1
-            task = asyncio.get_running_loop().create_task(self._do_download(job))
-            self._download_tasks[job.seq] = task
             try:
-                path = await asyncio.wait_for(task, timeout=DOWNLOAD_TIMEOUT)
-                self._set_result(job.seq, path)
-            except asyncio.TimeoutError:
-                logger.error("Job #%s timed out after %ss", job.seq, DOWNLOAD_TIMEOUT)
-                self._set_exception(
-                    job.seq, TimeoutError(f"下载超时（{DOWNLOAD_TIMEOUT} 秒）")
-                )
+                retries = 0
+                while True:
+                    task = asyncio.get_running_loop().create_task(
+                        self.downloader.run(job)
+                    )
+                    self._download_tasks[job.seq] = task
+                    done, _ = await asyncio.wait({task}, timeout=DOWNLOAD_TIMEOUT)
+                    if task in done:
+                        try:
+                            path = task.result()
+                        except asyncio.CancelledError:
+                            logger.info(
+                                "Job #%s download stopped by user", job.seq
+                            )
+                            self._cancel_marked.discard(job.seq)
+                            self._set_cancelled(job.seq)
+                            await self._delete_status(job)
+                        except Exception as exc:
+                            logger.exception(
+                                "Download failed for job #%s", job.seq
+                            )
+                            self._set_exception(job.seq, exc)
+                        else:
+                            self._set_result(job.seq, path)
+                        break
+                    task.cancel()
+                    if retries < DOWNLOAD_AUTO_RETRY:
+                        retries += 1
+                        logger.warning(
+                            "Job #%s download timeout, auto-retry %d/%d",
+                            job.seq,
+                            retries,
+                            DOWNLOAD_AUTO_RETRY,
+                        )
+                        await asyncio.sleep(2)
+                        continue
+                    logger.error(
+                        "Job #%s timed out after %ss", job.seq, DOWNLOAD_TIMEOUT
+                    )
+                    self._set_exception(
+                        job.seq,
+                        TimeoutError(f"下载超时（{DOWNLOAD_TIMEOUT} 秒）"),
+                    )
+                    break
             except asyncio.CancelledError:
-                logger.info("Job #%s download stopped by user", job.seq)
+                logger.info("Job #%s download worker cancelled", job.seq)
                 self._cancel_marked.discard(job.seq)
                 self._set_cancelled(job.seq)
                 await self._delete_status(job)
-            except Exception as exc:
-                logger.exception("Download failed for job #%s", job.seq)
-                self._set_exception(job.seq, exc)
             finally:
                 self._download_tasks.pop(job.seq, None)
                 self._active_downloads = max(0, self._active_downloads - 1)
                 self.input_q.task_done()
 
-    def _make_download_progress(
-        self, job: _Job, item: int = 1, items: int = 1
-    ):
-        last = {"pct": -1, "edit": 0.0}
+    async def _on_pre_download(self, job) -> None:
+        await self._safe_edit(job, f"🔄 {self.task_label(job.seq)} 正在下载...")
 
-        async def progress(received: int, total: int) -> None:
-            pct = int(received * 100 / total) if total else 0
-            if pct == last["pct"]:
-                return
-            last["pct"] = pct
-            if items <= 1:
-                overall = pct
-            else:
-                frac = received / total if total else 0
-                overall = round(((item - 1) + frac) * 100 / items)
-            self.active[job.seq] = {
-                "phase": "download",
-                "pct": overall,
-                "item": item,
-                "items": items,
-                "user_id": job.user_id,
-            }
-            now = time.time()
-            if pct == 100 or now - last["edit"] >= PROGRESS_REFRESH_SECONDS:
-                last["edit"] = now
-                logger.info(
-                    "Job #%s download progress: %d/%d (%d%%)",
-                    job.seq,
-                    received,
-                    total,
-                    pct,
-                )
-                await self._update_progress_status(job.seq)
-
-        return progress
-
-    def _make_upload_progress(self, seq: int, item: int = 1, items: int = 1):
-        last = {"pct": -1, "edit": 0.0}
+    async def _on_download_progress(
+        self, seq: int, received: int, total: int, item: int, items: int
+    ) -> None:
         job = self.jobs.get(seq)
-        user_id = job.user_id if job is not None else 0
+        if job is None:
+            return
+        if items <= 1:
+            overall = int(received * 100 / total) if total else 0
+        else:
+            frac = received / total if total else 0
+            overall = round(((item - 1) + frac) * 100 / items)
+        self.active[seq] = {
+            "phase": "download",
+            "pct": overall,
+            "item": item,
+            "items": items,
+            "user_id": job.user_id,
+        }
+        logger.info(
+            "Job #%s download progress: %d/%d (%d%%)", seq, received, total, overall
+        )
+        await self._update_progress_status(seq)
 
-        async def progress(received: int, total: int) -> None:
-            pct = int(received * 100 / total) if total else 0
-            if pct == last["pct"]:
-                return
-            last["pct"] = pct
-            if items <= 1:
-                overall = pct
-            else:
-                frac = received / total if total else 0
-                overall = round(((item - 1) + frac) * 100 / items)
-            self.active[seq] = {
-                "phase": "upload",
-                "pct": overall,
-                "item": item,
-                "items": items,
-                "user_id": user_id,
-            }
-            now = time.time()
-            if pct == 100 or now - last["edit"] >= PROGRESS_REFRESH_SECONDS:
-                last["edit"] = now
-                await self._update_progress_status(seq)
+    async def _on_download_done(self, job, paths) -> None:
+        await self._safe_edit(
+            job,
+            f"✅ 队列第 {self.task_label(job.seq)} 下载完成，等待上传",
+            buttons=[
+                Button.inline("⏸ 暂停", f"hold:{job.seq}"),
+                Button.inline("⏭ 跳过", f"hold:{job.seq}"),
+                Button.inline("⏹ 取消", f"q_cancel:{job.seq}"),
+            ],
+        )
 
-        return progress
+    async def _on_upload_progress(
+        self, seq: int, received: int, total: int, item: int, items: int
+    ) -> None:
+        job = self.jobs.get(seq)
+        if job is None:
+            return
+        if items <= 1:
+            overall = int(received * 100 / total) if total else 0
+        else:
+            frac = received / total if total else 0
+            overall = round(((item - 1) + frac) * 100 / items)
+        self.active[seq] = {
+            "phase": "upload",
+            "pct": overall,
+            "item": item,
+            "items": items,
+            "user_id": job.user_id,
+        }
+        await self._update_progress_status(seq)
+
+    async def _on_pre_publish(self, job, payload) -> None:
+        waiting = sum(1 for s, f in self.results.items() if s != job.seq and f.done())
+        suffix = f"（另有 {waiting} 个待上传）" if waiting else ""
+        label = "🔞 雪花遮挡" if job.spoiler else ""
+        if isinstance(payload, list):
+            total = sum(os.path.getsize(p) for p in payload)
+            await self._safe_edit(
+                job,
+                f"✅ 相册下载完成（{len(payload)} 张，共 {total / 1024 / 1024:.1f}MB）"
+                f"{label}，正在上传{suffix}...",
+            )
+        else:
+            size = os.path.getsize(payload)
+            await self._safe_edit(
+                job,
+                f"✅ 下载完成（{size / 1024 / 1024:.1f}MB）{label}，正在上传{suffix}...",
+            )
+
+    async def _on_published(self, job, ids: list) -> None:
+        self._remember_published(job.seq, ids)
+        text = (
+            f"✅ 相册已发布到 {DEST_CHANNEL}"
+            if job.kind == "album"
+            else f"✅ 已发布到 {DEST_CHANNEL}"
+        )
+        await self._safe_edit(
+            job, text, buttons=[Button.inline("↩️ 撤销", f"undo:{job.seq}")]
+        )
+        if AUTO_DELETE_SECONDS > 0:
+            asyncio.get_running_loop().create_task(
+                _delete_after(job.status, AUTO_DELETE_SECONDS)
+            )
 
     async def _update_progress_status(self, seq: int) -> None:
         now = time.time()
@@ -543,7 +623,7 @@ class _Pipeline:
         if phase == "download":
             buttons.append(Button.inline("⏹ 停止下载", f"stop:{seq}"))
         elif phase == "upload":
-            buttons.append(Button.inline("⏹ 停止上传", f"stop:{seq}"))
+            buttons.append(Button.inline("⏹ 取消", f"stop:{seq}"))
         try:
             await job.status.edit(text, buttons=buttons)
         except Exception:
@@ -565,53 +645,112 @@ class _Pipeline:
         except Exception:
             pass
 
-    async def _do_download(self, job: _Job):
-        workdir = self._workdir(job.seq)
-        os.makedirs(workdir, exist_ok=True)
-        await self._safe_edit(job, f"🔄 {self.task_label(job.seq)} 正在下载...")
-        if job.kind == "album":
-            paths = []
-            total = len(job.album)
-            for index, message in enumerate(job.album, start=1):
-                logger.info("Job #%s downloading album item %s", job.seq, message.id)
-                progress = self._make_download_progress(
-                    job, item=index, items=total
-                )
-                path = await message.download_media(
-                    file=workdir, progress_callback=progress
-                )
-                if not path:
-                    raise RuntimeError("未能下载相册媒体文件")
-                paths.append(path)
-            return paths
-        if job.kind == "media":
-            progress = self._make_download_progress(job)
-            path = await job.message.download_media(
-                file=workdir, progress_callback=progress
-            )
-        else:
-            path, _ = await download_video(job.url, workdir)
-        if not path:
-            raise RuntimeError("未能下载媒体文件")
-        return path
-
     async def _upload_worker(self) -> None:
         watchdog = DOWNLOAD_TIMEOUT + 60
         while True:
             while self._paused:
                 await asyncio.sleep(1)
-            seq = self._next_seq
-            fut = self.results.get(seq)
-            if fut is None:
-                fut = asyncio.get_running_loop().create_future()
-                self.results[seq] = fut
+            # 下载优先：有未下载任务（排队中或下载中）→ 挂起上传
+            while not self.input_q.empty() or self._active_downloads > 0:
+                await asyncio.sleep(0.5)
+            seq = self._pick_next_upload()
+            if seq is None:
+                await self._watchdog_unresolved(watchdog)
+                await asyncio.sleep(1)
+                continue
+            fut = self.results[seq]
             try:
-                path = await asyncio.wait_for(
-                    asyncio.shield(fut), timeout=watchdog
+                path = fut.result()
+            except asyncio.CancelledError:
+                continue
+            except Exception as exc:
+                await self._reply_error(
+                    seq, f"下载失败: {exc}", retry_job=self.jobs.get(seq)
                 )
-            except asyncio.TimeoutError:
-                if self._paused:
-                    continue
+                self._finish_seq(seq)
+                continue
+            if path is _CANCELLED:
+                logger.info("Job #%s skipped (cancelled)", seq)
+                self._finish_seq(seq)
+                continue
+            job = self.jobs.get(seq)
+            if seq in self._cancel_marked:
+                logger.info("Job #%s cancelled before upload", seq)
+                self._cancel_marked.discard(seq)
+                await self._delete_status(job)
+                self._finish_seq(seq)
+                continue
+            if seq in self._paused_files:
+                continue
+
+            self._uploading = seq
+            task = asyncio.get_running_loop().create_task(
+                self.publisher.publish(job, path)
+            )
+            self._upload_tasks[seq] = task
+            try:
+                done, _ = await asyncio.wait({task}, timeout=UPLOAD_TIMEOUT)
+            except asyncio.CancelledError:
+                logger.info("Job #%s upload worker cancelled", seq)
+                self._cancel_marked.discard(seq)
+                await self._delete_status(job)
+                self._finish_seq(seq)
+            else:
+                if task in done:
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        logger.info("Job #%s upload stopped by user", seq)
+                        self._cancel_marked.discard(seq)
+                        await self._delete_status(job)
+                        self._finish_seq(seq)
+                    except FileTooLargeError as exc:
+                        logger.warning("Job #%s %s", seq, exc)
+                        if job is not None:
+                            await self._safe_edit(job, f"❌ {exc}")
+                        self._finish_seq(seq)
+                    except Exception as exc:
+                        logger.exception("Upload failed for job #%s", seq)
+                        await self._reply_error(
+                            seq,
+                            f"上传失败: {exc}",
+                            retry_job=job,
+                            retry_path=path if not isinstance(path, list) else "",
+                        )
+                        self._finish_seq(seq, keep_cache=True)
+                else:
+                    task.cancel()
+                    logger.error(
+                        "Upload for job #%s timed out after %ss",
+                        seq,
+                        UPLOAD_TIMEOUT,
+                    )
+                    await self._reply_error(
+                        seq,
+                        f"上传超时（{UPLOAD_TIMEOUT} 秒）",
+                        retry_job=job,
+                        retry_path=path if not isinstance(path, list) else "",
+                    )
+                    self._finish_seq(seq, keep_cache=True)
+            finally:
+                self._upload_tasks.pop(seq, None)
+                self._uploading = None
+
+    def _pick_next_upload(self):
+        for seq in sorted(self.results):
+            if seq in self._paused_files:
+                continue
+            if self.results[seq].done():
+                return seq
+        return None
+
+    async def _watchdog_unresolved(self, watchdog: int) -> None:
+        now = time.time()
+        for seq, fut in list(self.results.items()):
+            if fut.done():
+                continue
+            created = self._future_created.get(seq, now)
+            if now - created >= watchdog:
                 logger.error(
                     "Job #%s unresolved for %ss, forcing cancel", seq, watchdog
                 )
@@ -621,249 +760,27 @@ class _Pipeline:
                     retry_job=self.jobs.get(seq),
                 )
                 self._set_cancelled(seq)
-            except Exception as exc:
-                await self._reply_error(
-                    seq, f"下载失败: {exc}", retry_job=self.jobs.get(seq)
-                )
-            else:
-                if path is _CANCELLED:
-                    logger.info("Job #%s skipped (cancelled)", seq)
-                elif seq in self._cancel_marked:
-                    logger.info("Job #%s cancelled before upload", seq)
-                    self._cancel_marked.discard(seq)
-                    await self._delete_status(self.jobs.get(seq))
-                else:
-                    while self._paused:
-                        await asyncio.sleep(1)
-                    self._uploading = seq
-                    task = asyncio.get_running_loop().create_task(
-                        self._publish(seq, path)
-                    )
-                    self._upload_tasks[seq] = task
-                    try:
-                        await asyncio.wait_for(task, timeout=UPLOAD_TIMEOUT)
-                    except asyncio.TimeoutError:
-                        logger.error(
-                            "Upload for job #%s timed out after %ss",
-                            seq,
-                            UPLOAD_TIMEOUT,
-                        )
-                        await self._reply_error(
-                            seq,
-                            f"上传超时（{UPLOAD_TIMEOUT} 秒）",
-                            retry_job=self.jobs.get(seq),
-                        )
-                    except asyncio.CancelledError:
-                        logger.info("Job #%s upload stopped by user", seq)
-                        self._cancel_marked.discard(seq)
-                        await self._delete_status(self.jobs.get(seq))
-                    except Exception as exc:
-                        logger.exception("Upload failed for job #%s", seq)
-                        await self._reply_error(
-                            seq, f"上传失败: {exc}", retry_job=self.jobs.get(seq)
-                        )
-                    finally:
-                        self._upload_tasks.pop(seq, None)
-                        self._uploading = None
-            self._finish_seq(seq)
+                self._future_created[seq] = now
 
-    def _finish_seq(self, seq: int) -> None:
-        self._next_seq += 1
+    def _finish_seq(self, seq: int, keep_cache: bool = False) -> None:
+        job = self.jobs.pop(seq, None)
+        cleanup = getattr(job, "cleanup_extra", "") if job else ""
         self.results.pop(seq, None)
-        self.jobs.pop(seq, None)
         self.active.pop(seq, None)
         self.active_seqs.discard(seq)
-        shutil.rmtree(self._workdir(seq), ignore_errors=True)
+        self._cancel_marked.discard(seq)
+        self._paused_files.discard(seq)
+        self._future_created.pop(seq, None)
+        if not keep_cache:
+            shutil.rmtree(self._workdir(seq), ignore_errors=True)
+            if cleanup:
+                shutil.rmtree(cleanup, ignore_errors=True)
 
     def _remember_published(self, seq: int, ids: list) -> None:
         self.published[seq] = ids
         if len(self.published) > 50:
             for old_seq in sorted(self.published)[:-50]:
                 self.published.pop(old_seq, None)
-
-    async def _publish(self, seq: int, payload) -> None:
-        job = self.jobs[seq]
-        if isinstance(payload, list):
-            await self._publish_album(seq, payload)
-            return
-
-        path = payload
-        size = os.path.getsize(path)
-        if size > MAX_FILE_SIZE:
-            await self._safe_edit(
-                job,
-                f"❌ 文件 {size / 1024 / 1024:.1f}MB 超过 "
-                f"{MAX_FILE_SIZE // (1024 * 1024)}MB 上限",
-            )
-            return
-
-        waiting = sum(1 for s, f in self.results.items() if s != seq and f.done())
-        suffix = f"（另有 {waiting} 个待上传）" if waiting else ""
-        label = "🔞 雪花遮挡" if job.spoiler else ""
-        await self._safe_edit(
-            job,
-            f"✅ 下载完成（{size / 1024 / 1024:.1f}MB）{label}，正在上传{suffix}...",
-        )
-
-        caption = None
-        if FORWARD_CAPTION and job.kind == "media":
-            caption = job.message.message[:1024] or None
-        msg_id = await self._send_media(path, caption, job.spoiler, job.seq)
-        self._remember_published(seq, [msg_id])
-        await self._safe_edit(
-            job,
-            f"✅ 已发布到 {DEST_CHANNEL}",
-            buttons=[Button.inline("↩️ 撤销", f"undo:{seq}")],
-        )
-        if AUTO_DELETE_SECONDS > 0:
-            asyncio.get_running_loop().create_task(
-                _delete_after(job.status, AUTO_DELETE_SECONDS)
-            )
-
-    async def _publish_album(self, seq: int, paths: list) -> None:
-        job = self.jobs[seq]
-        for path in paths:
-            size = os.path.getsize(path)
-            if size > MAX_FILE_SIZE:
-                await self._safe_edit(
-                    job,
-                    f"❌ 相册中有文件 {size / 1024 / 1024:.1f}MB 超过 "
-                    f"{MAX_FILE_SIZE // (1024 * 1024)}MB 上限",
-                )
-                return
-
-        total = sum(os.path.getsize(p) for p in paths)
-        waiting = sum(1 for s, f in self.results.items() if s != seq and f.done())
-        suffix = f"（另有 {waiting} 个待上传）" if waiting else ""
-        label = "🔞 雪花遮挡" if job.spoiler else ""
-        await self._safe_edit(
-            job,
-            f"✅ 相册下载完成（{len(paths)} 张，共 {total / 1024 / 1024:.1f}MB）"
-            f"{label}，正在上传{suffix}...",
-        )
-
-        if FORWARD_CAPTION:
-            captions = [m.message[:1024] or "" for m in job.album]
-        else:
-            captions = [""] * len(paths)
-        ids = await self._send_album(paths, captions, job.spoiler, seq)
-        self._remember_published(seq, ids)
-        await self._safe_edit(
-            job,
-            f"✅ 相册已发布到 {DEST_CHANNEL}",
-            buttons=[Button.inline("↩️ 撤销", f"undo:{seq}")],
-        )
-        if AUTO_DELETE_SECONDS > 0:
-            asyncio.get_running_loop().create_task(
-                _delete_after(job.status, AUTO_DELETE_SECONDS)
-            )
-
-    async def _send_media(self, path: str, caption: str | None, spoiler: bool, seq: int) -> int:
-        media = await self._upload_media_input(path, spoiler, seq)
-        msg = await self.client.send_file(DEST_CHANNEL, media, caption=caption)
-        return msg.id
-
-    async def _upload_media_input(
-        self, path: str, spoiler: bool, seq: int, item: int = 1, items: int = 1
-    ):
-        progress = self._make_upload_progress(seq, item, items)
-        uploaded = await self.client.upload_file(path, progress_callback=progress)
-
-        if is_photo_path(path):
-            return types.InputMediaUploadedPhoto(
-                file=uploaded, spoiler=spoiler or None
-            )
-
-        os.makedirs(self._workdir(seq), exist_ok=True)
-        attributes = [
-            types.DocumentAttributeFilename(file_name=os.path.basename(path))
-        ]
-        mime = guess_mime(path)
-        thumb_input = None
-        nosound = None
-
-        if is_video_path(path):
-            duration, width, height = 0, 1, 1
-            try:
-                duration, width, height = await probe_video(path)
-            except Exception as exc:
-                logger.warning("Video probe failed for job #%s: %s", seq, exc)
-            try:
-                thumb = await make_thumb(path, self._workdir(seq))
-                if thumb:
-                    thumb_input = await self.client.upload_file(thumb)
-            except Exception as exc:
-                logger.warning("Video thumb failed for job #%s: %s", seq, exc)
-            attributes.insert(
-                0,
-                types.DocumentAttributeVideo(
-                    duration=duration,
-                    w=width,
-                    h=height,
-                    supports_streaming=True,
-                ),
-            )
-            nosound = True
-
-        return types.InputMediaUploadedDocument(
-            file=uploaded,
-            mime_type=mime,
-            attributes=attributes,
-            thumb=thumb_input,
-            spoiler=spoiler or None,
-            nosound_video=nosound,
-        )
-
-    async def _send_album(
-        self, paths: list, captions: list, spoiler: bool, seq: int
-    ) -> list:
-        dest = await self._get_dest_input()
-        single_media = []
-        total = len(paths)
-        for index, path in enumerate(paths):
-            fm = await self._upload_media_input(
-                path, spoiler, seq, item=index + 1, items=total
-            )
-
-            result = await self.client(
-                functions.messages.UploadMediaRequest(dest, fm)
-            )
-            if isinstance(result, types.MessageMediaPhoto):
-                reference = types.InputMediaPhoto(
-                    id=get_input_photo(result.photo), spoiler=spoiler or None
-                )
-            elif isinstance(result, types.MessageMediaDocument):
-                reference = types.InputMediaDocument(
-                    id=get_input_document(result.document),
-                    spoiler=spoiler or None,
-                )
-            else:
-                raise RuntimeError(
-                    f"无法为相册媒体 #{(index + 1)} 构建引用"
-                )
-
-            caption = captions[index] if index < len(captions) else ""
-            single_media.append(
-                types.InputSingleMedia(reference, message=caption)
-            )
-
-        result = await self.client(
-            functions.messages.SendMultiMediaRequest(
-                dest, multi_media=single_media
-            )
-        )
-        ids = []
-        for update in getattr(result, "updates", []) or []:
-            if isinstance(update, types.UpdateNewChannelMessage):
-                ids.append(update.message.id)
-            elif isinstance(update, types.UpdateNewMessage):
-                ids.append(update.message.id)
-        return ids
-
-    async def _get_dest_input(self):
-        if self._dest_input is None:
-            self._dest_input = await self.client.get_input_entity(DEST_CHANNEL)
-        return self._dest_input
 
     def _workdir(self, seq: int) -> str:
         return os.path.join(DOWNLOAD_DIR, f"job-{seq}")
@@ -873,6 +790,7 @@ class _Pipeline:
         if fut is None:
             fut = asyncio.get_running_loop().create_future()
             self.results[seq] = fut
+            self._future_created[seq] = time.time()
         if not fut.done():
             fut.set_result(value)
 
@@ -881,6 +799,7 @@ class _Pipeline:
         if fut is None:
             fut = asyncio.get_running_loop().create_future()
             self.results[seq] = fut
+            self._future_created[seq] = time.time()
         if not fut.done():
             fut.set_exception(exc)
 
@@ -889,6 +808,7 @@ class _Pipeline:
         if fut is None:
             fut = asyncio.get_running_loop().create_future()
             self.results[seq] = fut
+            self._future_created[seq] = time.time()
         if not fut.done():
             fut.set_result(_CANCELLED)
 
@@ -1067,14 +987,18 @@ class _Pipeline:
         return count
 
     async def _reply_error(
-        self, seq: int, text: str, retry_job: _Job = None
+        self, seq: int, text: str, retry_job: _Job = None, retry_path: str = ""
     ) -> None:
         job = self.jobs.get(seq)
         if retry_job is not None:
-            self.retryable[seq] = retry_job
+            self.retryable[seq] = _RetryInfo(job=retry_job, path=retry_path)
         buttons = None
         if retry_job is not None:
-            buttons = [Button.inline("🔄 重试", f"retry:{seq}")]
+            buttons = [
+                Button.inline("🔄 重试", f"retry:{seq}"),
+                Button.inline("⏭ 跳过", f"hold:{seq}"),
+                Button.inline("⏹ 取消", f"q_cancel:{seq}"),
+            ]
         if job is not None:
             try:
                 await job.status.edit(f"❌ {text}", buttons=buttons)
@@ -1233,12 +1157,20 @@ def register_handlers(client: TelegramClient) -> None:
                     state = f"{pos} {prefix} {render_bar(info['pct'])} {info['pct']:3d}%"
                 else:
                     state = f"{pos} 📤 正在上传"
+            elif seq in pipeline._paused_files:
+                state = f"{pos} ⏸ 已暂停"
             elif seq in pipeline.jobs:
                 state = f"{pos} ✅ 等待上传"
             else:
                 state = f"{pos} ⏳ 等待下载"
             active_lines.append(state)
-            buttons.append([Button.inline("⏹ 取消", f"q_cancel:{seq}")])
+            if seq in pipeline._paused_files:
+                buttons.append([
+                    Button.inline("▶ 继续", f"resume:{seq}"),
+                    Button.inline("🗑 删除", f"q_cancel:{seq}"),
+                ])
+            else:
+                buttons.append([Button.inline("⏹ 取消", f"q_cancel:{seq}")])
 
         if active_lines:
             lines.append(f"\n▶ 进行中（{len(active_lines)}）")
@@ -1386,26 +1318,75 @@ def register_handlers(client: TelegramClient) -> None:
             await _answer("已撤销")
             return
 
+        if data_text.startswith("hold:"):
+            try:
+                seq = int(data_text.split(":", 1)[1])
+            except (ValueError, IndexError):
+                await _answer("无效操作")
+                return
+            pipeline._paused_files.add(seq)
+            job = pipeline.jobs.get(seq)
+            if job is not None:
+                try:
+                    await job.status.edit(
+                        f"⏸ 队列第 {pipeline.task_label(seq)} 已暂停（缓存保留）",
+                        buttons=[
+                            Button.inline("▶ 继续", f"resume:{seq}"),
+                            Button.inline("🗑 删除", f"q_cancel:{seq}"),
+                        ],
+                    )
+                except Exception:
+                    pass
+            await _answer("已暂停")
+            return
+
+        if data_text.startswith("resume:"):
+            try:
+                seq = int(data_text.split(":", 1)[1])
+            except (ValueError, IndexError):
+                await _answer("无效操作")
+                return
+            pipeline._paused_files.discard(seq)
+            job = pipeline.jobs.get(seq)
+            if job is not None:
+                try:
+                    await job.status.edit(
+                        f"🔄 队列第 {pipeline.task_label(seq)} 已继续，等待上传",
+                        buttons=[
+                            Button.inline("⏸ 暂停", f"hold:{seq}"),
+                            Button.inline("⏭ 跳过", f"hold:{seq}"),
+                            Button.inline("⏹ 取消", f"q_cancel:{seq}"),
+                        ],
+                    )
+                except Exception:
+                    pass
+            await _answer("已继续")
+            return
+
         if data_text.startswith("retry:"):
             try:
                 seq = int(data_text.split(":", 1)[1])
             except (ValueError, IndexError):
                 await _answer("无效操作")
                 return
-            old_job = pipeline.retryable.pop(seq, None)
-            if old_job is None:
+            info = pipeline.retryable.pop(seq, None)
+            if info is None:
                 await _answer("该任务已失效（可能已重试）")
                 return
             new_seq = pipeline.reserve_seq()
+            cached = info.path or ""
+            cleanup = os.path.dirname(cached) if cached else ""
             new_job = _Job(
                 seq=new_seq,
-                kind=old_job.kind,
-                status=old_job.status,
-                message=old_job.message,
-                album=old_job.album,
-                url=old_job.url,
-                spoiler=old_job.spoiler,
-                user_id=old_job.user_id,
+                kind=info.job.kind,
+                status=info.job.status,
+                message=info.job.message,
+                album=info.job.album,
+                url=info.job.url,
+                spoiler=info.job.spoiler,
+                user_id=info.job.user_id,
+                cached_path=cached,
+                cleanup_extra=cleanup,
             )
             pipeline.active_seqs.add(new_seq)
             try:
@@ -1414,7 +1395,7 @@ def register_handlers(client: TelegramClient) -> None:
                     f"🔄 {pipeline.task_label(new_seq)} 已重新入队",
                 )
             except Exception:
-                new_status = old_job.status
+                new_status = info.job.status
             new_job.status = new_status
             pipeline.enqueue(new_job)
             try:
@@ -1422,7 +1403,7 @@ def register_handlers(client: TelegramClient) -> None:
             except Exception:
                 pass
             await _answer("已重新入队")
-            logger.info("Job #%s retried as #%s", seq, new_seq)
+            logger.info("Job #%s retried as #%s (cached=%s)", seq, new_seq, bool(cached))
             return
 
         if event.data == b"toggle_progress":

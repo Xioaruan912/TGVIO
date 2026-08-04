@@ -21,29 +21,39 @@ telegram-video-forwarder/
 ├── .env                   # 密钥配置（勿入 git/勿明文传输）
 ├── .env.example
 ├── README.md              # 面向用户的说明
-├── .gitignore
+├── .gitignore             # 含 AGENTS.md/todo.md
 ├── AGENTS.md              # 本文档
+├── todo.md                # 进度/交接
 └── src/
     ├── main.py            # 入口：登录、注册命令菜单、注册 handlers
     ├── config.py          # 环境变量读取
-    ├── bot.py             # 核心：队列流水线 + 事件处理 + 媒体构造/发布 + /status
+    ├── bot.py             # 队列编排层：_Pipeline + 事件处理 + 命令 + 状态
+    ├── media.py           # 独立下载器/发布器（v8 重构，扩展钩子）
     ├── downloader.py      # yt-dlp URL 下载
     └── video.py           # ffprobe 探测 + ffmpeg 截缩略图 + 类型判断
 ```
 
 ## 3. 核心架构（src/bot.py）
 
-`_Pipeline` 类实现**两阶段流水线**：
+### 核心架构（v8 重构：下载/上传独立模块）
+
+`_Pipeline`（bot.py）只做**队列编排**（seq/顺序/看门狗/取消/暂停/进度状态），下载与上传是**两个独立功能模块**（src/media.py），通过 `asyncio.wait` 调用，超时可恢复、不卡死：
 
 ```
-用户转发媒体/URL → (相册聚合) → 18+ 确认弹窗(内联按钮)
-    → 入队(自增 seq) → 下载线程池(默认3并发) → 就绪区{seq:结果}
-    → 单 worker 严格按 seq 顺序上传到频道
+input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[seq]
+                                                              │
+上传 worker ◀── future 结算 ──▶ MediaPublisher.publish(job, path) ──▶ posted ids
 ```
+
+- **`MediaDownloader`**（src/media.py）：消息/相册/URL → 本地文件；`pre/post_download_hooks`、`progress_hooks`（订阅式扩展）
+- **`MediaPublisher`**（src/media.py）：本地文件 → 频道消息（雪花/缩略图/相册/大小校验）；`pre/post_publish_hooks`、`progress_hooks`；`FileTooLargeError`
+- **扩展方式**：新下载源 → `_download` 加 kind 分支；新发布目标/格式 → `_publish` 分支；压缩/水印/通知 → 订阅钩子，不改队列层
+- **超时恢复（v8）**：下载/上传用 `asyncio.wait`（超时立即结算 future 并继续，卡死的 `download_media`/`upload_file` 不再永久卡死 worker）；下载超时**自动重试** `DOWNLOAD_AUTO_RETRY`（默认 1 次）
+- 进度钩子由 `_Pipeline` 订阅（`_on_download_progress`/`_on_upload_progress`/`_on_pre_publish`/`_on_published`），驱动 `active` 登记表 + 节流状态编辑 + `_remember_published` + 自动撤回
 
 - **并行下载 + 顺序上传**：下载并发（`DOWNLOAD_CONCURRENCY`），上传严格按发送顺序（`_upload_worker` 维护 `next_seq`）。
 - **seq 预留机制**：媒体消息到达时先 `reserve_seq()`，等 18+ 确认后再入队；未确认的任务超时后 `_set_cancelled` 跳过，保证后续 seq 不卡死。
-- **18+ 确认**：内联按钮 `confirm:{seq}:1|0`，另有 `cancel:{seq}`「❌ 取消」按钮（第二行）丢弃任务——pop pending + 取消超时任务 + `_set_cancelled(seq)` + 弹窗改「❌ 已取消该任务」。确认后**删除按钮消息**，另发新状态消息作为任务 status，后续「下载中/上传中/已发布」都编辑同一条消息。`CONFIRM_TIMEOUT`（默认 60s）内未点按钮 → 任务取消并 `_set_cancelled`。
+- **18+ 确认**：内联按钮 `confirm:{seq}:1|0`，另有 `cancel:{seq}`「❌ 取消」按钮（第二行）丢弃任务——pop pending + 取消超时任务 + `_set_cancelled(seq)` + **删除确认消息**（v7.1 起不保留文案）。确认后**删除按钮消息**，另发新状态消息作为任务 status，后续「下载中/上传中/已发布」都编辑同一条消息。`CONFIRM_TIMEOUT`（默认 60s）内未点按钮 → 任务取消 + **删除确认消息**。
 - **相册聚合**：同 `grouped_id` 的消息在 `ALBUM_GATHER_SECONDS`（默认 1s）内聚合为**一个任务、一次询问**，发布为**单个相册消息**。`_send_album` 用 `UploadMediaRequest` 保存媒体后转 `InputMediaPhoto/Document(spoiler=...)` 再 `SendMultiMediaRequest`。
 - **纯媒体转发（v5）**：`FORWARD_CAPTION`（默认 false）控制是否转发原消息文字——false 时单条 `caption=None`、相册 `captions=[""]*N`，只发视频/图片本身；true 时保留 caption（相册逐张）。
 
@@ -52,7 +62,14 @@ telegram-video-forwarder/
 - **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/about`、`/status`、`/progress`、`/mode`、`/queue`、`/pause`、`/resume`（**`lang_code=""` + `lang_code="zh"` 都注册**——早期只更新默认语言表导致中文客户端 `zh` 表残留旧命令；必须两个语言位都更新），并 `SetBotMenuButtonRequest` 设默认菜单按钮。
 - **`/status`**：`_Pipeline.status_text(user_id)` 输出**队列全貌**（一次性只读快照）——逐个列出活跃任务的「队列第 N 位 + 阶段 + 进度条」，附「其他」区（等待确认/相册聚合中）。尊重进度条偏好；暂停时标题带「⏸」。
 - **`/progress`**：汇总显示所有进行中任务的下载/上传进度条（读 `_Pipeline.active` 登记表）。
-- **`/queue`（管理视图，v7）**：列出进行中任务（每项 `q_cancel:{seq}` 按钮）+ 待确认（每项 `cancel:{seq}` 按钮）+ 底部 `q_pause`/`q_resume`。**真正可控制所有阶段**：
+- **下载优先调度（v9）**：`_upload_worker` 顶部有**下载闸门**——`input_q` 非空或 `_active_downloads > 0` 时挂起上传，全部缓存到本地后按 `_pick_next_upload()`（最小就绪 seq，跳过 `_paused_files`）顺序上传；上传中新到内容会触发闸门先下载再续传。
+- **逐文件上传控制（v9）**：
+  - 等待上传：`_on_download_done` 状态「下载完成，等待上传」+ `[⏸暂停][⏭跳过][⏹取消]`
+  - **暂停/跳过 = hold**（`_paused_files.add(seq)`，缓存保留、不上传）；held 文件显示 `[▶继续][🗑删除]`；`resume` 移除后 `_pick_next_upload` 重新选中
+  - **取消 = 删除缓存**（`_cancel_seq` → 结算 + `_finish_seq` rmtree）
+  - **重试 = 缓存重传**：`_reply_error` 存 `_RetryInfo(job, path)`；`retry:` 回调用 `cached_path` 重建任务（`MediaDownloader` 检测 `cached_path` 免重下），`cleanup_extra` 记录旧缓存目录
+- **缓存生命周期（v9）**：`_finish_seq(seq, keep_cache=False)`——上传失败 `keep_cache=True` 保留缓存；成功/取消/跳过清理（含 `cleanup_extra` 旧缓存目录）。`_next_seq` 已移除，改由扫描 `results` 就绪 future 推进。
+- **`/queue`（管理视图，v7）**：列出进行中任务（含暂停态，每项控制按钮）+ 待确认 + 底部 `q_pause`/`q_resume`：
   - `_cancel_seq(seq)` + `_cancel_marked` 集合：待确认→`_cancel_pending`；下载/上传中→`task.cancel()`；**排队等待下载**→标记后下载 worker 取件时跳过；**等待上传**→上传 worker 发布前跳过。
   - `_cancel_marked` 生命周期：由下载 worker 跳过路径/`CancelledError` 路径、上传 worker "cancelled before upload"/`CancelledError` 路径消费；`_finish_seq` **不**清除（避免与队列取件竞态导致已取消任务被重复下载泄漏）。
 - **取消即撤回（v7.1）**：用户取消任务（确认 ❌ `_cancel_pending`、停止下载/上传 `CancelledError`、`/queue` 取消 `_cancel_seq`、下载 worker 跳过已取消排队任务）时，**删除**对应状态/确认消息（`_delete_status`/`pending.status.delete()`），不再保留"已取消"文案。**确认超时（`_confirm_timeout`）同样删除消息（v7.2）**。**点「↩️ 撤销」= 删除频道视频 + `event.delete()` 立即删除状态消息（v7.2）**。失败消息仍编辑保留（带重试按钮）。取消发生在发布前，频道无视频可撤。
@@ -122,6 +139,7 @@ telegram-video-forwarder/
 | `PROGRESS_MIN_INTERVAL` | `2.0` | 进度条编辑全局最小间隔（秒，防限流） |
 | `HELD_TIMEOUT` | `300` | 未设 18+ 模式时暂存超时（秒），超时按"正常"处理 |
 | `AUTO_DELETE_SECONDS` | `10` | 命令回复/提示消息自动撤回秒数（0=关闭） |
+| `DOWNLOAD_AUTO_RETRY` | `1` | 下载超时自动重试次数（0=关闭） |
 
 ## 5. 已踩过的坑（重要）
 
