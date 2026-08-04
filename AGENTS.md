@@ -64,9 +64,8 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 
 ### 命令与状态
 
-- **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/about`、`/status`、`/progress`、`/mode`、`/queue`、`/pause`、`/resume`（**`lang_code=""` + `lang_code="zh"` 都注册**——早期只更新默认语言表导致中文客户端 `zh` 表残留旧命令；必须两个语言位都更新），并 `SetBotMenuButtonRequest` 设默认菜单按钮。
+- **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/about`、`/status`、`/mode`、`/queue`（**`lang_code=""` + `lang_code="zh"` 都注册**——早期只更新默认语言表导致中文客户端 `zh` 表残留旧命令；必须两个语言位都更新），并 `SetBotMenuButtonRequest` 设默认菜单按钮。已移除的命令：`/progress`、`/pause`、`/resume`、`/cancel`（对应功能仍在 `/queue` 按钮与内联回调中提供）。
 - **`/status`**：`_Pipeline.status_text(user_id)` 输出**队列全貌**（一次性只读快照）——逐个列出活跃任务的「队列第 N 位 + 阶段 + 进度条」，附「其他」区（等待确认/相册聚合中）。尊重进度条偏好；暂停时标题带「⏸」。
-- **`/progress`**：汇总显示所有进行中任务的下载/上传进度条（读 `_Pipeline.active` 登记表）。
 - **下载优先调度（v9）**：`_upload_worker` 顶部有**下载闸门**——`input_q` 非空或 `_active_downloads > 0` 时挂起上传，全部缓存到本地后按 `_pick_next_upload()`（最小就绪 seq，跳过 `_paused_files`）顺序上传；上传中新到内容会触发闸门先下载再续传。
 - **逐文件上传控制（v9）**：
   - 等待上传：`_on_download_done` 状态「下载完成，等待上传」+ `[⏸暂停][⏭跳过][⏹取消]`
@@ -75,12 +74,11 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
   - **重试 = 缓存重传**：`_reply_error` 存 `_RetryInfo(job, path)`；`retry:` 回调用 `cached_path` 重建任务（`MediaDownloader` 检测 `cached_path` 免重下），`cleanup_extra` 记录旧缓存目录
 - **缓存生命周期（v9）**：`_finish_seq(seq, keep_cache=False)`——上传失败 `keep_cache=True` 保留缓存；成功/取消/跳过清理（含 `cleanup_extra` 旧缓存目录）。`_next_seq` 已移除，改由扫描 `results` 就绪 future 推进。
 - **⚠️ v10.1 关键修复**：`_upload_worker` 上传**成功路径**曾漏调 `_finish_seq`（v9 重构引入）→ 成功后 seq 留在 `results`，`_pick_next_upload` 永远返回同一 seq → **同一个相册/视频无限重复上传**，后续任务永远轮不到。修复：`await task` 成功分支补 `else: self._finish_seq(seq)`。排查"同一任务反复上传"先检查这里。
-- **`/queue`（管理视图，v7）**：列出进行中任务（含暂停态，每项控制按钮）+ 待确认 + 底部 `q_pause`/`q_resume`：
+- **`/queue`（管理视图，v7；按钮布局 v10.2）**：每个按钮带**位置序号（①②③…）**对应文本「队列第 N 位」——进行中项 `[N ⏸暂停][N ⏹取消]`，暂停项 `[N ▶继续][N 🗑删除]`，待确认 `[N ❌取消]`，底部 `[⏸全局暂停][▶全局恢复]`。`_pos_token(n)` 生成 ①-⑨（9 以上回退数字）。
   - `_cancel_seq(seq)` + `_cancel_marked` 集合：待确认→`_cancel_pending`；下载/上传中→`task.cancel()`；**排队等待下载**→标记后下载 worker 取件时跳过；**等待上传**→上传 worker 发布前跳过。
   - `_cancel_marked` 生命周期：由下载 worker 跳过路径/`CancelledError` 路径、上传 worker "cancelled before upload"/`CancelledError` 路径消费；`_finish_seq` **不**清除（避免与队列取件竞态导致已取消任务被重复下载泄漏）。
 - **取消即撤回（v7.1）**：用户取消任务（确认 ❌ `_cancel_pending`、停止下载/上传 `CancelledError`、`/queue` 取消 `_cancel_seq`、下载 worker 跳过已取消排队任务）时，**删除**对应状态/确认消息（`_delete_status`/`pending.status.delete()`），不再保留"已取消"文案。**确认超时（`_confirm_timeout`）同样删除消息（v7.2）**。**点「↩️ 撤销」= 删除频道视频 + `event.delete()` 立即删除状态消息（v7.2）**。失败消息仍编辑保留（带重试按钮）。取消发生在发布前，频道无视频可撤。
-- **`/cancel <N>`**：取消第 N 个待确认项（复用 `_cancel_pending(seq)`）。
-- **`/pause` / `/resume`**：`_pipeline._paused` 标志；下载 worker 在 `input_q.get()` 前、上传 worker 在循环顶部/发布前检查。**注意：上传 worker 看门狗在暂停时跳过强制取消**（`continue` 不推进 `next_seq`）。
+- **全局暂停（保留逻辑）**：`_pipeline._paused` 标志仍由 `/queue` 底部的 `q_pause`/`q_resume` 按钮控制；下载 worker 在 `input_q.get()` 前、上传 worker 在循环顶部/发布前检查。**注意：上传 worker 看门狗在暂停时跳过强制取消**（`continue` 不推进）。
 - **命令消息双触发防护**：通用 `on_private_message` 检测 `MessageEntityBotCommand` 实体则 return。
 
 ### 偏好持久化（v6 统一为 prefs.json）

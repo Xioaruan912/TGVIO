@@ -65,6 +65,12 @@ def render_bar(pct: int, width: int = 10) -> str:
     return "█" * filled + "░" * (width - filled)
 
 
+def _pos_token(n: int) -> str:
+    if 1 <= n <= 9:
+        return "①②③④⑤⑥⑦⑧⑨"[n - 1]
+    return str(n)
+
+
 async def _delete_after(message: object, seconds: float) -> None:
     if not seconds or seconds <= 0:
         return
@@ -97,12 +103,8 @@ _ABOUT_TEXT = (
     "/start    使用说明（首次运行设置 18+ 模式）\n"
     "/about    关于/命令说明\n"
     "/status   查看队列全貌（排位/阶段/进度）\n"
-    "/progress 查看所有任务的下载/上传进度条\n"
     "/mode     设置 18+ 处理方式（每次询问/总是雪花/总是正常）\n"
-    "/queue    管理队列（逐项取消/暂停/恢复）\n"
-    "/cancel N 取消第 N 个待确认项\n"
-    "/pause    暂停队列\n"
-    "/resume   恢复队列"
+    "/queue    管理队列（逐项取消/暂停/恢复）"
 )
 
 
@@ -1080,65 +1082,12 @@ def register_handlers(client: TelegramClient) -> None:
             return
         await _respond(event, pipeline.status_text(event.sender_id))
 
-    @client.on(events.NewMessage(pattern="/progress"))
-    async def on_progress(event: events.NewMessage.Event) -> None:
-        logger.info("CMD /progress from %s", event.sender_id)
-        if not _authorized(event):
-            return
-        if not pipeline._show_progress(event.sender_id):
-            await _respond(event, 
-                "🔕 进度条显示已关闭。点击任意任务状态消息的"
-                "「🔔 显示进度」按钮可重新开启。"
-            )
-            return
-        lines = []
-        for seq, info in sorted(pipeline.active.items()):
-            phase, item, items, pct = (
-                info["phase"],
-                info["item"],
-                info["items"],
-                info["pct"],
-            )
-            if items > 1:
-                label = (
-                    f"{pipeline.task_label(seq)} ⬇ 下载 {item}/{items}"
-                    if phase == "download"
-                    else f"{pipeline.task_label(seq)} 📤 上传 {item}/{items}"
-                )
-            else:
-                label = (
-                    f"{pipeline.task_label(seq)} ⬇ 下载"
-                    if phase == "download"
-                    else f"{pipeline.task_label(seq)} 📤 上传"
-                )
-            lines.append(f"{label} {render_bar(pct)} {pct:3d}%")
-        if not lines:
-            await _respond(event, "📊 暂无进行中的任务")
-        else:
-            await _respond(event, "📊 进行中任务\n" + "\n".join(lines))
-
-    @client.on(events.NewMessage(pattern="/pause"))
-    async def on_pause(event: events.NewMessage.Event) -> None:
-        logger.info("CMD /pause from %s", event.sender_id)
-        if not _authorized(event):
-            return
-        pipeline._paused = True
-        await _respond(event, "⏸ 已暂停队列（当前步骤完成后暂停，新的任务不再开始）")
-
-    @client.on(events.NewMessage(pattern="/resume"))
-    async def on_resume(event: events.NewMessage.Event) -> None:
-        logger.info("CMD /resume from %s", event.sender_id)
-        if not _authorized(event):
-            return
-        pipeline._paused = False
-        await _respond(event, "▶ 已恢复队列")
-
     @client.on(events.NewMessage(pattern="/queue"))
     async def on_queue(event: events.NewMessage.Event) -> None:
         logger.info("CMD /queue from %s", event.sender_id)
         if not _authorized(event):
             return
-        lines = ["📋 队列管理"]
+        lines = ["📋 队列管理", "每个按钮带位置序号，对应上方第 N 位。"]
         buttons = []
 
         active_lines = []
@@ -1173,13 +1122,21 @@ def register_handlers(client: TelegramClient) -> None:
             else:
                 state = f"{pos} ⏳ 等待下载"
             active_lines.append(state)
+            token = _pos_token(pipeline._queue_position(seq))
             if seq in pipeline._paused_files:
-                buttons.append([
-                    Button.inline("▶ 继续", f"resume:{seq}"),
-                    Button.inline("🗑 删除", f"q_cancel:{seq}"),
-                ])
+                buttons.append(
+                    [
+                        Button.inline(f"{token} ▶ 继续", f"resume:{seq}"),
+                        Button.inline(f"{token} 🗑 删除", f"q_cancel:{seq}"),
+                    ]
+                )
             else:
-                buttons.append([Button.inline("⏹ 取消", f"q_cancel:{seq}")])
+                buttons.append(
+                    [
+                        Button.inline(f"{token} ⏸ 暂停", f"hold:{seq}"),
+                        Button.inline(f"{token} ⏹ 取消", f"q_cancel:{seq}"),
+                    ]
+                )
 
         if active_lines:
             lines.append(f"\n▶ 进行中（{len(active_lines)}）")
@@ -1188,40 +1145,26 @@ def register_handlers(client: TelegramClient) -> None:
             lines.append("\n▶ 进行中：无")
 
         pending_lines = []
-        for seq in sorted(pipeline.pending):
+        for idx, seq in enumerate(sorted(pipeline.pending), start=1):
             p = pipeline.pending[seq]
             kind_label = "相册" if p.kind == "album" else "媒体"
-            pending_lines.append(f"⏳ 待确认（{kind_label}）")
-            buttons.append([Button.inline("❌ 取消", f"cancel:{seq}")])
+            pending_lines.append(f"❓{_pos_token(idx)} 待确认（{kind_label}）")
+            buttons.append(
+                [Button.inline(f"{_pos_token(idx)} ❌ 取消", f"cancel:{seq}")]
+            )
         if pending_lines:
             lines.append("\n❓ 待确认")
             lines.extend(pending_lines)
 
         buttons.append(
             [
-                Button.inline("⏸ 暂停", "q_pause"),
-                Button.inline("▶ 恢复", "q_resume"),
+                Button.inline("⏸ 全局暂停", "q_pause"),
+                Button.inline("▶ 全局恢复", "q_resume"),
             ]
         )
         await _respond(
             event, "\n".join(lines), buttons=buttons, auto_delete=False
         )
-
-    @client.on(events.NewMessage(pattern=r"/cancel\s+(\d+)"))
-    async def on_cancel(event: events.NewMessage.Event) -> None:
-        logger.info("CMD /cancel from %s", event.sender_id)
-        if not _authorized(event):
-            return
-        n = int(event.pattern_match.group(1))
-        pendings = sorted(pipeline.pending)
-        if n < 1 or n > len(pendings):
-            await _respond(event, 
-                f"❌ 没有第 {n} 个待确认项（当前 {len(pendings)} 个）"
-            )
-            return
-        seq = pendings[n - 1]
-        await pipeline._cancel_pending(seq)
-        await _respond(event, f"❌ 已取消第 {n} 个待确认项")
 
     @client.on(events.CallbackQuery())
     async def on_callback(event: events.CallbackQuery.Event) -> None:
