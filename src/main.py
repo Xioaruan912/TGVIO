@@ -18,7 +18,8 @@ _COMMANDS = [
     types.BotCommand("about", "关于/命令说明"),
     types.BotCommand("mode", "设置 18+ 处理方式"),
     types.BotCommand("queue", "管理队列"),
-    types.BotCommand("pack", "打包当前合集立即处理"),
+    types.BotCommand("begin", "开始合集会话"),
+    types.BotCommand("end", "结束合集并发布"),
 ]
 
 

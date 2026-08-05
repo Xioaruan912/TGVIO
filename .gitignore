@@ -6,3 +6,5 @@ downloads/
 .venv/
 AGENTS.md
 todo.md
+# Windows 复制文件产生的元数据垃圾（含全角冒号变体）
+*Zone.Identifier

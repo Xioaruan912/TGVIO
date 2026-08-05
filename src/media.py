@@ -82,6 +82,24 @@ class MediaDownloader:
                     raise RuntimeError("未能下载相册媒体文件")
                 paths.append(path)
             return paths
+        if job.kind == "collection":
+            paths = []
+            total = len(job.album)
+            for index, message in enumerate(job.album, start=1):
+                logger.info(
+                    "Job #%s downloading collection item %s (%d/%d)",
+                    job.seq,
+                    message.id,
+                    index,
+                    total,
+                )
+                path = await self._download_media_concurrent(
+                    message, workdir, job.seq, index, total
+                )
+                if not path:
+                    raise RuntimeError("未能下载合集媒体文件")
+                paths.append(path)
+            return paths
         if job.kind == "media":
             path = await self._download_media_concurrent(
                 job.message, workdir, job.seq, 1, 1
@@ -129,6 +147,9 @@ class MediaDownloader:
         file_size = self._media_size(media)
         filename = self._media_filename(media, item)
         out = os.path.join(workdir, filename)
+        if os.path.exists(out):
+            stem, ext = os.path.splitext(filename)
+            out = os.path.join(workdir, f"{stem}_{item}{ext}")
         request_size = int(self.part_size_kb * 1024)
         workers = self.download_workers
         stride = workers * request_size
@@ -191,6 +212,8 @@ class MediaPublisher:
         cover_width: int = 1280,
         max_cover_images: int = 10,
         group_counter_file: str = "",
+        channel_at: str = "",
+        group_at: str = "",
     ):
         self.client = client
         self.dest = dest
@@ -212,6 +235,21 @@ class MediaPublisher:
         self.group_counter_file = group_counter_file
         self._group_max_id = self._load_group_max()
         self._thread_root = None
+        self._caption_footer = " ".join(
+            x for x in (channel_at, group_at) if x
+        ).strip()
+
+    def _with_footer(self, text: str) -> str:
+        """caption 末尾自动追加 @频道 @群组（footer），保证不超 1024 字符。"""
+        text = text or ""
+        if not self._caption_footer:
+            return text[:1024]
+        limit = 1024 - len(self._caption_footer) - 1
+        if limit <= 0:
+            return self._caption_footer[:1024]
+        if text:
+            return f"{text[:limit]}\n{self._caption_footer}"
+        return self._caption_footer
 
     def _workdir(self, seq: int) -> str:
         return self._workdir_fn(seq)
@@ -225,6 +263,8 @@ class MediaPublisher:
         return ids
 
     async def _publish(self, job, payload):
+        if job.kind == "collection":
+            return await self._publish_collection(job, payload)
         if isinstance(payload, list):
             return await self._publish_album(job, payload)
         return await self._publish_media(job, payload)
@@ -236,6 +276,7 @@ class MediaPublisher:
         caption = None
         if self.forward_caption and job.kind == "media":
             caption = job.message.message[:1024] or None
+        caption = self._with_footer(caption) or None
         media = await self._upload_media_input(path, job.spoiler, job.seq)
         if self.cover_mode and is_video_path(path):
             try:
@@ -477,7 +518,7 @@ class MediaPublisher:
             cover_msg = await self.client.send_file(
                 self.dest,
                 cover_media,
-                caption=captions[video_idx[0]] or None,
+                caption=self._with_footer(captions[video_idx[0]]) or None,
             )
             refs.append((dest_input, cover_msg.id))
             root_msg = cover_msg.id
@@ -517,6 +558,154 @@ class MediaPublisher:
             first_chunk = False
         return refs
 
+    @staticmethod
+    def _join_collection_texts(job) -> str:
+        """会话期间的文字评论：每次发送的内容按行拆分（自动补换行），整合为一条文本。
+
+        作为封面 caption 与封面一起发送（非封面模式不使用）。
+        """
+        texts = getattr(job, "texts", None) or []
+        if not texts:
+            return ""
+        lines = []
+        for t in texts:
+            for line in t.splitlines():
+                line = line.strip()
+                if line:
+                    lines.append(line)
+        return "\n".join(lines)[:1024]
+
+    @staticmethod
+    def _merge_caption(comment: str, original: str) -> str:
+        if not comment:
+            return original
+        if original:
+            return comment + "\n" + original
+        return comment
+
+    async def _publish_collection(self, job, paths: list) -> list:
+        """合集发布：整个会话整合为「1 个封面 + 1 个评论区」。
+
+        - 图片（按序取前 MAX_COVER_IMAGES 张）→ 频道封面相册，超出按序丢弃
+        - 全部视频 → 按 10 条一组媒体组，进同一个讨论组评论线程
+        - 纯图片合集 → 只发封面相册；纯视频合集 → 首视频截帧做封面
+        - 会话期间收集的文字评论（job.texts）按行整合为封面 caption
+        """
+        for path in paths:
+            size = os.path.getsize(path)
+            if size > self.max_file_size:
+                raise FileTooLargeError(size, self.max_file_size)
+        dest_input = await self._get_dest_input()
+        captions = self._album_captions(job, paths)
+        comment = self._join_collection_texts(job)
+        photo_idx = [i for i, p in enumerate(paths) if is_photo_path(p)]
+        video_idx = [i for i, p in enumerate(paths) if not is_photo_path(p)]
+
+        if not self.cover_mode:
+            if comment:
+                logger.info("非封面模式忽略 %d 条会话评论", len(getattr(job, "texts", []) or []))
+            return await self._publish_ordered(job, paths, dest_input, captions)
+
+        refs = []
+        root_msg = None
+        if photo_idx:
+            dropped = len(photo_idx) - self.max_cover_images
+            if dropped > 0:
+                logger.info(
+                    "合集图片超过 %s 张，按序丢弃 %s 张",
+                    self.max_cover_images,
+                    dropped,
+                )
+            photo_idx = photo_idx[: self.max_cover_images]
+            photo_paths = [paths[i] for i in photo_idx]
+            photo_caps = [captions[i] for i in photo_idx]
+            if comment:
+                photo_caps[0] = self._merge_caption(comment, photo_caps[0])
+            cover_ids = await self._send_album_media(
+                job, photo_paths, dest_input, None, forced_captions=photo_caps
+            )
+            refs.extend((dest_input, mid) for mid in cover_ids)
+            root_msg = cover_ids[0]
+        elif video_idx:
+            workdir = self._workdir(job.seq)
+            os.makedirs(workdir, exist_ok=True)
+            first = paths[video_idx[0]]
+            cover = await make_cover(first, workdir, self.cover_width)
+            cover_media = await self._upload_media_input(cover, False, job.seq)
+            cover_caption = self._merge_caption(comment, captions[video_idx[0]])
+            cover_msg = await self.client.send_file(
+                self.dest,
+                cover_media,
+                caption=self._with_footer(cover_caption) or None,
+            )
+            refs.append((dest_input, cover_msg.id))
+            root_msg = cover_msg.id
+
+        if video_idx:
+            video_paths = [paths[i] for i in video_idx]
+            first_chunk = True
+            for start in range(0, len(video_paths), 10):
+                chunk = video_paths[start : start + 10]
+                caption = ""
+                if first_chunk and len(chunk) > 1:
+                    caption = f"合集共 {len(video_paths)} 个视频"
+                try:
+                    if len(chunk) == 1:
+                        media = await self._upload_media_input(
+                            chunk[0], job.spoiler, job.seq,
+                            item=start + 1, items=len(video_paths),
+                        )
+                        group_peer, comment_id = await self._post_comment(media, root_msg)
+                        refs.append((group_peer, comment_id))
+                    else:
+                        group_peer, cids = await self._post_album_comment(
+                            chunk, root_msg, job.spoiler, job.seq, caption=caption,
+                            item_offset=start, total_items=len(video_paths),
+                        )
+                        refs.extend((group_peer, cid) for cid in cids)
+                except Exception as exc:
+                    logger.warning(
+                        "Collection comment publish failed (%s), fallback direct", exc
+                    )
+                    for index, _p in enumerate(chunk):
+                        media = await self._upload_media_input(
+                            _p, job.spoiler, job.seq,
+                            item=start + index + 1, items=len(video_paths),
+                        )
+                        msg = await self.client.send_file(self.dest, media)
+                        refs.append((dest_input, msg.id))
+                first_chunk = False
+        return refs
+
+    async def _publish_ordered(self, job, paths: list, dest_input, captions: list) -> list:
+        """非封面模式合集发布：按到达顺序发到频道（连续图片 10 张一组相册，视频单发）。"""
+        refs = []
+        total = len(paths)
+        i = 0
+        while i < total:
+            if is_video_path(paths[i]):
+                media = await self._upload_media_input(
+                    paths[i], job.spoiler, job.seq, item=i + 1, items=total
+                )
+                msg = await self.client.send_file(
+                    self.dest, media, caption=self._with_footer(captions[i]) or None
+                )
+                refs.append(msg.id)
+                i += 1
+            else:
+                chunk_paths = []
+                chunk_caps = []
+                while i < total and not is_video_path(paths[i]) and len(chunk_paths) < 10:
+                    chunk_paths.append(paths[i])
+                    chunk_caps.append(captions[i])
+                    i += 1
+                ids = await self._send_album_media(
+                    job, chunk_paths, dest_input, job.spoiler,
+                    forced_captions=chunk_caps,
+                )
+                refs.extend(ids)
+        return refs
+
     async def _send_album_media(self, job, paths, dest_input, spoiler, forced_captions=None) -> list:
         total = len(paths)
         if forced_captions is not None:
@@ -551,7 +740,9 @@ class MediaPublisher:
                 else:
                     raise RuntimeError(f"无法为相册媒体 #{(item_index + 1)} 构建引用")
                 caption = captions[item_index] if item_index < len(captions) else ""
-                single_media.append(types.InputSingleMedia(reference, message=caption))
+                single_media.append(
+                    types.InputSingleMedia(reference, message=self._with_footer(caption))
+                )
             result = await self.client(
                 functions.messages.SendMultiMediaRequest(
                     dest_input, multi_media=single_media

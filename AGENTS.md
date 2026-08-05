@@ -59,10 +59,9 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **并行下载 + 顺序上传**：下载并发（`DOWNLOAD_CONCURRENCY`），上传严格按发送顺序（`_upload_worker` 维护 `next_seq`）。
 - **seq 预留机制**：媒体消息到达时先 `reserve_seq()`，等 18+ 确认后再入队；未确认的任务超时后 `_set_cancelled` 跳过，保证后续 seq 不卡死。
 - **18+ 确认**：内联按钮 `confirm:{seq}:1|0`，另有 `cancel:{seq}`「❌ 取消」按钮（第二行）丢弃任务——pop pending + 取消超时任务 + `_set_cancelled(seq)` + **删除确认消息**（v7.1 起不保留文案）。确认后**删除按钮消息**，另发新状态消息作为任务 status，后续「下载中/上传中/已发布」都编辑同一条消息。`CONFIRM_TIMEOUT`（默认 60s）内未点按钮 → 任务取消 + **删除确认消息**。
-- **相册聚合（v10.9 合集合并 + 队列级合并 + /pack）**：`collect_album` 按 `chat_id` 聚合（`COLLECTION_GATHER_SECONDS` 默认 **10s**），同一用户短时间到达的多个媒体组合并为一个合集任务。**三重保障**：
+- **相册聚合（v10.9 合集合并 + 队列级合并）**：`collect_album` 按 `chat_id` 聚合（`COLLECTION_GATHER_SECONDS` 默认 **10s**），同一用户短时间到达的多个媒体组合并为一个合集任务。**双重保障**：
   1. **宽窗口**：10s 窗口内任何新媒体组到达都重置计时，一次转发（Telegram 几秒内送达）必然收拢。
   2. **队列级合并**：`_auto_enqueue(kind="album")` 时若同用户已有"入队未下载"的相册任务（`pending_albums[user_id]→seq` + `album_jobs[seq]→job`），把新消息按 `message.id` 去重后**追加进那个任务的 album**，不新建任务/不发新封面。`_download_worker` 取件时清除 `album_jobs`/`pending_albums` 并置 `job.started=True`。即使窗口拆了，只要后续任务入队时第一个未开始下载就合并。
-  3. **`/pack`（或 `/打包`）命令**：立即 finalize 当前聚合缓冲（取消计时任务 + 直接 `_finalize_album`），用户转发完合集可手动定稿。已注册命令菜单（`/pack`），`_ABOUT_TEXT` 同步。
   - **上传进度用全局计数（v10.9）**：`_post_album_comment(paths, root_msg, spoiler, seq, caption, item_offset, total_items)` 把 `_upload_media_input` 的 `item/items` 改为**整个合集的视频总数**（`item_offset=start`、`total_items=len(video_paths)`），上传进度显示 `上传 3/100` 而非每 10 条分块 `3/10`。fallback 直发路径的 `item` 也改为 `start+index+1`（原为 `start+1` 导致同 chunk 全显示同一序号）。
 - **纯媒体转发（v5）**：`FORWARD_CAPTION`（默认 false）控制是否转发原消息文字——false 时单条 `caption=None`、相册 `captions=[""]*N`，只发视频/图片本身；true 时保留 caption（相册逐张）。
 - **封面模式（v10.6）**：`COVER_MODE=true`（默认 false）时频道只发封面图，视频发进频道关联**讨论组**的评论区线程（观看者点帖子 💬 图标看视频）：
@@ -82,6 +81,17 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
     - 视频上传前会 `UploadMediaRequest(讨论组, media)` 拿引用 → `SendMultiMediaRequest(讨论组, multi_media, reply_to=线程根)` 发媒体组评论。
     - bot 受限方法：`GetDiscussionMessageRequest`/`GetHistory`/`Search`/`GetDialogs`/`messages.getMessages`；可用：`GetFullChannelRequest`/`GetMessagesRequest`（按 id 取）/`SendMediaRequest`/`SendMultiMediaRequest`/`UploadMediaRequest`。
   - 前置（用户手动）：建群组 → 频道设置→讨论关联 → 机器人加群并设管理员。
+- **合集会话（v11）**：`SESSION_COLLECT`（默认 true）开启后，**转发自动开始会话**（自动 /begin），后续转发全部累积，`/end`（或「🛑 结束并发布」按钮）时统一处理为**一个 collection 任务**——解决"分两次转发被当成两个评论区"：
+  - **`_Session`（bot.py）**：`sessions[user_id]` 保存 `items`（每批一个 list，按到达顺序），`status`（会话状态消息，首个批次到达时发送）。
+  - **收集入口**：`_finalize_album`（相册，10s 窗口后）与 `on_private_message` 单条媒体，在 18+ 模式检查通过后先走 `_session_add_batch`——追加批次 → 编辑状态消息显示「🛑 结束并发布」按钮（`session_end:{user_id}`）→ `SESSION_END_TIMEOUT`（默认 5s）后隐藏按钮继续等待转发（防网络慢/分批转发）。
+  - **结束**：按钮回调或 `/end` → `_session_finalize`：**先收拢仍在 10s 聚合中的相册缓冲**（`albums.pop` + 取消任务）→ 平铺全部消息 → mode=ask 时统一 `_show_ask(kind="collection")`（整个合集只问一次 18+，超时自动正常），否则 `_auto_enqueue(kind="collection")`。入队失败时**恢复会话与缓冲**（不丢媒体），用户可重试 /end。
+  - **下载**（media.py `_download`）：`kind="collection"` 按 `job.album`（平铺消息列表）顺序下载全部 → paths 列表。重名文件加 `_{item}` 后缀防覆盖（会话媒体多，重名概率高）。
+  - **发布**（media.py `_publish_collection`，封面模式下）：图片按序取前 `MAX_COVER_IMAGES`（10）张 → 频道封面相册（**超出按序丢弃**）；**全部视频按 10 条一组媒体组进同一个评论线程**（首组带 `合集共 N 个视频`）；纯图片→只发封面；纯视频→首视频截帧做封面。非封面模式走 `_publish_ordered`（按到达顺序：连续图片 10 张一组相册、视频单发）。
+  - **撤销**：collection 返回值同为 `[(peer, mid)...]`（封面模式），`undo:` 逻辑天然兼容。
+  - **URL 下载不参与会话**（仍即时处理）；会话在内存中，bot 重启即清空（与队列一致）。
+  - `/begin`、`/end`（含 `/开始`/`/结束` 别名）已注册命令菜单。
+  - **常驻回复键盘（v12.1）**：`_reply_keyboard()` 构造 `ReplyKeyboardMarkup`（`persistent=True`、`resize=True`、`single_use=False`），按钮「📥 开始合集」/「🛑 结束合集」——Telethon 1.44 字段名是 `single_use`（不是 `one_time`）。`/start`、`/begin`、`/end` 回复均携带键盘（打字框上方常驻）。点击按钮发送的是**普通文本**（非命令实体），`on_private_message` 文本分支匹配 `_SESSION_BTN_BEGIN`/`_SESSION_BTN_END` 后直接调 `on_begin`/`on_end`（注意此匹配必须在评论收集分支之前）。键盘消息可被自动删除，persistent 键盘不随之消失。
+- **会话评论（v11.1，文字随封面发布）**：合集会话期间用户发送的**纯文字消息**（无媒体/无 URL）经 `_session_add_text` 按发送顺序存入 `_Session.texts`；`/end` 时经 `_show_ask`/`_auto_enqueue`/确认/重试整条链路（`_Job.texts`/`_PendingJob.texts`）传入 collection 任务；`MediaPublisher._join_collection_texts` 把每次评论**按行拆分（strip 空行、行间自动换行）整合为一条 ≤1024 字符文本**，作为**封面 caption 与封面一起发到频道**（图片封面→首图 caption；视频帧封面→封面消息 caption；`FORWARD_CAPTION` 原文案追加在评论之后；非封面模式忽略评论）。**不是发到评论区**。`/begin` 会创建空会话（支持先评论后媒体）；状态消息/`/status`/`/queue` 显示评论数。
 
 ### 命令与状态
 
@@ -107,9 +117,9 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 
 - 文件 `session/prefs.json`：`{"<user_id>": {"show_progress": bool, "spoiler_mode": "ask|always_spoiler|always_normal"}}`
 - 旧 `progress_prefs.json` 仅作迁移读取（show_progress）
-- `_MODE_NAMES` / `_mode_buttons()`；`/start` 首次未设 `spoiler_mode` 时引导设置；`/mode` 随时改
+- `_MODE_NAMES` / `_mode_buttons()`；**`_spoiler_mode` 未设置时默认 `always_normal`**（v12 起：首次使用不再询问/暂存，直接按"总是正常"处理；需要雪花遮挡的用户自行 `/mode` 修改，`/mode` 功能不变）；`/start` 直接显示说明+当前模式
 - 模式 `always_*` 时：`on_private_message` 单条 与 `_finalize_album` 跳过询问，走 `_auto_enqueue`（状态「已按偏好自动处理」）
-- **未设置模式先暂存（v7）**：`spoiler_mode` 未设置（`not _has_pref`）时，转发内容走 `hold_item()` 暂存到 `_Pipeline.held[user_id]`（首次发模式引导按钮、其余提示"已暂存"，并启动超时任务）。`mode:` 回调设置后 `take_held()` + `_release_held()` 按模式释放（`always_*`→`_auto_enqueue`，`ask`→逐条 `_show_ask`）。`HELD_TIMEOUT`（默认 300s，可配）未设置则 `_held_timeout` 按 `force_normal=True`（正常/非18+）自动入队并提示。`_show_ask(seq, kind, message, album, user_id, chat_id)` 为统一"问 18+"入口（pending 注册 + 按钮消息 + 失败结算）。
+- 已移除 v7「未设置模式先暂存」机制（`hold_item`/`_HeldItem`/`HELD_TIMEOUT`/`_release_held` 及其入口全部删除）
 
 ### 撤销发布 / 重试（v6）
 
@@ -159,11 +169,9 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 | `DOWNLOAD_CONCURRENCY` | `3` | 并行下载路数 |
 | `DOWNLOAD_TIMEOUT` | `1200` (20min) | 单任务下载超时 |
 | `CONFIRM_TIMEOUT` | `60` | 18+ 弹窗超时，超时取消 |
-| `ALBUM_GATHER_SECONDS` | `1.0` | 相册聚合等待秒数 |
 | `UPLOAD_TIMEOUT` | `1800` (30min) | 单任务上传超时 |
 | `FORWARD_CAPTION` | `false` | 是否转发原消息文字（false=纯媒体转发） |
 | `PROGRESS_MIN_INTERVAL` | `2.0` | 进度条编辑全局最小间隔（秒，防限流） |
-| `HELD_TIMEOUT` | `300` | 未设 18+ 模式时暂存超时（秒），超时按"正常"处理 |
 | `AUTO_DELETE_SECONDS` | `10` | 命令回复/提示消息自动撤回秒数（0=关闭） |
 | `DOWNLOAD_AUTO_RETRY` | `1` | 下载超时自动重试次数（0=关闭） |
 | `DOWNLOAD_WORKERS` | `8` | 并发下载分片数（单文件） |
@@ -171,6 +179,9 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 | `PART_SIZE_KB` | `512` | 传输分片大小（KB，Telegram 上限 512） |
 | `COVER_MODE` | `false` | 封面模式：频道只发封面图，视频进讨论组评论区 |
 | `COVER_WIDTH` | `1280` | 封面图最大宽/高像素 |
+| `MAX_COVER_IMAGES` | `10` | 封面相册最多图片数（超出按序丢弃） |
+| `SESSION_COLLECT` | `true` | 合集会话：转发自动开始，多次转发汇总为一个合集（视频进同一评论区） |
+| `SESSION_END_TIMEOUT` | `5` | 合集「结束并发布」按钮显示秒数（超时隐藏，继续等待转发） |
 
 ## 5. 已踩过的坑（重要）
 
@@ -229,4 +240,38 @@ docker compose logs -f         # 看日志
 docker compose restart / stop / start
 ```
 
-> 当前本地容器已停止（`docker compose stop`）。VPS 部署见 README.md「部署」小节，注意 `.env` 含密钥需安全传输。
+> VPS 部署见 README.md「部署」小节，注意 `.env` 含密钥需安全传输。
+
+## 10. VPS 部署工作流（每次任务完成必须执行）
+
+**本项目的标准发布流程：任何在 `telegram-video-forwarder` 上的改动/任务完成后，都必须把最新代码部署到 VPS 并验证。** 由 `~/deploy_vps.sh`（位于项目外、用户家目录）完成，无需手动 ssh。
+
+```bash
+~/deploy_vps.sh
+```
+
+脚本自动执行 4 步：
+1. **打包**：`tar` 打包 `/root/telegram-video-forwarder` → `/root/forwarder.tgz`，排除 `session/`、`downloads/`、`__pycache__`（**含 `.env`**，VPS 配置随代码一起同步）
+2. **上传**：`sshpass + scp` 到 VPS `154.83.158.223:/tmp/forwarder.tgz`（root 密码明文在脚本内，勿外泄）
+3. **解压覆盖**：VPS `/root/` 下解压覆盖同名目录
+4. **重建启动**：`docker compose up -d --build` + 打印容器状态
+
+### 部署后必须验证（不可跳过）
+
+```bash
+# VPS 上查看容器状态与启动日志（需密码，见 deploy_vps.sh 内 PASS）
+sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@154.83.158.223 \
+  'docker ps --filter "name=telegram-video-forwarder" --format "{{.Names}} {{.Status}}" && docker logs --tail 20 telegram-video-forwarder 2>&1'
+```
+
+验证要点：
+- 容器状态为 `Up`（不是 `Up X seconds` 后崩溃重启）
+- 日志出现 `Bot commands registered` 与 `Bot started. dest=... allowed=[...]` 即启动成功
+- 本地/远程代码一致性：对比 `src/bot.py` 的 md5（`md5sum` 两侧比对）
+
+### 注意事项
+
+- **`.env` 会被本地版本覆盖**——改配置请改本地 `.env` 再部署；VPS 上手动改的配置会被下次部署冲掉
+- **session/downloads 不打包**：VPS 的登录会话与下载目录保留，部署不丢登录状态
+- 部署前先跑语法校验：`python3 -m py_compile src/*.py`（防止打包坏代码上生产）
+- 若容器反复重启或日志无 `Bot started`，优先看启动异常（session 损坏/密钥错误），参考第 5 节坑 2

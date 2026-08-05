@@ -9,14 +9,18 @@ from dataclasses import dataclass
 
 from telethon import Button, TelegramClient, events
 from telethon.tl.types import (
+    KeyboardButton,
+    KeyboardButtonRow,
     MessageEntityBotCommand,
     MessageMediaDocument,
     MessageMediaPhoto,
+    ReplyKeyboardMarkup,
 )
 
 from .config import (
     ALLOWED_USERS,
     AUTO_DELETE_SECONDS,
+    CHANNEL_AT,
     COLLECTION_GATHER_SECONDS,
     CONFIRM_TIMEOUT,
     COVER_MODE,
@@ -28,11 +32,13 @@ from .config import (
     DOWNLOAD_TIMEOUT,
     DOWNLOAD_WORKERS,
     FORWARD_CAPTION,
-    HELD_TIMEOUT,
+    GROUP_AT,
     MAX_COVER_IMAGES,
     MAX_FILE_SIZE,
     PART_SIZE_KB,
     PROGRESS_MIN_INTERVAL,
+    SESSION_COLLECT,
+    SESSION_END_TIMEOUT,
     UPLOAD_TIMEOUT,
     UPLOAD_WORKERS,
 )
@@ -63,6 +69,28 @@ def _mode_buttons():
     ]
 
 
+_SESSION_BTN_BEGIN = "📥 开始合集"
+_SESSION_BTN_END = "🛑 结束合集"
+
+
+def _reply_keyboard() -> ReplyKeyboardMarkup:
+    """打字框上方的常驻回复键盘（点击按钮即发送对应文本，走命令处理逻辑）。"""
+    return ReplyKeyboardMarkup(
+        rows=[
+            KeyboardButtonRow(
+                buttons=[
+                    KeyboardButton(_SESSION_BTN_BEGIN),
+                    KeyboardButton(_SESSION_BTN_END),
+                ]
+            )
+        ],
+        resize=True,
+        persistent=True,
+        single_use=False,
+        selective=False,
+    )
+
+
 def render_bar(pct: int, width: int = 10) -> str:
     filled = max(0, min(width, round(pct * width / 100)))
     return "█" * filled + "░" * (width - filled)
@@ -87,10 +115,11 @@ _START_TEXT = (
     "📤 视频转发机器人\n\n"
     f"目标频道: {DEST_CHANNEL}\n\n"
     "使用方式:\n"
-    "1. 转发一个含视频/图片的消息给我 → 弹窗确认是否 18+ → 下载后重新上传到频道\n"
+    "1. 转发含视频/图片的消息给我 → 自动开始合集会话，继续转发自动并入 → 点「🛑 结束并发布」或发 /end 发布到频道\n"
     "2. 发送一个链接（抖音/B站/YouTube 等）→ 自动下载并发布到频道\n\n"
-    "支持连续发送多个：并行下载、按发送顺序依次上传到频道。\n"
-    "一次转发的一批图片（相册）会合并为一个任务、只询问一次，发布为单个相册消息。\n\n"
+    "合集：图片进频道封面相册（超过 10 张按序丢弃），全部视频整合进同一个评论区；\n"
+    "会话期间发的文字消息会作为评论，结束时整合为封面文字与封面一起发送。\n\n"
+    "18+ 处理默认「总是正常」；需要雪花遮挡请用 /mode 设置「总是雪花遮挡」或「每次询问」。\n"
     "选「是（雪花遮挡）」时，用 Telegram 内置雪花效果遮挡发布，文件内容不被修改。\n\n"
     f"⚠️ 确认弹窗 {CONFIRM_TIMEOUT} 秒内未回复将自动取消该任务。\n"
     f"⚠️ 单个上传文件上限 {MAX_FILE_SIZE // (1024 * 1024)}MB（平台上限）\n\n"
@@ -100,14 +129,15 @@ _START_TEXT = (
 _ABOUT_TEXT = (
     "ℹ️ 关于 · 视频转发机器人\n\n"
     f"把转发的视频/图片/链接处理后发布到 {DEST_CHANNEL}。\n"
-    "支持 18+ 雪花遮挡、相册聚合、并行下载/顺序上传队列、\n"
+    "支持 18+ 雪花遮挡、合集会话、相册聚合、并行下载/顺序上传队列、\n"
     "进度条、撤销发布与失败重试。\n\n"
     "📖 命令说明：\n"
-    "/start    使用说明（首次运行设置 18+ 模式）\n"
+    "/start    使用说明\n"
     "/about    关于/命令说明\n"
-    "/mode     设置 18+ 处理方式（每次询问/总是雪花/总是正常）\n"
+    "/mode     设置 18+ 处理方式（默认总是正常，可改每次询问/总是雪花/总是正常）\n"
     "/queue    管理队列（逐项取消/暂停/恢复）\n"
-    "/pack     打包当前合集立即处理（转发完可发 /pack 或 /打包）"
+    "/begin    开始合集会话（转发会自动开始）\n"
+    "/end      结束合集并发布（所有视频进同一个评论区）"
 )
 
 
@@ -124,6 +154,7 @@ class _Job:
     cached_path: str = ""
     cleanup_extra: str = ""
     started: bool = False
+    texts: list = None
 
 
 @dataclass
@@ -141,6 +172,7 @@ class _PendingJob:
     status: object = None
     timeout_task: object = None
     user_id: int = 0
+    texts: list = None
 
 
 @dataclass
@@ -152,11 +184,29 @@ class _AlbumBuffer:
 
 
 @dataclass
-class _HeldItem:
-    kind: str
-    message: object = None
-    album: list = None
-    chat_id: int = 0
+class _Session:
+    user_id: int
+    items: list = None
+    status: object = None
+    button_task: object = None
+    started_at: float = 0.0
+    texts: list = None
+
+    def __post_init__(self) -> None:
+        if self.items is None:
+            self.items = []
+        if self.texts is None:
+            self.texts = []
+        if not self.started_at:
+            self.started_at = time.time()
+
+    @property
+    def media_count(self) -> int:
+        return sum(len(item) for item in self.items)
+
+    @property
+    def text_count(self) -> int:
+        return len(self.texts)
 
 
 class _Pipeline:
@@ -185,8 +235,7 @@ class _Pipeline:
         self._cancel_marked: set[int] = set()
         self._paused_files: set[int] = set()
         self._future_created: dict[int, float] = {}
-        self.held: dict[int, list[_HeldItem]] = {}
-        self._held_timers: dict[int, asyncio.Task] = {}
+        self.sessions: dict[int, _Session] = {}
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -205,6 +254,8 @@ class _Pipeline:
             cover_width=COVER_WIDTH,
             max_cover_images=MAX_COVER_IMAGES,
             group_counter_file=os.path.join("session", "group_counter.txt"),
+            channel_at=CHANNEL_AT,
+            group_at=GROUP_AT,
         )
         self.downloader.pre_download_hooks.append(self._on_pre_download)
         self.downloader.progress_hooks.append(self._on_download_progress)
@@ -243,9 +294,6 @@ class _Pipeline:
     def _get_pref(self, user_id: int, key: str, default):
         return self.prefs.get(user_id, {}).get(key, default)
 
-    def _has_pref(self, user_id: int, key: str) -> bool:
-        return key in self.prefs.get(user_id, {})
-
     def _set_pref(self, user_id: int, key: str, value) -> None:
         self.prefs.setdefault(user_id, {})[key] = value
         self._save_prefs()
@@ -259,7 +307,8 @@ class _Pipeline:
         return not current
 
     def _spoiler_mode(self, user_id: int) -> str:
-        return self._get_pref(user_id, "spoiler_mode", "ask")
+        # 默认"总是正常"：首次使用不询问，需要雪花遮挡的用户用 /mode 自行设置
+        return self._get_pref(user_id, "spoiler_mode", "always_normal")
 
     def set_spoiler_mode(self, user_id: int, mode: str) -> None:
         self._set_pref(user_id, "spoiler_mode", mode)
@@ -328,6 +377,12 @@ class _Pipeline:
             extras.append(f"❓ 等待确认: {len(self.pending)}")
         if self.albums:
             extras.append(f"🖼 相册聚合中: {len(self.albums)}")
+        if self.sessions:
+            total = sum(s.media_count for s in self.sessions.values())
+            texts = sum(s.text_count for s in self.sessions.values())
+            extras.append(
+                f"📦 合集进行中: {len(self.sessions)} 项（{total} 个媒体 · {texts} 条评论）"
+            )
         if extras:
             lines.append("\n▶ 其他")
             lines.extend(extras)
@@ -367,9 +422,11 @@ class _Pipeline:
         message: object = None,
         album: list = None,
         user_id: int = 0,
+        texts: list = None,
     ) -> None:
         self.pending[seq] = _PendingJob(
-            seq=seq, kind=kind, message=message, album=album, user_id=user_id
+            seq=seq, kind=kind, message=message, album=album, user_id=user_id,
+            texts=texts,
         )
         self.pending[seq].timeout_task = asyncio.get_running_loop().create_task(
             self._confirm_timeout(seq)
@@ -396,27 +453,13 @@ class _Pipeline:
     async def _finalize_album(self, buf: _AlbumBuffer) -> None:
         await asyncio.sleep(COLLECTION_GATHER_SECONDS)
         self.albums.pop(buf.chat_id, None)
-        if not self._has_pref(buf.chat_id, "spoiler_mode"):
-            first = self.hold_item(
-                buf.chat_id, "album", album=list(buf.messages), chat_id=buf.chat_id
-            )
+        if SESSION_COLLECT:
             try:
-                if first:
-                    await self.client.send_message(
-                        buf.chat_id,
-                        "📌 请先设置 18+ 处理方式，再继续处理相册：",
-                        buttons=_mode_buttons(),
-                    )
-                else:
-                    msg = await self.client.send_message(
-                        buf.chat_id, "⏳ 已暂存，等待你设置 18+ 模式"
-                    )
-                    if AUTO_DELETE_SECONDS > 0:
-                        asyncio.get_running_loop().create_task(
-                            _delete_after(msg, AUTO_DELETE_SECONDS)
-                        )
+                await self._session_add_batch(
+                    buf.chat_id, list(buf.messages), buf.chat_id
+                )
             except Exception as exc:
-                logger.exception("Failed to prompt mode for album: %s", exc)
+                logger.exception("Failed to add album batch to session: %s", exc)
             return
         if self._spoiler_mode(buf.chat_id) != "ask":
             try:
@@ -448,6 +491,7 @@ class _Pipeline:
                 pending.album,
                 pending.user_id,
                 force_normal=True,
+                texts=pending.texts,
             )
         except Exception as exc:
             logger.exception("Auto-process timeout job failed: %s", exc)
@@ -457,6 +501,125 @@ class _Pipeline:
                 await pending.status.delete()
             except Exception:
                 pass
+
+    async def _session_add_batch(
+        self, user_id: int, messages: list, chat_id: int = 0
+    ) -> None:
+        """把一批媒体加入合集会话（自动 /begin）：追加 → 显示「🛑 结束并发布」按钮 → 5s 后隐藏。"""
+        session = self.sessions.get(user_id)
+        if session is None:
+            session = _Session(user_id=user_id)
+            self.sessions[user_id] = session
+            logger.info("Session auto-started for user %s", user_id)
+        session.items.append(list(messages))
+        await self._session_touch(user_id, session)
+
+    async def _session_add_text(self, user_id: int, text: str, chat_id: int = 0) -> None:
+        """会话期间的文字评论：按行收集（/end 时整合为封面 caption 与封面一起发送）。"""
+        session = self.sessions.get(user_id)
+        if session is None:
+            return
+        session.texts.append(text)
+        logger.info(
+            "Session text #%d collected for user %s (%d chars)", len(session.texts), user_id, len(text)
+        )
+        await self._session_touch(user_id, session)
+
+    async def _session_touch(self, user_id: int, session: _Session) -> None:
+        """更新会话状态消息：显示「🛑 结束并发布」按钮并重置 5s 隐藏计时。"""
+        if session.button_task is not None:
+            session.button_task.cancel()
+        summary = f"已收录 {len(session.items)} 项（{session.media_count} 个媒体"
+        if session.texts:
+            summary += f" · {session.text_count} 条评论"
+        summary += "）"
+        text = (
+            f"📦 合集会话进行中 · {summary}\n"
+            "继续转发自动加入合集，点击下方按钮或发 /end 结束并发布"
+        )
+        buttons = [[Button.inline("🛑 结束并发布", f"session_end:{user_id}")]]
+        try:
+            if session.status is None:
+                session.status = await self.client.send_message(
+                    user_id, text, buttons=buttons
+                )
+            else:
+                await session.status.edit(text, buttons=buttons)
+        except Exception as exc:
+            logger.exception("Session status update failed: %s", exc)
+        session.button_task = asyncio.get_running_loop().create_task(
+            self._session_button_timeout(user_id, session)
+        )
+
+    async def _session_button_timeout(self, user_id: int, session: _Session) -> None:
+        await asyncio.sleep(SESSION_END_TIMEOUT)
+        if self.sessions.get(user_id) is not session:
+            return
+        summary = f"已收录 {len(session.items)} 项（{session.media_count} 个媒体"
+        if session.texts:
+            summary += f" · {session.text_count} 条评论"
+        summary += "）"
+        try:
+            await session.status.edit(
+                f"📦 合集会话进行中 · {summary}\n"
+                "继续转发自动加入合集，发 /end 结束并发布",
+                buttons=None,
+            )
+        except Exception:
+            pass
+
+    async def _session_finalize(self, user_id: int, chat_id: int = 0) -> int:
+        """结束会话：先收拢仍在聚合中的相册缓冲，再统一 18+ 询问/入队为单个 collection 任务。"""
+        session = self.sessions.pop(user_id, None)
+        if session is None:
+            return 0
+        if session.button_task is not None:
+            session.button_task.cancel()
+        items = list(session.items)
+        buf = self.albums.pop(user_id, None)
+        if buf is not None:
+            if buf.task is not None:
+                buf.task.cancel()
+            if buf.messages:
+                items.append(list(buf.messages))
+                logger.info(
+                    "Session finalize flushed pending album (%d msgs)", len(buf.messages)
+                )
+        flat = [m for item in items for m in item]
+        if not flat:
+            logger.info("Session for user %s finalized with no media", user_id)
+            return 0
+        if session.status is not None:
+            try:
+                await session.status.edit("🛑 已结束收集，正在处理…", buttons=None)
+            except Exception:
+                pass
+        peer = chat_id or user_id
+        texts = list(session.texts) or None
+        try:
+            if self._spoiler_mode(user_id) == "ask":
+                seq = self.reserve_seq()
+                await self._show_ask(
+                    seq, "collection", None, flat, user_id, peer, texts=texts
+                )
+            else:
+                await self._auto_enqueue(
+                    "collection", None, flat, user_id, texts=texts
+                )
+        except Exception as exc:
+            logger.exception("Session finalize enqueue failed: %s", exc)
+            self.sessions[user_id] = session
+            if buf is not None:
+                self.albums[user_id] = buf
+            raise
+        logger.info(
+            "Session for user %s finalized: %d items, %d media, %d texts",
+            user_id,
+            len(items),
+            len(flat),
+            len(texts or []),
+        )
+        return len(flat)
 
     async def _download_worker(self) -> None:
         while True:
@@ -592,9 +755,11 @@ class _Pipeline:
         label = "🔞 雪花遮挡" if job.spoiler else ""
         if isinstance(payload, list):
             total = sum(os.path.getsize(p) for p in payload)
+            unit = "个媒体" if job.kind == "collection" else "张"
+            title = "合集" if job.kind == "collection" else "相册"
             await self._safe_edit(
                 job,
-                f"✅ 相册下载完成（{len(payload)} 张，共 {total / 1024 / 1024:.1f}MB）"
+                f"✅ {title}下载完成（{len(payload)} {unit}，共 {total / 1024 / 1024:.1f}MB）"
                 f"{label}，正在上传{suffix}...",
             )
         else:
@@ -606,11 +771,12 @@ class _Pipeline:
 
     async def _on_published(self, job, ids: list) -> None:
         self._remember_published(job.seq, ids)
-        text = (
-            f"✅ 相册已发布到 {DEST_CHANNEL}"
-            if job.kind == "album"
-            else f"✅ 已发布到 {DEST_CHANNEL}"
-        )
+        if job.kind == "collection":
+            text = f"✅ 合集已发布到 {DEST_CHANNEL}"
+        elif job.kind == "album":
+            text = f"✅ 相册已发布到 {DEST_CHANNEL}"
+        else:
+            text = f"✅ 已发布到 {DEST_CHANNEL}"
         await self._safe_edit(
             job, text, buttons=[Button.inline("↩️ 撤销", f"undo:{job.seq}")]
         )
@@ -897,6 +1063,7 @@ class _Pipeline:
         album: list,
         user_id: int,
         force_normal: bool = False,
+        texts: list = None,
     ) -> int:
         # 队列级合并：同一用户已有"入队未下载"的相册任务时，追加消息而非新建任务
         if kind == "album" and album:
@@ -948,6 +1115,7 @@ class _Pipeline:
             album=album,
             spoiler=spoiler,
             user_id=user_id,
+            texts=texts,
         )
         if kind == "album":
             self.album_jobs[seq] = job
@@ -964,13 +1132,17 @@ class _Pipeline:
         album: list,
         user_id: int,
         chat_id: int,
+        texts: list = None,
     ) -> None:
-        self.register_pending(seq, kind, message, album=album, user_id=user_id)
-        text = (
-            f"⚠️ 该相册（{len(album)} 张）是否为 18+？"
-            if kind == "album"
-            else "⚠️ 该内容是否为 18+？"
+        self.register_pending(
+            seq, kind, message, album=album, user_id=user_id, texts=texts
         )
+        if kind == "collection":
+            text = f"⚠️ 该合集（{len(album)} 个媒体）是否为 18+？"
+        elif kind == "album":
+            text = f"⚠️ 该相册（{len(album)} 张）是否为 18+？"
+        else:
+            text = "⚠️ 该内容是否为 18+？"
         try:
             status = await self.client.send_message(
                 chat_id,
@@ -988,68 +1160,6 @@ class _Pipeline:
             self.pending.pop(seq, None)
             self._set_cancelled(seq)
             raise
-
-    def hold_item(
-        self, user_id: int, kind: str, message: object = None,
-        album: list = None, chat_id: int = 0,
-    ) -> bool:
-        items = self.held.setdefault(user_id, [])
-        items.append(_HeldItem(kind=kind, message=message, album=album, chat_id=chat_id))
-        if len(items) == 1:
-            self._held_timers[user_id] = asyncio.get_running_loop().create_task(
-                self._held_timeout(user_id)
-            )
-            return True
-        return False
-
-    def take_held(self, user_id: int) -> list:
-        timer = self._held_timers.pop(user_id, None)
-        if timer is not None and not timer.done():
-            timer.cancel()
-        return self.held.pop(user_id, [])
-
-    async def _held_timeout(self, user_id: int) -> None:
-        await asyncio.sleep(HELD_TIMEOUT)
-        items = self.take_held(user_id)
-        if not items:
-            return
-        logger.info("Held items for %s released by timeout as normal", user_id)
-        for item in items:
-            try:
-                await self._auto_enqueue(
-                    item.kind, item.message, item.album, user_id, force_normal=True
-                )
-            except Exception as exc:
-                logger.exception("Held item timeout auto-enqueue failed: %s", exc)
-        try:
-            msg = await self.client.send_message(
-                user_id,
-                f"⏰ 未设置 18+ 模式，{len(items)} 个暂存内容已按「正常（非18+）」自动处理",
-            )
-            if AUTO_DELETE_SECONDS > 0:
-                asyncio.get_running_loop().create_task(
-                    _delete_after(msg, AUTO_DELETE_SECONDS)
-                )
-        except Exception:
-            pass
-
-    async def _release_held(self, user_id: int, mode: str, items: list) -> int:
-        count = 0
-        for item in items:
-            try:
-                if mode != "ask":
-                    await self._auto_enqueue(
-                        item.kind, item.message, item.album, user_id
-                    )
-                else:
-                    seq = self.reserve_seq()
-                    await self._show_ask(
-                        seq, item.kind, item.message, item.album, user_id, item.chat_id
-                    )
-                count += 1
-            except Exception as exc:
-                logger.exception("Release held item failed: %s", exc)
-        return count
 
     async def _reply_error(
         self, seq: int, text: str, retry_job: _Job = None, retry_path: str = ""
@@ -1098,16 +1208,11 @@ def register_handlers(client: TelegramClient) -> None:
         logger.info("CMD /start from %s", event.sender_id)
         if not _authorized(event):
             return
-        if not pipeline._has_pref(event.sender_id, "spoiler_mode"):
-            await _respond(event, 
-                "📌 首次使用，请选择 18+ 处理方式（之后可用 /mode 修改）：",
-                buttons=_mode_buttons(),
-                auto_delete=False,
-            )
-            return
         mode = pipeline._spoiler_mode(event.sender_id)
         await _respond(event, 
-            _START_TEXT + f"\n\n当前 18+ 模式：{_MODE_NAMES[mode]}（/mode 可修改）"
+            _START_TEXT + f"\n\n当前 18+ 模式：{_MODE_NAMES[mode]}（/mode 可修改）",
+            buttons=_reply_keyboard(),
+            auto_delete=False,
         )
 
     @client.on(events.NewMessage(pattern="/about"))
@@ -1129,24 +1234,48 @@ def register_handlers(client: TelegramClient) -> None:
             auto_delete=False,
         )
 
-    @client.on(events.NewMessage(pattern=r"/pack|/打包"))
-    async def on_pack(event: events.NewMessage.Event) -> None:
-        logger.info("CMD /pack from %s", event.sender_id)
+    @client.on(events.NewMessage(pattern=r"/begin|/开始"))
+    async def on_begin(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /begin from %s", event.sender_id)
         if not _authorized(event):
             return
-        buf = pipeline.albums.get(event.chat_id)
-        if buf is None or not buf.messages:
-            await _respond(event, "当前没有正在聚合的相册")
+        session = pipeline.sessions.get(event.sender_id)
+        if session is not None:
+            text = f"📦 合集会话已在进行中（{len(session.items)} 项，{session.media_count} 个媒体"
+            if session.texts:
+                text += f"，{session.text_count} 条评论"
+            text += "），转发/评论会自动加入，发 /end 结束"
+            await _respond(event, text, buttons=_reply_keyboard())
             return
-        if buf.task is not None:
-            buf.task.cancel()
+        pipeline.sessions[event.sender_id] = _Session(user_id=event.sender_id)
+        await _respond(
+            event,
+            "✅ 合集会话已开始：后续转发（视频/图片）与文字评论将汇总为一个合集，"
+            "评论会按行整合为封面文字与封面一起发送。\n"
+            "每次发送后状态消息上会弹出「🛑 结束并发布」，或点输入框上方的「🛑 结束合集」。",
+            buttons=_reply_keyboard(),
+        )
+
+    @client.on(events.NewMessage(pattern=r"/end|/结束"))
+    async def on_end(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /end from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        if event.sender_id not in pipeline.sessions:
+            await _respond(
+                event,
+                "当前没有进行中的合集会话（转发内容会自动开始合集）",
+                buttons=_reply_keyboard(),
+            )
+            return
+        await _respond(event, "🛑 正在结束合集并发布…", auto_delete=False, buttons=_reply_keyboard())
         try:
-            await pipeline._finalize_album(buf)
+            count = await pipeline._session_finalize(event.sender_id, event.chat_id)
+            if not count:
+                await _respond(event, "合集为空，未发布任何内容")
         except Exception as exc:
-            logger.exception("Pack failed: %s", exc)
-            await _respond(event, f"打包失败: {exc}")
-            return
-        await _respond(event, f"✅ 已打包 {len(buf.messages)} 条，正在处理")
+            logger.exception("Session end failed: %s", exc)
+            await _respond(event, f"结束合集失败: {exc}")
 
     @client.on(events.NewMessage(pattern="/queue"))
     async def on_queue(event: events.NewMessage.Event) -> None:
@@ -1222,6 +1351,14 @@ def register_handlers(client: TelegramClient) -> None:
             lines.append("\n❓ 待确认")
             lines.extend(pending_lines)
 
+        if pipeline.sessions:
+            total = sum(s.media_count for s in pipeline.sessions.values())
+            texts = sum(s.text_count for s in pipeline.sessions.values())
+            lines.append(
+                f"\n📦 合集会话进行中：{total} 个媒体 · {texts} 条评论已收录"
+                "（发 /end 结束并发布）"
+            )
+
         buttons.append(
             [
                 Button.inline("⏸ 全局暂停", "q_pause"),
@@ -1245,24 +1382,35 @@ def register_handlers(client: TelegramClient) -> None:
             return
 
         data_text = event.data.decode(errors="replace")
+        if data_text.startswith("session_end:"):
+            try:
+                target = int(data_text.split(":", 1)[1])
+            except (ValueError, IndexError):
+                await _answer("无效操作")
+                return
+            if target != event.sender_id:
+                await _answer("无权限")
+                return
+            if target not in pipeline.sessions:
+                await _answer("当前没有进行中的合集")
+                return
+            await _answer("已结束，正在处理…")
+            try:
+                await pipeline._session_finalize(target, event.chat_id)
+            except Exception as exc:
+                logger.exception("Session end callback failed: %s", exc)
+                await _answer(f"结束失败: {exc}")
+            return
+
         if data_text.startswith("mode:"):
             mode = data_text.split(":", 1)[1]
             if mode not in _MODE_NAMES:
                 await _answer("无效操作")
                 return
             pipeline.set_spoiler_mode(event.sender_id, mode)
-            held = pipeline.take_held(event.sender_id)
-            released = 0
-            if held:
-                released = await pipeline._release_held(
-                    event.sender_id, mode, held
-                )
             await _answer(f"已设置：{_MODE_NAMES[mode]}")
             try:
-                text = f"✅ 已设置 18+ 模式：{_MODE_NAMES[mode]}"
-                if released:
-                    text += f"\n已处理 {released} 个暂存内容"
-                await event.edit(text)
+                await event.edit(f"✅ 已设置 18+ 模式：{_MODE_NAMES[mode]}")
             except Exception:
                 pass
             return
@@ -1409,6 +1557,7 @@ def register_handlers(client: TelegramClient) -> None:
                 user_id=info.job.user_id,
                 cached_path=cached,
                 cleanup_extra=cleanup,
+                texts=info.job.texts,
             )
             pipeline.active_seqs.add(new_seq)
             try:
@@ -1478,6 +1627,7 @@ def register_handlers(client: TelegramClient) -> None:
                     album=pending.album,
                     spoiler=spoiler,
                     user_id=pending.user_id,
+                    texts=pending.texts,
                 )
             )
         except Exception:
@@ -1512,20 +1662,14 @@ def register_handlers(client: TelegramClient) -> None:
                 logger.info("Album message -> collect_album gid=%s", grouped_id)
                 pipeline.collect_album(grouped_id, event.message, event.chat_id)
                 return
-            if not pipeline._has_pref(event.sender_id, "spoiler_mode"):
-                first = pipeline.hold_item(
-                    event.sender_id, "media",
-                    message=event.message, chat_id=event.chat_id,
-                )
-                if first:
-                    await _respond(
-                        event,
-                        "📌 请先设置 18+ 处理方式，再继续处理视频：",
-                        buttons=_mode_buttons(),
-                        auto_delete=False,
+            if SESSION_COLLECT:
+                try:
+                    await pipeline._session_add_batch(
+                        event.sender_id, [event.message], event.chat_id
                     )
-                else:
-                    await _respond(event, "⏳ 已暂存，等待你设置 18+ 模式")
+                except Exception as exc:
+                    logger.exception("Add single media to session failed: %s", exc)
+                    await _respond(event, f"加入合集失败: {exc}")
                 return
             if pipeline._spoiler_mode(event.sender_id) != "ask":
                 try:
@@ -1555,6 +1699,23 @@ def register_handlers(client: TelegramClient) -> None:
                 user_id=event.sender_id,
             )
             await status.edit(f"⏳ {pipeline.task_label(seq)} 已加入队列")
+            return
+
+        text = (event.raw_text or "").strip()
+        if text == _SESSION_BTN_BEGIN:
+            await on_begin(event)
+            return
+        if text == _SESSION_BTN_END:
+            await on_end(event)
+            return
+        if SESSION_COLLECT and text and pipeline.sessions.get(event.sender_id) is not None:
+            try:
+                await pipeline._session_add_text(
+                    event.sender_id, text, event.chat_id
+                )
+            except Exception as exc:
+                logger.exception("Add text comment to session failed: %s", exc)
+                await _respond(event, f"添加评论失败: {exc}")
             return
 
         await _respond(event, "请发送视频或链接，或使用 /start 查看使用说明。")
