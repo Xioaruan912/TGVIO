@@ -146,8 +146,7 @@ _ABOUT_TEXT = (
     "/start    使用说明\n"
     "/about    关于/命令说明\n"
     "/mode     设置 18+ 处理方式（默认总是正常，可改每次询问/总是雪花/总是正常）\n"
-    "/webdav   配置 WebDAV 备份（on/off/url/user/pass/path/retry）\n"
-    "/webdavlogs 查看/重试/删除最近 24 小时的 WebDAV 上传记录\n"
+    "/webdav   配置 WebDAV 备份 / 查看上传记录（📁 按钮进入，可重试/删除）\n"
     "/queue    管理队列（逐项取消/暂停/恢复）\n"
     "/begin    开始合集会话（转发会自动开始）\n"
     "/end      结束合集并发布（所有视频进同一个评论区）"
@@ -799,7 +798,7 @@ class _Pipeline:
     async def _on_webdav_upload(self, job, paths) -> None:
         """下载完成后后台上传到 WebDAV（<远程路径>/<当天日期>/文件名），不阻塞主流程。
 
-        逐文件记录状态到 webdav_logs（持久化），失败文件保留本地缓存供 /webdavlogs 重试。
+        逐文件记录状态到 webdav_logs（持久化），失败文件保留本地缓存供 /webdav 记录内重试。
         """
         cfg = self.webdav_cfg
         if not cfg.get("enabled") or not cfg.get("url"):
@@ -868,7 +867,7 @@ class _Pipeline:
         task.add_done_callback(_done)
 
     def _webdav_cfg_view(self) -> tuple:
-        """按钮式配置视图（/webdav）：点击字段按钮后直接回复新值。"""
+        """按钮式配置主视图（/webdav）：状态卡片 + 3 个入口按钮，避免臃肿。"""
         cfg = self.webdav_cfg
         status = "✅ 已启用" if cfg.get("enabled") else "⛔ 已停用"
         lines = [
@@ -880,8 +879,6 @@ class _Pipeline:
             f"密码：{'***' if cfg.get('pass') else '（未设置）'}",
             f"路径：{cfg.get('path') or '（未设置）'}",
             f"重试：{cfg.get('retry')}",
-            "",
-            "👇 点击按钮修改（字段按钮点击后直接回复新值）：",
         ]
         toggle = (
             Button.inline("⛔ 停用", "wd_cfg:off")
@@ -890,20 +887,41 @@ class _Pipeline:
         )
         buttons = [
             [toggle],
+            [Button.inline("⚙️ 修改配置", "wd_cfg:edit")],
+            [Button.inline("📁 上传记录", "wd_cfg:logs")],
+        ]
+        return "\n".join(lines), buttons
+
+    def _webdav_cfg_fields_view(self) -> tuple:
+        """「修改配置」字段页：一次可连续修改多个字段，完成后返回。"""
+        cfg = self.webdav_cfg
+        lines = [
+            "⚙️ WebDAV 修改配置",
+            "",
+            f"地址：{cfg.get('url') or '（未设置）'}",
+            f"账号：{cfg.get('user') or '（未设置）'}",
+            f"密码：{'***' if cfg.get('pass') else '（未设置）'}",
+            f"路径：{cfg.get('path') or '（未设置）'}",
+            f"重试：{cfg.get('retry')}",
+            "",
+            "点击按钮，直接回复新值即可：",
+        ]
+        buttons = [
             [
                 Button.inline("✏️ 地址", "wd_cfg:url"),
                 Button.inline("✏️ 账号", "wd_cfg:user"),
-                Button.inline("✏️ 密码", "wd_cfg:pass"),
             ],
             [
+                Button.inline("✏️ 密码", "wd_cfg:pass"),
                 Button.inline("✏️ 路径", "wd_cfg:path"),
-                Button.inline("✏️ 重试", "wd_cfg:retry"),
             ],
+            [Button.inline("✏️ 重试", "wd_cfg:retry")],
+            [Button.inline("⬅️ 返回", "wd_cfg:back")],
         ]
         return "\n".join(lines), buttons
 
     def _webdav_logs_view(self) -> tuple:
-        """/webdavlogs 视图：最近 24 小时的上传记录 + 每行操作按钮。"""
+        """/webdav 内「上传记录」视图：最近 24 小时的上传记录 + 每行操作按钮。"""
         self._save_webdav_logs()
         logs = sorted(
             self.webdav_logs.items(),
@@ -911,9 +929,12 @@ class _Pipeline:
             reverse=True,
         )
         if not logs:
-            return "📁 WebDAV 上传记录\n\n（最近 24 小时暂无记录）", None
+            return (
+                "📁 WebDAV 上传记录\n\n（最近 24 小时暂无记录）",
+                [[Button.inline("⬅️ 返回", "wd_cfg:back")]],
+            )
         lines = ["📁 WebDAV 上传记录（最近 24 小时）", ""]
-        buttons = []
+        buttons = [[Button.inline("⬅️ 返回", "wd_cfg:back")]]
         for index, (key, log) in enumerate(logs):
             files = log.get("files", [])
             total = len(files)
@@ -1292,10 +1313,10 @@ class _Pipeline:
     def _schedule_cleanup(self, seq: int, cleanup: str) -> None:
         """清理缓存目录；若该任务仍有 WebDAV 后台上传在跑，则等上传结束再删。
 
-        WebDAV 上传存在失败文件（webdav_keep_cache）时保留缓存，供 /webdavlogs 重试。
+        WebDAV 上传存在失败文件（webdav_keep_cache）时保留缓存，供 /webdav 记录内重试。
         """
         if seq in self.webdav_keep_cache:
-            logger.info("Job #%s webdav 有失败文件，保留缓存待 /webdavlogs 重试", seq)
+            logger.info("Job #%s webdav 有失败文件，保留缓存待 /webdav 记录内重试", seq)
             return
 
         def _do_cleanup() -> None:
@@ -1617,14 +1638,6 @@ def register_handlers(client: TelegramClient) -> None:
             auto_delete=False,
         )
 
-    @client.on(events.NewMessage(pattern="/webdavlogs"))
-    async def on_webdavlogs(event: events.NewMessage.Event) -> None:
-        logger.info("CMD /webdavlogs from %s", event.sender_id)
-        if not _authorized(event):
-            return
-        text, buttons = pipeline._webdav_logs_view()
-        await _respond(event, text, buttons=buttons, auto_delete=False)
-
     @client.on(events.NewMessage(pattern=r"/begin|/开始"))
     async def on_begin(event: events.NewMessage.Event) -> None:
         logger.info("CMD /begin from %s", event.sender_id)
@@ -1777,6 +1790,29 @@ def register_handlers(client: TelegramClient) -> None:
         if data_text.startswith("wd_cfg:"):
             field = data_text.split(":", 1)[1]
             cfg = pipeline.webdav_cfg
+            if field == "logs":
+                await _answer("上传记录")
+                text, buttons = pipeline._webdav_logs_view()
+                try:
+                    await event.edit(text, buttons=buttons)
+                except Exception:
+                    pass
+                return
+            if field == "edit":
+                await _answer("修改配置")
+                text, buttons = pipeline._webdav_cfg_fields_view()
+                try:
+                    await event.edit(text, buttons=buttons)
+                except Exception:
+                    pass
+                return
+            if field == "back":
+                text, buttons = pipeline._webdav_cfg_view()
+                try:
+                    await event.edit(text, buttons=buttons)
+                except Exception:
+                    pass
+                return
             if field in ("on", "off"):
                 cfg["enabled"] = field == "on"
                 pipeline._save_webdav_cfg()
@@ -1813,11 +1849,21 @@ def register_handlers(client: TelegramClient) -> None:
         if data_text.startswith("wd_retry:"):
             key = data_text.split(":", 1)[1]
             await _answer(await pipeline._webdav_retry(key))
+            text, buttons = pipeline._webdav_logs_view()
+            try:
+                await event.edit(text, buttons=buttons)
+            except Exception:
+                pass
             return
 
         if data_text.startswith("wd_del:"):
             key = data_text.split(":", 1)[1]
             await _answer(await pipeline._webdav_delete(key))
+            text, buttons = pipeline._webdav_logs_view()
+            try:
+                await event.edit(text, buttons=buttons)
+            except Exception:
+                pass
             return
 
         if data_text.startswith("session_end:"):
@@ -2130,7 +2176,7 @@ def register_handlers(client: TelegramClient) -> None:
             await _respond(
                 event, f"✅ 已更新 WebDAV {field}：{shown}", auto_delete=False
             )
-            text, buttons = pipeline._webdav_cfg_view()
+            text, buttons = pipeline._webdav_cfg_fields_view()
             await _respond(event, text, buttons=buttons, auto_delete=False)
             return
 

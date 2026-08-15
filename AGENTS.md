@@ -193,7 +193,8 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **配置（v13.1，`/webdav` 命令）**：`_Pipeline.webdav_cfg` 从 `session/webdav.json` 加载（无文件则回退 config.py 的 .env 默认值），`/webdav` 显示当前配置，`/webdav <项> <值>` 设置并 `_save_webdav_cfg()` 持久化：
   - `/webdav on|off`（enabled）、`url`、`user`、`pass`、`path`（自动补前导 `/`）、`retry`
   - 密码显示打码 `***`；`/webdav` 已加入命令菜单（main.py `_COMMANDS`）
-  - **v13.3 按钮式交互**：`/webdav` 无参数 → 配置卡片 + 内联按钮（`_webdav_cfg_view()`）：`⛔停用/🔛启用` 直接切换；`✏️地址/账号/密码/路径/重试` 点击后 `event.edit` 提示并进入等待输入状态（`pipeline.webdav_waiting[user_id]=field`），**用户下一条私聊消息（`on_private_message` 顶部，命令实体防护之前）被捕获为新值**（校验：url 需 http(s):// 前缀、retry 需 0-10 数字、path 自动补 `/`），保存后重新展示配置卡片；`/取消` 或 `wd_cfg:cancel` 按钮取消。`/webdav <项> <值>` 参数式写法仍兼容。
+  - **v13.3 按钮式交互**：`/webdav` 无参数 → 配置卡片 + 主视图按钮（`_webdav_cfg_view()`）：`⛔停用/🔛启用` 直接切换、`⚙️修改配置`（`wd_cfg:edit` → `_webdav_cfg_fields_view()` 字段页）、`📁上传记录`（`wd_cfg:logs` → `_webdav_logs_view()`）。字段按钮点击后 `event.edit` 提示并进入等待输入状态（`pipeline.webdav_waiting[user_id]=field`），**用户下一条私聊消息（`on_private_message` 顶部，命令实体防护之前）被捕获为新值**（校验：url 需 http(s):// 前缀、retry 需 0-10 数字、path 自动补 `/`），保存后**重新展示字段页**（可连续改多个字段再 `⬅️返回`）；`/取消` 或 `wd_cfg:cancel` 按钮取消。`/webdav <项> <值>` 参数式写法仍兼容。
+  - **上传记录入口并入 /webdav（v13.4）**：不再有独立 `/webdavlogs` 命令；日志视图顶部带 `⬅️返回`（`wd_cfg:back` → 主配置视图），重试/删除回调后自动刷新日志视图。
 - **上传记录（v13.2，`/webdavlogs`）**：每次上传逐文件记入 `session/webdav_logs.json`（**只保留最近 24 小时**，`_save_webdav_logs` 自动清理过期）；`/webdavlogs` 列出每条记录（时间/远程目录/成功数/失败数）+ 每行内联按钮：
   - **🔄 重试（`wd_retry:<key>`）**：仅失败记录显示——从**保留的本地缓存**重传失败文件（`webdav_keep_cache` 集合：`_on_webdav_upload` 有失败即加入并阻止 `_schedule_cleanup` 删缓存；全部成功后自动清理）。缓存已删则提示无法重试。
   - **🗑 删除（`wd_del:<key>`）**：逐文件 `DELETE` 远端（`webdav.delete_remote`，404 视为成功），**不删整个日期文件夹**；成功后移除记录并清理本地缓存。远端删失败会列名提示。
