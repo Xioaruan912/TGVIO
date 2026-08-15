@@ -528,16 +528,19 @@ class _Pipeline:
 
     @staticmethod
     def _test_http_proxy(url: str) -> bool:
-        """通过代理访问测试连通性（urllib 标准库）。"""
+        """通过代理访问测试连通性（urllib 标准库，http/https 任一成功即可）。"""
         import urllib.request
 
         handler = urllib.request.ProxyHandler({"http": url, "https": url})
         opener = urllib.request.build_opener(handler)
-        try:
-            with opener.open("https://api.ipify.org", timeout=8) as resp:
-                return resp.status == 200
-        except Exception:
-            return False
+        for target in ("http://api.ipify.org", "https://api.ipify.org"):
+            try:
+                with opener.open(target, timeout=6) as resp:
+                    if resp.status == 200:
+                        return True
+            except Exception:
+                continue
+        return False
 
     def _proxy_view(self) -> tuple:
         """/proxy 主视图。"""
@@ -2198,9 +2201,24 @@ def register_handlers(client: TelegramClient):
                     await _answer("代理不存在")
                     return
                 url = proxies[idx].get("url", "")
-                await _answer("⏳ 测试中…")
-                ok = await asyncio.to_thread(pipeline._test_http_proxy, url)
-                await _answer("✅ 代理可用" if ok else "❌ 代理不可用")
+                await _answer("🧪 测试中…")
+
+                async def _do_proxy_test() -> None:
+                    try:
+                        ok = await asyncio.to_thread(
+                            pipeline._test_http_proxy, url
+                        )
+                    except Exception:
+                        ok = False
+                    try:
+                        await event.respond(
+                            f"🧪 代理 #{idx + 1}："
+                            f"{'✅ 可用' if ok else '❌ 不可用'}\n{url}"
+                        )
+                    except Exception:
+                        pass
+
+                asyncio.get_running_loop().create_task(_do_proxy_test())
                 return
             if field.startswith("del:"):
                 try:
