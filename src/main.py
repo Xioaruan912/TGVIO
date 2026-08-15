@@ -18,6 +18,7 @@ _COMMANDS = [
     types.BotCommand("about", "关于/命令说明"),
     types.BotCommand("mode", "设置 18+ 处理方式"),
     types.BotCommand("webdav", "配置 WebDAV 备份 / 上传记录"),
+    types.BotCommand("proxy", "代理设置（HTTP）"),
     types.BotCommand("queue", "管理队列"),
     types.BotCommand("begin", "开始合集会话"),
     types.BotCommand("end", "结束合集并发布"),
@@ -50,11 +51,14 @@ async def main() -> None:
         "session/bot",
         config.API_ID,
         config.API_HASH,
+        request_retries=8,
+        connection_retries=8,
     )
     await client.start(bot_token=config.BOT_TOKEN)
 
     await _setup_commands(client)
-    bot.register_handlers(client)
+    pipeline = bot.register_handlers(client)
+    await pipeline.apply_proxy_on_start()
     logger.info(
         "Bot started. dest=%s allowed=%s",
         config.DEST_CHANNEL,

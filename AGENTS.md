@@ -202,6 +202,22 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
   - **🗑 删除（`wd_del:<key>`）**：逐文件 `DELETE` 远端（`webdav.delete_remote`，404 视为成功），**不删整个日期文件夹**；成功后移除记录并清理本地缓存。远端删失败会列名提示。
 - **⚠️ 路径踩坑（v13.1）**：WebDAV 服务（openlist/dav 反代）后台目录结构调整后（原 `影视相关` 被迁移为 `115`），旧路径 `WEBDAV_PATH=/影视相关/Pron` 全部 PUT 404；新路径 `/115/Pron` 已验证可写（MKCOL 201 / PUT 201）。改路径后无需重启容器，重新 `/webdav path /115/Pron` 即生效。排查"webdav 上传失败"先看：`docker logs | grep webdav` 的 `PUT ... -> <code>`（404=路径不存在，403=写权限未开，401=认证失败）。
 
+### 下载稳定性加固 + HTTP 代理（v14）
+
+背景：VPS（HostDZire）→ Telegram 媒体 DC 偶发间歇性请求级抖动，`iter_download` 8 路并发分片中任一路 `Request was unsuccessful 6 time(s)` 即整文件失败（2026-08-15 实测 15:04-15:06 窗口多任务失败）。
+
+- **单分片容错（media.py）**：`_download_media_concurrent` 的 `asyncio.gather(return_exceptions=True)` 逐路容错——某分片流失败时**重建该流重试 `shard_retries`（SHARD_RETRIES=3）次**（iter_download 按 offset/stride 重拉自身区域，已写分片无害覆盖），仍失败才整体报错。不再一路抖动报废整个文件。
+- **请求重试提高（main.py）**：`TelegramClient(request_retries=8, connection_retries=8)`（Telethon 默认 5），抖动窗口内单请求自愈更强。
+- **网络类失败自动重试（bot.py `_download_worker`）**：`_is_network_error(exc)`（TimedOutError/ServerError/OSError/`Request was unsuccessful` 等）时走 `DOWNLOAD_AUTO_RETRY`（默认 **2** 次）自动重试——以前只对"下载超时"重试，`Request unsuccessful` 只能靠用户手动点重试。
+- **HTTP 代理 + 自动切换（`/proxy`，v14）**：
+  - 仅支持 **HTTP 代理**（`http://host:port` / `http://user:pass@host:port`），`_parse_proxy_url` 解析为 Telethon 元组 `("http", host, port, user, pwd, rdns)`。
+  - 依赖：`requirements.txt` 加 **`python-socks`**（Telethon 代理连接库，此前容器未装，`client._proxy` 功能不可用）。
+  - 运行时切换：改 `client._proxy` + `disconnect()` + `connect()`（session/auth_key 保留，**免重新登录**；`_apply_proxy(idx)`，idx=-1 直连）。启动时 `apply_proxy_on_start()`（main.py）恢复上次代理。
+  - `session/proxy.json`：`{"auto": true, "current": -1, "proxies": [{"url": ...}]}`。
+  - **自动切换（`_try_switch_proxy`）**：下载网络类失败且 auto 开启 → 直连失败依次试各代理；当前代理失败试下一个；全败恢复直连并报错。切换发生在 `_download_worker` 重试分支（切换后 sleep 2s 再重下）。
+  - `/proxy` 命令（按钮式，同 /webdav 模式）：主视图 `[➕添加][⛔/🔛自动切换][🔀管理][🔌直连]`；➕ 输入 http URL → 校验+连通测试（`_test_http_proxy`，urllib 走代理访问 api.ipify.org）→ 保存；管理列表每行 `[✅使用][🧪测试][🗑删除]`；删除当前代理自动回直连。
+  - ⚠️ 切换代理会重建连接（约 1-3s）并导致当前任务重下（无断点）；多任务并发下载时切换会影响其它进行中任务（其也会各自进入失败重试路径）。`DOWNLOAD_WORKERS` 保持 8（用户要求带宽优先）。
+
 
 ## 5. 已踩过的坑（重要）
 
@@ -262,9 +278,7 @@ docker compose restart / stop / start
 
 > VPS 部署见 README.md「部署」小节，注意 `.env` 含密钥需安全传输。
 
-## 10. VPS 部署工作流（每次任务完成必须执行）
-
-**本项目的标准发布流程：任何在 `telegram-video-forwarder` 上的改动/任务完成后，都必须把最新代码部署到 VPS 并验证。** 由 `~/deploy_vps.sh`（位于项目外、用户家目录）完成，无需手动 ssh。
+## 10. VPS 部署工作流（每次任务完成必须执行）**本项目的标准发布流程：任何在 `telegram-video-forwarder` 上的改动/任务完成后，都必须把最新代码部署到 VPS 并验证。** 由 `~/deploy_vps.sh`（位于项目外、用户家目录）完成，无需手动 ssh。
 
 ```bash
 ~/deploy_vps.sh

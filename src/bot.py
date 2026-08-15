@@ -65,6 +65,33 @@ WEBDAV_CFG_FILE = os.path.join("session", "webdav.json")
 WEBDAV_LOGS_FILE = os.path.join("session", "webdav_logs.json")
 WEBDAV_COUNT_FILE = os.path.join("session", "webdav_count.json")
 WEBDAV_LOG_HOURS = 24
+PROXY_FILE = os.path.join("session", "proxy.json")
+
+_NETWORK_ERROR_NAMES = {
+    "TimedOutError",
+    "ServerError",
+    "RpcCallFailError",
+    "RpcMcgetFailError",
+    "InterdcCallErrorError",
+    "InterdcCallRichErrorError",
+    "NetworkError",
+    "ConnectionError",
+    "ConnectionResetError",
+    "ConnectionAbortedError",
+    "ConnectionRefusedError",
+    "TimeoutError",
+}
+
+
+def _is_network_error(exc: Exception) -> bool:
+    if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
+        return True
+    name = exc.__class__.__name__
+    if name in _NETWORK_ERROR_NAMES:
+        return True
+    if "Request was unsuccessful" in str(exc):
+        return True
+    return False
 
 _MODE_NAMES = {
     "ask": "每次询问",
@@ -148,6 +175,7 @@ _ABOUT_TEXT = (
     "/about    关于/命令说明\n"
     "/mode     设置 18+ 处理方式（默认总是正常，可改每次询问/总是雪花/总是正常）\n"
     "/webdav   配置 WebDAV 备份 / 查看上传记录（📁 按钮进入，可重试/删除）\n"
+    "/proxy    代理设置（HTTP 代理，下载失败自动切换）\n"
     "/queue    管理队列（逐项取消/暂停/恢复）\n"
     "/begin    开始合集会话（转发会自动开始）\n"
     "/end      结束合集并发布（所有视频进同一个评论区）"
@@ -256,6 +284,8 @@ class _Pipeline:
         self.webdav_waiting: dict[int, str] = {}
         self.webdav_count: dict = self._load_webdav_count()
         self._webdav_count_lock = asyncio.Lock()
+        self.proxy_cfg: dict = self._load_proxy_cfg()
+        self.proxy_waiting: dict[int, str] = {}
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -387,6 +417,181 @@ class _Pipeline:
                 json.dump(self.webdav_count, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
+
+    def _load_proxy_cfg(self) -> dict:
+        cfg = {"auto": True, "current": -1, "proxies": []}
+        try:
+            with open(PROXY_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                cfg["auto"] = bool(data.get("auto", True))
+                cfg["current"] = int(data.get("current", -1))
+                proxies = data.get("proxies", [])
+                cfg["proxies"] = (
+                    [p for p in proxies if isinstance(p, dict) and p.get("url")]
+                    if isinstance(proxies, list)
+                    else []
+                )
+        except Exception:
+            pass
+        return cfg
+
+    def _save_proxy_cfg(self) -> None:
+        try:
+            with open(PROXY_FILE, "w") as f:
+                json.dump(self.proxy_cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    @staticmethod
+    def _parse_proxy_url(url: str):
+        """解析 http 代理 URL → Telethon proxy 元组 ("http", host, port, user, pwd, rdns)。无效返回 None。"""
+        m = re.match(r"^http://([^@/]+@)?([^:/]+):(\d+)$", (url or "").strip())
+        if not m:
+            return None
+        userinfo = (m.group(1) or "").rstrip("@")
+        host = m.group(2)
+        port = int(m.group(3))
+        username = password = None
+        if userinfo:
+            if ":" in userinfo:
+                username, password = userinfo.split(":", 1)
+            else:
+                username = userinfo
+        return ("http", host, port, username, password, True)
+
+    def _proxy_label(self, idx: int) -> str:
+        proxies = self.proxy_cfg.get("proxies", [])
+        if idx < 0 or idx >= len(proxies):
+            return "直连"
+        return proxies[idx].get("url", f"#{idx + 1}")
+
+    async def _apply_proxy(self, idx: int) -> bool:
+        """应用代理（idx=-1 直连）：改 client._proxy + 重建连接，session 保留免重登。"""
+        try:
+            proxy = None
+            if idx >= 0:
+                proxies = self.proxy_cfg.get("proxies", [])
+                if idx >= len(proxies):
+                    return False
+                proxy = self._parse_proxy_url(proxies[idx].get("url", ""))
+                if proxy is None:
+                    logger.warning("Proxy #%s URL 无效，无法应用", idx)
+                    return False
+            self.proxy_cfg["current"] = idx
+            self._save_proxy_cfg()
+            self.client._proxy = proxy
+            try:
+                await self.client.disconnect()
+            except Exception:
+                pass
+            await self.client.connect()
+            logger.info("Applied proxy #%s (%s)", idx, self._proxy_label(idx))
+            return True
+        except Exception as exc:
+            logger.warning("Proxy switch to #%s failed: %s", idx, exc)
+            return False
+
+    async def apply_proxy_on_start(self) -> None:
+        """启动时恢复上次的代理（若配置了 current >= 0）。"""
+        current = self.proxy_cfg.get("current", -1)
+        proxies = self.proxy_cfg.get("proxies", [])
+        if current >= 0 and current < len(proxies):
+            if await self._apply_proxy(current):
+                logger.info("Proxy applied on start: #%s", current)
+            else:
+                logger.warning("Proxy #%s failed on start, back to direct", current)
+                await self._apply_proxy(-1)
+        else:
+            self.proxy_cfg["current"] = -1
+            self._save_proxy_cfg()
+
+    async def _try_switch_proxy(self, seq: int) -> bool:
+        """下载网络失败时自动切换代理：直连失败→依次试各代理；代理失败→下一个；全败恢复直连。"""
+        proxies = self.proxy_cfg.get("proxies", [])
+        if not proxies:
+            return False
+        if not self.proxy_cfg.get("auto"):
+            return False
+        current = self.proxy_cfg.get("current", -1)
+        order = list(range(len(proxies)))
+        if current >= 0:
+            # 从下一个开始，绕过当前失败的
+            order = [i for i in order if i != current]
+        for idx in order:
+            if await self._apply_proxy(idx):
+                logger.info("Job #%s 网络失败，已自动切换代理 #%s", seq, idx)
+                return True
+        logger.info("Job #%s 所有代理均失败，恢复直连", seq)
+        await self._apply_proxy(-1)
+        return False
+
+    @staticmethod
+    def _test_http_proxy(url: str) -> bool:
+        """通过代理访问测试连通性（urllib 标准库）。"""
+        import urllib.request
+
+        handler = urllib.request.ProxyHandler({"http": url, "https": url})
+        opener = urllib.request.build_opener(handler)
+        try:
+            with opener.open("https://api.ipify.org", timeout=8) as resp:
+                return resp.status == 200
+        except Exception:
+            return False
+
+    def _proxy_view(self) -> tuple:
+        """/proxy 主视图。"""
+        cfg = self.proxy_cfg
+        current = cfg.get("current", -1)
+        label = self._proxy_label(current)
+        if current >= 0:
+            conn = f"代理 #{current + 1}：{label}"
+        else:
+            conn = "直连"
+        auto = "✅ 已开启" if cfg.get("auto") else "⛔ 已关闭"
+        lines = [
+            "🌐 代理设置（仅 HTTP 代理）",
+            "",
+            f"当前连接：{conn}",
+            f"自动切换：{auto}",
+            f"代理数量：{len(cfg.get('proxies', []))}",
+            "",
+            "下载网络失败时自动切换到下一个可用代理。",
+        ]
+        buttons = [
+            [Button.inline("➕ 添加代理", "proxy:add")],
+            [
+                Button.inline(
+                    "⛔ 关闭自动切换" if cfg.get("auto") else "🔛 开启自动切换",
+                    "proxy:auto",
+                )
+            ],
+            [
+                Button.inline("🔀 管理代理", "proxy:list"),
+                Button.inline("🔌 直连", "proxy:direct"),
+            ],
+        ]
+        return "\n".join(lines), buttons
+
+    def _proxy_list_view(self) -> tuple:
+        """/proxy 管理列表。"""
+        proxies = self.proxy_cfg.get("proxies", [])
+        current = self.proxy_cfg.get("current", -1)
+        lines = ["🔀 代理列表", ""]
+        buttons = [[Button.inline("⬅️ 返回", "proxy:back")]]
+        if not proxies:
+            lines.append("（暂无代理，点 ➕ 添加）")
+        for idx, p in enumerate(proxies):
+            mark = "✅ " if idx == current else ""
+            lines.append(f"{mark}代理 #{idx + 1}：{p.get('url', '')}")
+            buttons.append(
+                [
+                    Button.inline("✅ 使用", f"proxy:use:{idx}"),
+                    Button.inline("🧪 测试", f"proxy:test:{idx}"),
+                    Button.inline("🗑 删除", f"proxy:del:{idx}"),
+                ]
+            )
+        return "\n".join(lines), buttons
 
     def _show_progress(self, user_id: int) -> bool:
         return self._get_pref(user_id, "show_progress", True)
@@ -746,6 +951,22 @@ class _Pipeline:
                             self._set_cancelled(job.seq)
                             await self._delete_status(job)
                         except Exception as exc:
+                            if (
+                                _is_network_error(exc)
+                                and retries < DOWNLOAD_AUTO_RETRY
+                            ):
+                                switched = await self._try_switch_proxy(job.seq)
+                                retries += 1
+                                logger.warning(
+                                    "Job #%s download failed (%s), auto-retry %d/%d%s",
+                                    job.seq,
+                                    exc.__class__.__name__,
+                                    retries,
+                                    DOWNLOAD_AUTO_RETRY,
+                                    "（已切换代理）" if switched else "",
+                                )
+                                await asyncio.sleep(2)
+                                continue
                             logger.exception(
                                 "Download failed for job #%s", job.seq
                             )
@@ -1570,7 +1791,7 @@ class _Pipeline:
                 pass
 
 
-def register_handlers(client: TelegramClient) -> None:
+def register_handlers(client: TelegramClient):
     pipeline = _Pipeline(client)
     pipeline.start()
 
@@ -1669,6 +1890,15 @@ def register_handlers(client: TelegramClient) -> None:
             f"✅ 已更新 WebDAV {field}\n当前状态：{status}",
             auto_delete=False,
         )
+
+    @client.on(events.NewMessage(pattern="/proxy"))
+    async def on_proxy(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /proxy from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        pipeline.proxy_waiting.pop(event.sender_id, None)
+        text, buttons = pipeline._proxy_view()
+        await _respond(event, text, buttons=buttons, auto_delete=False)
 
     @client.on(events.NewMessage(pattern=r"/begin|/开始"))
     async def on_begin(event: events.NewMessage.Event) -> None:
@@ -1896,6 +2126,105 @@ def register_handlers(client: TelegramClient) -> None:
                 await event.edit(text, buttons=buttons)
             except Exception:
                 pass
+            return
+
+        if data_text.startswith("proxy:"):
+            field = data_text.split(":", 1)[1]
+
+            async def _refresh(view_text, view_buttons) -> None:
+                try:
+                    await event.edit(view_text, buttons=view_buttons)
+                except Exception:
+                    pass
+
+            if field == "add":
+                pipeline.proxy_waiting[event.sender_id] = "add"
+                await _answer("请输入代理地址")
+                await _refresh(
+                    "➕ 请输入 HTTP 代理地址（直接回复即可）：\n\n"
+                    "格式：\n"
+                    "  http://host:port\n"
+                    "  http://user:pass@host:port\n\n"
+                    "回复 /取消 取消添加",
+                    [Button.inline("❌ 取消", "proxy:cancel")],
+                )
+                return
+            if field == "cancel":
+                pipeline.proxy_waiting.pop(event.sender_id, None)
+                await _answer("已取消")
+                text, buttons = pipeline._proxy_view()
+                await _refresh(text, buttons)
+                return
+            if field == "auto":
+                pipeline.proxy_cfg["auto"] = not pipeline.proxy_cfg.get("auto", True)
+                pipeline._save_proxy_cfg()
+                await _answer("自动切换已开启" if pipeline.proxy_cfg["auto"] else "自动切换已关闭")
+                text, buttons = pipeline._proxy_view()
+                await _refresh(text, buttons)
+                return
+            if field == "direct":
+                ok = await pipeline._apply_proxy(-1)
+                await _answer("已切回直连" if ok else "切换失败")
+                text, buttons = pipeline._proxy_view()
+                await _refresh(text, buttons)
+                return
+            if field == "list":
+                text, buttons = pipeline._proxy_list_view()
+                await _refresh(text, buttons)
+                return
+            if field == "back":
+                text, buttons = pipeline._proxy_view()
+                await _refresh(text, buttons)
+                return
+            if field.startswith("use:"):
+                try:
+                    idx = int(field.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    await _answer("无效操作")
+                    return
+                ok = await pipeline._apply_proxy(idx)
+                await _answer("✅ 已切换" if ok else "❌ 切换失败")
+                text, buttons = pipeline._proxy_view()
+                await _refresh(text, buttons)
+                return
+            if field.startswith("test:"):
+                try:
+                    idx = int(field.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    await _answer("无效操作")
+                    return
+                proxies = pipeline.proxy_cfg.get("proxies", [])
+                if idx >= len(proxies):
+                    await _answer("代理不存在")
+                    return
+                url = proxies[idx].get("url", "")
+                await _answer("⏳ 测试中…")
+                ok = await asyncio.to_thread(pipeline._test_http_proxy, url)
+                await _answer("✅ 代理可用" if ok else "❌ 代理不可用")
+                return
+            if field.startswith("del:"):
+                try:
+                    idx = int(field.split(":", 1)[1])
+                except (ValueError, IndexError):
+                    await _answer("无效操作")
+                    return
+                proxies = pipeline.proxy_cfg.get("proxies", [])
+                if idx >= len(proxies):
+                    await _answer("代理不存在")
+                    return
+                removed = proxies.pop(idx)
+                current = pipeline.proxy_cfg.get("current", -1)
+                if current == idx:
+                    pipeline.proxy_cfg["current"] = -1
+                    await pipeline._apply_proxy(-1)
+                elif current > idx:
+                    pipeline.proxy_cfg["current"] = current - 1
+                pipeline._save_proxy_cfg()
+                await _answer(f"已删除代理 {removed.get('url', '')}")
+                text, buttons = pipeline._proxy_list_view()
+                await _refresh(text, buttons)
+                return
+            await _answer("无效操作")
             return
 
         if data_text.startswith("session_end:"):
@@ -2212,6 +2541,48 @@ def register_handlers(client: TelegramClient) -> None:
             await _respond(event, text, buttons=buttons, auto_delete=False)
             return
 
+        if event.sender_id in pipeline.proxy_waiting:
+            text = (event.raw_text or "").strip()
+            if text in ("/取消", "/cancel"):
+                pipeline.proxy_waiting.pop(event.sender_id, None)
+                await _respond(event, "❌ 已取消添加代理", auto_delete=False)
+                text, buttons = pipeline._proxy_view()
+                await _respond(event, text, buttons=buttons, auto_delete=False)
+                return
+            pipeline.proxy_waiting.pop(event.sender_id, None)
+            parsed = pipeline._parse_proxy_url(text)
+            if parsed is None:
+                await _respond(
+                    event,
+                    "❌ 代理格式无效，应形如 http://host:port 或 http://user:pass@host:port\n"
+                    "重新发 /proxy 再试",
+                    auto_delete=False,
+                )
+                return
+            if any(
+                p.get("url") == text for p in pipeline.proxy_cfg.get("proxies", [])
+            ):
+                await _respond(event, "⚠️ 该代理已存在", auto_delete=False)
+                text, buttons = pipeline._proxy_view()
+                await _respond(event, text, buttons=buttons, auto_delete=False)
+                return
+            ok = await asyncio.to_thread(pipeline._test_http_proxy, text)
+            if not ok:
+                await _respond(
+                    event,
+                    "⚠️ 该代理测试连通失败，仍要添加请确认代理可用；已跳过添加",
+                    auto_delete=False,
+                )
+                text, buttons = pipeline._proxy_view()
+                await _respond(event, text, buttons=buttons, auto_delete=False)
+                return
+            pipeline.proxy_cfg.setdefault("proxies", []).append({"url": text})
+            pipeline._save_proxy_cfg()
+            await _respond(event, f"✅ 已添加代理：{text}", auto_delete=False)
+            text, buttons = pipeline._proxy_view()
+            await _respond(event, text, buttons=buttons, auto_delete=False)
+            return
+
         if any(
             isinstance(e, MessageEntityBotCommand)
             for e in (event.message.entities or [])
@@ -2281,3 +2652,5 @@ def register_handlers(client: TelegramClient) -> None:
             return
 
         await _respond(event, "请发送视频或链接，或使用 /start 查看使用说明。")
+
+    return pipeline

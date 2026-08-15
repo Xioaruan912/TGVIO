@@ -22,6 +22,8 @@ from .video import guess_mime, is_photo_path, is_video_path, make_cover, make_th
 
 logger = logging.getLogger(__name__)
 
+SHARD_RETRIES = 3
+
 
 class FileTooLargeError(Exception):
     def __init__(self, size: int, limit: int):
@@ -48,6 +50,7 @@ class MediaDownloader:
         self.download_timeout = download_timeout
         self.download_workers = max(1, download_workers)
         self.part_size_kb = part_size_kb
+        self.shard_retries = SHARD_RETRIES
         self.pre_download_hooks = []   # async (job) -> None
         self.post_download_hooks = []  # async (job, paths) -> None
         self.progress_hooks = []       # async (seq, received, total, item, items) -> None
@@ -142,7 +145,11 @@ class MediaDownloader:
     async def _download_media_concurrent(
         self, message, workdir: str, seq: int, item: int, items: int
     ) -> str:
-        """并发分片下载（iter_download + 多路 offset/stride），单文件接近带宽上限。"""
+        """并发分片下载（iter_download + 多路 offset/stride），单文件接近带宽上限。
+
+        单分片容错：某一路分片流失败时重建该流重试（SHARD_RETRIES 次），
+        不因一路抖动报废整个文件。
+        """
         media = message.media
         file_size = self._media_size(media)
         filename = self._media_filename(media, item)
@@ -159,24 +166,45 @@ class MediaDownloader:
         with open(out, "wb") as f:
             f.truncate(file_size)
 
-            async def consume(w: int) -> None:
+            async def consume(w: int):
                 nonlocal received
-                k = 0
-                it = self.client.iter_download(
-                    media,
-                    offset=w * request_size,
-                    stride=stride,
-                    request_size=request_size,
-                    file_size=file_size,
-                )
-                async for chunk in it:
-                    f.seek(w * request_size + k * stride)
-                    f.write(chunk)
-                    k += 1
-                    received += len(chunk)
-                    await progress(received, file_size)
+                last_exc = None
+                for attempt in range(self.shard_retries + 1):
+                    try:
+                        k = 0
+                        it = self.client.iter_download(
+                            media,
+                            offset=w * request_size,
+                            stride=stride,
+                            request_size=request_size,
+                            file_size=file_size,
+                        )
+                        async for chunk in it:
+                            f.seek(w * request_size + k * stride)
+                            f.write(chunk)
+                            k += 1
+                            received += len(chunk)
+                            await progress(received, file_size)
+                        return
+                    except Exception as exc:
+                        last_exc = exc
+                        logger.warning(
+                            "Job #%s shard #%s failed (%s), retry %d/%d",
+                            seq,
+                            w,
+                            exc.__class__.__name__,
+                            attempt + 1,
+                            self.shard_retries,
+                        )
+                        await asyncio.sleep(1)
+                raise last_exc
 
-            await asyncio.gather(*(consume(w) for w in range(workers)))
+            results = await asyncio.gather(
+                *(consume(w) for w in range(workers)), return_exceptions=True
+            )
+            errors = [r for r in results if isinstance(r, Exception)]
+            if errors:
+                raise errors[0]
 
         logger.info("Job #%s downloaded concurrently %d bytes", seq, file_size)
         return out
