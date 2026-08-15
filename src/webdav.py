@@ -119,6 +119,48 @@ def upload_file(
     return False
 
 
+def delete_remote(
+    base_url: str,
+    remote_dir: str,
+    filename: str,
+    user: str,
+    passwd: str,
+    retries: int = 2,
+) -> bool:
+    """删除 <base_url>/<remote_dir>/<文件名>（逐文件删除，不删目录）。
+
+    远端 404（文件本就不存在）视为删除成功。
+    """
+    auth = _auth_header(user, passwd)
+    parsed, root_path = _split(base_url)
+    rel = f"{remote_dir.strip('/')}/{filename}"
+    target = urllib.parse.urlunsplit(
+        (
+            parsed.scheme,
+            parsed.netloc,
+            urllib.parse.quote(f"{root_path.rstrip('/')}/{rel}", safe="/"),
+            "",
+            "",
+        )
+    )
+    for attempt in range(retries + 1):
+        try:
+            conn = _connect(parsed)
+            try:
+                conn.request("DELETE", target, headers={"Authorization": auth})
+                resp = conn.getresponse()
+                resp.read()
+                if resp.status in (200, 204, 404):
+                    return True
+                logger.warning("WebDAV DELETE %s -> %s", target, resp.status)
+            finally:
+                conn.close()
+        except Exception as exc:
+            logger.warning("WebDAV DELETE attempt %d failed: %s", attempt + 1, exc)
+    logger.error("WebDAV DELETE failed after %d attempts: %s", retries + 1, target)
+    return False
+
+
 def ensure_dir(base_url: str, remote_dir: str, user: str, passwd: str) -> None:
     """确保远端目录存在（上传时会自动创建，仅日志用途）。"""
     try:

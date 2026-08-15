@@ -62,6 +62,8 @@ _CANCELLED = object()
 PREFS_FILE = os.path.join("session", "prefs.json")
 LEGACY_PREFS_FILE = os.path.join("session", "progress_prefs.json")
 WEBDAV_CFG_FILE = os.path.join("session", "webdav.json")
+WEBDAV_LOGS_FILE = os.path.join("session", "webdav_logs.json")
+WEBDAV_LOG_HOURS = 24
 
 _MODE_NAMES = {
     "ask": "每次询问",
@@ -145,6 +147,7 @@ _ABOUT_TEXT = (
     "/about    关于/命令说明\n"
     "/mode     设置 18+ 处理方式（默认总是正常，可改每次询问/总是雪花/总是正常）\n"
     "/webdav   配置 WebDAV 备份（on/off/url/user/pass/path/retry）\n"
+    "/webdavlogs 查看/重试/删除最近 24 小时的 WebDAV 上传记录\n"
     "/queue    管理队列（逐项取消/暂停/恢复）\n"
     "/begin    开始合集会话（转发会自动开始）\n"
     "/end      结束合集并发布（所有视频进同一个评论区）"
@@ -248,6 +251,8 @@ class _Pipeline:
         self.sessions: dict[int, _Session] = {}
         self._webdav_tasks: dict[asyncio.Task, int] = {}
         self.webdav_cfg = self._load_webdav_cfg()
+        self.webdav_logs: dict = self._load_webdav_logs()
+        self.webdav_keep_cache: set[int] = set()
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -335,6 +340,27 @@ class _Pipeline:
         try:
             with open(WEBDAV_CFG_FILE, "w") as f:
                 json.dump(self.webdav_cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _load_webdav_logs(self) -> dict:
+        try:
+            with open(WEBDAV_LOGS_FILE) as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_webdav_logs(self) -> None:
+        try:
+            cutoff = time.time() - WEBDAV_LOG_HOURS * 3600
+            self.webdav_logs = {
+                k: v
+                for k, v in self.webdav_logs.items()
+                if isinstance(v, dict) and v.get("ts", 0) >= cutoff
+            }
+            with open(WEBDAV_LOGS_FILE, "w") as f:
+                json.dump(self.webdav_logs, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -770,7 +796,10 @@ class _Pipeline:
         )
 
     async def _on_webdav_upload(self, job, paths) -> None:
-        """下载完成后后台上传到 WebDAV（<远程路径>/<当天日期>/文件名），不阻塞主流程。"""
+        """下载完成后后台上传到 WebDAV（<远程路径>/<当天日期>/文件名），不阻塞主流程。
+
+        逐文件记录状态到 webdav_logs（持久化），失败文件保留本地缓存供 /webdavlogs 重试。
+        """
         cfg = self.webdav_cfg
         if not cfg.get("enabled") or not cfg.get("url"):
             return
@@ -780,28 +809,52 @@ class _Pipeline:
             return
         remote_dir = f"{str(cfg.get('path', '')).strip('/')}/{datetime.now().strftime('%Y-%m-%d')}"
         seq = job.seq
+        log = {
+            "seq": seq,
+            "ts": time.time(),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "remote_dir": remote_dir,
+            "files": [
+                {"name": os.path.basename(p), "local": p, "status": "pending"}
+                for p in file_list
+            ],
+        }
 
         async def _upload() -> None:
             try:
-                for path in file_list:
+                for f in log["files"]:
+                    if f["status"] == "ok":
+                        continue
                     ok = await asyncio.to_thread(
                         webdav.upload_file,
                         cfg.get("url"),
                         remote_dir,
-                        path,
+                        f["local"],
                         cfg.get("user"),
                         cfg.get("pass"),
                         int(cfg.get("retry", 2)),
                     )
+                    f["status"] = "ok" if ok else "failed"
                     logger.info(
                         "Job #%s webdav %s -> %s (%s)",
                         seq,
-                        os.path.basename(path),
+                        f["name"],
                         remote_dir,
                         "OK" if ok else "FAILED",
                     )
             except Exception as exc:
                 logger.error("Job #%s webdav upload error: %s", seq, exc)
+                for f in log["files"]:
+                    if f["status"] == "pending":
+                        f["status"] = "failed"
+            finally:
+                failed = [f for f in log["files"] if f["status"] == "failed"]
+                if failed:
+                    self.webdav_keep_cache.add(seq)
+                else:
+                    self.webdav_keep_cache.discard(seq)
+                self.webdav_logs[str(seq)] = log
+                self._save_webdav_logs()
 
         task = asyncio.get_running_loop().create_task(_upload())
         self._webdav_tasks[task] = seq
@@ -812,6 +865,123 @@ class _Pipeline:
                 logger.error("Job #%s webdav task failed", seq)
 
         task.add_done_callback(_done)
+
+    def _webdav_logs_view(self) -> tuple:
+        """/webdavlogs 视图：最近 24 小时的上传记录 + 每行操作按钮。"""
+        self._save_webdav_logs()
+        logs = sorted(
+            self.webdav_logs.items(),
+            key=lambda kv: kv[1].get("ts", 0),
+            reverse=True,
+        )
+        if not logs:
+            return "📁 WebDAV 上传记录\n\n（最近 24 小时暂无记录）", None
+        lines = ["📁 WebDAV 上传记录（最近 24 小时）", ""]
+        buttons = []
+        for index, (key, log) in enumerate(logs):
+            files = log.get("files", [])
+            total = len(files)
+            ok = sum(1 for f in files if f.get("status") == "ok")
+            failed = total - ok
+            mark = "✅ 全部成功" if failed == 0 else f"⚠️ 失败 {failed}/{total}"
+            lines.append(
+                f"{_pos_token(index + 1)} {log.get('time', '')}  {mark}\n"
+                f"    {log.get('remote_dir', '')}（{ok}/{total}）"
+            )
+            row = []
+            if failed > 0:
+                row.append(Button.inline("🔄 重试", f"wd_retry:{key}"))
+            row.append(Button.inline("🗑 删除", f"wd_del:{key}"))
+            buttons.append(row)
+        return "\n".join(lines), buttons
+
+    async def _webdav_retry(self, key: str) -> str:
+        """重试某条记录中失败的文件（从保留的本地缓存重传）。"""
+        log = self.webdav_logs.get(key)
+        if not log:
+            return "记录不存在或已过期"
+        failed = [f for f in log.get("files", []) if f.get("status") != "ok"]
+        if not failed:
+            return "没有失败的文件"
+        cfg = self.webdav_cfg
+        if not cfg.get("url"):
+            return "WebDAV 未配置地址（先用 /webdav 配置）"
+        missing = [f["name"] for f in failed if not os.path.isfile(f.get("local", ""))]
+        if missing:
+            return f"❌ 本地缓存已不存在，无法重试: {', '.join(missing[:3])}"
+
+        async def _upload() -> None:
+            try:
+                for f in failed:
+                    ok = await asyncio.to_thread(
+                        webdav.upload_file,
+                        cfg.get("url"),
+                        log["remote_dir"],
+                        f["local"],
+                        cfg.get("user"),
+                        cfg.get("pass"),
+                        int(cfg.get("retry", 2)),
+                    )
+                    f["status"] = "ok" if ok else "failed"
+                    logger.info(
+                        "Job #%s webdav retry %s (%s)",
+                        log["seq"],
+                        f["name"],
+                        "OK" if ok else "FAILED",
+                    )
+            except Exception as exc:
+                logger.error("Job #%s webdav retry error: %s", log["seq"], exc)
+            finally:
+                if all(f.get("status") == "ok" for f in log.get("files", [])):
+                    self.webdav_keep_cache.discard(log["seq"])
+                    self._schedule_cleanup(log["seq"], "")
+                self._save_webdav_logs()
+
+        task = asyncio.get_running_loop().create_task(_upload())
+        self._webdav_tasks[task] = log["seq"]
+
+        def _done(t: asyncio.Task) -> None:
+            self._webdav_tasks.pop(t, None)
+
+        task.add_done_callback(_done)
+        return f"🔄 正在重试 {len(failed)} 个文件…"
+
+    async def _webdav_delete(self, key: str) -> str:
+        """删除某条记录本次上传的所有远端文件（逐个 DELETE，不删目录）。"""
+        log = self.webdav_logs.get(key)
+        if not log:
+            return "记录不存在或已过期"
+        cfg = self.webdav_cfg
+        if not cfg.get("url"):
+            return "WebDAV 未配置地址（先用 /webdav 配置）"
+        deleted = 0
+        failed_names = []
+        for f in log.get("files", []):
+            if f.get("status") == "deleted":
+                deleted += 1
+                continue
+            ok = await asyncio.to_thread(
+                webdav.delete_remote,
+                cfg.get("url"),
+                log["remote_dir"],
+                f["name"],
+                cfg.get("user"),
+                cfg.get("pass"),
+            )
+            if ok:
+                deleted += 1
+                f["status"] = "deleted"
+            else:
+                failed_names.append(f["name"])
+        if deleted:
+            self.webdav_keep_cache.discard(log["seq"])
+            self._schedule_cleanup(log["seq"], "")
+        if failed_names:
+            self._save_webdav_logs()
+            return f"❌ 删除失败 {len(failed_names)} 个: {', '.join(failed_names[:3])}"
+        self.webdav_logs.pop(key, None)
+        self._save_webdav_logs()
+        return f"🗑 已删除本次上传的 {deleted} 个文件"
 
     async def _wait_webdav(self, seq: int, timeout: float | None = None) -> None:
         """等待某任务的 WebDAV 后台上传结束（清理缓存前调用，防删除未传完文件）。"""
@@ -1084,7 +1254,13 @@ class _Pipeline:
             self._schedule_cleanup(seq, cleanup)
 
     def _schedule_cleanup(self, seq: int, cleanup: str) -> None:
-        """清理缓存目录；若该任务仍有 WebDAV 后台上传在跑，则等上传结束再删。"""
+        """清理缓存目录；若该任务仍有 WebDAV 后台上传在跑，则等上传结束再删。
+
+        WebDAV 上传存在失败文件（webdav_keep_cache）时保留缓存，供 /webdavlogs 重试。
+        """
+        if seq in self.webdav_keep_cache:
+            logger.info("Job #%s webdav 有失败文件，保留缓存待 /webdavlogs 重试", seq)
+            return
 
         def _do_cleanup() -> None:
             shutil.rmtree(self._workdir(seq), ignore_errors=True)
@@ -1422,6 +1598,14 @@ def register_handlers(client: TelegramClient) -> None:
             auto_delete=False,
         )
 
+    @client.on(events.NewMessage(pattern="/webdavlogs"))
+    async def on_webdavlogs(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /webdavlogs from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        text, buttons = pipeline._webdav_logs_view()
+        await _respond(event, text, buttons=buttons, auto_delete=False)
+
     @client.on(events.NewMessage(pattern=r"/begin|/开始"))
     async def on_begin(event: events.NewMessage.Event) -> None:
         logger.info("CMD /begin from %s", event.sender_id)
@@ -1570,6 +1754,17 @@ def register_handlers(client: TelegramClient) -> None:
             return
 
         data_text = event.data.decode(errors="replace")
+
+        if data_text.startswith("wd_retry:"):
+            key = data_text.split(":", 1)[1]
+            await _answer(await pipeline._webdav_retry(key))
+            return
+
+        if data_text.startswith("wd_del:"):
+            key = data_text.split(":", 1)[1]
+            await _answer(await pipeline._webdav_delete(key))
+            return
+
         if data_text.startswith("session_end:"):
             try:
                 target = int(data_text.split(":", 1)[1])

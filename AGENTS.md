@@ -193,6 +193,9 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **配置（v13.1，`/webdav` 命令）**：`_Pipeline.webdav_cfg` 从 `session/webdav.json` 加载（无文件则回退 config.py 的 .env 默认值），`/webdav` 显示当前配置，`/webdav <项> <值>` 设置并 `_save_webdav_cfg()` 持久化：
   - `/webdav on|off`（enabled）、`url`、`user`、`pass`、`path`（自动补前导 `/`）、`retry`
   - 密码显示打码 `***`；`/webdav` 已加入命令菜单（main.py `_COMMANDS`）
+- **上传记录（v13.2，`/webdavlogs`）**：每次上传逐文件记入 `session/webdav_logs.json`（**只保留最近 24 小时**，`_save_webdav_logs` 自动清理过期）；`/webdavlogs` 列出每条记录（时间/远程目录/成功数/失败数）+ 每行内联按钮：
+  - **🔄 重试（`wd_retry:<key>`）**：仅失败记录显示——从**保留的本地缓存**重传失败文件（`webdav_keep_cache` 集合：`_on_webdav_upload` 有失败即加入并阻止 `_schedule_cleanup` 删缓存；全部成功后自动清理）。缓存已删则提示无法重试。
+  - **🗑 删除（`wd_del:<key>`）**：逐文件 `DELETE` 远端（`webdav.delete_remote`，404 视为成功），**不删整个日期文件夹**；成功后移除记录并清理本地缓存。远端删失败会列名提示。
 - **⚠️ 路径踩坑（v13.1）**：WebDAV 服务（openlist/dav 反代）后台目录结构调整后（原 `影视相关` 被迁移为 `115`），旧路径 `WEBDAV_PATH=/影视相关/Pron` 全部 PUT 404；新路径 `/115/Pron` 已验证可写（MKCOL 201 / PUT 201）。改路径后无需重启容器，重新 `/webdav path /115/Pron` 即生效。排查"webdav 上传失败"先看：`docker logs | grep webdav` 的 `PUT ... -> <code>`（404=路径不存在，403=写权限未开，401=认证失败）。
 
 
