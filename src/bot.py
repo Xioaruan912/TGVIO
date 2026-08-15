@@ -253,6 +253,7 @@ class _Pipeline:
         self.webdav_cfg = self._load_webdav_cfg()
         self.webdav_logs: dict = self._load_webdav_logs()
         self.webdav_keep_cache: set[int] = set()
+        self.webdav_waiting: dict[int, str] = {}
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -865,6 +866,41 @@ class _Pipeline:
                 logger.error("Job #%s webdav task failed", seq)
 
         task.add_done_callback(_done)
+
+    def _webdav_cfg_view(self) -> tuple:
+        """按钮式配置视图（/webdav）：点击字段按钮后直接回复新值。"""
+        cfg = self.webdav_cfg
+        status = "✅ 已启用" if cfg.get("enabled") else "⛔ 已停用"
+        lines = [
+            "📁 WebDAV 备份配置（下载完成后自动备份媒体）",
+            "",
+            f"状态：{status}",
+            f"地址：{cfg.get('url') or '（未设置）'}",
+            f"账号：{cfg.get('user') or '（未设置）'}",
+            f"密码：{'***' if cfg.get('pass') else '（未设置）'}",
+            f"路径：{cfg.get('path') or '（未设置）'}",
+            f"重试：{cfg.get('retry')}",
+            "",
+            "👇 点击按钮修改（字段按钮点击后直接回复新值）：",
+        ]
+        toggle = (
+            Button.inline("⛔ 停用", "wd_cfg:off")
+            if cfg.get("enabled")
+            else Button.inline("🔛 启用", "wd_cfg:on")
+        )
+        buttons = [
+            [toggle],
+            [
+                Button.inline("✏️ 地址", "wd_cfg:url"),
+                Button.inline("✏️ 账号", "wd_cfg:user"),
+                Button.inline("✏️ 密码", "wd_cfg:pass"),
+            ],
+            [
+                Button.inline("✏️ 路径", "wd_cfg:path"),
+                Button.inline("✏️ 重试", "wd_cfg:retry"),
+            ],
+        ]
+        return "\n".join(lines), buttons
 
     def _webdav_logs_view(self) -> tuple:
         """/webdavlogs 视图：最近 24 小时的上传记录 + 每行操作按钮。"""
@@ -1542,26 +1578,9 @@ def register_handlers(client: TelegramClient) -> None:
         cfg = pipeline.webdav_cfg
         parts = event.raw_text.strip().split(maxsplit=2)
         if len(parts) == 1:
-            status = "✅ 已启用" if cfg.get("enabled") else "⛔ 已停用"
-            lines = [
-                "📁 WebDAV 备份配置（下载完成后自动备份媒体）",
-                "",
-                f"状态：{status}",
-                f"地址：{cfg.get('url') or '（未设置）'}",
-                f"账号：{cfg.get('user') or '（未设置）'}",
-                f"密码：{'***' if cfg.get('pass') else '（未设置）'}",
-                f"路径：{cfg.get('path') or '（未设置）'}",
-                f"重试：{cfg.get('retry')}",
-                "",
-                "修改方式：/webdav <项> <值>",
-                "  /webdav on / off         启用/停用",
-                "  /webdav url <地址>       服务器地址",
-                "  /webdav user <账号>      用户名",
-                "  /webdav pass <密码>      密码",
-                "  /webdav path <路径>      远端目录（如 /115/Pron）",
-                "  /webdav retry <次数>     失败重试次数",
-            ]
-            await _respond(event, "\n".join(lines), auto_delete=False)
+            pipeline.webdav_waiting.pop(event.sender_id, None)
+            text, buttons = pipeline._webdav_cfg_view()
+            await _respond(event, text, buttons=buttons, auto_delete=False)
             return
         key = parts[1].lower()
         val = parts[2] if len(parts) > 2 else ""
@@ -1754,6 +1773,42 @@ def register_handlers(client: TelegramClient) -> None:
             return
 
         data_text = event.data.decode(errors="replace")
+
+        if data_text.startswith("wd_cfg:"):
+            field = data_text.split(":", 1)[1]
+            cfg = pipeline.webdav_cfg
+            if field in ("on", "off"):
+                cfg["enabled"] = field == "on"
+                pipeline._save_webdav_cfg()
+                await _answer("✅ 已启用" if field == "on" else "⛔ 已停用")
+                text, buttons = pipeline._webdav_cfg_view()
+                try:
+                    await event.edit(text, buttons=buttons)
+                except Exception:
+                    pass
+                return
+            if field == "cancel":
+                pipeline.webdav_waiting.pop(event.sender_id, None)
+                await _answer("已取消")
+                return
+            if field in ("url", "user", "pass", "path", "retry"):
+                pipeline.webdav_waiting[event.sender_id] = field
+                current = cfg.get(field)
+                if field == "pass":
+                    current = "***" if current else "（空）"
+                await _answer("请直接回复新值")
+                try:
+                    await event.edit(
+                        f"✏️ 请输入新的 WebDAV {field}"
+                        f"（当前：{current or '（空）'}）\n"
+                        f"直接回复即可；回复 /取消 取消修改",
+                        buttons=[Button.inline("❌ 取消", "wd_cfg:cancel")],
+                    )
+                except Exception:
+                    pass
+                return
+            await _answer("无效操作")
+            return
 
         if data_text.startswith("wd_retry:"):
             key = data_text.split(":", 1)[1]
@@ -2031,6 +2086,52 @@ def register_handlers(client: TelegramClient) -> None:
         )
         if not _authorized(event):
             logger.info("Ignoring unauthorized user %s", event.sender_id)
+            return
+
+        if event.sender_id in pipeline.webdav_waiting:
+            field = pipeline.webdav_waiting.get(event.sender_id)
+            text = (event.raw_text or "").strip()
+            if text in ("/取消", "/cancel"):
+                pipeline.webdav_waiting.pop(event.sender_id, None)
+                await _respond(event, "❌ 已取消修改", auto_delete=False)
+                return
+            cfg = pipeline.webdav_cfg
+            value = text
+            if field == "retry":
+                if not value.isdigit():
+                    await _respond(
+                        event, "❌ 重试次数必须是数字，请重新输入", auto_delete=False
+                    )
+                    return
+                value = int(value)
+                if value < 0 or value > 10:
+                    await _respond(
+                        event, "❌ 重试次数需在 0-10 之间，请重新输入", auto_delete=False
+                    )
+                    return
+            elif field == "url":
+                if not re.match(r"^https?://", value, re.IGNORECASE):
+                    await _respond(
+                        event,
+                        "❌ 地址需以 http:// 或 https:// 开头，请重新输入",
+                        auto_delete=False,
+                    )
+                    return
+            elif field == "path":
+                if value and not value.startswith("/"):
+                    value = "/" + value
+            if field in ("url", "user", "pass", "path") and not value:
+                await _respond(event, "❌ 内容不能为空，请重新输入", auto_delete=False)
+                return
+            cfg[field] = value
+            pipeline._save_webdav_cfg()
+            pipeline.webdav_waiting.pop(event.sender_id, None)
+            shown = "***" if field == "pass" else value
+            await _respond(
+                event, f"✅ 已更新 WebDAV {field}：{shown}", auto_delete=False
+            )
+            text, buttons = pipeline._webdav_cfg_view()
+            await _respond(event, text, buttons=buttons, auto_delete=False)
             return
 
         if any(
