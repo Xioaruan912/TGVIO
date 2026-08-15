@@ -61,6 +61,7 @@ _CANCELLED = object()
 
 PREFS_FILE = os.path.join("session", "prefs.json")
 LEGACY_PREFS_FILE = os.path.join("session", "progress_prefs.json")
+WEBDAV_CFG_FILE = os.path.join("session", "webdav.json")
 
 _MODE_NAMES = {
     "ask": "每次询问",
@@ -143,6 +144,7 @@ _ABOUT_TEXT = (
     "/start    使用说明\n"
     "/about    关于/命令说明\n"
     "/mode     设置 18+ 处理方式（默认总是正常，可改每次询问/总是雪花/总是正常）\n"
+    "/webdav   配置 WebDAV 备份（on/off/url/user/pass/path/retry）\n"
     "/queue    管理队列（逐项取消/暂停/恢复）\n"
     "/begin    开始合集会话（转发会自动开始）\n"
     "/end      结束合集并发布（所有视频进同一个评论区）"
@@ -245,6 +247,7 @@ class _Pipeline:
         self._future_created: dict[int, float] = {}
         self.sessions: dict[int, _Session] = {}
         self._webdav_tasks: dict[asyncio.Task, int] = {}
+        self.webdav_cfg = self._load_webdav_cfg()
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -307,6 +310,33 @@ class _Pipeline:
     def _set_pref(self, user_id: int, key: str, value) -> None:
         self.prefs.setdefault(user_id, {})[key] = value
         self._save_prefs()
+
+    def _load_webdav_cfg(self) -> dict:
+        cfg = {
+            "enabled": WEBDAV_ENABLED,
+            "url": WEBDAV_URL,
+            "user": WEBDAV_USER,
+            "pass": WEBDAV_PASS,
+            "path": WEBDAV_PATH,
+            "retry": WEBDAV_RETRY,
+        }
+        try:
+            with open(WEBDAV_CFG_FILE) as f:
+                data = json.load(f)
+            if isinstance(data, dict):
+                for key in cfg:
+                    if key in data:
+                        cfg[key] = data[key]
+        except Exception:
+            pass
+        return cfg
+
+    def _save_webdav_cfg(self) -> None:
+        try:
+            with open(WEBDAV_CFG_FILE, "w") as f:
+                json.dump(self.webdav_cfg, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
 
     def _show_progress(self, user_id: int) -> bool:
         return self._get_pref(user_id, "show_progress", True)
@@ -741,13 +771,14 @@ class _Pipeline:
 
     async def _on_webdav_upload(self, job, paths) -> None:
         """下载完成后后台上传到 WebDAV（<远程路径>/<当天日期>/文件名），不阻塞主流程。"""
-        if not WEBDAV_ENABLED or not WEBDAV_URL:
+        cfg = self.webdav_cfg
+        if not cfg.get("enabled") or not cfg.get("url"):
             return
         file_list = [paths] if isinstance(paths, str) else list(paths or [])
         file_list = [p for p in file_list if os.path.isfile(p)]
         if not file_list:
             return
-        remote_dir = f"{WEBDAV_PATH.strip('/')}/{datetime.now().strftime('%Y-%m-%d')}"
+        remote_dir = f"{str(cfg.get('path', '')).strip('/')}/{datetime.now().strftime('%Y-%m-%d')}"
         seq = job.seq
 
         async def _upload() -> None:
@@ -755,12 +786,12 @@ class _Pipeline:
                 for path in file_list:
                     ok = await asyncio.to_thread(
                         webdav.upload_file,
-                        WEBDAV_URL,
+                        cfg.get("url"),
                         remote_dir,
                         path,
-                        WEBDAV_USER,
-                        WEBDAV_PASS,
-                        WEBDAV_RETRY,
+                        cfg.get("user"),
+                        cfg.get("pass"),
+                        int(cfg.get("retry", 2)),
                     )
                     logger.info(
                         "Job #%s webdav %s -> %s (%s)",
@@ -1324,6 +1355,70 @@ def register_handlers(client: TelegramClient) -> None:
         await _respond(event, 
             f"当前 18+ 模式：{_MODE_NAMES[mode]}\n请选择新的处理方式：",
             buttons=_mode_buttons(),
+            auto_delete=False,
+        )
+
+    @client.on(events.NewMessage(pattern="/webdav"))
+    async def on_webdav(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /webdav from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        cfg = pipeline.webdav_cfg
+        parts = event.raw_text.strip().split(maxsplit=2)
+        if len(parts) == 1:
+            status = "✅ 已启用" if cfg.get("enabled") else "⛔ 已停用"
+            lines = [
+                "📁 WebDAV 备份配置（下载完成后自动备份媒体）",
+                "",
+                f"状态：{status}",
+                f"地址：{cfg.get('url') or '（未设置）'}",
+                f"账号：{cfg.get('user') or '（未设置）'}",
+                f"密码：{'***' if cfg.get('pass') else '（未设置）'}",
+                f"路径：{cfg.get('path') or '（未设置）'}",
+                f"重试：{cfg.get('retry')}",
+                "",
+                "修改方式：/webdav <项> <值>",
+                "  /webdav on / off         启用/停用",
+                "  /webdav url <地址>       服务器地址",
+                "  /webdav user <账号>      用户名",
+                "  /webdav pass <密码>      密码",
+                "  /webdav path <路径>      远端目录（如 /115/Pron）",
+                "  /webdav retry <次数>     失败重试次数",
+            ]
+            await _respond(event, "\n".join(lines), auto_delete=False)
+            return
+        key = parts[1].lower()
+        val = parts[2] if len(parts) > 2 else ""
+        field_map = {
+            "on": ("enabled", True),
+            "enable": ("enabled", True),
+            "off": ("enabled", False),
+            "disable": ("enabled", False),
+            "url": ("url", val),
+            "user": ("user", val),
+            "pass": ("pass", val),
+            "path": ("path", val),
+            "retry": ("retry", int(val) if val.isdigit() else None),
+        }
+        if key not in field_map:
+            await _respond(
+                event,
+                f"❌ 未知配置项: {key}（可用: on/off/url/user/pass/path/retry）",
+                auto_delete=False,
+            )
+            return
+        field, value = field_map[key]
+        if value is None:
+            await _respond(event, f"❌ 参数无效: /webdav {key} <值>", auto_delete=False)
+            return
+        if field == "path" and value and not value.startswith("/"):
+            value = "/" + value
+        cfg[field] = value
+        pipeline._save_webdav_cfg()
+        status = "✅ 已启用" if cfg.get("enabled") else "⛔ 已停用"
+        await _respond(
+            event,
+            f"✅ 已更新 WebDAV {field}\n当前状态：{status}",
             auto_delete=False,
         )
 

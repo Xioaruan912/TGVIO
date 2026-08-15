@@ -95,7 +95,7 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 
 ### 命令与状态
 
-- **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/about`、`/mode`、`/queue`（**`lang_code=""` + `lang_code="zh"` 都注册**——早期只更新默认语言表导致中文客户端 `zh` 表残留旧命令；必须两个语言位都更新），并 `SetBotMenuButtonRequest` 设默认菜单按钮。已移除的命令：`/progress`、`/pause`、`/resume`、`/cancel`、`/status`（对应功能仍在 `/queue` 按钮与内联回调中提供）。
+- **命令菜单**：启动时 `SetBotCommandsRequest` 注册 `/start`、`/about`、`/mode`、`/webdav`、`/queue`（**`lang_code=""` + `lang_code="zh"` 都注册**——早期只更新默认语言表导致中文客户端 `zh` 表残留旧命令；必须两个语言位都更新），并 `SetBotMenuButtonRequest` 设默认菜单按钮。已移除的命令：`/progress`、`/pause`、`/resume`、`/cancel`、`/status`（对应功能仍在 `/queue` 按钮与内联回调中提供）。
 - **`/status`**：`_Pipeline.status_text(user_id)` 输出**队列全貌**（一次性只读快照）——逐个列出活跃任务的「队列第 N 位 + 阶段 + 进度条」，附「其他」区（等待确认/相册聚合中）。尊重进度条偏好；暂停时标题带「⏸」。
 - **下载优先调度（v9）**：`_upload_worker` 顶部有**下载闸门**——`input_q` 非空或 `_active_downloads > 0` 时挂起上传，全部缓存到本地后按 `_pick_next_upload()`（最小就绪 seq，跳过 `_paused_files`）顺序上传；上传中新到内容会触发闸门先下载再续传。
 - **逐文件上传控制（v9）**：
@@ -182,17 +182,18 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 | `MAX_COVER_IMAGES` | `10` | 封面相册最多图片数（超出按序丢弃） |
 | `SESSION_COLLECT` | `true` | 合集会话：转发自动开始，多次转发汇总为一个合集（视频进同一评论区） |
 | `SESSION_END_TIMEOUT` | `5` | 合集「结束并发布」按钮显示秒数（超时隐藏，继续等待转发） |
-| `WEBDAV_ENABLED` | `false` | 下载完成后把媒体备份到 WebDAV（`WEBDAV_URL` 根目录 + `WEBDAV_PATH` + 当天日期子文件夹） |
-| `WEBDAV_URL` | — | WebDAV 服务器地址（如 `https://file.722225.xyz/dav/`） |
-| `WEBDAV_USER` / `WEBDAV_PASS` | — | WebDAV 账号密码 |
-| `WEBDAV_PATH` | `/影视相关/Pron` | 远端目录（相对 dav 根，按日期建子目录） |
-| `WEBDAV_RETRY` | `2` | 单文件上传失败重试次数 |
 
-### WebDAV 备份（v13）
+> WebDAV 备份**不再通过 .env 配置**（v13.1 起），改为运行中 `/webdav` 命令设置，持久化到 `session/webdav.json`（gitignore，不入库）。
+
+### WebDAV 备份（v13 + v13.1 命令配置）
 
 - 实现于 `src/webdav.py`（**纯标准库** http.client，无新依赖，不阻塞事件循环，阻塞 IO 走 `asyncio.to_thread`）。
-- 触发点：`MediaDownloader.post_download_hooks` 里的 `_on_webdav_upload`（bot.py）——**下载完成后立即后台任务上传**（`<远程路径>/<YYYY-MM-DD>/<文件名>`，MKCOL 自动建目录，失败重试 `WEBDAV_RETRY` 次），**不阻塞** Telegram 下载 worker 与发布流程。
+- 触发点：`MediaDownloader.post_download_hooks` 里的 `_on_webdav_upload`（bot.py）——**下载完成后立即后台任务上传**（`<远程路径>/<YYYY-MM-DD>/<文件名>`，MKCOL 自动建目录，失败重试 `retry` 次），**不阻塞** Telegram 下载 worker 与发布流程。
 - 缓存清理适配：`_finish_seq` → `_schedule_cleanup` 会等待该任务 WebDAV 上传结束后再 rmtree（`_wait_webdav`），避免"文件正在上传、缓存目录先被删"；取消/跳过路径同样安全。清理任务挂在 `self._webdav_tasks`（task → seq）。
+- **配置（v13.1，`/webdav` 命令）**：`_Pipeline.webdav_cfg` 从 `session/webdav.json` 加载（无文件则回退 config.py 的 .env 默认值），`/webdav` 显示当前配置，`/webdav <项> <值>` 设置并 `_save_webdav_cfg()` 持久化：
+  - `/webdav on|off`（enabled）、`url`、`user`、`pass`、`path`（自动补前导 `/`）、`retry`
+  - 密码显示打码 `***`；`/webdav` 已加入命令菜单（main.py `_COMMANDS`）
+- **⚠️ 路径踩坑（v13.1）**：WebDAV 服务（openlist/dav 反代）后台目录结构调整后（原 `影视相关` 被迁移为 `115`），旧路径 `WEBDAV_PATH=/影视相关/Pron` 全部 PUT 404；新路径 `/115/Pron` 已验证可写（MKCOL 201 / PUT 201）。改路径后无需重启容器，重新 `/webdav path /115/Pron` 即生效。排查"webdav 上传失败"先看：`docker logs | grep webdav` 的 `PUT ... -> <code>`（404=路径不存在，403=写权限未开，401=认证失败）。
 
 
 ## 5. 已踩过的坑（重要）
