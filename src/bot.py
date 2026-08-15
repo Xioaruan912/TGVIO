@@ -155,10 +155,11 @@ _START_TEXT = (
     "📤 视频转发机器人\n\n"
     f"目标频道: {DEST_CHANNEL}\n\n"
     "使用方式:\n"
-    "1. 转发含视频/图片的消息给我 → 自动开始合集会话，继续转发自动并入 → 点「🛑 结束并发布」或发 /end 发布到频道\n"
+    "1. 转发含视频/图片的消息给我 → 自动开始合集会话，继续转发自动并入 → 完成后发 /end 或点「🛑 结束并发布」按钮发布到频道\n"
     "2. 发送一个链接（抖音/B站/YouTube 等）→ 自动下载并发布到频道\n\n"
     "合集：图片进频道封面相册（超过 10 张按序丢弃），全部视频整合进同一个评论区；\n"
-    "会话期间发的文字消息会作为评论，结束时整合为封面文字与封面一起发送。\n\n"
+    "会话期间发的文字消息会作为评论，结束时整合为封面文字与封面一起发送。\n"
+    "合集进行中只显示一条状态消息，不会随每次转发反复弹出；发 /end 结束。\n\n"
     "18+ 处理默认「总是正常」；需要雪花遮挡请用 /mode 设置「总是雪花遮挡」或「每次询问」。\n"
     "选「是（雪花遮挡）」时，用 Telegram 内置雪花效果遮挡发布，文件内容不被修改。\n\n"
     f"⚠️ 确认弹窗 {CONFIRM_TIMEOUT} 秒内未回复将自动取消该任务。\n"
@@ -805,7 +806,7 @@ class _Pipeline:
     async def _session_add_batch(
         self, user_id: int, messages: list, chat_id: int = 0
     ) -> None:
-        """把一批媒体加入合集会话（自动 /begin）：追加 → 显示「🛑 结束并发布」按钮 → 5s 后隐藏。"""
+        """把一批媒体加入合集会话（自动 /begin）：追加 → 会话状态消息首次创建一次，后续不再弹出。"""
         session = self.sessions.get(user_id)
         if session is None:
             session = _Session(user_id=user_id)
@@ -826,47 +827,28 @@ class _Pipeline:
         await self._session_touch(user_id, session)
 
     async def _session_touch(self, user_id: int, session: _Session) -> None:
-        """更新会话状态消息：显示「🛑 结束并发布」按钮并重置 5s 隐藏计时。"""
-        if session.button_task is not None:
-            session.button_task.cancel()
+        """合集状态消息：仅在会话开始（首个媒体/评论）时创建一次。
+
+        后续转发/评论**不再更新或弹出**，避免刷屏——保持一条固定消息，
+        等用户发 /end 或点「🛑 结束并发布（/end）」按钮结束。
+        """
+        if session.status is not None:
+            return
         summary = f"已收录 {len(session.items)} 项（{session.media_count} 个媒体"
         if session.texts:
             summary += f" · {session.text_count} 条评论"
         summary += "）"
         text = (
             f"📦 合集会话进行中 · {summary}\n"
-            "继续转发自动加入合集，点击下方按钮或发 /end 结束并发布"
+            "继续转发自动加入合集，点下方按钮或发 /end 结束并发布"
         )
-        buttons = [[Button.inline("🛑 结束并发布", f"session_end:{user_id}")]]
+        buttons = [[Button.inline("🛑 结束并发布（/end）", f"session_end:{user_id}")]]
         try:
-            if session.status is None:
-                session.status = await self.client.send_message(
-                    user_id, text, buttons=buttons
-                )
-            else:
-                await session.status.edit(text, buttons=buttons)
+            session.status = await self.client.send_message(
+                user_id, text, buttons=buttons
+            )
         except Exception as exc:
             logger.exception("Session status update failed: %s", exc)
-        session.button_task = asyncio.get_running_loop().create_task(
-            self._session_button_timeout(user_id, session)
-        )
-
-    async def _session_button_timeout(self, user_id: int, session: _Session) -> None:
-        await asyncio.sleep(SESSION_END_TIMEOUT)
-        if self.sessions.get(user_id) is not session:
-            return
-        summary = f"已收录 {len(session.items)} 项（{session.media_count} 个媒体"
-        if session.texts:
-            summary += f" · {session.text_count} 条评论"
-        summary += "）"
-        try:
-            await session.status.edit(
-                f"📦 合集会话进行中 · {summary}\n"
-                "继续转发自动加入合集，发 /end 结束并发布",
-                buttons=None,
-            )
-        except Exception:
-            pass
 
     async def _session_finalize(self, user_id: int, chat_id: int = 0) -> int:
         """结束会话：先收拢仍在聚合中的相册缓冲，再统一 18+ 询问/入队为单个 collection 任务。"""
@@ -2000,7 +1982,7 @@ def register_handlers(client: TelegramClient):
             event,
             "✅ 合集会话已开始：后续转发（视频/图片）与文字评论将汇总为一个合集，"
             "评论会按行整合为封面文字与封面一起发送。\n"
-            "每次发送后状态消息上会弹出「🛑 结束并发布」，或点输入框上方的「🛑 结束合集」。",
+            "继续转发即可，结束后发 /end 或点状态消息上的「🛑 结束并发布（/end）」按钮发布。",
             buttons=_reply_keyboard(),
         )
 
