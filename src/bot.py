@@ -65,6 +65,7 @@ WEBDAV_CFG_FILE = os.path.join("session", "webdav.json")
 WEBDAV_LOGS_FILE = os.path.join("session", "webdav_logs.json")
 WEBDAV_COUNT_FILE = os.path.join("session", "webdav_count.json")
 WEBDAV_LOG_HOURS = 24
+WEBDAV_AUTORETRY_INTERVAL = 3600  # 失败记录自动重传间隔（秒，默认 1 小时）
 PROXY_FILE = os.path.join("session", "proxy.json")
 
 _NETWORK_ERROR_NAMES = {
@@ -262,7 +263,7 @@ class _Pipeline:
         self.results: dict[int, asyncio.Future] = {}
         self.active: dict[int, dict] = {}
         self.active_seqs: set[int] = set()
-        self._counter = 0
+        self._counter = int(time.time())
         self._dest_input = None
         self._active_downloads = 0
         self._uploading: int | None = None
@@ -616,6 +617,7 @@ class _Pipeline:
         for _ in range(max(1, DOWNLOAD_CONCURRENCY)):
             loop.create_task(self._download_worker())
         loop.create_task(self._upload_worker())
+        loop.create_task(self._webdav_autoretry_loop())
 
     def reserve_seq(self) -> int:
         seq = self._counter
@@ -1066,6 +1068,7 @@ class _Pipeline:
         )
         seq = job.seq
         log = {
+            "key": f"{seq}:{int(time.time())}",
             "seq": seq,
             "ts": time.time(),
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -1109,7 +1112,7 @@ class _Pipeline:
                     self.webdav_keep_cache.add(seq)
                 else:
                     self.webdav_keep_cache.discard(seq)
-                self.webdav_logs[str(seq)] = log
+                self.webdav_logs[log["key"]] = log
                 self._save_webdav_logs()
 
         task = asyncio.get_running_loop().create_task(_upload())
@@ -1295,6 +1298,76 @@ class _Pipeline:
         self.webdav_logs.pop(key, None)
         self._save_webdav_logs()
         return f"🗑 已删除本次上传的 {deleted} 个文件"
+
+    async def _webdav_autoretry_loop(self) -> None:
+        """失败记录自动重传循环：每 WEBDAV_AUTORETRY_INTERVAL（默认 1 小时）扫描一次，
+        对状态非 ok 且本地缓存仍在的文件重传到原 remote_dir，直到全部完成。"""
+        while True:
+            try:
+                await self._webdav_autoretry_once()
+            except Exception as exc:
+                logger.error("WebDAV 自动重传异常: %s", exc)
+            await asyncio.sleep(WEBDAV_AUTORETRY_INTERVAL)
+
+    async def _webdav_autoretry_once(self) -> None:
+        cfg = self.webdav_cfg
+        if not cfg.get("enabled") or not cfg.get("url"):
+            return
+        if not self.webdav_logs:
+            return
+        retried = 0
+        for key, log in list(self.webdav_logs.items()):
+            files = log.get("files", [])
+            pending = [f for f in files if f.get("status") not in ("ok", "deleted")]
+            if not pending:
+                continue
+            changed = False
+            all_ok = True
+            for f in pending:
+                local = f.get("local", "")
+                if not local or not os.path.isfile(local):
+                    logger.info(
+                        "自动重传跳过 %s：本地缓存不存在（%s）", f.get("name", ""), key
+                    )
+                    all_ok = False
+                    continue
+                try:
+                    ok = await asyncio.to_thread(
+                        webdav.upload_file,
+                        cfg.get("url"),
+                        log["remote_dir"],
+                        local,
+                        cfg.get("user"),
+                        cfg.get("pass"),
+                        int(cfg.get("retry", 2)),
+                    )
+                except Exception as exc:
+                    logger.warning("自动重传 %s 异常: %s", f.get("name"), exc)
+                    ok = False
+                if ok:
+                    f["status"] = "ok"
+                    retried += 1
+                    logger.info(
+                        "WebDAV 自动重传成功 %s -> %s/%s",
+                        f.get("name"),
+                        log["remote_dir"],
+                        f.get("name"),
+                    )
+                else:
+                    all_ok = False
+                    logger.info(
+                        "WebDAV 自动重传失败（稍后重试）%s -> %s",
+                        f.get("name"),
+                        log["remote_dir"],
+                    )
+                changed = True
+            if changed:
+                if all_ok:
+                    self.webdav_keep_cache.discard(log["seq"])
+                    self._schedule_cleanup(log["seq"], "")
+                self._save_webdav_logs()
+        if retried:
+            logger.info("WebDAV 自动重传完成：本次成功 %d 个文件", retried)
 
     async def _wait_webdav(self, seq: int, timeout: float | None = None) -> None:
         """等待某任务的 WebDAV 后台上传结束（清理缓存前调用，防删除未传完文件）。"""
@@ -1587,12 +1660,18 @@ class _Pipeline:
 
         async def _delayed() -> None:
             await self._wait_webdav(seq)
+            if seq in self.webdav_keep_cache:
+                logger.info(
+                    "Job #%s webdav 上传失败，保留缓存待自动/手动重传", seq
+                )
+                return
             _do_cleanup()
 
         try:
             asyncio.get_running_loop().create_task(_delayed())
         except RuntimeError:
-            _do_cleanup()
+            if seq not in self.webdav_keep_cache:
+                _do_cleanup()
 
     def _remember_published(self, seq: int, ids: list) -> None:
         self.published[seq] = ids

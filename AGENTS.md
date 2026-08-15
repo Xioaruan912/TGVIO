@@ -200,6 +200,7 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **上传记录（v13.2，`/webdav` 内「📁 上传记录」）**：每次上传逐文件记入 `session/webdav_logs.json`（**只保留最近 24 小时**，`_save_webdav_logs` 自动清理过期）；视图列出每条记录（时间/远程目录/成功数/失败数）+ 每行内联按钮：
   - **🔄 重试（`wd_retry:<key>`）**：仅失败记录显示——从**保留的本地缓存**重传失败文件（`webdav_keep_cache` 集合：`_on_webdav_upload` 有失败即加入并阻止 `_schedule_cleanup` 删缓存；全部成功后自动清理）。缓存已删则提示无法重试。
   - **🗑 删除（`wd_del:<key>`）**：逐文件 `DELETE` 远端（`webdav.delete_remote`，404 视为成功），**不删整个日期文件夹**；成功后移除记录并清理本地缓存。远端删失败会列名提示。
+  - **自动重传（v13.6）**：`_Pipeline._webdav_autoretry_loop`（`start()` 启动）每 `WEBDAV_AUTORETRY_INTERVAL`（默认 **1 小时**）扫描 `webdav_logs`，对状态非 ok/deleted 且**本地缓存仍在**的文件重传到原 `remote_dir`，全部成功后清理缓存；缓存已删（如旧记录）保持失败状态待手动处理。⚠️ 依赖失败时缓存保留——v13.6 修复了 `_schedule_cleanup` 竞态：`_delayed` 在 `_wait_webdav` 结束后**再次检查 `webdav_keep_cache`**，有失败则不删（此前 bug 导致失败缓存被删、无法重试/重传）。log key 改为 `f"{seq}:{int(ts)}"`（唯一，重启后 seq 从 `int(time.time())` 起算，避免覆盖旧记录）。
 - **⚠️ 路径踩坑（v13.1）**：WebDAV 服务（openlist/dav 反代）后台目录结构调整后（原 `影视相关` 被迁移为 `115`），旧路径 `WEBDAV_PATH=/影视相关/Pron` 全部 PUT 404；新路径 `/115/Pron` 已验证可写（MKCOL 201 / PUT 201）。改路径后无需重启容器，重新 `/webdav path /115/Pron` 即生效。排查"webdav 上传失败"先看：`docker logs | grep webdav` 的 `PUT ... -> <code>`（404=路径不存在，403=写权限未开，401=认证失败）。
 
 ### 下载稳定性加固 + HTTP 代理（v14）
