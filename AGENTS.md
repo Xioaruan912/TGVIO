@@ -188,14 +188,16 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 ### WebDAV 备份（v13 + v13.1 命令配置）
 
 - 实现于 `src/webdav.py`（**纯标准库** http.client，无新依赖，不阻塞事件循环，阻塞 IO 走 `asyncio.to_thread`）。
-- 触发点：`MediaDownloader.post_download_hooks` 里的 `_on_webdav_upload`（bot.py）——**下载完成后立即后台任务上传**（`<远程路径>/<YYYY-MM-DD>/<文件名>`，MKCOL 自动建目录，失败重试 `retry` 次），**不阻塞** Telegram 下载 worker 与发布流程。
+- 触发点：`MediaDownloader.post_download_hooks` 里的 `_on_webdav_upload`（bot.py）——**下载完成后立即后台任务上传**，**不阻塞** Telegram 下载 worker 与发布流程。
+- **目录结构（v13.5）**：`<路径>/<YYYY-MM-DD>/<当天第 N 次上传>/`——按"当天第几次上传"分子文件夹（如 `/115/Pron/2026-08-15/1/`、`/2/`、`/3/`…），每次任务一个文件夹，清晰区分批次。序号持久化到 `session/webdav_count.json`（`_webdav_count_lock` 保证并发取号不重复；只保留最近 7 天计数）。`webdav_logs` 的 `remote_dir` 含序号，重试/删除按记录路径操作。
+- 失败重试 `retry` 次，失败文件保留本地缓存供重试。
 - 缓存清理适配：`_finish_seq` → `_schedule_cleanup` 会等待该任务 WebDAV 上传结束后再 rmtree（`_wait_webdav`），避免"文件正在上传、缓存目录先被删"；取消/跳过路径同样安全。清理任务挂在 `self._webdav_tasks`（task → seq）。
 - **配置（v13.1，`/webdav` 命令）**：`_Pipeline.webdav_cfg` 从 `session/webdav.json` 加载（无文件则回退 config.py 的 .env 默认值），`/webdav` 显示当前配置，`/webdav <项> <值>` 设置并 `_save_webdav_cfg()` 持久化：
   - `/webdav on|off`（enabled）、`url`、`user`、`pass`、`path`（自动补前导 `/`）、`retry`
   - 密码显示打码 `***`；`/webdav` 已加入命令菜单（main.py `_COMMANDS`）
   - **v13.3 按钮式交互**：`/webdav` 无参数 → 配置卡片 + 主视图按钮（`_webdav_cfg_view()`）：`⛔停用/🔛启用` 直接切换、`⚙️修改配置`（`wd_cfg:edit` → `_webdav_cfg_fields_view()` 字段页）、`📁上传记录`（`wd_cfg:logs` → `_webdav_logs_view()`）。字段按钮点击后 `event.edit` 提示并进入等待输入状态（`pipeline.webdav_waiting[user_id]=field`），**用户下一条私聊消息（`on_private_message` 顶部，命令实体防护之前）被捕获为新值**（校验：url 需 http(s):// 前缀、retry 需 0-10 数字、path 自动补 `/`），保存后**重新展示字段页**（可连续改多个字段再 `⬅️返回`）；`/取消` 或 `wd_cfg:cancel` 按钮取消。`/webdav <项> <值>` 参数式写法仍兼容。
   - **上传记录入口并入 /webdav（v13.4）**：不再有独立 `/webdavlogs` 命令；日志视图顶部带 `⬅️返回`（`wd_cfg:back` → 主配置视图），重试/删除回调后自动刷新日志视图。
-- **上传记录（v13.2，`/webdavlogs`）**：每次上传逐文件记入 `session/webdav_logs.json`（**只保留最近 24 小时**，`_save_webdav_logs` 自动清理过期）；`/webdavlogs` 列出每条记录（时间/远程目录/成功数/失败数）+ 每行内联按钮：
+- **上传记录（v13.2，`/webdav` 内「📁 上传记录」）**：每次上传逐文件记入 `session/webdav_logs.json`（**只保留最近 24 小时**，`_save_webdav_logs` 自动清理过期）；视图列出每条记录（时间/远程目录/成功数/失败数）+ 每行内联按钮：
   - **🔄 重试（`wd_retry:<key>`）**：仅失败记录显示——从**保留的本地缓存**重传失败文件（`webdav_keep_cache` 集合：`_on_webdav_upload` 有失败即加入并阻止 `_schedule_cleanup` 删缓存；全部成功后自动清理）。缓存已删则提示无法重试。
   - **🗑 删除（`wd_del:<key>`）**：逐文件 `DELETE` 远端（`webdav.delete_remote`，404 视为成功），**不删整个日期文件夹**；成功后移除记录并清理本地缓存。远端删失败会列名提示。
 - **⚠️ 路径踩坑（v13.1）**：WebDAV 服务（openlist/dav 反代）后台目录结构调整后（原 `影视相关` 被迁移为 `115`），旧路径 `WEBDAV_PATH=/影视相关/Pron` 全部 PUT 404；新路径 `/115/Pron` 已验证可写（MKCOL 201 / PUT 201）。改路径后无需重启容器，重新 `/webdav path /115/Pron` 即生效。排查"webdav 上传失败"先看：`docker logs | grep webdav` 的 `PUT ... -> <code>`（404=路径不存在，403=写权限未开，401=认证失败）。

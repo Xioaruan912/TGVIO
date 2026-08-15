@@ -6,7 +6,7 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from telethon import Button, TelegramClient, events
 from telethon.tl.types import (
@@ -63,6 +63,7 @@ PREFS_FILE = os.path.join("session", "prefs.json")
 LEGACY_PREFS_FILE = os.path.join("session", "progress_prefs.json")
 WEBDAV_CFG_FILE = os.path.join("session", "webdav.json")
 WEBDAV_LOGS_FILE = os.path.join("session", "webdav_logs.json")
+WEBDAV_COUNT_FILE = os.path.join("session", "webdav_count.json")
 WEBDAV_LOG_HOURS = 24
 
 _MODE_NAMES = {
@@ -253,6 +254,8 @@ class _Pipeline:
         self.webdav_logs: dict = self._load_webdav_logs()
         self.webdav_keep_cache: set[int] = set()
         self.webdav_waiting: dict[int, str] = {}
+        self.webdav_count: dict = self._load_webdav_count()
+        self._webdav_count_lock = asyncio.Lock()
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -361,6 +364,27 @@ class _Pipeline:
             }
             with open(WEBDAV_LOGS_FILE, "w") as f:
                 json.dump(self.webdav_logs, f, ensure_ascii=False, indent=2)
+        except Exception:
+            pass
+
+    def _load_webdav_count(self) -> dict:
+        try:
+            with open(WEBDAV_COUNT_FILE) as f:
+                data = json.load(f)
+            return data if isinstance(data, dict) else {}
+        except Exception:
+            return {}
+
+    def _save_webdav_count(self) -> None:
+        try:
+            # 只保留最近 7 天的计数，避免文件无限增长
+            self.webdav_count = {
+                k: v
+                for k, v in self.webdav_count.items()
+                if isinstance(v, int) and k >= (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+            }
+            with open(WEBDAV_COUNT_FILE, "w") as f:
+                json.dump(self.webdav_count, f, ensure_ascii=False, indent=2)
         except Exception:
             pass
 
@@ -796,9 +820,10 @@ class _Pipeline:
         )
 
     async def _on_webdav_upload(self, job, paths) -> None:
-        """下载完成后后台上传到 WebDAV（<远程路径>/<当天日期>/文件名），不阻塞主流程。
+        """下载完成后后台上传到 WebDAV，不阻塞主流程。
 
-        逐文件记录状态到 webdav_logs（持久化），失败文件保留本地缓存供 /webdav 记录内重试。
+        目录结构：<路径>/<当天日期>/<当天第 N 次上传>/（N 持久化，重启不重置）。
+        逐文件记录状态到 webdav_logs（持久化），失败文件保留本地缓存供重试。
         """
         cfg = self.webdav_cfg
         if not cfg.get("enabled") or not cfg.get("url"):
@@ -807,7 +832,14 @@ class _Pipeline:
         file_list = [p for p in file_list if os.path.isfile(p)]
         if not file_list:
             return
-        remote_dir = f"{str(cfg.get('path', '')).strip('/')}/{datetime.now().strftime('%Y-%m-%d')}"
+        date_str = datetime.now().strftime("%Y-%m-%d")
+        async with self._webdav_count_lock:
+            n = self.webdav_count.get(date_str, 0) + 1
+            self.webdav_count[date_str] = n
+            self._save_webdav_count()
+        remote_dir = (
+            f"{str(cfg.get('path', '')).strip('/')}/{date_str}/{n}"
+        )
         seq = job.seq
         log = {
             "seq": seq,
