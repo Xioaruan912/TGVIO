@@ -6,6 +6,7 @@ import re
 import shutil
 import time
 from dataclasses import dataclass
+from datetime import datetime
 
 from telethon import Button, TelegramClient, events
 from telethon.tl.types import (
@@ -41,7 +42,14 @@ from .config import (
     SESSION_END_TIMEOUT,
     UPLOAD_TIMEOUT,
     UPLOAD_WORKERS,
+    WEBDAV_ENABLED,
+    WEBDAV_PASS,
+    WEBDAV_PATH,
+    WEBDAV_RETRY,
+    WEBDAV_URL,
+    WEBDAV_USER,
 )
+from . import webdav
 from .media import FileTooLargeError, MediaDownloader, MediaPublisher
 
 logger = logging.getLogger(__name__)
@@ -236,6 +244,7 @@ class _Pipeline:
         self._paused_files: set[int] = set()
         self._future_created: dict[int, float] = {}
         self.sessions: dict[int, _Session] = {}
+        self._webdav_tasks: dict[asyncio.Task, int] = {}
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -260,6 +269,7 @@ class _Pipeline:
         self.downloader.pre_download_hooks.append(self._on_pre_download)
         self.downloader.progress_hooks.append(self._on_download_progress)
         self.downloader.post_download_hooks.append(self._on_download_done)
+        self.downloader.post_download_hooks.append(self._on_webdav_upload)
         self.publisher.progress_hooks.append(self._on_upload_progress)
         self.publisher.pre_publish_hooks.append(self._on_pre_publish)
         self.publisher.post_publish_hooks.append(self._on_published)
@@ -729,6 +739,69 @@ class _Pipeline:
             ],
         )
 
+    async def _on_webdav_upload(self, job, paths) -> None:
+        """下载完成后后台上传到 WebDAV（<远程路径>/<当天日期>/文件名），不阻塞主流程。"""
+        if not WEBDAV_ENABLED or not WEBDAV_URL:
+            return
+        file_list = [paths] if isinstance(paths, str) else list(paths or [])
+        file_list = [p for p in file_list if os.path.isfile(p)]
+        if not file_list:
+            return
+        remote_dir = f"{WEBDAV_PATH.strip('/')}/{datetime.now().strftime('%Y-%m-%d')}"
+        seq = job.seq
+
+        async def _upload() -> None:
+            try:
+                for path in file_list:
+                    ok = await asyncio.to_thread(
+                        webdav.upload_file,
+                        WEBDAV_URL,
+                        remote_dir,
+                        path,
+                        WEBDAV_USER,
+                        WEBDAV_PASS,
+                        WEBDAV_RETRY,
+                    )
+                    logger.info(
+                        "Job #%s webdav %s -> %s (%s)",
+                        seq,
+                        os.path.basename(path),
+                        remote_dir,
+                        "OK" if ok else "FAILED",
+                    )
+            except Exception as exc:
+                logger.error("Job #%s webdav upload error: %s", seq, exc)
+
+        task = asyncio.get_running_loop().create_task(_upload())
+        self._webdav_tasks[task] = seq
+
+        def _done(t: asyncio.Task) -> None:
+            self._webdav_tasks.pop(t, None)
+            if t.exception() and not isinstance(t.exception(), asyncio.CancelledError):
+                logger.error("Job #%s webdav task failed", seq)
+
+        task.add_done_callback(_done)
+
+    async def _wait_webdav(self, seq: int, timeout: float | None = None) -> None:
+        """等待某任务的 WebDAV 后台上传结束（清理缓存前调用，防删除未传完文件）。"""
+        pending = [t for t, s in self._webdav_tasks.items() if s == seq]
+        if not pending:
+            return
+        done, remaining = await asyncio.wait(pending, timeout=timeout)
+        for t in pending:
+            if t in done and not t.cancelled():
+                try:
+                    t.result()
+                except Exception:
+                    pass
+        for t in remaining:
+            t.cancel()
+        for t in remaining:
+            try:
+                await t
+            except Exception:
+                pass
+
     async def _on_upload_progress(
         self, seq: int, received: int, total: int, item: int, items: int
     ) -> None:
@@ -977,9 +1050,29 @@ class _Pipeline:
         self._paused_files.discard(seq)
         self._future_created.pop(seq, None)
         if not keep_cache:
+            self._schedule_cleanup(seq, cleanup)
+
+    def _schedule_cleanup(self, seq: int, cleanup: str) -> None:
+        """清理缓存目录；若该任务仍有 WebDAV 后台上传在跑，则等上传结束再删。"""
+
+        def _do_cleanup() -> None:
             shutil.rmtree(self._workdir(seq), ignore_errors=True)
             if cleanup:
                 shutil.rmtree(cleanup, ignore_errors=True)
+
+        pending = [t for t, s in self._webdav_tasks.items() if s == seq]
+        if not pending:
+            _do_cleanup()
+            return
+
+        async def _delayed() -> None:
+            await self._wait_webdav(seq)
+            _do_cleanup()
+
+        try:
+            asyncio.get_running_loop().create_task(_delayed())
+        except RuntimeError:
+            _do_cleanup()
 
     def _remember_published(self, seq: int, ids: list) -> None:
         self.published[seq] = ids

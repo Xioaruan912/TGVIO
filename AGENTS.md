@@ -182,6 +182,18 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 | `MAX_COVER_IMAGES` | `10` | 封面相册最多图片数（超出按序丢弃） |
 | `SESSION_COLLECT` | `true` | 合集会话：转发自动开始，多次转发汇总为一个合集（视频进同一评论区） |
 | `SESSION_END_TIMEOUT` | `5` | 合集「结束并发布」按钮显示秒数（超时隐藏，继续等待转发） |
+| `WEBDAV_ENABLED` | `false` | 下载完成后把媒体备份到 WebDAV（`WEBDAV_URL` 根目录 + `WEBDAV_PATH` + 当天日期子文件夹） |
+| `WEBDAV_URL` | — | WebDAV 服务器地址（如 `https://file.722225.xyz/dav/`） |
+| `WEBDAV_USER` / `WEBDAV_PASS` | — | WebDAV 账号密码 |
+| `WEBDAV_PATH` | `/影视相关/Pron` | 远端目录（相对 dav 根，按日期建子目录） |
+| `WEBDAV_RETRY` | `2` | 单文件上传失败重试次数 |
+
+### WebDAV 备份（v13）
+
+- 实现于 `src/webdav.py`（**纯标准库** http.client，无新依赖，不阻塞事件循环，阻塞 IO 走 `asyncio.to_thread`）。
+- 触发点：`MediaDownloader.post_download_hooks` 里的 `_on_webdav_upload`（bot.py）——**下载完成后立即后台任务上传**（`<远程路径>/<YYYY-MM-DD>/<文件名>`，MKCOL 自动建目录，失败重试 `WEBDAV_RETRY` 次），**不阻塞** Telegram 下载 worker 与发布流程。
+- 缓存清理适配：`_finish_seq` → `_schedule_cleanup` 会等待该任务 WebDAV 上传结束后再 rmtree（`_wait_webdav`），避免"文件正在上传、缓存目录先被删"；取消/跳过路径同样安全。清理任务挂在 `self._webdav_tasks`（task → seq）。
+
 
 ## 5. 已踩过的坑（重要）
 
