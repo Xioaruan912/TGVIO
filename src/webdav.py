@@ -9,14 +9,19 @@ import base64
 import http.client
 import logging
 import os
+import re
 import ssl
+import time
 import urllib.parse
 
 logger = logging.getLogger(__name__)
 
 _CHUNK = 1024 * 1024
 _REDIRECT_MAX = 3
-_TIMEOUT = 3600
+# socket 级超时：单次 send/recv 操作阻塞上限（覆盖"服务器不响应"卡死，如 PUT 尾部）
+_TIMEOUT = 300
+# 发送循环无进度看门狗：超过该秒数无新字节上传则主动中断（触发重试）
+_STALL_TIMEOUT = 120
 
 
 def _auth_header(user: str, passwd: str) -> str:
@@ -68,6 +73,7 @@ def _put_file(conn: http.client.HTTPConnection, parsed, url_path: str, local_pat
     conn.putheader("Content-Type", "application/octet-stream")
     conn.endheaders()
     sent = 0
+    last_sent = time.monotonic()
     with open(local_path, "rb") as f:
         while True:
             chunk = f.read(_CHUNK)
@@ -75,15 +81,65 @@ def _put_file(conn: http.client.HTTPConnection, parsed, url_path: str, local_pat
                 break
             conn.send(chunk)
             sent += len(chunk)
+            if time.monotonic() - last_sent > _STALL_TIMEOUT:
+                raise TimeoutError(
+                    f"WebDAV 上传无进度超过 {_STALL_TIMEOUT}s，中断重试"
+                )
+            last_sent = time.monotonic()
             if size and sent % (8 * _CHUNK) == 0:
                 logger.info("WebDAV upload %s: %d/%d bytes", url_path, sent, size)
     resp = conn.getresponse()
     resp.read()
-    if resp.status in (200, 201, 204):
-        logger.info("WebDAV uploaded %s (%d bytes)", url_path, size)
-        return True
-    logger.error("WebDAV PUT %s -> %s", url_path, resp.status)
-    return False
+    if resp.status not in (200, 201, 204):
+        logger.error("WebDAV PUT %s -> %s", url_path, resp.status)
+        return False
+    # 完整性校验：远端文件大小必须与本地一致，防止"假成功"（静默丢失）
+    remote_size = _remote_size(parsed, url_path, auth)
+    if remote_size is not None and remote_size != size:
+        logger.error(
+            "WebDAV 完整性校验失败 %s: 远端 %d != 本地 %d",
+            url_path,
+            remote_size,
+            size,
+        )
+        return False
+    logger.info("WebDAV uploaded %s (%d bytes)", url_path, size)
+    return True
+
+
+def _remote_size(parsed, url_path: str, auth: str) -> int | None:
+    """PROPFIND（Depth:0）查询远端文件大小；失败返回 None（不阻断，视为无法校验）。"""
+    target = urllib.parse.urlunsplit(
+        (parsed.scheme, parsed.netloc, urllib.parse.quote(url_path, safe="/"), "", "")
+    )
+    body = (
+        '<?xml version="1.0"?><D:propfind xmlns:D="DAV:">'
+        "<D:prop><D:getcontentlength/></D:prop></D:propfind>"
+    )
+    try:
+        conn = _connect(parsed)
+        try:
+            conn.request(
+                "PROPFIND",
+                target,
+                body=body,
+                headers={
+                    "Authorization": auth,
+                    "Depth": "0",
+                    "Content-Type": "application/xml",
+                },
+            )
+            resp = conn.getresponse()
+            data = resp.read()
+            if resp.status in (200, 207):
+                m = re.search(rb"<D:getcontentlength>(\d+)</D:getcontentlength>", data)
+                if m:
+                    return int(m.group(1))
+            return None
+        finally:
+            conn.close()
+    except Exception:
+        return None
 
 
 def _upload_once(base_url: str, remote_dir: str, local_path: str, user: str, passwd: str) -> bool:

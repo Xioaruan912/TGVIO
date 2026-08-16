@@ -201,6 +201,13 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
   - **🔄 重试（`wd_retry:<key>`）**：仅失败记录显示——从**保留的本地缓存**重传失败文件（`webdav_keep_cache` 集合：`_on_webdav_upload` 有失败即加入并阻止 `_schedule_cleanup` 删缓存；全部成功后自动清理）。缓存已删则提示无法重试。
   - **🗑 删除（`wd_del:<key>`）**：逐文件 `DELETE` 远端（`webdav.delete_remote`，404 视为成功），**不删整个日期文件夹**；成功后移除记录并清理本地缓存。远端删失败会列名提示。
   - **自动重传（v13.6）**：`_Pipeline._webdav_autoretry_loop`（`start()` 启动）每 `WEBDAV_AUTORETRY_INTERVAL`（默认 **1 小时**）扫描 `webdav_logs`，对状态非 ok/deleted 且**本地缓存仍在**的文件重传到原 `remote_dir`，全部成功后清理缓存；缓存已删（如旧记录）保持失败状态待手动处理。⚠️ 依赖失败时缓存保留——v13.6 修复了 `_schedule_cleanup` 竞态：`_delayed` 在 `_wait_webdav` 结束后**再次检查 `webdav_keep_cache`**，有失败则不删（此前 bug 导致失败缓存被删、无法重试/重传）。log key 改为 `f"{seq}:{int(ts)}"`（唯一，重启后 seq 从 `int(time.time())` 起算，避免覆盖旧记录）。
+  - **上传可靠保障（v15，webdav.py 加固）**：
+    - `_TIMEOUT` 3600 → **300s**（socket 级，覆盖"服务器不响应"卡死，如 PUT 尾部挂起）
+    - **无进度看门狗** `_STALL_TIMEOUT=120`：发送循环超 120s 无新字节主动中断重试
+    - **完整性校验（核心）**：PUT 返回 2xx 后 `PROPFIND`（Depth:0）校验远端 `getcontentlength == 本地 size`，不一致视为失败重传——杜绝"假成功"静默丢失
+    - `WEBDAV_RETRY` 默认 **5**（每个文件最多 6 次尝试）
+  - **⚠️ openlist 服务稳定性（2026-08-16 事故）**：`file.722225.xyz` 是 OpenList（Alist 系），nginx 在旧 VPS 154.83.158.223 反代到 **199.47.242.40:5244**。openlist.service 曾运行 12h46m 后因 TLS 请求 panic 崩溃（exit-code 2）→ 全部上传 502/挂起。恢复：`systemctl restart openlist`。故障表现：上传"卡在尾部/99.7%"、PUT 405、PROPFIND 502——先查 `systemctl status openlist` 与 5244 监听。
+  - **批量补传工具 `scripts/ensure_webdav.py`**：遍历本地缓存目录，对远端缺失/大小不一致的文件用新 webdav 逻辑重传（含完整性校验 + 失败后 PROPFIND 兜底防假失败）。用法（容器内）：`python3 scripts/ensure_webdav.py <本地目录> <远端目录>`（配置读 `session/webdav.json`）。
 - **⚠️ 路径踩坑（v13.1）**：WebDAV 服务（openlist/dav 反代）后台目录结构调整后（原 `影视相关` 被迁移为 `115`），旧路径 `WEBDAV_PATH=/影视相关/Pron` 全部 PUT 404；新路径 `/115/Pron` 已验证可写（MKCOL 201 / PUT 201）。改路径后无需重启容器，重新 `/webdav path /115/Pron` 即生效。排查"webdav 上传失败"先看：`docker logs | grep webdav` 的 `PUT ... -> <code>`（404=路径不存在，403=写权限未开，401=认证失败）。
 
 ### 下载稳定性加固 + HTTP 代理（v14）
