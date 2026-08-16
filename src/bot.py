@@ -1,4 +1,5 @@
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -93,6 +94,18 @@ def _is_network_error(exc: Exception) -> bool:
     if "Request was unsuccessful" in str(exc):
         return True
     return False
+
+
+def _file_md5_short(path: str) -> str:
+    """文件内容 MD5 前 8 位（分块读取，大文件不占内存）。"""
+    h = hashlib.md5()
+    with open(path, "rb") as f:
+        while True:
+            c = f.read(1024 * 1024)
+            if not c:
+                break
+            h.update(c)
+    return h.hexdigest()[:8]
 
 _MODE_NAMES = {
     "ask": "每次询问",
@@ -1052,14 +1065,21 @@ class _Pipeline:
         log = {
             "key": f"{seq}:{int(time.time())}",
             "seq": seq,
+            "user_id": job.user_id,
             "ts": time.time(),
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "remote_dir": remote_dir,
-            "files": [
-                {"name": os.path.basename(p), "local": p, "status": "pending"}
-                for p in file_list
-            ],
+            "files": [],
         }
+        for p in file_list:
+            stem, ext = os.path.splitext(os.path.basename(p))
+            log["files"].append(
+                {
+                    "name": f"{_file_md5_short(p)}{ext}",
+                    "local": p,
+                    "status": "pending",
+                }
+            )
 
         async def _upload() -> None:
             try:
@@ -1074,6 +1094,7 @@ class _Pipeline:
                         cfg.get("user"),
                         cfg.get("pass"),
                         int(cfg.get("retry", 2)),
+                        remote_name=f["name"],
                     )
                     f["status"] = "ok" if ok else "failed"
                     logger.info(
@@ -1096,6 +1117,7 @@ class _Pipeline:
                     self.webdav_keep_cache.discard(seq)
                 self.webdav_logs[log["key"]] = log
                 self._save_webdav_logs()
+                await self._notify_webdav_result(job.user_id, log)
 
         task = asyncio.get_running_loop().create_task(_upload())
         self._webdav_tasks[task] = seq
@@ -1106,6 +1128,50 @@ class _Pipeline:
                 logger.error("Job #%s webdav task failed", seq)
 
         task.add_done_callback(_done)
+
+    async def _notify_webdav_result(self, user_id: int, log: dict) -> None:
+        """上传批次结束后通知用户结果（成功/失败）。"""
+        if not user_id:
+            return
+        files = log.get("files", [])
+        total = len(files)
+        failed = [f for f in files if f.get("status") == "failed"]
+        remote = log.get("remote_dir", "")
+        try:
+            if not failed:
+                await self.client.send_message(
+                    user_id,
+                    f"✅ WebDAV 备份完成：{total} 个文件\n{remote}",
+                )
+            else:
+                await self.client.send_message(
+                    user_id,
+                    f"⚠️ WebDAV 备份：{len(failed)}/{total} 个文件失败\n{remote}\n"
+                    f"将每小时自动补传，也可点按钮立即重试",
+                    buttons=[
+                        [
+                            Button.inline(
+                                "🔄 立即重试", f"wd_retry:{log.get('key', '')}"
+                            )
+                        ]
+                    ],
+                )
+        except Exception as exc:
+            logger.warning("WebDAV 结果通知发送失败: %s", exc)
+
+    async def _notify_webdav_autoretry_done(self, log: dict) -> None:
+        """自动补传最终全部成功时通知用户。"""
+        user_id = log.get("user_id")
+        if not user_id:
+            return
+        try:
+            await self.client.send_message(
+                user_id,
+                f"✅ WebDAV 已自动补传完成：{len(log.get('files', []))} 个文件\n"
+                f"{log.get('remote_dir', '')}",
+            )
+        except Exception as exc:
+            logger.warning("WebDAV 补传通知失败: %s", exc)
 
     def _webdav_cfg_view(self) -> tuple:
         """按钮式配置主视图（/webdav）：状态卡片 + 3 个入口按钮，避免臃肿。"""
@@ -1347,6 +1413,7 @@ class _Pipeline:
                 if all_ok:
                     self.webdav_keep_cache.discard(log["seq"])
                     self._schedule_cleanup(log["seq"], "")
+                    await self._notify_webdav_autoretry_done(log)
                 self._save_webdav_logs()
         if retried:
             logger.info("WebDAV 自动重传完成：本次成功 %d 个文件", retried)

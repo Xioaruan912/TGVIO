@@ -78,6 +78,14 @@ def remote_size(base_url: str, remote_dir: str, name: str, user: str, passwd: st
         return None
 
 
+def _remove_local(path: str) -> None:
+    """删除本地缓存文件（确认远端完整后调用）。"""
+    try:
+        os.remove(path)
+    except OSError as exc:
+        logger.warning("删除本地缓存失败 %s: %s", path, exc)
+
+
 def main() -> int:
     if len(sys.argv) < 3:
         print("用法: ensure_webdav.py <本地目录> <远端目录>")
@@ -88,40 +96,50 @@ def main() -> int:
     from src import webdav
 
     cfg = load_cfg()
-    files = sorted(
-        f for f in os.listdir(local_dir)
-        if os.path.isfile(os.path.join(local_dir, f))
-    )
-    print(f"本地文件: {len(files)} 个，远端目录: {remote_dir}", flush=True)
-    ok = skip = fail = 0
-    for name in files:
-        local = os.path.join(local_dir, name)
-        size = os.path.getsize(local)
-        rs = remote_size(cfg["url"], remote_dir, name, cfg["user"], cfg["pass"])
-        if rs is not None and rs == size:
-            skip += 1
-            print(f"[已存在] {name} ({size})", flush=True)
-            continue
-        print(f"[上传] {name} ({size}) 远端={rs}", flush=True)
-        res = webdav.upload_file(
-            cfg["url"], remote_dir, local,
-            cfg["user"], cfg["pass"],
-            retries=max(0, cfg["retry"] - 1),
+    # 持久循环：直到全部文件成功上传（openlist/网络偶发失败会自动重试）
+    round_no = 0
+    while True:
+        round_no += 1
+        print(f"===== 第 {round_no} 轮开始 =====", flush=True)
+        files = sorted(
+            f for f in os.listdir(local_dir)
+            if os.path.isfile(os.path.join(local_dir, f))
         )
-        if not res:
-            # 上传返回失败，但 openlist 可能在尾部已实际落盘——PROPFIND 兜底校验
-            rs2 = remote_size(cfg["url"], remote_dir, name, cfg["user"], cfg["pass"])
-            if rs2 is not None and rs2 == size:
-                logger.warning("%s: 上传报告失败但远端已完整（%d），视为成功", name, size)
-                res = True
-        if res:
-            ok += 1
-            print(f"  -> OK", flush=True)
-        else:
-            fail += 1
-            print(f"  -> FAIL", flush=True)
-    print(f"\n完成: 新传 {ok} / 已存在 {skip} / 失败 {fail}", flush=True)
-    return 1 if fail else 0
+        print(f"本地文件: {len(files)} 个，远端目录: {remote_dir}", flush=True)
+        ok = skip = fail = 0
+        for name in files:
+            local = os.path.join(local_dir, name)
+            size = os.path.getsize(local)
+            rs = remote_size(cfg["url"], remote_dir, name, cfg["user"], cfg["pass"])
+            if rs is not None and rs == size:
+                skip += 1
+                _remove_local(local)
+                continue
+            print(f"[上传] {name} ({size}) 远端={rs}", flush=True)
+            res = webdav.upload_file(
+                cfg["url"], remote_dir, local,
+                cfg["user"], cfg["pass"],
+                retries=max(0, cfg["retry"] - 1),
+            )
+            if not res:
+                # 上传返回失败，但 openlist 可能在尾部已实际落盘——PROPFIND 兜底校验
+                rs2 = remote_size(cfg["url"], remote_dir, name, cfg["user"], cfg["pass"])
+                if rs2 is not None and rs2 == size:
+                    logger.warning("%s: 上传报告失败但远端已完整（%d），视为成功", name, size)
+                    res = True
+            if res:
+                ok += 1
+                _remove_local(local)
+                print(f"  -> OK（已删本地缓存）", flush=True)
+            else:
+                fail += 1
+                print(f"  -> FAIL（下轮重试，本地缓存保留）", flush=True)
+        print(f"第 {round_no} 轮完成: 新传 {ok} / 已存在 {skip} / 失败 {fail}", flush=True)
+        if fail == 0:
+            print("全部文件上传完成", flush=True)
+            return 0
+        print(f"{fail} 个文件仍失败，5 分钟后重试…", flush=True)
+        time.sleep(300)
 
 
 if __name__ == "__main__":

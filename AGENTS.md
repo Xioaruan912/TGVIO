@@ -204,10 +204,13 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
   - **上传可靠保障（v15，webdav.py 加固）**：
     - `_TIMEOUT` 3600 → **300s**（socket 级，覆盖"服务器不响应"卡死，如 PUT 尾部挂起）
     - **无进度看门狗** `_STALL_TIMEOUT=120`：发送循环超 120s 无新字节主动中断重试
-    - **完整性校验（核心）**：PUT 返回 2xx 后 `PROPFIND`（Depth:0）校验远端 `getcontentlength == 本地 size`，不一致视为失败重传——杜绝"假成功"静默丢失
+    - **响应等待 + PROPFIND 轮询确认（v15.1）**：PUT 数据发送完成后响应等待仅 `_RESP_TIMEOUT=30`s，超时/非 2xx（如 423 Locked=后端转存中）**不立即判失败**，改用 `_verify_remote` PROPFIND 轮询（36×10s=6 分钟）确认远端 `getcontentlength == 本地 size` 才成功——兼容 openlist 接收后后台转存上游（115）慢响应的行为，杜绝"假成功"静默丢失；`upload_file` 重试间隔 60s（给后端落盘时间，避免 423 锁冲突）
     - `WEBDAV_RETRY` 默认 **5**（每个文件最多 6 次尝试）
-  - **⚠️ openlist 服务稳定性（2026-08-16 事故）**：`file.722225.xyz` 是 OpenList（Alist 系），nginx 在旧 VPS 154.83.158.223 反代到 **199.47.242.40:5244**。openlist.service 曾运行 12h46m 后因 TLS 请求 panic 崩溃（exit-code 2）→ 全部上传 502/挂起。恢复：`systemctl restart openlist`。故障表现：上传"卡在尾部/99.7%"、PUT 405、PROPFIND 502——先查 `systemctl status openlist` 与 5244 监听。
-  - **批量补传工具 `scripts/ensure_webdav.py`**：遍历本地缓存目录，对远端缺失/大小不一致的文件用新 webdav 逻辑重传（含完整性校验 + 失败后 PROPFIND 兜底防假失败）。用法（容器内）：`python3 scripts/ensure_webdav.py <本地目录> <远端目录>`（配置读 `session/webdav.json`）。
+  - **上传结果通知（v15.2）**：`_on_webdav_upload` 结束后 `_notify_webdav_result` 给用户发结果——全部成功 `✅ 备份完成：N 个文件`；有失败 `⚠️ 失败 M/N + 🔄立即重试按钮（wd_retry）`。自动重传最终全部成功时 `_notify_webdav_autoretry_done` 通知 `✅ 已自动补传完成`（log 需含 `user_id`，v15.2 起 `_on_webdav_upload` 写入）。
+  - **hash 重命名（v15.3）**：所有 WebDAV 上传文件统一命名为 `<文件内容MD5前8位>.<后缀>`（`_file_md5_short`，分块读取不占内存），避免原始长文件名/隐私/特殊字符；`webdav.upload_file` 新增 `remote_name` 参数。存量缓存批量重命名用 `scripts/rename_media.py`。
+  - **确认成功即删本地缓存（v15.3）**：`scripts/ensure_webdav.py` 对每个文件经 PROPFIND 确认远端完整后**立即删除本地缓存**（`_remove_local`），失败文件保留下轮重试；持久循环直到全部成功（openlist/网络偶发失败每 5 分钟自动重试一轮）。bot 主流程已有对应逻辑：`_on_webdav_upload` 全部成功 → `webdav_keep_cache` 释放 → `_schedule_cleanup` 等 webdav 结束后清理缓存。
+  - **⚠️ openlist 服务稳定性（2026-08-16 事故）**：`file.<WebDAV域名>` 是 OpenList（Alist 系），nginx 在旧 VPS 反代到**生产 VPS 的 5244 端口**。openlist.service 曾运行 12h46m 后因 TLS 请求 panic 崩溃（exit-code 2）→ 全部上传 502/挂起。恢复：`systemctl restart openlist`。故障表现：上传"卡在尾部/99.7%"、PUT 405、PROPFIND 502——先查 `systemctl status openlist` 与 5244 监听。**2026-08-16 晚起 openlist 长期拒绝 WebDAV 写入（PUT 全部 405，直连 5244 也 405），补传暂停**；本地缓存（downloads/）完整保留，恢复写入后 `ensure_webdav.py` / 自动重传即可继续。
+  - **批量补传工具 `scripts/ensure_webdav.py`**：遍历本地缓存目录，对远端缺失/大小不一致的文件用新 webdav 逻辑重传（含完整性校验 + 失败后 PROPFIND 兜底防假失败 + **确认成功后删除本地缓存** + **持久循环每 5 分钟重试失败文件直到全部成功**）。用法（容器内）：`python3 scripts/ensure_webdav.py <本地目录> <远端目录>`（配置读 `session/webdav.json`）。
 - **⚠️ 路径踩坑（v13.1）**：WebDAV 服务（openlist/dav 反代）后台目录结构调整后（原 `影视相关` 被迁移为 `115`），旧路径 `WEBDAV_PATH=/影视相关/Pron` 全部 PUT 404；新路径 `/115/Pron` 已验证可写（MKCOL 201 / PUT 201）。改路径后无需重启容器，重新 `/webdav path /115/Pron` 即生效。排查"webdav 上传失败"先看：`docker logs | grep webdav` 的 `PUT ... -> <code>`（404=路径不存在，403=写权限未开，401=认证失败）。
 
 ### 下载稳定性加固 + HTTP 代理（v14）
@@ -294,15 +297,15 @@ docker compose restart / stop / start
 
 脚本自动执行 4 步：
 1. **打包**：`tar` 打包 `/root/telegram-video-forwarder` → `/root/forwarder.tgz`，排除 `session/`、`downloads/`、`__pycache__`（**含 `.env`**，VPS 配置随代码一起同步）
-2. **上传**：`sshpass + scp` 到 VPS `154.83.158.223:/tmp/forwarder.tgz`（root 密码明文在脚本内，勿外泄）
+2. **上传**：`sshpass + scp` 到旧 VPS（`~/deploy_vps.sh` 内 IP）`/tmp/forwarder.tgz`（root 密码明文在脚本内，勿外泄）
 3. **解压覆盖**：VPS `/root/` 下解压覆盖同名目录
 4. **重建启动**：`docker compose up -d --build` + 打印容器状态
 
 ### 部署后必须验证（不可跳过）
 
 ```bash
-# VPS 上查看容器状态与启动日志（需密码，见 deploy_vps.sh 内 PASS）
-sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@154.83.158.223 \
+# VPS 上查看容器状态与启动日志（目标 IP/密码见 deploy_vps.sh）
+sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@<VPS_IP> \
   'docker ps --filter "name=telegram-video-forwarder" --format "{{.Names}} {{.Status}}" && docker logs --tail 20 telegram-video-forwarder 2>&1'
 ```
 

@@ -8,18 +8,18 @@
 ## 0. 版本基线（重要，2026-08-15）
 
 - **GitHub 仓库**：`https://github.com/Xioaruan912/TG_Upload_bot.git`（remote `origin`，main 分支，凭据在 `~/.git-credentials`）
-- **生产 VPS**：`199.47.242.40`（HostDZire，root/密码见用户提供；容器 `telegram-video-forwarder`，`docker compose up -d --build` 部署）
+- **生产 VPS**：HostDZire（root/密码见用户提供；容器 `telegram-video-forwarder`，`docker compose up -d --build` 部署）
 - **本机/生产基线一致**：本机工作区 = VPS 生产版本（含 v13 webdav 功能 + caption 水印 footer + `/webdav` 命令 v13.1）
-- **注意**：`~/deploy_vps.sh` 部署目标是**旧 VPS 154.83.158.223**；新生产是 199.47.242.40，需手动 tar+scp 部署（见下方工作流）
+- **注意**：`~/deploy_vps.sh` 部署目标是**旧 VPS**；新生产是 HostDZire，需手动 tar+scp 部署（见下方工作流）
 - **WebDAV 配置不再写 .env**：运行中 `/webdav` 命令配置，持久化 `session/webdav.json`（gitignore）
 
-## 0.1 部署到新生产 VPS 的工作流（199.47.242.40）
+## 0.1 部署到新生产 VPS 的工作流（HostDZire）
 
 ```bash
 cd /root
 tar czf /tmp/tg_deploy.tgz --exclude=.git --exclude=session --exclude=downloads --exclude=__pycache__ telegram-video-forwarder
-sshpass -p '<PASS>' scp -P 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/tg_deploy.tgz root@199.47.242.40:/tmp/
-sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@199.47.242.40 \
+sshpass -p '<PASS>' scp -P 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/tg_deploy.tgz root@<VPS_IP>:/tmp/
+sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@<VPS_IP> \
   'cd /root && tar xzf /tmp/tg_deploy.tgz && cd telegram-video-forwarder && docker compose up -d --build'
 ```
 - 验证：`docker ps` 容器 `Up`；日志出现 `Bot commands registered` + `Bot started`

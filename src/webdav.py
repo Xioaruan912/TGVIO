@@ -22,6 +22,12 @@ _REDIRECT_MAX = 3
 _TIMEOUT = 300
 # 发送循环无进度看门狗：超过该秒数无新字节上传则主动中断（触发重试）
 _STALL_TIMEOUT = 120
+# PUT 数据发送完成后，等待服务器响应的最长时间（openlist 对大文件 PUT 响应慢，
+# 超时后改用 PROPFIND 轮询确认远端完整性，而不是干等后重传整个文件）
+_RESP_TIMEOUT = 30
+# PROPFIND 轮询确认次数与间隔（openlist 接收后后台转存，需等其完成）
+_VERIFY_ATTEMPTS = 36
+_VERIFY_INTERVAL = 10
 
 
 def _auth_header(user: str, passwd: str) -> str:
@@ -88,23 +94,40 @@ def _put_file(conn: http.client.HTTPConnection, parsed, url_path: str, local_pat
             last_sent = time.monotonic()
             if size and sent % (8 * _CHUNK) == 0:
                 logger.info("WebDAV upload %s: %d/%d bytes", url_path, sent, size)
-    resp = conn.getresponse()
-    resp.read()
-    if resp.status not in (200, 201, 204):
-        logger.error("WebDAV PUT %s -> %s", url_path, resp.status)
-        return False
-    # 完整性校验：远端文件大小必须与本地一致，防止"假成功"（静默丢失）
-    remote_size = _remote_size(parsed, url_path, auth)
-    if remote_size is not None and remote_size != size:
-        logger.error(
-            "WebDAV 完整性校验失败 %s: 远端 %d != 本地 %d",
-            url_path,
-            remote_size,
-            size,
+    # 数据已发送完成。部分 WebDAV 服务（如 openlist 转发上游）对大文件 PUT 响应很慢，
+    # 响应等待只给 _RESP_TIMEOUT 秒；超时/异常不当作失败，改用 PROPFIND 轮询确认远端完整性。
+    try:
+        conn.sock.settimeout(_RESP_TIMEOUT)
+        resp = conn.getresponse()
+        resp.read()
+        if resp.status in (200, 201, 204):
+            return _verify_remote(parsed, url_path, size, auth)
+        # 非成功状态（423 Locked=后台转存中，或其它）也可能最终落盘——先轮询确认
+        logger.warning(
+            "WebDAV PUT %s -> %s，PROPFIND 轮询确认…", url_path, resp.status
         )
-        return False
-    logger.info("WebDAV uploaded %s (%d bytes)", url_path, size)
-    return True
+        return _verify_remote(parsed, url_path, size, auth)
+    except Exception as exc:
+        logger.warning(
+            "WebDAV PUT %s 响应等待超时(%s)，PROPFIND 轮询确认…",
+            url_path,
+            exc.__class__.__name__,
+        )
+        return _verify_remote(parsed, url_path, size, auth)
+
+
+def _verify_remote(parsed, url_path: str, size: int, auth: str, attempts: int = None, interval: float = None) -> bool:
+    """PROPFIND 轮询确认远端文件大小 == 本地大小（防假成功；兼容服务器响应慢）。"""
+    attempts = _VERIFY_ATTEMPTS if attempts is None else attempts
+    interval = _VERIFY_INTERVAL if interval is None else interval
+    for _ in range(attempts):
+        rs = _remote_size(parsed, url_path, auth)
+        if rs is not None and rs == size:
+            logger.info("WebDAV uploaded %s (%d bytes)", url_path, size)
+            return True
+        time.sleep(interval)
+    logger.error("WebDAV 完整性校验失败 %s: 远端未确认完整", url_path)
+    return False
 
 
 def _remote_size(parsed, url_path: str, auth: str) -> int | None:
@@ -142,11 +165,19 @@ def _remote_size(parsed, url_path: str, auth: str) -> int | None:
         return None
 
 
-def _upload_once(base_url: str, remote_dir: str, local_path: str, user: str, passwd: str) -> bool:
+def _upload_once(
+    base_url: str,
+    remote_dir: str,
+    local_path: str,
+    user: str,
+    passwd: str,
+    remote_name: str = "",
+) -> bool:
     """单次上传（不重试）。remote_dir 为相对 dav 根的目录路径（自动创建日期文件夹）。"""
     auth = _auth_header(user, passwd)
     parsed, root_path = _split(base_url)
-    rel_dir = f"{remote_dir.strip('/')}/{os.path.basename(local_path)}"
+    name = remote_name or os.path.basename(local_path)
+    rel_dir = f"{remote_dir.strip('/')}/{name}"
     url_path = f"{root_path.rstrip('/')}/{rel_dir}"
     conn = _connect(parsed)
     try:
@@ -163,14 +194,21 @@ def upload_file(
     user: str,
     passwd: str,
     retries: int = 2,
+    remote_name: str = "",
 ) -> bool:
-    """上传 local_path 到 <base_url>/<remote_dir>/<文件名>，失败自动重试 retries 次。"""
+    """上传 local_path 到 <base_url>/<remote_dir>/<文件名>，失败自动重试 retries 次。
+
+    默认远端文件名 = 本地 basename；传 remote_name 可自定义（如 hash 名）。
+    重试间隔较长（60s），给后端（如 openlist 转存上游）时间完成落盘，避免 423 锁冲突。
+    """
     for attempt in range(retries + 1):
         try:
-            if _upload_once(base_url, remote_dir, local_path, user, passwd):
+            if _upload_once(base_url, remote_dir, local_path, user, passwd, remote_name):
                 return True
         except Exception as exc:
             logger.warning("WebDAV upload attempt %d failed: %s", attempt + 1, exc)
+        if attempt < retries:
+            time.sleep(60)
     logger.error("WebDAV upload failed after %d attempts: %s", retries + 1, local_path)
     return False
 
