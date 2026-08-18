@@ -68,7 +68,14 @@ def _mkcol(conn: http.client.HTTPConnection, parsed, dir_path: str, auth: str) -
     return False
 
 
-def _put_file(conn: http.client.HTTPConnection, parsed, url_path: str, local_path: str, auth: str) -> bool:
+def _put_file(
+    conn: http.client.HTTPConnection,
+    parsed,
+    url_path: str,
+    local_path: str,
+    auth: str,
+    progress_callback=None,
+) -> bool:
     size = os.path.getsize(local_path)
     target = urllib.parse.urlunsplit(
         (parsed.scheme, parsed.netloc, urllib.parse.quote(url_path, safe="/"), "", "")
@@ -94,6 +101,8 @@ def _put_file(conn: http.client.HTTPConnection, parsed, url_path: str, local_pat
             last_sent = time.monotonic()
             if size and sent % (8 * _CHUNK) == 0:
                 logger.info("WebDAV upload %s: %d/%d bytes", url_path, sent, size)
+                if progress_callback:
+                    progress_callback(sent, size)
     # 数据已发送完成。部分 WebDAV 服务（如 openlist 转发上游）对大文件 PUT 响应很慢，
     # 响应等待只给 _RESP_TIMEOUT 秒；超时/异常不当作失败，改用 PROPFIND 轮询确认远端完整性。
     try:
@@ -172,6 +181,7 @@ def _upload_once(
     user: str,
     passwd: str,
     remote_name: str = "",
+    progress_callback=None,
 ) -> bool:
     """单次上传（不重试）。remote_dir 为相对 dav 根的目录路径（自动创建日期文件夹）。"""
     auth = _auth_header(user, passwd)
@@ -182,7 +192,7 @@ def _upload_once(
     conn = _connect(parsed)
     try:
         _mkcol(conn, parsed, f"{root_path.rstrip('/')}/{remote_dir.strip('/')}", auth)
-        return _put_file(conn, parsed, url_path, local_path, auth)
+        return _put_file(conn, parsed, url_path, local_path, auth, progress_callback)
     finally:
         conn.close()
 
@@ -195,15 +205,17 @@ def upload_file(
     passwd: str,
     retries: int = 2,
     remote_name: str = "",
+    progress_callback=None,
 ) -> bool:
     """上传 local_path 到 <base_url>/<remote_dir>/<文件名>，失败自动重试 retries 次。
 
     默认远端文件名 = 本地 basename；传 remote_name 可自定义（如 hash 名）。
     重试间隔较长（60s），给后端（如 openlist 转存上游）时间完成落盘，避免 423 锁冲突。
+    progress_callback(sent, size) 每约 8MB 调用一次（发送循环内，线程上下文）。
     """
     for attempt in range(retries + 1):
         try:
-            if _upload_once(base_url, remote_dir, local_path, user, passwd, remote_name):
+            if _upload_once(base_url, remote_dir, local_path, user, passwd, remote_name, progress_callback):
                 return True
         except Exception as exc:
             logger.warning("WebDAV upload attempt %d failed: %s", attempt + 1, exc)

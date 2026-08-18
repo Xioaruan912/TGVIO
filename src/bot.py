@@ -1044,7 +1044,8 @@ class _Pipeline:
         """下载完成后后台上传到 WebDAV，不阻塞主流程。
 
         目录结构：<路径>/<当天日期>/<当天第 N 次上传>/（N 持久化，重启不重置）。
-        逐文件记录状态到 webdav_logs（持久化），失败文件保留本地缓存供重试。
+        逐文件记录状态到 webdav_logs（批次开始即落盘，重启可见），失败文件保留本地缓存供重试。
+        发送一条状态消息实时展示上传进度（逐文件更新，最后编辑为最终结果）。
         """
         cfg = self.webdav_cfg
         if not cfg.get("enabled") or not cfg.get("url"):
@@ -1081,11 +1082,73 @@ class _Pipeline:
                 }
             )
 
+        # 批次开始即落盘（进行中在 /webdav 记录里可见，重启也能恢复）
+        self.webdav_logs[log["key"]] = log
+        self._save_webdav_logs()
+
+        total = len(log["files"])
+        status_msg = None
+        if job.user_id:
+            try:
+                status_msg = await self.client.send_message(
+                    job.user_id,
+                    f"📤 WebDAV 开始备份：{total} 个文件\n{remote_dir}",
+                )
+            except Exception as exc:
+                logger.warning("WebDAV 开始通知发送失败: %s", exc)
+
+        async def _render_final() -> str:
+            """渲染最终结果文本（全部成功 / 有失败）。"""
+            ok = sum(1 for f in log["files"] if f.get("status") == "ok")
+            failed = total - ok
+            if failed == 0:
+                return f"✅ WebDAV 备份完成：{ok} 个文件\n{remote_dir}"
+            return (
+                f"⚠️ WebDAV 备份：{failed}/{total} 个文件失败\n{remote_dir}\n"
+                f"失败文件将每小时自动补传，也可点按钮立即重试"
+            )
+
+        async def _edit_status(text: str, buttons=None) -> None:
+            nonlocal status_msg
+            if not status_msg:
+                return
+            try:
+                status_msg = await status_msg.edit(text, buttons=buttons)
+            except Exception as exc:
+                logger.debug("WebDAV 状态消息编辑失败: %s", exc)
+
+        # 进度编辑节流 + 代际计数：防止迟到的进度编辑覆盖最终结果
+        state = {"gen": 0, "last": 0.0}
+        loop = asyncio.get_running_loop()
+
+        def _progress_cb(sent: int, size: int, _fname: str = "") -> None:
+            now = time.monotonic()
+            if now - state["last"] < 5.0:
+                return
+            state["last"] = now
+            gen = state["gen"]
+            pct = (sent / size * 100) if size else 0
+
+            async def _apply() -> None:
+                if state["gen"] != gen:
+                    return
+                await _edit_status(
+                    f"📤 WebDAV 备份中\n{_fname}  ({pct:.0f}%)\n{remote_dir}"
+                )
+
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_apply()))
+
         async def _upload() -> None:
             try:
                 for f in log["files"]:
                     if f["status"] == "ok":
                         continue
+                    f["status"] = "uploading"
+                    self._save_webdav_logs()
+                    cur = sum(1 for x in log["files"] if x.get("status") == "ok") + 1
+                    await _edit_status(
+                        f"📤 WebDAV 备份中 {cur}/{total}\n{f['name']}\n{remote_dir}"
+                    )
                     ok = await asyncio.to_thread(
                         webdav.upload_file,
                         cfg.get("url"),
@@ -1095,8 +1158,10 @@ class _Pipeline:
                         cfg.get("pass"),
                         int(cfg.get("retry", 2)),
                         remote_name=f["name"],
+                        progress_callback=lambda s, sz, _n=f["name"]: _progress_cb(s, sz, _n),
                     )
                     f["status"] = "ok" if ok else "failed"
+                    self._save_webdav_logs()
                     logger.info(
                         "Job #%s webdav %s -> %s (%s)",
                         seq,
@@ -1109,6 +1174,7 @@ class _Pipeline:
                 for f in log["files"]:
                     if f["status"] == "pending":
                         f["status"] = "failed"
+                self._save_webdav_logs()
             finally:
                 failed = [f for f in log["files"] if f["status"] == "failed"]
                 if failed:
@@ -1117,7 +1183,15 @@ class _Pipeline:
                     self.webdav_keep_cache.discard(seq)
                 self.webdav_logs[log["key"]] = log
                 self._save_webdav_logs()
-                await self._notify_webdav_result(job.user_id, log)
+                final_text = await _render_final()
+                if status_msg:
+                    buttons = None
+                    if failed:
+                        buttons = [[Button.inline("🔄 立即重试", f"wd_retry:{log['key']}")]]
+                    state["gen"] += 1
+                    await _edit_status(final_text, buttons=buttons)
+                else:
+                    await self._notify_webdav_result(job.user_id, log)
 
         task = asyncio.get_running_loop().create_task(_upload())
         self._webdav_tasks[task] = seq
@@ -1246,12 +1320,24 @@ class _Pipeline:
             files = log.get("files", [])
             total = len(files)
             ok = sum(1 for f in files if f.get("status") == "ok")
-            failed = total - ok
-            mark = "✅ 全部成功" if failed == 0 else f"⚠️ 失败 {failed}/{total}"
+            running = any(
+                f.get("status") in ("pending", "uploading") for f in files
+            )
+            failed = total - ok - sum(
+                1 for f in files if f.get("status") in ("pending", "uploading")
+            )
+            if running:
+                mark = "⏳ 进行中"
+            elif failed == 0:
+                mark = "✅ 全部成功"
+            else:
+                mark = f"⚠️ 失败 {failed}/{total}"
             lines.append(
                 f"{_pos_token(index + 1)} {log.get('time', '')}  {mark}\n"
                 f"    {log.get('remote_dir', '')}（{ok}/{total}）"
             )
+            if running:
+                continue
             row = []
             if failed > 0:
                 row.append(Button.inline("🔄 重试", f"wd_retry:{key}"))
