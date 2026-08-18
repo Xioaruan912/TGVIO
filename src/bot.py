@@ -189,7 +189,8 @@ _ABOUT_TEXT = (
     "/start    使用说明\n"
     "/about    关于/命令说明\n"
     "/mode     设置 18+ 处理方式（默认总是正常，可改每次询问/总是雪花/总是正常）\n"
-    "/webdav   配置 WebDAV 备份 / 查看上传记录（📁 按钮进入，可重试/删除）\n"
+    "/webdav   配置 WebDAV 备份链接\n"
+    "/webdavlogs  查看上传记录 / 本地待上传缓存\n"
     "/proxy    代理设置（HTTP 代理，下载失败自动切换）\n"
     "/queue    管理队列（逐项取消/暂停/恢复）\n"
     "/begin    开始合集会话（转发会自动开始）\n"
@@ -1301,7 +1302,6 @@ class _Pipeline:
         buttons = [
             [toggle],
             [Button.inline("⚙️ 修改配置", "wd_cfg:edit")],
-            [Button.inline("📁 上传记录", "wd_cfg:logs")],
         ]
         return "\n".join(lines), buttons
 
@@ -1329,21 +1329,106 @@ class _Pipeline:
         ]
         return "\n".join(lines), buttons
 
+    def _webdav_cache_dirs(self) -> list:
+        """扫描 downloads/ 下的 job-* 目录，找出仍含文件的待上传缓存。
+
+        排除：空目录、已被 webdav_logs 全部 ok 覆盖（本地缓存已确认上传）的目录。
+        返回 [(job_dir, seq, files_count, total_size, remote_dir)]。
+        """
+        result = []
+        try:
+            entries = sorted(os.listdir(DOWNLOAD_DIR))
+        except OSError:
+            return result
+        for name in entries:
+            if not name.startswith("job-"):
+                continue
+            seq_s = name[4:]
+            if not seq_s.isdigit():
+                continue
+            job_dir = os.path.join(DOWNLOAD_DIR, name)
+            if not os.path.isdir(job_dir):
+                continue
+            files = [
+                f for f in os.listdir(job_dir)
+                if os.path.isfile(os.path.join(job_dir, f))
+            ]
+            if not files:
+                continue
+            # 已被某条 log 全部 ok 覆盖则不算待上传
+            all_ok = False
+            remote_dir = ""
+            for log in self.webdav_logs.values():
+                if log.get("seq") != int(seq_s):
+                    continue
+                remote_dir = log.get("remote_dir", "")
+                ls = log.get("files", [])
+                if ls and all(f.get("status") == "ok" for f in ls):
+                    all_ok = True
+                break
+            if all_ok:
+                continue
+            # 无 log 记录时按目录 mtime 日期 + webdav_count 序号推导 remote_dir
+            if not remote_dir:
+                try:
+                    mtime = os.path.getmtime(job_dir)
+                    d = datetime.fromtimestamp(mtime)
+                    date_str = d.strftime("%Y-%m-%d")
+                    n = self.webdav_count.get(date_str, 1)
+                    remote_dir = (
+                        f"{str(self.webdav_cfg.get('path', '')).strip('/')}"
+                        f"/{date_str}/{n}"
+                    )
+                except Exception:
+                    remote_dir = ""
+            size = sum(
+                os.path.getsize(os.path.join(job_dir, f))
+                for f in files
+                if os.path.isfile(os.path.join(job_dir, f))
+            )
+            result.append((job_dir, int(seq_s), len(files), size, remote_dir))
+        return result
+
+    def _webdav_cache_view(self) -> tuple:
+        """「本地待上传缓存」区块：每个 job 目录一行 + 上传按钮。"""
+        dirs = self._webdav_cache_dirs()
+        lines = ["📦 本地待上传缓存", ""]
+        buttons: list = []
+        if not dirs:
+            lines.append("（无待上传缓存）")
+            return "\n".join(lines), buttons
+        for index, (job_dir, seq, n, size, remote_dir) in enumerate(dirs):
+            size_mb = size / (1024 * 1024)
+            size_txt = f"{size_mb:.0f}M" if size_mb < 1024 else f"{size_mb / 1024:.1f}G"
+            remote_txt = remote_dir or "（待定）"
+            lines.append(
+                f"{_pos_token(index + 1)} {os.path.basename(job_dir)}  "
+                f"{n} 个文件 · {size_txt}"
+            )
+            lines.append(f"   📂 {remote_txt}")
+            buttons.append(
+                [Button.inline(f"📤 上传 → {os.path.basename(job_dir)}", f"wd_cache_up:{seq}")]
+            )
+        return "\n".join(lines), buttons
+
     def _webdav_logs_view(self) -> tuple:
-        """/webdav 内「上传记录」视图：最近 24 小时的上传记录 + 每行操作按钮。"""
+        """/webdavlogs 视图：顶部本地待上传缓存 + 上传记录（分层清晰）。"""
         self._save_webdav_logs()
+        cache_text, cache_buttons = self._webdav_cache_view()
         logs = sorted(
             self.webdav_logs.items(),
             key=lambda kv: kv[1].get("ts", 0),
             reverse=True,
         )
+        lines = [cache_text]
+        buttons: list = [*cache_buttons]
+        lines.append("")
+        lines.append("────────────────────────")
+        lines.append("📁 上传记录（最近 24 小时）")
         if not logs:
-            return (
-                "📁 WebDAV 上传记录\n\n（最近 24 小时暂无记录）",
-                [[Button.inline("⬅️ 返回", "wd_cfg:back")]],
-            )
-        lines = ["📁 WebDAV 上传记录（最近 24 小时）", ""]
-        buttons = [[Button.inline("⬅️ 返回", "wd_cfg:back")]]
+            lines.append("")
+            lines.append("（暂无记录）")
+            return "\n".join(lines), buttons or [[Button.inline("🔄 刷新", "wd_cfg:logs")]]
         for index, (key, log) in enumerate(logs):
             files = log.get("files", [])
             total = len(files)
@@ -1364,11 +1449,20 @@ class _Pipeline:
             else:
                 mark = f"⚠️ 失败 {failed}/{total}"
                 bar_pct = ok / total * 100 if total else 0
-            lines.append(
-                f"{_pos_token(index + 1)} {log.get('time', '')}  {mark}\n"
-                f"    {render_bar(bar_pct)}  {ok}/{total}\n"
-                f"    {log.get('remote_dir', '')}"
-            )
+            # 时间短格式：08-17 17:56（跨年才显示年份）
+            t = log.get("time", "")
+            t_short = t
+            try:
+                dt = datetime.strptime(t, "%Y-%m-%d %H:%M:%S")
+                t_short = dt.strftime("%m-%d %H:%M")
+                if dt.year != datetime.now().year:
+                    t_short = dt.strftime("%Y-%m-%d %H:%M")
+            except Exception:
+                pass
+            lines.append("")
+            lines.append(f"{_pos_token(index + 1)} {t_short}  {mark}")
+            lines.append(f"   📂 {log.get('remote_dir', '')}")
+            lines.append(f"   {render_bar(bar_pct)}  {ok}/{total}")
             if running:
                 continue
             row = []
@@ -1428,6 +1522,104 @@ class _Pipeline:
 
         task.add_done_callback(_done)
         return f"🔄 正在重试 {len(failed)} 个文件…"
+
+    async def _webdav_upload_cache(self, seq: int) -> str:
+        """补传本地缓存目录（/webdavlogs 的「📤 上传」按钮）。
+
+        目录 = DOWNLOAD_DIR/job-<seq>；remote_dir 优先取该 seq 已有 log 记录，
+        否则按 webdav_count 的当天序号推导 path/日期/N。逐文件上传（hash 名，
+        PROPFIND 确认），成功后删除本地文件，批次结束写 log + 通知。
+        """
+        job_dir = os.path.join(DOWNLOAD_DIR, f"job-{seq}")
+        if not os.path.isdir(job_dir):
+            return "❌ 缓存目录不存在"
+        cfg = self.webdav_cfg
+        if not cfg.get("enabled") or not cfg.get("url"):
+            return "❌ WebDAV 未启用或未配置地址（先用 /webdav）"
+        files = sorted(
+            f for f in os.listdir(job_dir)
+            if os.path.isfile(os.path.join(job_dir, f))
+        )
+        if not files:
+            return "缓存目录为空，无需上传"
+
+        # 推导 remote_dir：优先该 seq 已有 log；否则按当天第 N 次
+        remote_dir = ""
+        for log in self.webdav_logs.values():
+            if log.get("seq") == seq and log.get("remote_dir"):
+                remote_dir = log["remote_dir"]
+                break
+        if not remote_dir:
+            date_str = datetime.now().strftime("%Y-%m-%d")
+            async with self._webdav_count_lock:
+                n = self.webdav_count.get(date_str, 0) + 1
+                self.webdav_count[date_str] = n
+                self._save_webdav_count()
+            remote_dir = f"{str(cfg.get('path', '')).strip('/')}/{date_str}/{n}"
+
+        log = {
+            "key": f"{seq}:{int(time.time())}",
+            "seq": seq,
+            "user_id": 0,
+            "ts": time.time(),
+            "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+            "remote_dir": remote_dir,
+            "files": [],
+        }
+        for p in files:
+            full = os.path.join(job_dir, p)
+            stem, ext = os.path.splitext(p)
+            log["files"].append(
+                {
+                    "name": f"{_file_md5_short(full)}{ext}",
+                    "local": full,
+                    "status": "pending",
+                }
+            )
+        self.webdav_logs[log["key"]] = log
+        self._save_webdav_logs()
+
+        total = len(log["files"])
+        status_msg = None
+        for f in log["files"]:
+            f["status"] = "uploading"
+            self._save_webdav_logs()
+            ok = await asyncio.to_thread(
+                webdav.upload_file,
+                cfg.get("url"),
+                remote_dir,
+                f["local"],
+                cfg.get("user"),
+                cfg.get("pass"),
+                int(cfg.get("retry", 2)),
+                remote_name=f["name"],
+            )
+            f["status"] = "ok" if ok else "failed"
+            if ok:
+                try:
+                    os.remove(f["local"])
+                except OSError as exc:
+                    logger.warning("WebDAV 缓存删除失败 %s: %s", f["local"], exc)
+            self._save_webdav_logs()
+            logger.info(
+                "Job #%s webdav cache upload %s -> %s (%s)",
+                seq, f["name"], remote_dir, "OK" if ok else "FAILED",
+            )
+        failed = [f for f in log["files"] if f["status"] == "failed"]
+        if failed:
+            self.webdav_keep_cache.add(seq)
+        else:
+            self.webdav_keep_cache.discard(seq)
+            try:
+                os.rmdir(job_dir)
+            except OSError:
+                pass
+        self.webdav_logs[log["key"]] = log
+        self._save_webdav_logs()
+        await self._notify_webdav_result(0, log)
+        if failed:
+            return f"⚠️ 缓存上传：{len(failed)}/{total} 个失败（将在 /webdavlogs 显示，可重试）"
+        return f"✅ 缓存上传完成：{total} 个文件\n📂 {remote_dir}"
 
     async def _webdav_delete(self, key: str) -> str:
         """删除某条记录本次上传的所有远端文件（逐个 DELETE，不删目录）。"""
@@ -2141,6 +2333,15 @@ def register_handlers(client: TelegramClient):
             auto_delete=False,
         )
 
+    @client.on(events.NewMessage(pattern="/webdavlogs"))
+    async def on_webdavlogs(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /webdavlogs from %s", event.sender_id)
+        if not _authorized(event):
+            return
+        pipeline.webdav_waiting.pop(event.sender_id, None)
+        text, buttons = pipeline._webdav_logs_view()
+        await _respond(event, text, buttons=buttons, auto_delete=False)
+
     @client.on(events.NewMessage(pattern="/proxy"))
     async def on_proxy(event: events.NewMessage.Event) -> None:
         logger.info("CMD /proxy from %s", event.sender_id)
@@ -2371,6 +2572,29 @@ def register_handlers(client: TelegramClient):
         if data_text.startswith("wd_del:"):
             key = data_text.split(":", 1)[1]
             await _answer(await pipeline._webdav_delete(key))
+            text, buttons = pipeline._webdav_logs_view()
+            try:
+                await event.edit(text, buttons=buttons)
+            except Exception:
+                pass
+            return
+
+        if data_text.startswith("wd_cache_up:"):
+            seq_s = data_text.split(":", 1)[1]
+            if not seq_s.isdigit():
+                await _answer("无效操作")
+                return
+            await _answer("正在上传缓存…")
+            text, buttons = pipeline._webdav_logs_view()
+            try:
+                await event.edit(text, buttons=buttons)
+            except Exception:
+                pass
+            result = await pipeline._webdav_upload_cache(int(seq_s))
+            try:
+                await event.respond(result)
+            except Exception:
+                pass
             text, buttons = pipeline._webdav_logs_view()
             try:
                 await event.edit(text, buttons=buttons)

@@ -4,6 +4,8 @@ services:
     container_name: telegram-video-forwarder
     restart: unless-stopped
     env_file: .env
+    environment:
+      - TZ=Asia/Shanghai
     volumes:
       - ./session:/app/session
       - ./downloads:/app/downloads
