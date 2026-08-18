@@ -1092,7 +1092,10 @@ class _Pipeline:
             try:
                 status_msg = await self.client.send_message(
                     job.user_id,
-                    f"📤 WebDAV 开始备份：{total} 个文件\n{remote_dir}",
+                    f"📤 WebDAV 开始备份：{total} 个文件\n"
+                    f"────────────────────────\n"
+                    f"📂 {remote_dir}\n"
+                    f"{render_bar(0)}  0%",
                 )
             except Exception as exc:
                 logger.warning("WebDAV 开始通知发送失败: %s", exc)
@@ -1102,9 +1105,17 @@ class _Pipeline:
             ok = sum(1 for f in log["files"] if f.get("status") == "ok")
             failed = total - ok
             if failed == 0:
-                return f"✅ WebDAV 备份完成：{ok} 个文件\n{remote_dir}"
+                return (
+                    f"✅ WebDAV 备份完成：{ok} 个文件\n"
+                    f"────────────────────────\n"
+                    f"{render_bar(100)}  {ok}/{total}\n"
+                    f"📂 {remote_dir}"
+                )
             return (
-                f"⚠️ WebDAV 备份：{failed}/{total} 个文件失败\n{remote_dir}\n"
+                f"⚠️ WebDAV 备份：{failed}/{total} 个文件失败\n"
+                f"────────────────────────\n"
+                f"{render_bar(ok / total * 100 if total else 0)}  {ok}/{total}\n"
+                f"📂 {remote_dir}\n"
                 f"失败文件将每小时自动补传，也可点按钮立即重试"
             )
 
@@ -1121,7 +1132,7 @@ class _Pipeline:
         state = {"gen": 0, "last": 0.0}
         loop = asyncio.get_running_loop()
 
-        def _progress_cb(sent: int, size: int, _fname: str = "") -> None:
+        def _progress_cb(sent: int, size: int, _fname: str = "", _cur: int = 1) -> None:
             now = time.monotonic()
             if now - state["last"] < 5.0:
                 return
@@ -1133,7 +1144,10 @@ class _Pipeline:
                 if state["gen"] != gen:
                     return
                 await _edit_status(
-                    f"📤 WebDAV 备份中\n{_fname}  ({pct:.0f}%)\n{remote_dir}"
+                    f"📤 WebDAV 备份中 {_cur}/{total}\n"
+                    f"{render_bar(pct)}  {pct:.0f}%\n"
+                    f"{_fname}\n"
+                    f"📂 {remote_dir}"
                 )
 
             loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_apply()))
@@ -1147,7 +1161,10 @@ class _Pipeline:
                     self._save_webdav_logs()
                     cur = sum(1 for x in log["files"] if x.get("status") == "ok") + 1
                     await _edit_status(
-                        f"📤 WebDAV 备份中 {cur}/{total}\n{f['name']}\n{remote_dir}"
+                        f"📤 WebDAV 备份中 {cur}/{total}\n"
+                        f"{render_bar(0)}  0%\n"
+                        f"{f['name']}\n"
+                        f"📂 {remote_dir}"
                     )
                     ok = await asyncio.to_thread(
                         webdav.upload_file,
@@ -1158,7 +1175,7 @@ class _Pipeline:
                         cfg.get("pass"),
                         int(cfg.get("retry", 2)),
                         remote_name=f["name"],
-                        progress_callback=lambda s, sz, _n=f["name"]: _progress_cb(s, sz, _n),
+                        progress_callback=lambda s, sz, _n=f["name"], _c=cur: _progress_cb(s, sz, _n, _c),
                     )
                     f["status"] = "ok" if ok else "failed"
                     self._save_webdav_logs()
@@ -1247,19 +1264,34 @@ class _Pipeline:
         except Exception as exc:
             logger.warning("WebDAV 补传通知失败: %s", exc)
 
+    def _wd_cfg_lines(self, cfg: dict) -> list:
+        """WebDAV 配置字段行（主视图与编辑页共享），前缀定宽对齐。"""
+        val = {
+            "url": cfg.get("url") or "（未设置）",
+            "user": cfg.get("user") or "（未设置）",
+            "pass": "***" if cfg.get("pass") else "（未设置）",
+            "path": cfg.get("path") or "（未设置）",
+            "retry": f"{cfg.get('retry')} 次",
+        }
+        return [
+            f"🔗 地址    {val['url']}",
+            f"👤 账号    {val['user']}",
+            f"🔑 密码    {val['pass']}",
+            f"📂 路径    {val['path']}",
+            f"🔄 重试    {val['retry']}",
+        ]
+
     def _webdav_cfg_view(self) -> tuple:
         """按钮式配置主视图（/webdav）：状态卡片 + 3 个入口按钮，避免臃肿。"""
         cfg = self.webdav_cfg
         status = "✅ 已启用" if cfg.get("enabled") else "⛔ 已停用"
         lines = [
-            "📁 WebDAV 备份配置（下载完成后自动备份媒体）",
-            "",
-            f"状态：{status}",
-            f"地址：{cfg.get('url') or '（未设置）'}",
-            f"账号：{cfg.get('user') or '（未设置）'}",
-            f"密码：{'***' if cfg.get('pass') else '（未设置）'}",
-            f"路径：{cfg.get('path') or '（未设置）'}",
-            f"重试：{cfg.get('retry')}",
+            "📁 WebDAV 备份配置",
+            "下载完成后自动备份媒体",
+            "────────────────────────",
+            f"状态    {status}",
+            *self._wd_cfg_lines(cfg),
+            "────────────────────────",
         ]
         toggle = (
             Button.inline("⛔ 停用", "wd_cfg:off")
@@ -1278,13 +1310,9 @@ class _Pipeline:
         cfg = self.webdav_cfg
         lines = [
             "⚙️ WebDAV 修改配置",
-            "",
-            f"地址：{cfg.get('url') or '（未设置）'}",
-            f"账号：{cfg.get('user') or '（未设置）'}",
-            f"密码：{'***' if cfg.get('pass') else '（未设置）'}",
-            f"路径：{cfg.get('path') or '（未设置）'}",
-            f"重试：{cfg.get('retry')}",
-            "",
+            "────────────────────────",
+            *self._wd_cfg_lines(cfg),
+            "────────────────────────",
             "点击按钮，直接回复新值即可：",
         ]
         buttons = [
@@ -1323,18 +1351,23 @@ class _Pipeline:
             running = any(
                 f.get("status") in ("pending", "uploading") for f in files
             )
-            failed = total - ok - sum(
+            pending = sum(
                 1 for f in files if f.get("status") in ("pending", "uploading")
             )
+            failed = total - ok - pending
             if running:
                 mark = "⏳ 进行中"
+                bar_pct = ok / total * 100 if total else 0
             elif failed == 0:
                 mark = "✅ 全部成功"
+                bar_pct = 100
             else:
                 mark = f"⚠️ 失败 {failed}/{total}"
+                bar_pct = ok / total * 100 if total else 0
             lines.append(
                 f"{_pos_token(index + 1)} {log.get('time', '')}  {mark}\n"
-                f"    {log.get('remote_dir', '')}（{ok}/{total}）"
+                f"    {render_bar(bar_pct)}  {ok}/{total}\n"
+                f"    {log.get('remote_dir', '')}"
             )
             if running:
                 continue

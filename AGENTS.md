@@ -208,6 +208,11 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
     - `WEBDAV_RETRY` 默认 **5**（每个文件最多 6 次尝试）
   - **上传结果通知（v15.2）**：`_on_webdav_upload` 结束后 `_notify_webdav_result` 给用户发结果——全部成功 `✅ 备份完成：N 个文件`；有失败 `⚠️ 失败 M/N + 🔄立即重试按钮（wd_retry）`。自动重传最终全部成功时 `_notify_webdav_autoretry_done` 通知 `✅ 已自动补传完成`（log 需含 `user_id`，v15.2 起 `_on_webdav_upload` 写入）。
   - **实时上传进度状态消息（v15.4）**：`_on_webdav_upload` 批次开始**立即持久化 log 条目**（每文件 `pending`，重启/中断可见），并发一条状态消息「📤 WebDAV 开始备份：N 个文件 → remote_dir」。上传中逐文件编辑该消息「📤 备份中 cur/N + 文件名 + 进度%」——字节进度经 `webdav.upload_file` 新增的 `progress_callback(sent,size)`（每 8MB 回调，线程上下文）→ `loop.call_soon_threadsafe` + **5s 节流** + **代际计数 `state["gen"]`**（防止迟到的进度编辑覆盖最终结果）。批次结束编辑该消息为最终 ✅/⚠️（失败时带 🔄立即重试按钮），**不再另发结果消息**；状态消息发送失败才回退 `_notify_webdav_result`。`/webdav` 上传记录对含 `pending/uploading` 的批次显示「⏳ 进行中」且不显示重试/删除按钮（避免与上传中冲突）。
+  - **命令展示重构（v15.4 第二波）**：`/webdav` 三个视图 + 上传状态消息统一**卡片式风格**（`─` 分隔线 + emoji + 字段定宽对齐）：
+    - `_wd_cfg_lines(cfg)`：配置字段行共享渲染（`🔗 地址`/`👤 账号`/`🔑 密码`/`📂 路径`/`🔄 重试`，前缀定宽对齐），主视图与字段编辑页共用
+    - `_webdav_cfg_view`：`📁 WebDAV 备份配置` + 分隔线 + 状态/字段 + 分隔线
+    - `_webdav_logs_view`：每条记录带 **`render_bar(ok/total*100)` 块状进度条**（`████░░░░░░  3/29`）+ 状态标记（⏳进行中/✅全部成功/⚠️失败）+ 远程路径
+    - `_on_webdav_upload` 状态消息：开始/上传中/最终结果均含 `render_bar` 进度条 + `cur/total` + 文件名 + `📂 remote_dir`（`_progress_cb` 通过 lambda 捕获 `_cur` 序号）
   - **移除 guard cron（v15.4）**：旧的 `ensure_webdav_guard.sh` + cron 已删除——重构后批次开始即写 log，`_webdav_autoretry_loop`（每小时）兜底重传 `pending/uploading/failed` 且本地缓存仍在的文件，容器重启丢失上传任务也能靠 autoretry 恢复，无需外部守护进程空转。
   - **hash 重命名（v15.3）**：所有 WebDAV 上传文件统一命名为 `<文件内容MD5前8位>.<后缀>`（`_file_md5_short`，分块读取不占内存），避免原始长文件名/隐私/特殊字符；`webdav.upload_file` 新增 `remote_name` 参数。存量缓存批量重命名用 `scripts/rename_media.py`。
   - **确认成功即删本地缓存（v15.3）**：`scripts/ensure_webdav.py` 对每个文件经 PROPFIND 确认远端完整后**立即删除本地缓存**（`_remove_local`），失败文件保留下轮重试；持久循环直到全部成功（openlist/网络偶发失败每 5 分钟自动重试一轮）。bot 主流程已有对应逻辑：`_on_webdav_upload` 全部成功 → `webdav_keep_cache` 释放 → `_schedule_cleanup` 等 webdav 结束后清理缓存。
