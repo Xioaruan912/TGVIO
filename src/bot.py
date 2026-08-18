@@ -1523,12 +1523,14 @@ class _Pipeline:
         task.add_done_callback(_done)
         return f"🔄 正在重试 {len(failed)} 个文件…"
 
-    async def _webdav_upload_cache(self, seq: int) -> str:
+    async def _webdav_upload_cache(self, seq: int, user_id: int = 0) -> str:
         """补传本地缓存目录（/webdavlogs 的「📤 上传」按钮）。
 
         目录 = DOWNLOAD_DIR/job-<seq>；remote_dir 优先取该 seq 已有 log 记录，
         否则按 webdav_count 的当天序号推导 path/日期/N。逐文件上传（hash 名，
         PROPFIND 确认），成功后删除本地文件，批次结束写 log + 通知。
+        幂等：上传前 PROPFIND 查重，远端已有同名且大小一致则跳过（防重复上传）。
+        实时进度经 status_msg 逐文件更新（user_id 指定接收用户）。
         """
         job_dir = os.path.join(DOWNLOAD_DIR, f"job-{seq}")
         if not os.path.isdir(job_dir):
@@ -1560,7 +1562,7 @@ class _Pipeline:
         log = {
             "key": f"{seq}:{int(time.time())}",
             "seq": seq,
-            "user_id": 0,
+            "user_id": user_id,
             "ts": time.time(),
             "time": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
             "remote_dir": remote_dir,
@@ -1580,10 +1582,83 @@ class _Pipeline:
         self._save_webdav_logs()
 
         total = len(log["files"])
+        # 进度状态消息（user_id 有效才发；进行中不撤，结束后 10s 撤）
         status_msg = None
+        if user_id:
+            try:
+                status_msg = await self.client.send_message(
+                    user_id,
+                    f"📤 WebDAV 开始备份：{total} 个文件\n"
+                    f"────────────────────────\n"
+                    f"📂 {remote_dir}\n"
+                    f"{render_bar(0)}  0%",
+                )
+            except Exception as exc:
+                logger.warning("WebDAV 开始通知发送失败: %s", exc)
+
+        async def _edit_status(text: str) -> None:
+            nonlocal status_msg
+            if not status_msg:
+                return
+            try:
+                status_msg = await status_msg.edit(text)
+            except Exception as exc:
+                logger.debug("WebDAV 状态消息编辑失败: %s", exc)
+
+        state = {"gen": 0, "last": 0.0}
+        loop = asyncio.get_running_loop()
+
+        def _progress_cb(sent: int, size: int, _fname: str = "", _cur: int = 1) -> None:
+            now = time.monotonic()
+            if now - state["last"] < 5.0:
+                return
+            state["last"] = now
+            gen = state["gen"]
+            pct = (sent / size * 100) if size else 0
+
+            async def _apply() -> None:
+                if state["gen"] != gen:
+                    return
+                await _edit_status(
+                    f"📤 WebDAV 备份中 {_cur}/{total}\n"
+                    f"{render_bar(pct)}  {pct:.0f}%\n"
+                    f"{_fname}\n"
+                    f"📂 {remote_dir}"
+                )
+
+            loop.call_soon_threadsafe(lambda: asyncio.ensure_future(_apply()))
+
         for f in log["files"]:
+            if f["status"] == "ok":
+                continue
             f["status"] = "uploading"
             self._save_webdav_logs()
+            cur = sum(1 for x in log["files"] if x.get("status") == "ok") + 1
+            await _edit_status(
+                f"📤 WebDAV 备份中 {cur}/{total}\n"
+                f"{render_bar(0)}  0%\n"
+                f"{f['name']}\n"
+                f"📂 {remote_dir}"
+            )
+            # 幂等查重：远端已有同名且大小一致则跳过（防重复上传）
+            local_size = os.path.getsize(f["local"])
+            remote_sz = await asyncio.to_thread(
+                webdav.remote_file_size,
+                cfg.get("url"), remote_dir, f["name"],
+                cfg.get("user"), cfg.get("pass"),
+            )
+            if remote_sz is not None and remote_sz == local_size:
+                f["status"] = "ok"
+                logger.info(
+                    "Job #%s webdav cache skip（远端已存在）%s (%d bytes)",
+                    seq, f["name"], local_size,
+                )
+                try:
+                    os.remove(f["local"])
+                except OSError as exc:
+                    logger.warning("WebDAV 缓存删除失败 %s: %s", f["local"], exc)
+                self._save_webdav_logs()
+                continue
             ok = await asyncio.to_thread(
                 webdav.upload_file,
                 cfg.get("url"),
@@ -1593,6 +1668,7 @@ class _Pipeline:
                 cfg.get("pass"),
                 int(cfg.get("retry", 2)),
                 remote_name=f["name"],
+                progress_callback=lambda s, sz, _n=f["name"], _c=cur: _progress_cb(s, sz, _n, _c),
             )
             f["status"] = "ok" if ok else "failed"
             if ok:
@@ -1616,7 +1692,33 @@ class _Pipeline:
                 pass
         self.webdav_logs[log["key"]] = log
         self._save_webdav_logs()
-        await self._notify_webdav_result(0, log)
+
+        # 最终结果：编辑进度消息为最终 + 10s 撤（进行中不撤策略）
+        ok_n = total - len(failed)
+        if status_msg:
+            if not failed:
+                final_text = (
+                    f"✅ WebDAV 备份完成：{ok_n} 个文件\n"
+                    f"────────────────────────\n"
+                    f"{render_bar(100)}  {ok_n}/{total}\n"
+                    f"📂 {remote_dir}"
+                )
+            else:
+                final_text = (
+                    f"⚠️ WebDAV 备份：{len(failed)}/{total} 个文件失败\n"
+                    f"────────────────────────\n"
+                    f"{render_bar(ok_n / total * 100 if total else 0)}  {ok_n}/{total}\n"
+                    f"📂 {remote_dir}\n"
+                    f"失败文件将每小时自动补传，也可点按钮立即重试"
+                )
+            state["gen"] += 1
+            await _edit_status(final_text)
+            if AUTO_DELETE_SECONDS > 0:
+                asyncio.get_running_loop().create_task(
+                    _delete_after(status_msg, AUTO_DELETE_SECONDS)
+                )
+        else:
+            await self._notify_webdav_result(user_id, log)
         if failed:
             return f"⚠️ 缓存上传：{len(failed)}/{total} 个失败（将在 /webdavlogs 显示，可重试）"
         return f"✅ 缓存上传完成：{total} 个文件\n📂 {remote_dir}"
@@ -2584,22 +2686,23 @@ def register_handlers(client: TelegramClient):
             if not seq_s.isdigit():
                 await _answer("无效操作")
                 return
-            await _answer("正在上传缓存…")
+            await _answer("已开始上传，进度见新消息…")
             text, buttons = pipeline._webdav_logs_view()
             try:
                 await event.edit(text, buttons=buttons)
             except Exception:
                 pass
-            result = await pipeline._webdav_upload_cache(int(seq_s))
-            try:
-                await event.respond(result)
-            except Exception:
-                pass
-            text, buttons = pipeline._webdav_logs_view()
-            try:
-                await event.edit(text, buttons=buttons)
-            except Exception:
-                pass
+            # 后台任务执行补传，回调不阻塞（避免部署重启时残留阻塞回调）
+            async def _bg() -> None:
+                try:
+                    result = await pipeline._webdav_upload_cache(int(seq_s), event.sender_id)
+                    try:
+                        await event.respond(result)
+                    except Exception:
+                        pass
+                except Exception as exc:
+                    logger.error("wd_cache_up 后台任务异常: %s", exc)
+            asyncio.get_running_loop().create_task(_bg())
             return
 
         if data_text.startswith("proxy:"):

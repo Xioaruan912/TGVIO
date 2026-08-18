@@ -174,6 +174,22 @@ def _remote_size(parsed, url_path: str, auth: str) -> int | None:
         return None
 
 
+def remote_file_size(
+    base_url: str, remote_dir: str, filename: str, user: str, passwd: str
+) -> int | None:
+    """公开的远端文件大小查询（幂等上传前查重用）。文件不存在/查询失败返回 None。"""
+    try:
+        auth = _auth_header(user, passwd)
+        parsed, root_path = _split(base_url)
+        url_path = f"{root_path.rstrip('/')}/{remote_dir.strip('/')}/{filename}"
+        return _remote_size(parsed, url_path, auth)
+    except Exception as exc:
+        logger.warning("WebDAV remote_file_size %s/%s failed: %s", remote_dir, filename, exc)
+        return None
+    except Exception:
+        return None
+
+
 def _upload_once(
     base_url: str,
     remote_dir: str,

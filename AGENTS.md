@@ -219,6 +219,11 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
     - `_webdav_upload_cache(seq)`：补传指定 job 目录——remote_dir 优先取该 seq 已有 log，否则按当天第 N 次推导；逐文件 `webdav.upload_file`（hash 名 + PROPFIND 确认），成功后**删除本地文件**（`os.remove`）并尝试 `os.rmdir` 清空目录，批次结束写 log + 通知
     - `_webdav_logs_view()`：顶部缓存区块 + `─` 分隔线 + 记录（时间短格式 `%m-%d %H:%M`，跨年才显示完整；状态/📂路径/进度条三行分层；进行中不显示操作按钮）
     - 回调：`wd_retry`/`wd_del`/`wd_cache_up` 操作后均刷新 `_webdav_logs_view`；`wd_cfg:logs` 仍保留（记录空态刷新按钮复用）
+  - **缓存上传防重复 + 后台化（v15.5）**：
+    - `_webdav_upload_cache(seq, user_id)` 新增 `user_id` 参数 + **实时进度 status_msg**（与 `_on_webdav_upload` 同款 `render_bar` 卡片 + 5s 节流 + gen 代际防乱序；进行中不撤，结束后 10s 撤）
+    - **幂等查重**：上传前调 `webdav.remote_file_size`（webdav.py 新增公开函数，PROPFIND 查远端大小），远端已有同名且大小一致则跳过并删本地缓存——防止重复上传（曾因部署重启导致同一文件被旧名+hash 名各传一次）
+    - `wd_cache_up:` 回调改为 `asyncio.create_task` 后台执行，**不再阻塞回调**（曾因 restart 时回调残留导致新旧代码混合执行、原始名+hash 名重复上传）
+    - ⚠️ 教训：docker restart 只会杀进程，**已发出 socket 的 PUT 请求在 openlist 侧会继续转存**；重启前应先停上传或容忍偶发残留（靠幂等查重自愈）
   - **容器时区（v15.4）**：`docker-compose.yml` 已加 `TZ=Asia/Shanghai`（宿主机已是 CST，容器内 Python `datetime.now()` 此前是 UTC，导致上传记录时间差 8 小时）。⚠️ 改 compose 后需 `docker compose up -d --force-recreate` 重建容器，**重建会清空 docker cp 的代码改动**——代码改动必须同步重新部署或直接改镜像。
   - **移除 guard cron（v15.4）**：旧的 `ensure_webdav_guard.sh` + cron 已删除——重构后批次开始即写 log，`_webdav_autoretry_loop`（每小时）兜底重传 `pending/uploading/failed` 且本地缓存仍在的文件，容器重启丢失上传任务也能靠 autoretry 恢复，无需外部守护进程空转。
   - **hash 重命名（v15.3）**：所有 WebDAV 上传文件统一命名为 `<文件内容MD5前8位>.<后缀>`（`_file_md5_short`，分块读取不占内存），避免原始长文件名/隐私/特殊字符；`webdav.upload_file` 新增 `remote_name` 参数。存量缓存批量重命名用 `scripts/rename_media.py`。
