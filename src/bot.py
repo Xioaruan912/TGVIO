@@ -2255,7 +2255,7 @@ def register_handlers(client: TelegramClient):
         except Exception as exc:
             logger.warning("Respond failed: %s", exc)
 
-    @client.on(events.NewMessage(pattern="/start"))
+    @client.on(events.NewMessage(pattern="/start$"))
     async def on_start(event: events.NewMessage.Event) -> None:
         logger.info("CMD /start from %s", event.sender_id)
         if not _authorized(event):
@@ -2267,14 +2267,14 @@ def register_handlers(client: TelegramClient):
             auto_delete=False,
         )
 
-    @client.on(events.NewMessage(pattern="/about"))
+    @client.on(events.NewMessage(pattern="/about$"))
     async def on_about(event: events.NewMessage.Event) -> None:
         logger.info("CMD /about from %s", event.sender_id)
         if not _authorized(event):
             return
         await _respond(event, _ABOUT_TEXT)
 
-    @client.on(events.NewMessage(pattern="/mode"))
+    @client.on(events.NewMessage(pattern="/mode$"))
     async def on_mode(event: events.NewMessage.Event) -> None:
         logger.info("CMD /mode from %s", event.sender_id)
         if not _authorized(event):
@@ -2286,7 +2286,7 @@ def register_handlers(client: TelegramClient):
             auto_delete=False,
         )
 
-    @client.on(events.NewMessage(pattern="/webdav"))
+    @client.on(events.NewMessage(pattern=r"/webdav(\s|$)"))
     async def on_webdav(event: events.NewMessage.Event) -> None:
         logger.info("CMD /webdav from %s", event.sender_id)
         if not _authorized(event):
@@ -2333,7 +2333,7 @@ def register_handlers(client: TelegramClient):
             auto_delete=False,
         )
 
-    @client.on(events.NewMessage(pattern="/webdavlogs"))
+    @client.on(events.NewMessage(pattern="/webdavlogs$"))
     async def on_webdavlogs(event: events.NewMessage.Event) -> None:
         logger.info("CMD /webdavlogs from %s", event.sender_id)
         if not _authorized(event):
@@ -2342,7 +2342,7 @@ def register_handlers(client: TelegramClient):
         text, buttons = pipeline._webdav_logs_view()
         await _respond(event, text, buttons=buttons, auto_delete=False)
 
-    @client.on(events.NewMessage(pattern="/proxy"))
+    @client.on(events.NewMessage(pattern="/proxy$"))
     async def on_proxy(event: events.NewMessage.Event) -> None:
         logger.info("CMD /proxy from %s", event.sender_id)
         if not _authorized(event):
@@ -2351,7 +2351,7 @@ def register_handlers(client: TelegramClient):
         text, buttons = pipeline._proxy_view()
         await _respond(event, text, buttons=buttons, auto_delete=False)
 
-    @client.on(events.NewMessage(pattern=r"/begin|/开始"))
+    @client.on(events.NewMessage(pattern=r"/begin$|/开始$"))
     async def on_begin(event: events.NewMessage.Event) -> None:
         logger.info("CMD /begin from %s", event.sender_id)
         if not _authorized(event):
@@ -2373,7 +2373,7 @@ def register_handlers(client: TelegramClient):
             buttons=_reply_keyboard(),
         )
 
-    @client.on(events.NewMessage(pattern=r"/end|/结束"))
+    @client.on(events.NewMessage(pattern=r"/end$|/结束$"))
     async def on_end(event: events.NewMessage.Event) -> None:
         logger.info("CMD /end from %s", event.sender_id)
         if not _authorized(event):
@@ -2394,7 +2394,7 @@ def register_handlers(client: TelegramClient):
             logger.exception("Session end failed: %s", exc)
             await _respond(event, f"结束合集失败: {exc}")
 
-    @client.on(events.NewMessage(pattern="/queue"))
+    @client.on(events.NewMessage(pattern="/queue$"))
     async def on_queue(event: events.NewMessage.Event) -> None:
         logger.info("CMD /queue from %s", event.sender_id)
         if not _authorized(event):
