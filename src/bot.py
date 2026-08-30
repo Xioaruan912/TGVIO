@@ -2217,9 +2217,12 @@ class _Pipeline:
                 pass
 
 
-def register_handlers(client: TelegramClient):
+def register_handlers(client: TelegramClient, repository=None):
     """Build the pipeline and install the extracted R1 handler layer."""
     pipeline = _Pipeline(client)
+    # R2-A lifecycle seam only: the in-memory pipeline remains the runtime
+    # source of truth until the explicit R2-B dual-write migration stage.
+    pipeline.repository = repository
     pipeline.start()
     queue = JobQueue(pipeline)
     backup = BackupManager(pipeline)

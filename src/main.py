@@ -6,6 +6,7 @@ from telethon import TelegramClient, functions
 from telethon.tl import types
 
 from . import bot, config
+from .repository import SQLiteRepository
 
 logging.basicConfig(
     level=logging.INFO,
@@ -48,24 +49,42 @@ async def main() -> None:
     os.makedirs("session", exist_ok=True)
     os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
 
-    client = TelegramClient(
-        "session/bot",
-        config.API_ID,
-        config.API_HASH,
-        request_retries=8,
-        connection_retries=8,
+    repository = SQLiteRepository(
+        "session/state.sqlite3",
+        download_root=config.DOWNLOAD_DIR,
     )
-    await client.start(bot_token=config.BOT_TOKEN)
+    await repository.open()
+    try:
+        applied = await repository.migrate()
+        check = await repository.self_check()
+        logger.info(
+            "SQLite repository ready. schema=%s integrity=%s",
+            await repository.schema_versions(),
+            check["integrity"],
+        )
+        if applied:
+            logger.info("SQLite migrations applied on startup: %s", applied)
 
-    await _setup_commands(client)
-    pipeline = bot.register_handlers(client)
-    await pipeline.apply_proxy_on_start()
-    logger.info(
-        "Bot started. dest=%s allowed=%s",
-        config.DEST_CHANNEL,
-        sorted(config.ALLOWED_USERS),
-    )
-    await client.run_until_disconnected()
+        client = TelegramClient(
+            "session/bot",
+            config.API_ID,
+            config.API_HASH,
+            request_retries=8,
+            connection_retries=8,
+        )
+        await client.start(bot_token=config.BOT_TOKEN)
+
+        await _setup_commands(client)
+        pipeline = bot.register_handlers(client, repository=repository)
+        await pipeline.apply_proxy_on_start()
+        logger.info(
+            "Bot started. dest=%s allowed=%s",
+            config.DEST_CHANNEL,
+            sorted(config.ALLOWED_USERS),
+        )
+        await client.run_until_disconnected()
+    finally:
+        await repository.close()
 
 
 if __name__ == "__main__":
