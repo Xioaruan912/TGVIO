@@ -32,7 +32,7 @@ sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=
 ### 核心功能
 - [x] **转发重传**：用户转发视频/图片给 bot → 下载到本地 → 重新上传到目标频道 `@messFaround`（独立副本，源频道删除不影响）
 - [x] **URL 下载**：发送链接（抖音/B站/YouTube 等）→ yt-dlp 下载后发布
-- [x] **18+ 雪花确认**：内联按钮询问是否 18+，选"是"用 Telegram 内置 spoiler（雪花）遮挡发布（不改文件内容）；`CONFIRM_TIMEOUT` 超时自动取消；弹窗含「❌ 取消」按钮可主动丢弃误转发任务
+- [x] **18+ 雪花确认**：内联按钮询问是否 18+，选"是"用 Telegram 内置 spoiler（雪花）遮挡发布（不改文件内容）；`CONFIRM_TIMEOUT` 超时自动按正常模式处理；弹窗含「❌ 取消」按钮可主动丢弃误转发任务
 - [x] **相册支持**：同 `grouped_id` 图片批聚合为单任务/单询问/单个相册消息发布
 - [x] **纯媒体转发开关**：`FORWARD_CAPTION`（默认 false）控制是否转发原消息文字（false=只发视频/图片本身）
 - [x] **队列流水线**：并行下载（3 路）+ 严格按发送顺序上传（seq FIFO）
