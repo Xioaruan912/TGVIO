@@ -57,7 +57,7 @@ def _install_sigterm_handler(client: TelegramClient) -> None:
             return
         fired = True
         logger.info("SIGTERM received; disconnecting Telegram client")
-        loop.create_task(client.disconnect())
+        asyncio.ensure_future(client.disconnect())
 
     try:
         loop.add_signal_handler(signal.SIGTERM, request_shutdown)

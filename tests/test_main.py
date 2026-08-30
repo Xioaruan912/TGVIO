@@ -8,16 +8,9 @@ from src import main
 class _FakeLoop:
     def __init__(self) -> None:
         self.callback = None
-        self.tasks = []
 
     def add_signal_handler(self, _signal, callback) -> None:
         self.callback = callback
-
-    def create_task(self, coro):
-        task = asyncio.create_task(coro)
-        self.tasks.append(task)
-        return task
-
 
 class _FakeClient:
     def __init__(self) -> None:
@@ -36,6 +29,6 @@ class MainSignalTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(loop.callback)
         loop.callback()
         loop.callback()
-        await asyncio.gather(*loop.tasks)
+        await asyncio.sleep(0)
         self.assertEqual(client.disconnect_calls, 1)
 
