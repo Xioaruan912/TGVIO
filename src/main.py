@@ -75,7 +75,9 @@ async def main() -> None:
         await client.start(bot_token=config.BOT_TOKEN)
 
         await _setup_commands(client)
-        pipeline = bot.register_handlers(client, repository=repository)
+        pipeline = bot.register_handlers(client, repository=repository, start_workers=False)
+        await pipeline.recover_from_repository()
+        pipeline.start()
         await pipeline.apply_proxy_on_start()
         logger.info(
             "Bot started. dest=%s allowed=%s",

@@ -54,7 +54,10 @@ class ShadowState:
             "media_kind": "document" if document is not None else "photo" if photo is not None else None,
             "original_name": getattr(document, "file_name", None),
             "mime_type": getattr(document, "mime_type", None),
-            "metadata": {"schema_version": 1},
+            "metadata": {
+                "schema_version": 1,
+                "caption": str(getattr(message, "message", "") or "")[:1024],
+            },
         }
 
     async def _accept(self, seq: int, **kwargs: Any) -> None:
@@ -82,6 +85,7 @@ class ShadowState:
         extra.update({"schema_version": 1, "legacy_seq": seq})
         record = await self.repository.accept_job(
             items=items,
+            legacy_seq=seq,
             event_payload=extra,
             **kwargs,
         )
@@ -94,21 +98,87 @@ class ShadowState:
         self._schedule(lambda: self._accept(seq, **kwargs), f"accept #{seq}")
 
     def transition(self, seq: int, event_type: str, state: str | None, **extra: Any) -> None:
+        self._schedule(
+            lambda: self.transition_now(seq, event_type, state, **extra),
+            f"transition #{seq} {event_type}",
+        )
+
+    async def transition_now(
+        self, seq: int, event_type: str, state: str | None, **extra: Any
+    ):
+        job_id = self.job_ids.get(seq)
+        if not job_id or state is None or self.repository is None:
+            return None
+        current = await self.repository.get_job(job_id)
+        if current is None or current.state == state:
+            return None
+        return await self.repository.transition_job(
+            job_id,
+            expected_revision=current.revision,
+            to_state=state,
+            event_type=event_type,
+            payload={"schema_version": 1, "legacy_seq": seq, **extra},
+        )
+
+    def download_completed(self, seq: int, paths: list[str]) -> None:
         async def run() -> None:
             job_id = self.job_ids.get(seq)
-            if not job_id or state is None:
+            if not job_id:
                 return
             current = await self.repository.get_job(job_id)
-            if current is None or current.state == state:
+            if current is None:
                 return
-            await self.repository.transition_job(
+            await self.repository.record_download_ready(
                 job_id,
+                list(paths),
                 expected_revision=current.revision,
-                to_state=state,
-                event_type=event_type,
-                payload={"schema_version": 1, "legacy_seq": seq, **extra},
             )
-        self._schedule(run, f"transition #{seq} {event_type}")
+        self._schedule(run, f"download completed #{seq}")
+
+    async def complete_download(self, seq: int, paths: list[str]):
+        job_id = self.job_ids.get(seq)
+        if not job_id or self.repository is None:
+            return None
+        current = await self.repository.get_job(job_id)
+        if current is None:
+            return None
+        return await self.repository.record_download_ready(
+            job_id,
+            list(paths),
+            expected_revision=current.revision,
+        )
+
+    async def complete_publish(self, seq: int, ids: list):
+        job_id = self.job_ids.get(seq)
+        if not job_id or self.repository is None:
+            return None
+        refs = []
+        for value in ids or []:
+            if isinstance(value, tuple) and len(value) >= 2:
+                refs.append((int(value[0]), int(value[1]), "published"))
+            else:
+                refs.append((0, int(value), "legacy_destination"))
+        current = await self.repository.get_job(job_id)
+        if current is None:
+            return None
+        return await self.repository.record_published_messages(
+            job_id,
+            refs,
+            expected_revision=current.revision,
+        )
+
+    def bind_existing(self, seq: int, job_id: int) -> None:
+        self.job_ids[int(seq)] = int(job_id)
+
+    async def heartbeat_claim(self, seq: int, kind: str, owner: str) -> bool:
+        job_id = self.job_ids.get(seq)
+        if not job_id or self.repository is None:
+            return False
+        return await self.repository.heartbeat_claim(
+            job_id,
+            owner=owner,
+            kind=kind,
+        )
 
     def event(self, seq: int, event_type: str, **extra: Any) -> None:
         async def run() -> None:

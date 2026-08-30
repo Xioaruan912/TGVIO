@@ -54,6 +54,8 @@ class JobRecord:
     status_chat_id: int | None = None
     status_message_id: int | None = None
     resume_state: str | None = None
+    legacy_seq: int | None = None
+    spoiler: bool = False
 
 
 @dataclass(frozen=True)
@@ -225,6 +227,13 @@ class SQLiteRepository:
         if self._conn is None:
             raise RepositoryError("repository is not open")
         return self._conn
+
+    async def _table_has_column(self, table: str, column: str) -> bool:
+        conn = self._require_conn()
+        cursor = await conn.execute(f"PRAGMA table_info({table})")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return any(str(row[1]) == column for row in rows)
 
     async def _ensure_migration_table(self) -> None:
         conn = self._require_conn()
@@ -495,6 +504,7 @@ class SQLiteRepository:
         texts: list[str] | None = None,
         source_chat_id: int | None = None,
         source_url: str | None = None,
+        legacy_seq: int | None = None,
         spoiler: bool = False,
         event_type: str = "accepted",
         event_payload: dict[str, Any] | None = None,
@@ -510,19 +520,32 @@ class SQLiteRepository:
             if local_path:
                 local_path = self._validated_local_path(str(local_path))
             prepared.append((ordinal, item, local_path, metadata_json))
+        has_legacy_seq = await self._table_has_column("jobs", "legacy_seq")
         async with self._write_lock:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
-                cursor = await conn.execute(
-                    """
-                    INSERT INTO jobs(
-                      kind, user_id, state, spoiler, source_kind, source_chat_id,
-                      source_url, total_items, accepted_at, updated_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (kind, user_id, state, int(spoiler), source_kind, source_chat_id,
-                     source_url, len(prepared), timestamp, timestamp),
-                )
+                if has_legacy_seq:
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO jobs(
+                          kind, user_id, state, spoiler, source_kind, source_chat_id,
+                          source_url, legacy_seq, total_items, accepted_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (kind, user_id, state, int(spoiler), source_kind, source_chat_id,
+                         source_url, legacy_seq, len(prepared), timestamp, timestamp),
+                    )
+                else:
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO jobs(
+                          kind, user_id, state, spoiler, source_kind, source_chat_id,
+                          source_url, total_items, accepted_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (kind, user_id, state, int(spoiler), source_kind, source_chat_id,
+                         source_url, len(prepared), timestamp, timestamp),
+                    )
                 job_id = int(cursor.lastrowid)
                 await cursor.close()
                 for ordinal, item, local_path, metadata_json in prepared:
@@ -781,6 +804,140 @@ class SQLiteRepository:
     async def claim_next_publish(self, owner: str) -> JobClaim | None:
         return await self._claim_job(kind="publish", owner=owner)
 
+    async def heartbeat_claim(self, job_id: int, *, owner: str, kind: str) -> bool:
+        conn = self._require_conn()
+        timestamp = time.time()
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """
+                UPDATE jobs SET heartbeat_at=?, updated_at=?
+                WHERE id=? AND claim_owner=? AND claim_kind=?
+                """,
+                (timestamp, timestamp, int(job_id), owner, kind),
+            )
+            changed = cursor.rowcount == 1
+            await cursor.close()
+            await conn.commit()
+        return changed
+
+    async def record_download_ready(
+        self,
+        job_id: int,
+        paths: list[str],
+        *,
+        expected_revision: int,
+    ) -> TransitionResult:
+        conn = self._require_conn()
+        resolved = [self._validated_local_path(path) for path in paths]
+        timestamp = time.time()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT state,resume_state,revision FROM jobs WHERE id=?", (job_id,)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RepositoryError(f"job {job_id} not found")
+                if int(row["revision"]) != int(expected_revision):
+                    await conn.rollback()
+                    current = await self.get_job(job_id)
+                    if current is None:
+                        raise RepositoryError(f"job {job_id} missing after stale download completion")
+                    return TransitionResult(False, current)
+                plan = plan_transition(
+                    str(row["state"]), "ready", current_resume_state=row["resume_state"]
+                )
+                cursor = await conn.execute(
+                    "SELECT id,ordinal FROM job_items WHERE job_id=? ORDER BY ordinal", (job_id,)
+                )
+                items = await cursor.fetchall()
+                await cursor.close()
+                if items and len(items) != len(resolved):
+                    raise RepositoryError(
+                        f"download path count mismatch for job {job_id}: {len(resolved)} != {len(items)}"
+                    )
+                if not items:
+                    for ordinal, path in enumerate(resolved, start=1):
+                        await conn.execute(
+                            """
+                            INSERT INTO job_items(job_id,ordinal,local_path,size_bytes,download_state,publish_state,metadata_json)
+                            VALUES (?,?,?,?,?,?,?)
+                            """,
+                            (
+                                job_id,
+                                ordinal,
+                                path,
+                                os.path.getsize(path),
+                                "succeeded",
+                                "pending",
+                                self._encode_versioned_payload({"schema_version": 1, "recovered_descriptor": "local_path"}),
+                            ),
+                        )
+                else:
+                    for item, path in zip(items, resolved):
+                        await conn.execute(
+                            """
+                            UPDATE job_items
+                            SET local_path=?, size_bytes=?, download_state='succeeded'
+                            WHERE id=?
+                            """,
+                            (path, os.path.getsize(path), int(item["id"])),
+                        )
+                local_dir = str(Path(resolved[0]).parent) if resolved else None
+                cursor = await conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state='ready', download_state='succeeded', local_dir=?, updated_at=?,
+                        revision=revision+1, claim_owner=NULL, claim_kind=NULL, heartbeat_at=NULL
+                    WHERE id=? AND revision=?
+                    """,
+                    (local_dir, timestamp, job_id, int(expected_revision)),
+                )
+                if cursor.rowcount != 1:
+                    await cursor.close()
+                    await conn.rollback()
+                    current = await self.get_job(job_id)
+                    if current is None:
+                        raise RepositoryError(f"job {job_id} missing after download CAS miss")
+                    return TransitionResult(False, current)
+                await cursor.close()
+                await conn.execute(
+                    "INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at) VALUES (?,?,?,?,?,?)",
+                    (
+                        job_id,
+                        "download_completed",
+                        plan.from_state,
+                        "ready",
+                        self._encode_versioned_payload({"schema_version": 1, "count": len(resolved)}),
+                        timestamp,
+                    ),
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        current = await self.get_job(job_id)
+        if current is None:
+            raise RepositoryError(f"job {job_id} missing after download completion")
+        return TransitionResult(True, current)
+
+    async def list_incomplete_jobs(self) -> list[JobRecord]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            """
+            SELECT id,kind,user_id,state,source_kind,revision,accepted_at,updated_at,resume_state,
+                   source_chat_id,source_url,status_chat_id,status_message_id,legacy_seq,spoiler
+            FROM jobs
+            WHERE state IN ('queued','downloading','ready','publishing','interrupted')
+            ORDER BY id
+            """
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [self._job_from_row(row) for row in rows]
+
     async def list_job_items(self, job_id: int) -> list[JobItemRecord]:
         conn = self._require_conn()
         cursor = await conn.execute(
@@ -965,11 +1122,12 @@ class SQLiteRepository:
 
     async def get_job(self, job_id: int) -> JobRecord | None:
         conn = self._require_conn()
+        legacy_expr = "legacy_seq" if await self._table_has_column("jobs", "legacy_seq") else "NULL AS legacy_seq"
         cursor = await conn.execute(
-            """
+            f"""
             SELECT id, kind, user_id, state, source_kind, revision, accepted_at, updated_at,
-                   resume_state,
-                   source_chat_id, source_url, status_chat_id, status_message_id
+                   resume_state, source_chat_id, source_url, status_chat_id, status_message_id,
+                   {legacy_expr}, spoiler
             FROM jobs WHERE id = ?
             """,
             (job_id,),
@@ -981,9 +1139,10 @@ class SQLiteRepository:
     async def list_jobs(self, *, user_id: int | None = None, limit: int = 100) -> list[JobRecord]:
         conn = self._require_conn()
         limit = max(1, min(int(limit), 500))
+        legacy_expr = "legacy_seq" if await self._table_has_column("jobs", "legacy_seq") else "NULL AS legacy_seq"
         sql = (
             "SELECT id, kind, user_id, state, source_kind, revision, accepted_at, updated_at, resume_state, "
-            "source_chat_id, source_url, status_chat_id, status_message_id FROM jobs"
+            f"source_chat_id, source_url, status_chat_id, status_message_id, {legacy_expr}, spoiler FROM jobs"
         )
         params: tuple[Any, ...]
         if user_id is None:
@@ -1013,6 +1172,8 @@ class SQLiteRepository:
             status_chat_id=row["status_chat_id"],
             status_message_id=row["status_message_id"],
             resume_state=row["resume_state"],
+            legacy_seq=row["legacy_seq"],
+            spoiler=bool(row["spoiler"]),
         )
 
     async def list_job_events(self, job_id: int) -> list[JobEventRecord]:

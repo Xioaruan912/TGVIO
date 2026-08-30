@@ -142,13 +142,25 @@ class JobQueue:
     async def cancel_pending(self, seq: int) -> bool:
         ok = await self._pipeline._cancel_pending(seq)
         if ok and self._shadow is not None:
-            self._shadow.transition(seq, "cancelled", "cancelled")
+            if getattr(self._pipeline, "repository", None) is not None:
+                await self._shadow.transition_now(seq, "cancelled", "cancelled")
+            else:
+                self._shadow.transition(seq, "cancelled", "cancelled")
         return ok
 
     async def cancel(self, seq: int) -> bool:
         ok = await self._pipeline._cancel_seq(seq)
         if ok and self._shadow is not None:
-            self._shadow.transition(seq, "cancelled", "cancelled")
+            if getattr(self._pipeline, "repository", None) is not None:
+                await self._shadow.transition_now(seq, "cancelled", "cancelled")
+            else:
+                self._shadow.transition(seq, "cancelled", "cancelled")
+            if (
+                getattr(self._pipeline, "repository", None) is not None
+                and seq not in self._pipeline._download_tasks
+                and seq not in self._pipeline._upload_tasks
+            ):
+                self._pipeline._finish_seq(seq)
         return ok
 
     def pause_all(self) -> None:
@@ -277,6 +289,29 @@ class JobQueue:
         if self._shadow is not None:
             self._shadow.transition(seq, event_type, state, **extra)
 
+    async def transition_now(self, seq: int, event_type: str, state: str, **extra: Any):
+        if self._shadow is None:
+            return None
+        return await self._shadow.transition_now(seq, event_type, state, **extra)
+
+    def shadow_download_completed(self, seq: int, paths: list[str]) -> None:
+        if self._shadow is not None:
+            self._shadow.download_completed(seq, paths)
+
+    async def complete_download(self, seq: int, paths: list[str]):
+        if self._shadow is None:
+            return None
+        return await self._shadow.complete_download(seq, paths)
+
+    async def complete_publish(self, seq: int, ids: list):
+        if self._shadow is None:
+            return None
+        return await self._shadow.complete_publish(seq, ids)
+
+    def bind_recovered(self, seq: int, job_id: int) -> None:
+        if self._shadow is not None:
+            self._shadow.bind_existing(seq, job_id)
+
     async def claim_next_download(self, owner: str):
         repository = getattr(self._pipeline, "repository", None)
         if repository is None:
@@ -288,6 +323,11 @@ class JobQueue:
         if repository is None:
             return None
         return await repository.claim_next_publish(owner)
+
+    async def heartbeat_claim(self, seq: int, kind: str, owner: str) -> bool:
+        if self._shadow is None:
+            return False
+        return await self._shadow.heartbeat_claim(seq, kind, owner)
 
     async def drain_shadow(self) -> None:
         if self._shadow is not None:

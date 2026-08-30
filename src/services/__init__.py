@@ -5,6 +5,7 @@ from .interactions import InteractionSession, InteractionSessions
 from .job_queue import ConfirmationTicket, JobQueue, RetryTicket
 from .proxy_manager import ProxyManager
 from .shadow_state import ShadowState
+from .recovery import RecoveryAction, recover_jobs
 
 __all__ = [
     "BackupManager",
@@ -14,5 +15,7 @@ __all__ = [
     "JobQueue",
     "ProxyManager",
     "ShadowState",
+    "RecoveryAction",
+    "recover_jobs",
     "RetryTicket",
 ]

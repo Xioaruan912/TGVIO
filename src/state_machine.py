@@ -20,11 +20,19 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "downloading": frozenset({"ready", "paused", "cancelled", "failed"}),
     "ready": frozenset({"publishing", "paused", "cancelled", "failed"}),
     "publishing": frozenset({"succeeded", "cancelled", "failed"}),
+    "interrupted": frozenset({"queued", "ready", "failed", "cancelled"}),
     "paused": RESUMABLE_STATES,
     "failed": frozenset({"queued", "ready"}),
     "succeeded": frozenset(),
     "cancelled": frozenset(),
 }
+
+ALLOWED_TRANSITIONS["downloading"] = frozenset(
+    set(ALLOWED_TRANSITIONS["downloading"]) | {"interrupted"}
+)
+ALLOWED_TRANSITIONS["publishing"] = frozenset(
+    set(ALLOWED_TRANSITIONS["publishing"]) | {"interrupted"}
+)
 
 
 @dataclass(frozen=True)

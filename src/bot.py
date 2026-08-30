@@ -1,11 +1,13 @@
 import asyncio
 import hashlib
+import json
 import logging
 import os
 import re
 import shutil
 import time
 from datetime import datetime, timedelta
+from types import SimpleNamespace
 
 from telethon import Button, TelegramClient
 from telethon.tl.types import (
@@ -50,7 +52,14 @@ from .models import AlbumBuffer, Job, PendingJob, RetryInfo, Session
 from .progress import position_token, render_bar
 from .storage import JsonStore
 from .handlers import HandlerContext, install_handlers
-from .services import BackupManager, InteractionSessions, JobQueue, ProxyManager, ShadowState
+from .services import (
+    BackupManager,
+    InteractionSessions,
+    JobQueue,
+    ProxyManager,
+    ShadowState,
+    recover_jobs,
+)
 from .views import (
     PendingQueueItemView,
     ProxyViewState,
@@ -182,6 +191,7 @@ class _Pipeline:
     def __init__(self, client: TelegramClient) -> None:
         self.client = client
         self.input_q: asyncio.Queue = asyncio.Queue()
+        self._runtime_jobs: dict[int, _Job] = {}
         self.jobs: dict[int, _Job] = {}
         self.pending: dict[int, _PendingJob] = {}
         self.albums: dict[int, _AlbumBuffer] = {}
@@ -196,6 +206,9 @@ class _Pipeline:
         self._uploading: int | None = None
         self._download_tasks: dict[int, asyncio.Task] = {}
         self._upload_tasks: dict[int, asyncio.Task] = {}
+        self._repo_download_claimed: set[int] = set()
+        self._repo_publish_claimed: set[int] = set()
+        self._repo_claim_owners: dict[tuple[str, int], str] = {}
         self.prefs: dict[int, dict] = {}
         self.published: dict[int, list] = {}
         self.retryable: dict[int, _Job] = {}
@@ -573,8 +586,69 @@ class _Pipeline:
         return seq
 
     def enqueue(self, job: _Job) -> None:
+        self._runtime_jobs[job.seq] = job
         self.input_q.put_nowait(job)
         self.active_seqs.add(job.seq)
+
+    async def recover_from_repository(self) -> list:
+        """Repair durable jobs and recreate only transport-safe runtime objects."""
+        if getattr(self, "repository", None) is None:
+            return []
+        actions = await recover_jobs(self.repository)
+        for action in actions:
+            record = action.job
+            if action.action == "failed":
+                logger.warning(
+                    "Recovery failed closed for DB job %s: %s",
+                    record.id,
+                    action.reason,
+                )
+                continue
+            seq = int(record.legacy_seq if record.legacy_seq is not None else record.id)
+            if getattr(self, "job_queue", None) is not None:
+                self.job_queue.bind_recovered(seq, record.id)
+            texts = await self.repository.list_job_texts(record.id)
+            items = await self.repository.list_job_items(record.id)
+            placeholders = []
+            for item in items:
+                caption = ""
+                if item.metadata_json:
+                    try:
+                        caption = str(json.loads(item.metadata_json).get("caption") or "")
+                    except Exception:
+                        caption = ""
+                placeholders.append(SimpleNamespace(message=caption))
+            try:
+                status = await self.client.send_message(
+                    record.user_id,
+                    f"♻️ 恢复任务 #{seq}："
+                    f"{'等待重新下载' if action.action == 'download' else '缓存完整，等待发布'}",
+                )
+            except Exception:
+                status = None
+            job = _Job(
+                seq=seq,
+                kind=record.kind,
+                status=status,
+                message=(placeholders[0] if placeholders else SimpleNamespace(message="")),
+                album=(placeholders if record.kind in {"album", "collection"} else None),
+                url=record.source_url or "",
+                spoiler=record.spoiler,
+                user_id=record.user_id,
+                texts=texts or None,
+            )
+            self._runtime_jobs[seq] = job
+            self.active_seqs.add(seq)
+            if action.action == "download":
+                self.input_q.put_nowait(job)
+            else:
+                self.jobs[seq] = job
+                payload = list(action.paths)
+                self._set_result(seq, payload[0] if len(payload) == 1 else payload)
+            self._counter = max(self._counter, seq + 1)
+        if actions:
+            logger.info("Startup recovery scanned %d durable jobs", len(actions))
+        return actions
 
     def _queue_position(self, seq: int) -> int:
         return 1 + sum(1 for s in self.active_seqs if s < seq)
@@ -814,7 +888,33 @@ class _Pipeline:
         while True:
             while self._paused:
                 await asyncio.sleep(1)
-            job = await self.input_q.get()
+            wake_job = await self.input_q.get()
+            job = wake_job
+            if getattr(self, "repository", None) is not None and getattr(self, "job_queue", None) is not None:
+                await self.job_queue.drain_shadow()
+                owner = f"download:{id(asyncio.current_task())}"
+                claim = await self.job_queue.claim_next_download(owner)
+                if claim is None:
+                    self.input_q.task_done()
+                    await asyncio.sleep(0.05)
+                    continue
+                seq = int(claim.job.legacy_seq if claim.job.legacy_seq is not None else claim.job.id)
+                job = self._runtime_jobs.get(seq)
+                if job is None:
+                    logger.error("Claimed DB job %s has no runtime transport object", claim.job.id)
+                    current = await self.repository.get_job(claim.job.id)
+                    if current is not None:
+                        await self.repository.transition_job(
+                            current.id,
+                            expected_revision=current.revision,
+                            to_state="failed",
+                            event_type="runtime_binding_missing",
+                            payload={"schema_version": 1},
+                        )
+                    self.input_q.task_done()
+                    continue
+                self._repo_download_claimed.add(job.seq)
+                self._repo_claim_owners[("download", job.seq)] = owner
             self.album_jobs.pop(job.seq, None)
             if self.pending_albums.get(job.user_id) == job.seq:
                 del self.pending_albums[job.user_id]
@@ -844,6 +944,9 @@ class _Pipeline:
                             self._cancel_marked.discard(job.seq)
                             self._set_cancelled(job.seq)
                             await self._delete_status(job)
+                            if getattr(self, "repository", None) is not None:
+                                self.job_queue.shadow_transition(job.seq, "cancelled", "cancelled")
+                                self._finish_seq(job.seq)
                         except Exception as exc:
                             if (
                                 _is_network_error(exc)
@@ -864,7 +967,15 @@ class _Pipeline:
                             logger.exception(
                                 "Download failed for job #%s", job.seq
                             )
-                            self._set_exception(job.seq, exc)
+                            if getattr(self, "repository", None) is not None:
+                                await self._reply_error(
+                                    job.seq,
+                                    f"下载失败: {exc}",
+                                    retry_job=job,
+                                )
+                                self._finish_seq(job.seq)
+                            else:
+                                self._set_exception(job.seq, exc)
                         else:
                             self._set_result(job.seq, path)
                         break
@@ -882,23 +993,36 @@ class _Pipeline:
                     logger.error(
                         "Job #%s timed out after %ss", job.seq, DOWNLOAD_TIMEOUT
                     )
-                    self._set_exception(
-                        job.seq,
-                        TimeoutError(f"下载超时（{DOWNLOAD_TIMEOUT} 秒）"),
-                    )
+                    if getattr(self, "repository", None) is not None:
+                        await self._reply_error(
+                            job.seq,
+                            f"下载超时（{DOWNLOAD_TIMEOUT} 秒）",
+                            retry_job=job,
+                        )
+                        self._finish_seq(job.seq)
+                    else:
+                        self._set_exception(
+                            job.seq,
+                            TimeoutError(f"下载超时（{DOWNLOAD_TIMEOUT} 秒）"),
+                        )
                     break
             except asyncio.CancelledError:
                 logger.info("Job #%s download worker cancelled", job.seq)
                 self._cancel_marked.discard(job.seq)
                 self._set_cancelled(job.seq)
                 await self._delete_status(job)
+                if getattr(self, "repository", None) is not None:
+                    self.job_queue.shadow_transition(job.seq, "cancelled", "cancelled")
+                    self._finish_seq(job.seq)
             finally:
                 self._download_tasks.pop(job.seq, None)
+                self._repo_download_claimed.discard(job.seq)
+                self._repo_claim_owners.pop(("download", job.seq), None)
                 self._active_downloads = max(0, self._active_downloads - 1)
                 self.input_q.task_done()
 
     async def _on_pre_download(self, job) -> None:
-        if getattr(self, "job_queue", None) is not None:
+        if getattr(self, "job_queue", None) is not None and job.seq not in self._repo_download_claimed:
             self.job_queue.shadow_transition(job.seq, "download_started", "downloading")
         await self._safe_edit(job, f"🔄 {self.task_label(job.seq)} 正在下载...")
 
@@ -908,6 +1032,9 @@ class _Pipeline:
         job = self.jobs.get(seq)
         if job is None:
             return
+        owner = self._repo_claim_owners.get(("download", seq))
+        if owner and getattr(self, "job_queue", None) is not None:
+            await self.job_queue.heartbeat_claim(seq, "download", owner)
         if items <= 1:
             overall = int(received * 100 / total) if total else 0
         else:
@@ -927,7 +1054,11 @@ class _Pipeline:
 
     async def _on_download_done(self, job, paths) -> None:
         if getattr(self, "job_queue", None) is not None:
-            self.job_queue.shadow_transition(job.seq, "download_completed", "ready")
+            file_list = [paths] if isinstance(paths, str) else list(paths or [])
+            if getattr(self, "repository", None) is not None:
+                await self.job_queue.complete_download(job.seq, file_list)
+            else:
+                self.job_queue.shadow_download_completed(job.seq, file_list)
         await self._safe_edit(
             job,
             f"✅ {self.task_label(job.seq)} 下载完成，等待上传",
@@ -1760,6 +1891,9 @@ class _Pipeline:
         job = self.jobs.get(seq)
         if job is None:
             return
+        owner = self._repo_claim_owners.get(("publish", seq))
+        if owner and getattr(self, "job_queue", None) is not None:
+            await self.job_queue.heartbeat_claim(seq, "publish", owner)
         if items <= 1:
             overall = int(received * 100 / total) if total else 0
         else:
@@ -1775,7 +1909,7 @@ class _Pipeline:
         await self._update_progress_status(seq)
 
     async def _on_pre_publish(self, job, payload) -> None:
-        if getattr(self, "job_queue", None) is not None:
+        if getattr(self, "job_queue", None) is not None and job.seq not in self._repo_publish_claimed:
             self.job_queue.shadow_transition(job.seq, "publish_started", "publishing")
         waiting = sum(1 for s, f in self.results.items() if s != job.seq and f.done())
         suffix = f"（另有 {waiting} 个待上传）" if waiting else ""
@@ -1799,7 +1933,10 @@ class _Pipeline:
     async def _on_published(self, job, ids: list) -> None:
         self._remember_published(job.seq, ids)
         if getattr(self, "job_queue", None) is not None:
-            self.job_queue.shadow_published(job.seq, ids)
+            if getattr(self, "repository", None) is not None:
+                await self.job_queue.complete_publish(job.seq, ids)
+            else:
+                self.job_queue.shadow_published(job.seq, ids)
         if job.kind == "collection":
             text = f"✅ 合集已发布到 {DEST_CHANNEL}"
         elif job.kind == "album":
@@ -1885,7 +2022,16 @@ class _Pipeline:
             # 下载优先：有未下载任务（排队中或下载中）→ 挂起上传
             while not self.input_q.empty() or self._active_downloads > 0:
                 await asyncio.sleep(0.5)
-            seq = self._pick_next_upload()
+            seq = None
+            if getattr(self, "repository", None) is not None and getattr(self, "job_queue", None) is not None:
+                await self.job_queue.drain_shadow()
+                claim = await self.job_queue.claim_next_publish("publish:primary")
+                if claim is not None:
+                    seq = int(claim.job.legacy_seq if claim.job.legacy_seq is not None else claim.job.id)
+                    self._repo_publish_claimed.add(seq)
+                    self._repo_claim_owners[("publish", seq)] = "publish:primary"
+            else:
+                seq = self._pick_next_upload()
             if seq is None:
                 await self._watchdog_unresolved(watchdog)
                 await asyncio.sleep(1)
@@ -1968,6 +2114,8 @@ class _Pipeline:
                     self._finish_seq(seq, keep_cache=True)
             finally:
                 self._upload_tasks.pop(seq, None)
+                self._repo_publish_claimed.discard(seq)
+                self._repo_claim_owners.pop(("publish", seq), None)
                 self._uploading = None
 
     def _pick_next_upload(self):
@@ -2005,6 +2153,7 @@ class _Pipeline:
         self._cancel_marked.discard(seq)
         self._paused_files.discard(seq)
         self._future_created.pop(seq, None)
+        self._runtime_jobs.pop(seq, None)
         if not keep_cache:
             self._schedule_cleanup(seq, cleanup)
 
@@ -2262,7 +2411,10 @@ class _Pipeline:
         if retry_job is not None:
             self.retryable[seq] = _RetryInfo(job=retry_job, path=retry_path)
             if getattr(self, "job_queue", None) is not None:
-                self.job_queue.shadow_transition(seq, "failed", "failed")
+                if getattr(self, "repository", None) is not None:
+                    await self.job_queue.transition_now(seq, "failed", "failed")
+                else:
+                    self.job_queue.shadow_transition(seq, "failed", "failed")
         buttons = None
         if retry_job is not None:
             buttons = [
@@ -2277,13 +2429,12 @@ class _Pipeline:
                 pass
 
 
-def register_handlers(client: TelegramClient, repository=None):
+def register_handlers(client: TelegramClient, repository=None, *, start_workers: bool = True):
     """Build the pipeline and install the extracted R1 handler layer."""
     pipeline = _Pipeline(client)
     # R2-A lifecycle seam only: the in-memory pipeline remains the runtime
     # source of truth until the explicit R2-B dual-write migration stage.
     pipeline.repository = repository
-    pipeline.start()
     shadow = ShadowState(repository)
     queue = JobQueue(pipeline, shadow=shadow)
     backup = BackupManager(pipeline, shadow=shadow)
@@ -2312,4 +2463,6 @@ def register_handlers(client: TelegramClient, repository=None):
         delete_after=_delete_after,
     )
     install_handlers(ctx)
+    if start_workers:
+        pipeline.start()
     return pipeline
