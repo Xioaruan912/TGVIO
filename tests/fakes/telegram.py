@@ -116,6 +116,34 @@ class FakeCallbackEvent:
         return message
 
 
+class FakeNewMessageEvent:
+    def __init__(
+        self,
+        client: FakeClient,
+        raw_text: str,
+        sender_id: int = 42,
+        chat_id: int | None = None,
+        message: FakeMessage | None = None,
+    ) -> None:
+        self.client = client
+        self.raw_text = raw_text
+        self.sender_id = sender_id
+        self.chat_id = sender_id if chat_id is None else chat_id
+        self.message = message or FakeMessage(1, raw_text=raw_text)
+        self.responses: list[FakeStatusMessage] = []
+        self.replies: list[FakeStatusMessage] = []
+
+    async def respond(self, text: str, **kwargs: Any) -> FakeStatusMessage:
+        message = await self.client.send_message(self.chat_id, text, **kwargs)
+        self.responses.append(message)
+        return message
+
+    async def reply(self, text: str, **kwargs: Any) -> FakeStatusMessage:
+        message = await self.client.send_message(self.chat_id, text, **kwargs)
+        self.replies.append(message)
+        return message
+
+
 class FakeDownloader:
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
         self.pre_download_hooks: list[Any] = []
@@ -147,15 +175,25 @@ class FakePublisher:
         self.progress_hooks: list[Any] = []
         self.post_publish_hooks: list[Any] = []
         self.calls: list[int] = []
+        self.jobs: list[object] = []
         self.payloads: list[Any] = []
         self.failures: dict[int, Exception] = {}
+        self.blockers: dict[int, asyncio.Event] = {}
         self.expected_calls = 0
+        self.expected_starts = 0
         self.completed = asyncio.Event()
+        self.started = asyncio.Event()
 
     async def publish(self, job: object, payload: Any) -> list[int]:
         seq = job.seq
         self.calls.append(seq)
+        self.jobs.append(job)
         self.payloads.append(payload)
+        if self.expected_starts and len(self.calls) >= self.expected_starts:
+            self.started.set()
+        blocker = self.blockers.get(seq)
+        if blocker is not None:
+            await blocker.wait()
         if seq in self.failures:
             raise self.failures[seq]
         if self.expected_calls and len(self.calls) >= self.expected_calls:

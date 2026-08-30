@@ -5,6 +5,7 @@ from .telegram import (
     FakeClient,
     FakeDownloader,
     FakeMessage,
+    FakeNewMessageEvent,
     FakePublisher,
     FakeStatusMessage,
 )
@@ -14,6 +15,7 @@ __all__ = [
     "FakeClient",
     "FakeDownloader",
     "FakeMessage",
+    "FakeNewMessageEvent",
     "FakePublisher",
     "FakeStatusMessage",
 ]

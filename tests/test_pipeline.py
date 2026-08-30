@@ -12,6 +12,7 @@ from tests.fakes import (
     FakeClient,
     FakeDownloader,
     FakeMessage,
+    FakeNewMessageEvent,
     FakePublisher,
     FakeStatusMessage,
 )
@@ -50,6 +51,7 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             "WEBDAV_COUNT_FILE": os.path.join(state_dir, "webdav-count.json"),
             "PROXY_FILE": os.path.join(state_dir, "proxy.json"),
             "DOWNLOAD_DIR": download_dir,
+            "AUTO_DELETE_SECONDS": 0,
             "ALLOWED_USERS": {42},
             "MediaDownloader": FakeDownloader,
             "MediaPublisher": FakePublisher,
@@ -443,6 +445,133 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(failure), "bad media")
         self.assertEqual(self.pipeline._active_downloads, 0)
         self.pipeline._finish_seq(190)
+
+    async def test_begin_and_end_handlers_publish_collected_session(self) -> None:
+        pipeline, client = self.register_callback_pipeline()
+        begin = client.handlers["on_begin"]
+        end = client.handlers["on_end"]
+
+        begin_event = FakeNewMessageEvent(client, "/begin")
+        await begin(begin_event)
+        self.assertIn(42, pipeline.sessions)
+        self.assertIn("合集会话已开始", begin_event.responses[-1].text)
+
+        pipeline.sessions[42].items.extend(
+            [[FakeMessage(1)], [FakeMessage(2), FakeMessage(3)]]
+        )
+        pipeline.sessions[42].texts.extend(["第一行", "第二行"])
+
+        end_event = FakeNewMessageEvent(client, "/end")
+        await end(end_event)
+        queued = pipeline.input_q.get_nowait()
+        pipeline.input_q.task_done()
+
+        self.assertNotIn(42, pipeline.sessions)
+        self.assertEqual(queued.kind, "collection")
+        self.assertEqual([message.id for message in queued.album], [1, 2, 3])
+        self.assertEqual(queued.texts, ["第一行", "第二行"])
+        self.assertIn("正在结束合集", end_event.responses[0].text)
+
+    async def test_end_handler_reports_empty_session_without_enqueuing(self) -> None:
+        pipeline, client = self.register_callback_pipeline()
+        pipeline.sessions[42] = bot._Session(user_id=42)
+
+        event = FakeNewMessageEvent(client, "/end")
+        await client.handlers["on_end"](event)
+
+        self.assertTrue(pipeline.input_q.empty())
+        self.assertNotIn(42, pipeline.sessions)
+        self.assertIn("合集为空", event.responses[-1].text)
+
+    async def test_status_edit_and_delete_failures_do_not_change_job_result(self) -> None:
+        job = self.make_job(200)
+        job.status.edit_exception = RuntimeError("message missing")
+        job.status.delete_exception = RuntimeError("message missing")
+        self.pipeline.jobs[200] = job
+
+        await self.pipeline._safe_edit(job, "new status")
+        await self.pipeline._delete_status(job)
+        await self.pipeline._reply_error(
+            200, "download failed", retry_job=job, retry_path="/cached/video.mp4"
+        )
+
+        self.assertEqual(job.status.text, "")
+        self.assertEqual(self.pipeline.retryable[200].path, "/cached/video.mp4")
+
+    async def test_upload_worker_passes_all_job_kinds_in_sequence(self) -> None:
+        self.pipeline.publisher.expected_calls = 4
+        self.pipeline._schedule_cleanup = lambda _seq, _cleanup: None
+        kinds = ["media", "album", "collection", "url"]
+        for offset, kind in reversed(list(enumerate(kinds))):
+            seq = 210 + offset
+            job = self.make_job(seq)
+            job.kind = kind
+            self.pipeline.jobs[seq] = job
+            self.pipeline.active_seqs.add(seq)
+            payload = (
+                [f"/fake/{seq}.mp4"]
+                if kind in ("album", "collection")
+                else f"/fake/{seq}.mp4"
+            )
+            self.pipeline._set_result(seq, payload)
+
+        worker = asyncio.create_task(self.pipeline._upload_worker())
+        await asyncio.wait_for(self.pipeline.publisher.completed.wait(), timeout=1)
+        await wait_until(lambda: not self.pipeline.results)
+        await cancel_task(worker)
+
+        self.assertEqual(
+            [job.kind for job in self.pipeline.publisher.jobs], kinds
+        )
+        self.assertEqual(self.pipeline.publisher.calls, [210, 211, 212, 213])
+
+    async def test_file_too_large_is_terminal_and_cleans_cache(self) -> None:
+        seq = 220
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "large.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"large")
+        job = self.make_job(seq)
+        self.pipeline.jobs[seq] = job
+        self.pipeline.active_seqs.add(seq)
+        self.pipeline._set_result(seq, path)
+        self.pipeline.publisher.failures[seq] = bot.FileTooLargeError(20, 10)
+
+        with self.assertLogs("src.bot", level="WARNING"):
+            worker = asyncio.create_task(self.pipeline._upload_worker())
+            await wait_until(lambda: seq not in self.pipeline.results)
+        await cancel_task(worker)
+
+        self.assertFalse(os.path.exists(workdir))
+        self.assertNotIn(seq, self.pipeline.retryable)
+        self.assertIn("超过", job.status.text)
+
+    async def test_upload_timeout_preserves_cache_and_registers_retry(self) -> None:
+        seq = 230
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "video.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        job = self.make_job(seq)
+        self.pipeline.jobs[seq] = job
+        self.pipeline.active_seqs.add(seq)
+        self.pipeline._set_result(seq, path)
+        self.pipeline.publisher.expected_starts = 1
+        self.pipeline.publisher.blockers[seq] = asyncio.Event()
+
+        with patch.object(bot, "UPLOAD_TIMEOUT", 0.01):
+            with self.assertLogs("src.bot", level="ERROR"):
+                worker = asyncio.create_task(self.pipeline._upload_worker())
+                await asyncio.wait_for(self.pipeline.publisher.started.wait(), timeout=1)
+                await wait_until(lambda: seq not in self.pipeline.results)
+        await asyncio.sleep(0)
+        await cancel_task(worker)
+
+        self.assertTrue(os.path.isfile(path))
+        self.assertEqual(self.pipeline.retryable[seq].path, path)
+        self.assertIn("上传超时", job.status.text)
 
 
 if __name__ == "__main__":
