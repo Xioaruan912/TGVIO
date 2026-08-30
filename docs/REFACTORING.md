@@ -26,10 +26,10 @@
 - `src/services/interactions.py`: revisioned input interaction sessions.
 - `src/repository/`: SQLite lifecycle, checksum-verified forward migrations,
   schema 4 runtime/recovery metadata, revision-CAS transitions, atomic
-  download/publish claims, claim heartbeat, local-cache persistence, accepted
-  aggregates, events, published refs, backup and interaction-session DAOs.
-  Production schema 4 exists at `session/state.sqlite3` and now drives worker
-  acquisition/restart classification.
+  download/publish claims, claim heartbeat/interruption, local-cache
+  persistence, accepted aggregates, events, published refs, backup and
+  interaction-session DAOs. Production schema 4 exists at
+  `session/state.sqlite3` and drives worker acquisition/restart classification.
 - `src/services/recovery.py`: fail-closed startup recovery planner for queued,
   downloading, ready, publishing and interrupted durable jobs.
 - `src/services/shadow_state.py`: serialized best-effort mirror from the legacy
@@ -38,20 +38,23 @@
 - `src/state_machine.py`: authoritative allowed job-state transition table,
   terminal rules and pause/resume validation.
 - `src/bot.py`: transport/orchestration compatibility layer; repository claims
-  choose durable download/publish work while process-local queues/Futures still
-  coordinate live transport and UI state.
+  choose durable download/publish work, publisher payloads come from durable
+  `job_items.local_path`, and process-local queues/Futures are only live
+  wake-up/transport/UI compatibility mechanisms. It also owns bounded graceful
+  shutdown and claim interruption.
+- `src/main.py`: repository migrate/recovery before workers, explicit SIGTERM
+  disconnect, then pipeline shutdown before repository close.
 
 ## Next extraction targets
 
-1. Add explicit graceful shutdown: stop intake/new claims, settle active claims
-   as interrupted when needed, and drain WebDAV work within a bounded stop
-   timeout.
-2. Add SIGTERM/repeated-shutdown tests and restart verification that consumes
-   the interrupted states created by shutdown.
-3. Remove remaining places that treat Future/input_q membership as durable job
-   truth; retain them only for in-process wake-up/transport coordination.
-4. Mark R3 complete only after production stop/start/recovery smoke succeeds,
-   then move to U1 without mixing UI work into shutdown cleanup.
+1. U1: build the stable `/start` control console from immutable/basic view
+   state, keeping network probes out of synchronous rendering.
+2. U1: converge per-job presentation on one main status card and persist its
+   Telegram chat/message identifiers.
+3. U1: replace the global progress edit throttle with `(job_id, phase)` state,
+   generation guards and per-job Telegram edit throttling.
+4. Keep U2 pagination/detail/confirmation flows separate until the U1 console,
+   job card and throttling deployment is stable.
 
 ## UI direction
 

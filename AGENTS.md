@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `3245303`（R3-B：repository claim 驱动 worker + startup recovery 完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 23:21 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`，日志包含 `Applied SQLite migration 0004_recovery.sql`、`SQLite repository ready. schema=[1, 2, 3, 4] integrity=ok`、`Bot commands registered` 和 `Bot started`。
+- 当前分支：`main`。当前生产运行代码基线为 `5604113`（R3 完成：repository worker/recovery + graceful SIGTERM shutdown）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 23:35 CST 最后一次部署/stop-start 验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`；真实 `docker compose stop` 1 秒内 `exit=0`，日志出现 `SIGTERM received; disconnecting Telegram client` 且无 traceback/asyncio callback error，随后 `docker compose start` 正常恢复并再次出现 `SQLite repository ready...` 与 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -420,7 +420,7 @@ docker compose config --quiet
 | R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [x] `744ca98`（2026-08-30） |
 | R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [x] `15b4012`（2026-08-30） |
 | R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [x] `3a2775e`（2026-08-30；schema 1→2 + shadow dual-write，旧 `_Pipeline` 仍是运行真相源） |
-| R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ]（R3-A/B 已完成 `3e187d9`/`3245303`；下一步 R3-C graceful shutdown + legacy truth-path 收尾） |
+| R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [x] `5604113`（2026-08-30；R3-A/B/C 完成） |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [ ] |
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [ ] |
@@ -1488,13 +1488,13 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-R0、R1、R2 已完成，R3-A/R3-B 已分别由 `3e187d9`、`3245303` 完成并部署。下一阶段进入 **R3-C：graceful shutdown + claim interruption/legacy truth-path 收尾**；完成前不要开始新 UI。
+R0、R1、R2、R3 已完成。下一阶段进入 **U1：Telegram 首页控制台 + 统一任务状态卡 + 每任务进度节流**；不要同时夹带 U2 分页详情、Web Dashboard、多频道或转码。
 
-1. 为 `_Pipeline` 增加显式 shutdown lifecycle：停止 intake/新 claim，等待或中断 download/publish/WebDAV task，在 compose stop timeout 内退出；shutdown 期间不得领取新任务。
-2. 对仍持有 claim 的 `downloading/publishing` job 做原子 interrupted repair：清 claim owner/heartbeat 并记录 shutdown event；`ready/queued` 保持可恢复，partial published refs 仍禁止自动重发。
-3. 增加 SIGTERM/stop fake 测试：下载中、发布中、WebDAV 后台、空闲、重复 shutdown；repository 关闭前必须先完成 claim settlement，下一次 startup recovery 应能承接 interrupted job。
-4. 在 repository-backed worker 已稳定的前提下，逐步移除把 Future/input_q 当“任务真相”的判断；允许保留 Queue/Event 作为进程内 wake-up/transport coordination，但 durable 排序、状态与恢复必须只读 SQLite。
-5. R3-C 通过 93+ 回归、生产 stop/start/recovery 冒烟后，才把 R3 主项标 `[x]`，随后进入 U1 首页控制台；不要在本阶段夹带 Web Dashboard、多频道或转码。
+1. 先按第 15.1/15.2 节建立统一 UI state/view model 与 `/start` 稳定控制台；刷新只编辑原消息，WebDAV/磁盘状态读取失败不得拖垮首页。
+2. 再按第 15.3 节把 job 主要状态消息统一成单卡模型，优先复用 schema 中已有 `status_chat_id/status_message_id`，阶段/终态/用户操作立即刷新。
+3. 把当前全局 `_last_progress_edit` 改为 `(job_id, phase)` 独立 ProgressState，并按第 15.4 节做 generation + 每任务 2 秒 UI 节流；先不实现 F1 的完整 yt-dlp speed/ETA 功能扩展。
+4. 保持现有 callback data/旧命令兼容，U1 阶段不做 U2 的完整队列分页、筛选、详情/确认页；先用 characterization tests 锁住旧入口，再逐步切 view。
+5. U1 仍需独立门禁：98+ 回归、构建镜像、生产部署和 Telegram UI 核心路径验证；不要因 R3 已稳定而跳过部署前无活动传输检查。
 
 ## 21. 执行日志
 
@@ -1643,3 +1643,15 @@ R0、R1、R2 已完成，R3-A/R3-B 已分别由 `3e187d9`、`3245303` 完成并�
 - 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-3245303`、`/root/telegram-video-forwarder-releases/pre-3245303.tar.gz` 和 schema-3 DB 备份；回滚 R3-A 前必须停容器并恢复 schema-3 DB，因为旧 migration 集合不认识 version 4。
 - 未完成与风险：进程内 `Future`/`input_q` 仍承担 transport coordination 和部分旧状态展示；尚未实现 SIGTERM graceful shutdown/停止新 claim/主动 interrupted settlement。R3 尚不能标总完成。
 - 下一步精确入口：第 20.6 节 R3-C；先为 pipeline shutdown + claim interruption 写 fake tests，再接 main/container stop lifecycle。
+
+### 2026-08-30 23:35 - R3-C graceful shutdown 与 durable truth-path 收尾
+
+- 状态：R3 已完成、推送并部署生产；P0 的 R0/R1/R2/R3 基础重构链全部完成，下一阶段进入 U1。
+- 基线 commit：`813a623`；主要实现 commit：`76f9368`（`feat(runtime): complete R3 graceful shutdown`）；SIGTERM 修复 commits：`65fe81d`、`5604113`。
+- 已改文件：`src/bot.py`、`src/main.py`、`src/repository/sqlite.py`、`src/services/job_queue.py`、`src/services/shadow_state.py`、`docker-compose.yml`、`tests/test_shutdown.py`、`tests/test_main.py`。
+- 已完成：pipeline 显式 shutdown gate/worker task tracking；shutdown 先停止新 claim，再按 owner/kind 原子把 active download/publish claim 转为 `interrupted` 并清 claim metadata，之后停止 transport；WebDAV 后台任务有 bounded drain；pending/album/session timer 一并取消；重复 shutdown 幂等。repository 模式 publisher 不再从 Future 获取实际 payload，改为从 SQLite `job_items.local_path` 读取，Future/input_q 只保留无 repository 兼容和进程内协调用途。Compose 增 `stop_grace_period: 30s`。
+- SIGTERM 修复：第一次真实生产 stop 暴露应用未处理 SIGTERM，导致打满 30 秒并 `exit=137`；增加显式 SIGTERM handler 后第二次 stop 已 `exit=0`，但发现 Telethon `disconnect()` 返回 Future，使用 `loop.create_task()` 会触发 TypeError；最终 `5604113` 改为 `asyncio.ensure_future()`，第三次真实 stop 1 秒内 `exit=0`，仅记录 `SIGTERM received; disconnecting Telegram client`，无 traceback/asyncio callback error。
+- 测试：最终本地/最终构建镜像/生产容器均 **98 项 unittest 全通过**；新增空闲/重复 shutdown、下载中 claim interruption + restart recovery、发布中 interruption + 完整缓存恢复、WebDAV bounded cancel、SIGTERM disconnect once 测试。`py_compile`、`git diff --check`、compose config、Docker build、静态镜像秘密路径检查全部通过；schema 仍 `[1,2,3,4]`，无新 migration，0001～0004 checksum 未改。
+- VPS：最终生产运行代码为 `5604113`，容器 `running`、`restart=0`，镜像 `sha256:8e432f565882e0def925e6b3f124540f348fda58eeb0f11e2600a4247066812b`；最终源码哈希与 commit 一致。真实 `docker compose stop` 1 秒内正常退出 `exit=0`/`OOMKilled=false`，stop 后 DB `integrity=ok`；`docker compose start` 后 schema `[1,2,3,4]`、`integrity=ok`、`restart=0`、`Bot started` 正常。
+- 回滚：R3-C 首次部署前 DB 备份 `/root/telegram-video-forwarder-releases/state-pre-76f9368-20260830-233021.sqlite3`；保留 `telegram-video-forwarder:rollback-pre-76f9368`、`/root/telegram-video-forwarder-releases/pre-76f9368.tar.gz`，以及后续 `rollback-pre-65fe81d` / `rollback-pre-5604113` 与对应源码包。R3-C 无 schema 变更，回滚到 R3-B 不要求降库。
+- 下一步精确入口：第 15.1～15.4 节 U1；先做 `/start` 稳定首页控制台与统一 view/state model，再做单任务状态卡和 per-job progress throttling，不同时进入 U2。
