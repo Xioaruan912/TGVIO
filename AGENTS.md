@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `e055200`（R1-A：纯 view 边界抽取）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 22:04 CST 最后一次部署验证时容器 `running`、`restart=0`，关键源码哈希与 `e055200` 一致，日志包含 `Bot commands registered` 和 `Bot started`。
+- 当前分支：`main`。当前生产运行代码基线为 `15b4012`（R1：views/handlers/service facade 边界完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 22:19 CST 最后一次部署验证时容器 `running`、`restart=0`，关键源码哈希与 `15b4012` 一致，日志包含 `Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -418,7 +418,7 @@ docker compose config --quiet
 | ID | 优先级 | 工作包 | 依赖 | 状态 |
 |---|---|---|---|---|
 | R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [x] `744ca98`（2026-08-30） |
-| R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [ ]（R1-A views 已完成 `e055200`；下一步 R1-B handlers） |
+| R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [x] `15b4012`（2026-08-30） |
 | R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [ ] |
 | R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ] |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
@@ -1488,15 +1488,15 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-R0 已完成，R1-A 已由 `e055200` 完成并部署。当前进入 **R1-B：handler 注册/分派抽取**，不要直接上 SQLite、状态机或新 UI。
+R0、R1 已完成并部署。下一阶段进入 **R2-A：SQLite repository 与 migration 基础**；不要同时实现 R3 状态机或新 UI。
 
-1. 保持现有 54 项离线测试与 `src/views/` renderer 预期不变；新增 handler 测试必须继续使用 FakeClient/Event，不连接真实 Telegram。
-2. 将 `register_handlers()` 中 command、callback、private-message 分派渐进移动到独立 handler 模块；第一提交只抽注册/分派和薄适配，不移动队列/WebDAV 业务状态。
-3. handler 只做鉴权、输入解析、调用 service/pipeline、选择 view；不得重新实现 queue、backup 或 media 逻辑。
-4. `src/ui.py` 继续作为 R1 兼容层，暂不删除；`src/views/` 不得反向 import `bot`/handler。
-5. R1-B 完成并部署后，再进入 R1-C `JobQueue`/`BackupManager` 边界抽取；不要跨阶段同时改持久化。
+1. 在 `session/state.sqlite3` 建立单连接 repository 生命周期与前向 migration runner；先只创建 schema/DAO，不切换生产任务真相源。
+2. 第一版 migration 建 `schema_migrations`、`jobs`、`job_events`、`backup_attempts`、`backup_files`、`settings`，字段遵循第 14 节定义；依赖新增 `aiosqlite`。
+3. repository 写入必须经 `asyncio.Lock` 串行化，启用 foreign keys、busy timeout、FULL synchronous；Telegram/WebDAV IO 不得持有事务。
+4. 新增临时 SQLite 文件的 migration/repository 单元测试，验证重复启动幂等、checksum、事务回滚和基本 CRUD；现有 60 项离线回归必须继续通过。
+5. R2-A 只把 DB 基础设施接入启动/关闭生命周期并做 self-check；旧内存 `_Pipeline` 仍负责运行任务，等 R2-B 明确双写/迁移路径后再切换。
 
-未经用户明确改变优先级，不要先做 Web Dashboard、多频道、SQLite 或转码。
+未经用户明确改变优先级，不要先做 Web Dashboard、多频道、R3 状态机或转码。
 
 ## 21. 执行日志
 
@@ -1570,3 +1570,18 @@ R0 已完成，R1-A 已由 `e055200` 完成并部署。当前进入 **R1-B：han
 - 数据迁移：无；`.env`、`session/`、`downloads/` 未打包、未覆盖。
 - 未完成与风险：`register_handlers()` 仍在 `src/bot.py`，JobQueue/BackupManager 也尚未抽取；R1 不能标总完成。
 - 下一步精确入口：第 20.6 节 R1-B，从 `register_handlers()` 的 command/callback/private-message 分派开始，只抽 handler 边界。
+
+### 2026-08-30 22:19 - R1-B/C handlers 与 service facade 收尾
+
+- 状态：R1 已完成、推送并部署生产。
+- 基线 commit：`711a412`
+- 实现 commit：`15b4012`（`refactor(core): complete R1 handler service boundaries`）
+- 已改文件：`src/handlers/*`、`src/services/*`、`src/bot.py`、`tests/test_handlers.py`。
+- 已完成：command/callback/private-message 注册与分派从 `bot.py` 移至领域 handler；callback 前缀集中到 `CallbackRouter` 动作表；过期 callback 统一应答；`webdav_waiting`/`proxy_waiting` 裸字典替换为带 revision 的 `InteractionSession`；handler 的 queue 状态写入经 `JobQueue` facade，WebDAV 配置/补传经 `BackupManager` facade，proxy 配置经 `ProxyManager` facade。`bot.py` 由约 3100 行降至约 2250 行，保留现有 `_Pipeline` worker/运行时逻辑作为 R2 前兼容实现。
+- 测试：现有 54 项 R0/R1-A 预期未修改；新增 6 项 handler/service 边界测试后，本地、构建镜像和生产容器均为 60 项 unittest 全通过。`py_compile`、`git diff --check`、`docker compose config --quiet`、`docker compose build`、无反向 `bot` import、handler 不直接操作 queue 内部集合、镜像秘密路径检查全部通过。
+- GitHub：`15b4012` 已推送 `origin/main`；本条交接记录随其后的 docs-only commit 推送。
+- VPS：部署前确认生产实际 `src/bot.py`/`src/ui.py` 与 `e055200` 一致、容器 `restart=0` 且近 5 分钟无活动传输；2026-08-30 22:19 CST 用 Git archive 部署 `15b4012`。容器 `running`、`restart=0`，启动日志正常；本地/主机/容器关键源码 SHA-256 完全一致；`.env`、`session/`、`downloads/` 保持原生产数据。
+- 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-15b4012` 和 `/root/telegram-video-forwarder-releases/pre-15b4012.tar.gz`。
+- 数据迁移：无；R1 仍使用旧内存任务状态与 JSON 设置，未引入 SQLite。
+- 未完成与风险：`JobQueue`/`BackupManager` 当前是 R1 facade，底层 worker/WebDAV 生命周期仍委托 `_Pipeline`；这是 R2/R3 持久化和状态机替换的兼容 seam，不应在 handler 中绕过。
+- 下一步精确入口：第 20.6 节 R2-A；先实现 SQLite migration/repository 基础，不同时切状态机。
