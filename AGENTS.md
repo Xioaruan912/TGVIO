@@ -1519,8 +1519,8 @@ fix(webdav): preserve cache across interrupted verify
 - 已改文件：`tests/__init__.py`、`tests/fakes/__init__.py`、`tests/fakes/telegram.py`、`tests/test_pipeline.py`、`AGENTS.md`。
 - 已完成：离线 FakeClient/CallbackEvent/Message/Status、FakeDownloader/Publisher；submit 顺序、pending/queued cancel、paused skip、FIFO publish、上传失败缓存、WebDAV 延迟清理保留、retry/confirm 一次性 callback、任务/全局暂停恢复测试。
 - 测试：`python3 -m unittest discover -s tests -v` 共 13 项通过；`git diff --check`、`py_compile src/tests`、`docker compose config --quiet` 通过。
-- GitHub：实现提交 `fecb832` 与本次 AGENTS 交接提交均推送 `origin/main`。
-- VPS：本批只有 tests/文档，不改变镜像运行代码；不重建容器，只做只读健康确认。
+- GitHub：实现提交 `fecb832`、首个交接提交 `b8252ed` 均已推送 `origin/main`；本条健康记录随其后的文档提交推送。
+- VPS：本批只有 tests/文档，不改变镜像运行代码，因此未重建容器。2026-08-30 只读确认：容器 `running`、`restart=0`，日志正常出现 `Bot commands registered` 与 `Bot started`。
 - 数据迁移：无。
 - 未完成与风险：album/collection/mode/session、并行下载与运行中取消、WebDAV 协议矩阵、cover/undo 和 view snapshot 尚未覆盖，不能把 R0 主项标完成。
 - 下一步精确入口：`tests/test_pipeline.py`，先增加 `_auto_enqueue` album merge、`_session_finalize` 和 `_confirm_timeout` 测试。
