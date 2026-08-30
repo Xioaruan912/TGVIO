@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `b5450e6`（F1：yt-dlp 实时进度、断点续传安全路径与真正取消完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 00:09 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`，生产容器 121 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。F1 未新增 migration，R3 recovery/shutdown、U1 progress 和 U2 durable UI 基线继续由现有测试保护。
+- 当前分支：`main`。当前生产运行代码基线为 `31a8335`（F2-A：统一错误模型、下载阶段退避/取消、失败持久化与错误专属 UI；部署归档含交接 commit `d187e18`）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 07:38 CST 最后一次部署验证时容器 `running`、`restart=0`、`OOMKilled=false`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、active jobs/claims 为 0，生产容器 130 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。F2-A 未新增 migration，R3 recovery/shutdown、U1 progress、U2 durable UI 和 F1 cancel 基线继续由现有测试保护。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1696,15 +1696,16 @@ R0、R1、R2、R3、U1、U2、F1 已完成。当前正在执行 **F2：错误分
 
 ### 2026-08-31 07:38 - F2-A 统一错误模型与下载阶段退避
 
-- 状态：实现已提交且本地候选镜像门禁完成，等待 GitHub/生产部署；F2 主工作包仍在进行中。
+- 状态：F2-A 已完成、推送并部署生产；F2 主工作包仍在进行中。
 - 基线 commit：`ad1a42e`；实现 commit：`31a8335`（`feat(errors): add F2 download retry policy`）。
 - 已改文件：`src/domain/__init__.py`、`src/domain/errors.py`、`src/bot.py`、`src/repository/sqlite.py`、`src/services/shadow_state.py`、`src/services/job_queue.py`、`src/handlers/jobs.py`、`src/views/tasks.py`、`tests/test_errors.py`、`tests/test_repository.py`、`tests/test_pipeline.py`、`tests/test_recovery_pipeline.py`、`tests/test_u2.py`、`AGENTS.md`。
 - 已完成：新增 transport-independent `ErrorCode/ErrorInfo/RetryPolicy`，覆盖第 16.2 节列出的 network/Telegram/source/url/file/disk/cache/media/partial publish/WebDAV/cancelled/unknown；用户只看到固定安全摘要，日志记录错误码、异常类型和不含异常文本的 stack frame 路径。download 使用独立 budget（沿用 `DOWNLOAD_AUTO_RETRY`）、`base*2**(attempt-1)+jitter`（5 秒起、300 秒 cap）；FloodWait 只使用服务端秒数 + 1 秒安全量；unknown 有限重试，非 retryable 错误直接失败。
 - 持久化/UI：非终态失败 attempt 原子写 `error_code/error_message/retry_count/next_retry_at` 与 `<phase>_retry_scheduled` event；终态失败写安全错误码/摘要并清 `next_retry_at`，后续非失败 transition 清活动错误但保留 retry count 历史。任务详情/失败中心显示错误码、专属处理建议和仍有效的预计重试时间；不显示 URL、凭证、原异常或 traceback。
 - 取消语义：backoff 使用 per-job interrupt event，用户在退避期间取消会立即唤醒，不会启动下一次 download；测试 sleep 可注入，生产仍用真实 asyncio sleep。
 - 测试：最终候选镜像 **130 项 unittest 全通过**；`python3 -m compileall -q src tests`、`git diff --check`、`docker compose config --quiet`、`docker compose build bot` 全通过。此前一次 121 项结果来自构建前旧镜像，已明确作废；一次旧测试因真实退避超过 1 秒而失败，已通过注入测试 sleep 修复，不能计入最终结果。
-- GitHub：实现已提交，尚未推送。
-- VPS：未部署；生产仍为 `b5450e6`，本批未接触远端 `.env/session/downloads`。
+- GitHub：`31a8335` 与交接提交 `d187e18` 已推送 `origin/main`；本条最终部署记录随其后的 docs-only commit 推送。
+- VPS：部署前只读确认生产 `src/bot.py` SHA-256 与 `b5450e6` 完全一致、容器 `restart=0`、DB `integrity=ok`/schema4、active jobs/claims 为 0、磁盘余量 48GB。2026-08-31 07:38 CST 用不含 `.env/session/downloads/.git` 的 Git archive `d187e18` 安全部署；新镜像 `sha256:baedc2d2e7a97b8b80b46131b3767ae3816f5ba8ce92175915d1b8428c0c4b7d`，容器 `running`、`restart=0`、`OOMKilled=false`，启动日志正常，主机/容器四个关键源码 SHA-256 一致，生产容器 130 tests 全通过，运行数据目录均保留。
 - 数据迁移：无；复用 schema 1 已有字段，0001～0004 migration 不修改。回滚代码不需要降库，新增 event/错误字段可由旧代码忽略。
 - 未完成与风险：publish 仍只在整批成功后保存 refs，不能安全自动重试；WebDAV 仍使用旧内部 retry；代理切换尚未集中串行。因此 F2 主复选框保持 `[ ]`。
-- 下一步精确入口：完成本批最终 130+ 测试、提交/推送/安全部署并回填本条；之后按上方 F2-B 从 `MediaPublisher` 每次成功 send 的副作用 checkpoint 开始。
+- 回滚：镜像 `telegram-video-forwarder:rollback-pre-d187e18`（旧 image `sha256:4393cdd6...`）；源码 `/root/telegram-video-forwarder-releases/pre-d187e18.tar.gz`；SQLite 在线备份 `/root/telegram-video-forwarder-releases/state-pre-d187e18-20260831-0739.sqlite3`。部署 archive 时间比 VPS 时钟约快 87 秒，仅有 tar future timestamp 提示，构建/运行不受影响。
+- 下一步精确入口：按上方 F2-B，从 `MediaPublisher` 每次成功 send 的副作用 checkpoint 和失败注入测试开始；未完成 checkpoint 前不得开启 publish 自动重试。
