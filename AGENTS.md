@@ -7,7 +7,7 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。最后一个影响生产运行代码的提交是 `ee104c1`；之后有规划文档 `ff8340a` 和 R0 测试提交 `fecb832`，均不改变容器运行逻辑。开始工作时仍须用 `git log -1` 确认最新 HEAD。
+- 当前分支：`main`。当前待发布/生产运行代码基线为 `b031154`（修复确认超时序号泄漏并扩展 R0 测试）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
 - 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 最后一次部署验证时容器正常运行，关键源码哈希与本地一致，日志包含 `Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
@@ -453,9 +453,9 @@ docker compose config --quiet
 
 - [x] 建立 `tests/fakes/telegram.py`：`FakeClient`、`FakeCallbackEvent`、`FakeMessage`、`FakeStatusMessage`，记录 `respond/edit/delete/send_file/delete_messages` 调用。（2026-08-30，`fecb832`）
 - [ ] 建立可注入的 `FakeDownloader`、`FakePublisher`、`FakeBackupClient` 和 controllable clock；禁止测试依赖真实 `time.sleep`。其中 Downloader/Publisher 已完成（`fecb832`），BackupClient/clock 待补。
-- [ ] 覆盖单媒体、相册、collection、URL 四种 Job 的接受和顺序发布。单媒体、URL 接受及 ready job FIFO 发布已完成（`fecb832`），相册/collection 待补。
-- [ ] 覆盖 ask/always_spoiler/always_normal、确认超时自动正常、用户取消、合集 `/begin`/`/end`、文字 caption 拼接。pending 取消和 confirmation callback 一次性消费已完成（`fecb832`），其余待补。
-- [ ] 覆盖并行下载但 FIFO 上传、暂停后跳过、继续、取消排队项、取消运行项、下载失败、上传失败、缓存重传。FIFO、暂停/继续、排队取消、上传失败保留缓存与一次性缓存重试已完成（`fecb832`）；并行下载、运行中取消和下载失败待补。
+- [ ] 覆盖单媒体、相册、collection、URL 四种 Job 的接受和顺序发布。四种 Job 接受、album 未开始合并、collection 展平和通用 ready job FIFO 已覆盖（`fecb832`、`b031154`）；各媒体 kind 到 FakePublisher 的参数化发布仍待补。
+- [ ] 覆盖 ask/always_spoiler/always_normal、确认超时自动正常、用户取消、合集 `/begin`/`/end`、文字 caption 拼接。ask/always_spoiler/force_normal、超时、pending cancel、session 展平与文字顺序已覆盖（`fecb832`、`b031154`）；`/begin`/`/end` handler 与 publisher caption 拼接待补。
+- [x] 覆盖并行下载但 FIFO 上传、暂停后跳过、继续、取消排队项、取消运行项、下载失败、上传失败、缓存重传。（2026-08-30，`fecb832`、`b031154`）
 - [ ] 覆盖封面模式返回 `(peer_id, message_id)`、评论区线程根查找和撤销；已有关键 workaround 不得在抽取时消失。
 - [ ] 覆盖 WebDAV 失败保留缓存、成功清理、远端大小幂等、自动补传和 OpenList 延迟响应确认。延迟清理期间失败标记保留缓存已完成（`fecb832`），其余待补。
 - [ ] 覆盖重复 callback、callback 到达时任务已完成、状态消息已删除、FloodWait/编辑失败不影响任务结果。重复 confirm/retry 不重复入队已完成（`fecb832`），其余待补。
@@ -1488,10 +1488,10 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-下一位实现代理继续 **R0**，不要直接上 SQLite 或改 UI。`fecb832` 已完成队列/取消/暂停/重试首批 10 个行为测试，准确入口如下：
+下一位实现代理继续 **R0**，不要直接上 SQLite 或改 UI。`fecb832` + `b031154` 已完成 18 个队列/合集行为测试并修复确认超时幽灵序号，准确入口如下：
 
-1. 在 `tests/test_pipeline.py` 增加 album/collection 接受、ask/always 模式、确认超时、`/begin`/`/end` 和文字 caption 测试。
-2. 增加并行下载、运行中取消、下载失败与状态消息 edit/delete 失败测试。
+1. 在 `tests/test_pipeline.py` 增加 `/begin`/`/end` handler、publisher collection caption 拼接，以及 status edit/delete 失败测试。
+2. 参数化四种 Job 到 FakePublisher 的发布调用，补 FileTooLarge/上传 timeout 行为。
 3. 新建 FakeBackupClient/本地 WebDAV server，覆盖成功清理、远端大小幂等、自动补传和延迟响应。
 4. 为 cover mode 返回 peer/message pairs、撤销和 `queue_view`/progress 文案补快照测试。
 5. 记录 `src/*.py` 行数、依赖方向和配置基线；R0 全部通过后才进入 R1 view/handler 抽取。
@@ -1524,3 +1524,18 @@ fix(webdav): preserve cache across interrupted verify
 - 数据迁移：无。
 - 未完成与风险：album/collection/mode/session、并行下载与运行中取消、WebDAV 协议矩阵、cover/undo 和 view snapshot 尚未覆盖，不能把 R0 主项标完成。
 - 下一步精确入口：`tests/test_pipeline.py`，先增加 `_auto_enqueue` album merge、`_session_finalize` 和 `_confirm_timeout` 测试。
+
+### 2026-08-30 21:35 - R0-B 合集/并发下载与确认超时修复
+
+- 状态：实现和本地门禁已完成，等待本条记录提交后部署生产。
+- 基线 commit：`53a2802`
+- 实现 commit：`b031154`（`fix(queue): preserve sequence on confirmation timeout`）
+- 已改文件：`src/bot.py`、`tests/fakes/telegram.py`、`tests/test_pipeline.py`、`AGENTS.md`。
+- 已完成：album 未开始批次去重合并、collection 批次展平与文字顺序、ask/spoiler/force-normal、确认超时、双下载 worker 并发、运行中取消、下载失败结算测试。
+- 修复：确认超时此前为已预留的任务重新分配 seq，导致旧 seq 永久留在 `active_seqs` 并破坏队列顺序；现在 `_auto_enqueue(reserved_seq=...)` 复用原序号，且该路径不参与相册自动合并。
+- 测试：先由新增测试稳定复现 `queued.seq 101 != reserved seq 100`，修复后 `python3 -m unittest discover -s tests -v` 共 21 项通过；`git diff --check`、`py_compile`、compose config 均通过。
+- GitHub：实现提交 `b031154` 与本次 AGENTS 交接提交将一起推送 `origin/main`。
+- VPS：这是运行代码修复，必须在推送后按第 10 节部署并验证；部署结果追加到本条记录。
+- 数据迁移：无；不触碰 `.env`、`session/`、`downloads/`。
+- 未完成与风险：R0 的 WebDAV 协议矩阵、cover/undo、view snapshot 和 handler 异常仍待覆盖。
+- 下一步精确入口：`tests/test_pipeline.py` 补 handler/status failure；随后为 `src/webdav.py` 建本地协议 fake。
