@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `36cc8bf`（R2-A：SQLite repository/migration 基础完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 22:28 CST 最后一次部署验证时容器 `running`、`restart=0`，关键源码哈希与 `36cc8bf` 一致，日志包含 `SQLite repository ready. schema=[1] integrity=ok`、`Bot commands registered` 和 `Bot started`。
+- 当前分支：`main`。当前生产运行代码基线为 `3a2775e`（R2-B：runtime entities + 非权威 shadow dual-write 完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 22:59 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2]`、`integrity=ok`，日志包含 `Applied SQLite migration 0002_runtime_entities.sql`、`SQLite repository ready. schema=[1, 2] integrity=ok`、`Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -419,7 +419,7 @@ docker compose config --quiet
 |---|---|---|---|---|
 | R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [x] `744ca98`（2026-08-30） |
 | R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [x] `15b4012`（2026-08-30） |
-| R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [ ]（R2-A 基础 schema/lifecycle 已完成 `36cc8bf`；下一步 R2-B shadow dual-write） |
+| R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [x] `3a2775e`（2026-08-30；schema 1→2 + shadow dual-write，旧 `_Pipeline` 仍是运行真相源） |
 | R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ] |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [ ] |
@@ -1488,15 +1488,13 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-R0、R1 已完成，R2-A 已由 `36cc8bf` 完成并部署。下一阶段进入 **R2-B：完整运行实体 schema + 非权威 shadow dual-write**；不要同时实现 R3 状态机、恢复器或新 UI。
+R0、R1、R2 已完成并部署。下一阶段进入 **R3-A：显式状态机 + repository 原子 transition/claim/idempotency 基础**；这一小阶段先不做完整重启恢复和新 UI。
 
-1. 新增 `0002_runtime_entities.sql`，建立第 14.2 节尚缺的 `job_items`、`job_texts`、`published_messages`、`interaction_sessions`；不要修改已应用的 `0001_initial.sql`，checksum 必须保持不变。
-2. repository 增加原子 `accept job + items + texts + first event`、published message refs、interaction session 等 DAO；所有 payload/metadata 带 `schema_version`，路径继续受 download root 约束。
-3. 通过 R1 `JobQueue`/`BackupManager` seam 增加 **shadow dual-write**：旧 `_Pipeline` 仍是生产运行真相源，SQLite 只记录镜像状态；handler 不得绕过 service 直接写库。
-4. shadow write 必须有独立 fake/repository 测试，验证 album/collection/text 顺序、confirm/cancel/retry、publish peer/message refs 和 WebDAV attempt 映射；不得改变现有 67 项行为预期。
-5. 部署前备份现有 `session/state.sqlite3`，migration 2 必须自动生成一致性 pre-migrate backup；部署后核对 schema `[1, 2]`、旧 DB 内容未丢失、Bot 行为仍由内存 pipeline 驱动。
-
-未经用户明确改变优先级，不要先做 Web Dashboard、多频道、R3 状态机或转码。
+1. 把允许的 `jobs.state` transition 集中定义为显式表，并为 terminal state、paused/resume、failed retry 等规则加单元测试；handler/pipeline 不得自行发明状态字符串。
+2. repository 增加基于 `revision` 的原子 transition 与 compare-and-swap；重复 callback/旧 revision 必须无重复副作用，并在同一事务写 `job_events`。
+3. 增加下载/发布 claim DAO（先测试/服务边界，不立刻删除旧 worker Future）；验证两个并发 claimant 最多一个成功。
+4. 通过 `JobQueue` seam 开始把 confirm/cancel/retry/hold/resume 的状态写入口统一到状态机；仍保留旧 `_Pipeline` 调度作为兼容执行路径，直到 R3-B recovery/worker 切换完成。
+5. 不在 R3-A 同时实现 startup recovery、SIGTERM graceful shutdown、Web Dashboard、多频道或新 UI。
 
 ## 21. 执行日志
 
@@ -1600,3 +1598,18 @@ R0、R1 已完成，R2-A 已由 `36cc8bf` 完成并部署。下一阶段进入 *
 - 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-36cc8bf` 和 `/root/telegram-video-forwarder-releases/pre-36cc8bf.tar.gz`。
 - 未完成与风险：SQLite 目前只是基础设施，尚未 shadow-write 实际任务，也不是恢复真相源；不得误认为容器重启后任务已经可恢复。`backup_files.job_item_id` 暂未建立 FK，待 R2-B `job_items` 表落地后通过新 migration 补全运行实体关系，不得修改已应用的 0001。
 - 下一步精确入口：第 20.6 节 R2-B；先建 `0002_runtime_entities.sql` 和 repository 原子 accept/item/text/published DAO，再从 `JobQueue`/`BackupManager` 做非权威双写。
+
+### 2026-08-30 22:59 - R2-B runtime entities 与 shadow dual-write
+
+- 状态：R2 已完成、推送并部署生产；SQLite 仍是 shadow/history，不是 worker 调度真相源。
+- 基线 commit：`a99fc1a`
+- 实现 commit：`3a2775e`（`feat(storage): add R2-B shadow runtime persistence`）
+- 已改文件：`src/repository/migrations/0002_runtime_entities.sql`、`src/repository/sqlite.py`、`src/services/shadow_state.py`、`src/services/job_queue.py`、`src/services/backup_manager.py`、`src/bot.py`、`src/main.py`、`tests/test_repository.py`、`tests/test_shadow_state.py` 等。
+- 已完成：migration 2 建 `job_items/job_texts/published_messages/interaction_sessions`，并重建 `backup_files` 加 `job_item_id -> job_items` FK；新增原子 accepted aggregate、event、published refs、interaction session、backup/list DAO；`ShadowState` 经 `JobQueue`/`BackupManager` seam 串行 best-effort 写入 accepted/confirm/cancel/retry/published/WebDAV attempt；album 合并只追加新 message id，collection 文本和媒体 ordinal 保持顺序。`0001_initial.sql` SHA-256 保持 `3dd7ef02...6047` 未修改。
+- 测试：现有行为回归未改语义；新增 repository/shadow 测试后本地绑定源码与最终构建镜像均 73 项 unittest 全通过；`py_compile`、`git diff --check`、compose config、Docker build、schema `[1,2]` smoke、migration 1→2 数据保留/自动 backup、FK、checksum、镜像秘密路径检查全部通过。
+- GitHub：实现提交 `3a2775e` 已推送 `origin/main`；本条部署记录随其后的 docs-only commit 推送。
+- VPS：部署前确认生产实际代码为 `36cc8bf`、容器 `restart=0`、近 5 分钟无活动传输，DB schema `[1]`、`integrity=ok`、jobs/events 为 0；2026-08-30 22:59 CST 安全部署 `3a2775e`。容器 `running`、`restart=0`，镜像 `sha256:7a23a66c551887967ad39e2a3884631641a13e11732420d9b3d6ee4a2fac7fab`；生产容器 73 tests 全通过。
+- 数据迁移：部署前用 SQLite backup API 建 `/root/telegram-video-forwarder-releases/state-pre-3a2775e-20260830-225920.sqlite3`；启动 migration 2 又自动建 `session/db_backups/state-pre-migrate-20260830-225932.sqlite3`。迁移后 schema `[1,2]`、`integrity=ok`，旧 jobs/events 计数仍为 0，新增 runtime tables 均为空，`backup_files.job_item_id` FK 验证为 true。
+- 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-3a2775e`、`/root/telegram-video-forwarder-releases/pre-3a2775e.tar.gz` 和上述两份数据库备份；回滚 R2-A 代码前应先停容器并恢复 schema-1 数据库备份，因为旧代码的 REQUIRED_TABLES 与 migration 集合不认识 schema 2。
+- 未完成与风险：shadow 数据目前只在当前进程维护 `legacy seq -> DB job id` 映射，重启后不会用于恢复或调度；WebDAV shadow 当前记录 attempt/file 起点，旧 JSON 仍是 WebDAV 实际恢复来源。不要把 schema 2 当作 R3 已完成。
+- 下一步精确入口：第 20.6 节 R3-A；先做显式 transition 表、revision CAS 与并发 claim 测试，再逐步把 service 写入口切到状态机。

@@ -25,21 +25,25 @@
 - `src/services/proxy_manager.py`: proxy settings/switching facade.
 - `src/services/interactions.py`: revisioned input interaction sessions.
 - `src/repository/`: R2 SQLite lifecycle, checksum-verified forward migrations,
-  integrity checks and basic job/event/backup/settings DAOs. Production schema
-  1 exists at `session/state.sqlite3`, but is not yet the runtime source of truth.
+  schema 2 runtime entities, atomic accepted aggregates, events, published refs,
+  backup and interaction-session DAOs. Production schema 2 exists at
+  `session/state.sqlite3`, but is still not the runtime source of truth.
+- `src/services/shadow_state.py`: serialized best-effort mirror from the legacy
+  queue/WebDAV paths into SQLite, including album merge de-duplication and
+  published peer/message references.
 - `src/bot.py`: legacy in-memory worker/orchestration implementation plus thin
   dependency assembly for the extracted handlers/services.
 
 ## Next extraction targets
 
-1. Add migration 2 for job items/texts/published refs/interaction sessions and
-   atomically persist accepted job aggregates.
-2. Shadow-write queue/backup lifecycle through the existing R1 service facades
-   while the legacy in-memory pipeline remains authoritative.
-3. Only after shadow state is verified, move durable queue/backup truth behind
-   repositories and remove duplicated legacy mutations incrementally.
-4. Add the explicit job state machine, idempotent transitions and restart
-   recovery only after persistence is stable.
+1. Add the explicit R3 job-state transition table and repository revision/CAS
+   operations; make stale/repeated commands idempotent.
+2. Add atomic download/publish claims and concurrency tests while preserving the
+   current legacy worker behavior as a compatibility path.
+3. Route handler-facing queue transitions through the state-machine seam, then
+   move worker truth to SQLite only after the shadow path remains stable.
+4. Add restart recovery and graceful shutdown in a later R3 batch, not in the
+   first state-machine commit.
 5. Keep the R0/R1 characterization suite unchanged while replacing the legacy
    `_Pipeline` internals incrementally.
 
