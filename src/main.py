@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import signal
 
 from telethon import TelegramClient, functions
 from telethon.tl import types
@@ -45,6 +46,25 @@ async def _setup_commands(client: TelegramClient) -> None:
     logger.info("Bot commands registered")
 
 
+def _install_sigterm_handler(client: TelegramClient) -> None:
+    """Make container SIGTERM disconnect Telethon so main can run shutdown."""
+    loop = asyncio.get_running_loop()
+    fired = False
+
+    def request_shutdown() -> None:
+        nonlocal fired
+        if fired:
+            return
+        fired = True
+        logger.info("SIGTERM received; disconnecting Telegram client")
+        loop.create_task(client.disconnect())
+
+    try:
+        loop.add_signal_handler(signal.SIGTERM, request_shutdown)
+    except (NotImplementedError, RuntimeError):
+        logger.warning("SIGTERM handler unavailable on this event loop")
+
+
 async def main() -> None:
     os.makedirs("session", exist_ok=True)
     os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
@@ -74,6 +94,7 @@ async def main() -> None:
             connection_retries=8,
         )
         await client.start(bot_token=config.BOT_TOKEN)
+        _install_sigterm_handler(client)
 
         await _setup_commands(client)
         pipeline = bot.register_handlers(client, repository=repository, start_workers=False)

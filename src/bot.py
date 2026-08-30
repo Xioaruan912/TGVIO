@@ -2171,8 +2171,10 @@ class _Pipeline:
                     try:
                         await task
                     except asyncio.CancelledError:
-                        logger.info("Job #%s upload stopped by user", seq)
-                        if not self._stopping:
+                        if self._stopping:
+                            logger.info("Job #%s upload interrupted by shutdown", seq)
+                        else:
+                            logger.info("Job #%s upload stopped by user", seq)
                             self._cancel_marked.discard(seq)
                             await self._delete_status(job)
                             self._finish_seq(seq)
