@@ -171,11 +171,17 @@ class JobQueue:
 
     def hold(self, seq: int) -> Job | None:
         self._pipeline._paused_files.add(seq)
-        return self._pipeline.jobs.get(seq)
+        job = self._pipeline.jobs.get(seq)
+        if job is not None and self._shadow is not None:
+            self._shadow.transition(seq, "paused", "paused")
+        return job
 
     def resume(self, seq: int) -> Job | None:
         self._pipeline._paused_files.discard(seq)
-        return self._pipeline.jobs.get(seq)
+        job = self._pipeline.jobs.get(seq)
+        if job is not None and self._shadow is not None:
+            self._shadow.resume(seq)
+        return job
 
     def claim_retry(self, seq: int) -> RetryTicket | None:
         info = self._pipeline.retryable.pop(seq, None)
@@ -210,7 +216,7 @@ class JobQueue:
         self._pipeline.active_seqs.add(ticket.new_seq)
         self._pipeline.enqueue(new_job)
         if self._shadow is not None:
-            self._shadow.transition(ticket.old_seq, "retry_requested", "failed", retry_seq=ticket.new_seq)
+            self._shadow.event(ticket.old_seq, "retry_requested", retry_seq=ticket.new_seq)
             self._shadow.accept(
                 ticket.new_seq,
                 kind=new_job.kind,
@@ -266,6 +272,22 @@ class JobQueue:
     def shadow_published(self, seq: int, ids: list) -> None:
         if self._shadow is not None:
             self._shadow.published(seq, ids)
+
+    def shadow_transition(self, seq: int, event_type: str, state: str, **extra: Any) -> None:
+        if self._shadow is not None:
+            self._shadow.transition(seq, event_type, state, **extra)
+
+    async def claim_next_download(self, owner: str):
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return None
+        return await repository.claim_next_download(owner)
+
+    async def claim_next_publish(self, owner: str):
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return None
+        return await repository.claim_next_publish(owner)
 
     async def drain_shadow(self) -> None:
         if self._shadow is not None:

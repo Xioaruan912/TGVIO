@@ -72,11 +72,9 @@ class ShadowState:
                     new_items.append(item)
             if new_items:
                 await self.repository.append_job_items(job_id, new_items)
-            state = kwargs.get("state")
             await self.repository.record_job_event(
                 job_id,
                 "shadow_update",
-                to_state=state,
                 payload={"schema_version": 1, "legacy_seq": seq},
             )
             return
@@ -98,15 +96,48 @@ class ShadowState:
     def transition(self, seq: int, event_type: str, state: str | None, **extra: Any) -> None:
         async def run() -> None:
             job_id = self.job_ids.get(seq)
+            if not job_id or state is None:
+                return
+            current = await self.repository.get_job(job_id)
+            if current is None or current.state == state:
+                return
+            await self.repository.transition_job(
+                job_id,
+                expected_revision=current.revision,
+                to_state=state,
+                event_type=event_type,
+                payload={"schema_version": 1, "legacy_seq": seq, **extra},
+            )
+        self._schedule(run, f"transition #{seq} {event_type}")
+
+    def event(self, seq: int, event_type: str, **extra: Any) -> None:
+        async def run() -> None:
+            job_id = self.job_ids.get(seq)
             if not job_id:
                 return
             await self.repository.record_job_event(
                 job_id,
                 event_type,
-                to_state=state,
                 payload={"schema_version": 1, "legacy_seq": seq, **extra},
             )
-        self._schedule(run, f"transition #{seq} {event_type}")
+        self._schedule(run, f"event #{seq} {event_type}")
+
+    def resume(self, seq: int) -> None:
+        async def run() -> None:
+            job_id = self.job_ids.get(seq)
+            if not job_id:
+                return
+            current = await self.repository.get_job(job_id)
+            if current is None or not current.resume_state:
+                return
+            await self.repository.transition_job(
+                job_id,
+                expected_revision=current.revision,
+                to_state=current.resume_state,
+                event_type="resumed",
+                payload={"schema_version": 1, "legacy_seq": seq},
+            )
+        self._schedule(run, f"resume #{seq}")
 
     def published(self, seq: int, ids: list) -> None:
         async def run() -> None:
@@ -119,7 +150,12 @@ class ShadowState:
                     refs.append((int(value[0]), int(value[1]), "published"))
                 else:
                     refs.append((0, int(value), "legacy_destination"))
-            await self.repository.record_published_messages(job_id, refs)
+            current = await self.repository.get_job(job_id)
+            if current is None:
+                return
+            await self.repository.record_published_messages(
+                job_id, refs, expected_revision=current.revision
+            )
         self._schedule(run, f"published #{seq}")
 
     def backup_started(self, seq: int, remote_dir: str, files: list[dict[str, Any]]) -> None:

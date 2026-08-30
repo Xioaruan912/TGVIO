@@ -22,6 +22,8 @@ from typing import Any, Iterable
 
 import aiosqlite
 
+from ..state_machine import InvalidTransition, plan_transition
+
 logger = logging.getLogger(__name__)
 
 
@@ -51,6 +53,7 @@ class JobRecord:
     source_url: str | None = None
     status_chat_id: int | None = None
     status_message_id: int | None = None
+    resume_state: str | None = None
 
 
 @dataclass(frozen=True)
@@ -121,6 +124,20 @@ class InteractionSessionRecord:
     revision: int
     expires_at: float
     updated_at: float
+
+
+@dataclass(frozen=True)
+class TransitionResult:
+    applied: bool
+    job: JobRecord
+
+
+@dataclass(frozen=True)
+class JobClaim:
+    job: JobRecord
+    owner: str
+    kind: str
+    heartbeat_at: float
 
 
 @dataclass(frozen=True)
@@ -578,6 +595,192 @@ class SQLiteRepository:
                 await conn.rollback()
                 raise
 
+    async def transition_job(
+        self,
+        job_id: int,
+        *,
+        expected_revision: int,
+        to_state: str,
+        event_type: str,
+        payload: dict[str, Any] | None = None,
+    ) -> TransitionResult:
+        """Atomically apply one state-machine transition using revision CAS.
+
+        A stale expected_revision returns applied=False without writing an event.
+        """
+        conn = self._require_conn()
+        timestamp = time.time()
+        payload_json = self._encode_versioned_payload(payload)
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT state,resume_state,revision FROM jobs WHERE id=?",
+                    (job_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RepositoryError(f"job {job_id} not found")
+                current_revision = int(row["revision"])
+                if current_revision != int(expected_revision):
+                    await conn.rollback()
+                    current = await self.get_job(job_id)
+                    if current is None:
+                        raise RepositoryError(f"job {job_id} not found after stale transition")
+                    return TransitionResult(False, current)
+
+                plan = plan_transition(
+                    str(row["state"]),
+                    to_state,
+                    current_resume_state=row["resume_state"],
+                )
+                cursor = await conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state=?, resume_state=?, updated_at=?, revision=revision+1,
+                        claim_owner=NULL, claim_kind=NULL, heartbeat_at=NULL
+                    WHERE id=? AND revision=?
+                    """,
+                    (
+                        plan.to_state,
+                        plan.resume_state,
+                        timestamp,
+                        job_id,
+                        int(expected_revision),
+                    ),
+                )
+                changed = cursor.rowcount == 1
+                await cursor.close()
+                if not changed:
+                    await conn.rollback()
+                    current = await self.get_job(job_id)
+                    if current is None:
+                        raise RepositoryError(f"job {job_id} missing after CAS miss")
+                    return TransitionResult(False, current)
+                await conn.execute(
+                    """
+                    INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                    VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        job_id,
+                        event_type,
+                        plan.from_state,
+                        plan.to_state,
+                        payload_json,
+                        timestamp,
+                    ),
+                )
+                await conn.commit()
+            except InvalidTransition:
+                await conn.rollback()
+                raise
+            except Exception:
+                await conn.rollback()
+                raise
+        current = await self.get_job(job_id)
+        if current is None:
+            raise RepositoryError(f"job {job_id} missing after transition")
+        return TransitionResult(True, current)
+
+    async def _claim_job(self, *, kind: str, owner: str) -> JobClaim | None:
+        if kind not in {"download", "publish"}:
+            raise RepositoryError(f"unknown claim kind: {kind}")
+        conn = self._require_conn()
+        timestamp = time.time()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                if kind == "download":
+                    cursor = await conn.execute(
+                        """
+                        SELECT id,state,resume_state,revision FROM jobs
+                        WHERE state='queued' AND claim_owner IS NULL
+                        ORDER BY id LIMIT 1
+                        """
+                    )
+                    target_state = "downloading"
+                    substate_sql = "download_state='running'"
+                else:
+                    cursor = await conn.execute(
+                        """
+                        SELECT j.id,j.state,j.resume_state,j.revision FROM jobs j
+                        WHERE j.state='ready' AND j.claim_owner IS NULL
+                          AND NOT EXISTS (
+                            SELECT 1 FROM jobs earlier
+                            WHERE earlier.id < j.id
+                              AND earlier.state IN ('queued','downloading','ready','publishing')
+                          )
+                        ORDER BY j.id LIMIT 1
+                        """
+                    )
+                    target_state = "publishing"
+                    substate_sql = "publish_state='running'"
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    await conn.rollback()
+                    return None
+                plan = plan_transition(
+                    str(row["state"]), target_state, current_resume_state=row["resume_state"]
+                )
+                job_id = int(row["id"])
+                revision = int(row["revision"])
+                cursor = await conn.execute(
+                    f"""
+                    UPDATE jobs
+                    SET state=?, {substate_sql}, claim_owner=?, claim_kind=?, heartbeat_at=?,
+                        updated_at=?, started_at=COALESCE(started_at,?), revision=revision+1
+                    WHERE id=? AND revision=? AND claim_owner IS NULL
+                    """,
+                    (
+                        plan.to_state,
+                        owner,
+                        kind,
+                        timestamp,
+                        timestamp,
+                        timestamp,
+                        job_id,
+                        revision,
+                    ),
+                )
+                changed = cursor.rowcount == 1
+                await cursor.close()
+                if not changed:
+                    await conn.rollback()
+                    return None
+                await conn.execute(
+                    """
+                    INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                    VALUES (?,?,?,?,?,?)
+                    """,
+                    (
+                        job_id,
+                        f"{kind}_claimed",
+                        plan.from_state,
+                        plan.to_state,
+                        self._encode_versioned_payload(
+                            {"schema_version": 1, "owner": owner}
+                        ),
+                        timestamp,
+                    ),
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        current = await self.get_job(job_id)
+        if current is None:
+            raise RepositoryError(f"job {job_id} missing after claim")
+        return JobClaim(current, owner, kind, timestamp)
+
+    async def claim_next_download(self, owner: str) -> JobClaim | None:
+        return await self._claim_job(kind="download", owner=owner)
+
+    async def claim_next_publish(self, owner: str) -> JobClaim | None:
+        return await self._claim_job(kind="publish", owner=owner)
+
     async def list_job_items(self, job_id: int) -> list[JobItemRecord]:
         conn = self._require_conn()
         cursor = await conn.execute(
@@ -657,35 +860,70 @@ class SQLiteRepository:
         await cursor.close()
         return [str(r[0]) for r in rows]
 
-    async def record_published_messages(self, job_id: int, messages: list[tuple[int, int, str]]) -> None:
+    async def record_published_messages(
+        self,
+        job_id: int,
+        messages: list[tuple[int, int, str]],
+        *,
+        expected_revision: int,
+    ) -> TransitionResult:
         conn = self._require_conn()
         timestamp = time.time()
         async with self._write_lock:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
-                cursor = await conn.execute("SELECT state FROM jobs WHERE id=?", (job_id,))
+                cursor = await conn.execute(
+                    "SELECT state,resume_state,revision FROM jobs WHERE id=?", (job_id,)
+                )
                 row = await cursor.fetchone()
                 await cursor.close()
                 if row is None:
                     raise RepositoryError(f"job {job_id} not found")
-                from_state = str(row[0])
+                if int(row["revision"]) != int(expected_revision):
+                    await conn.rollback()
+                    current = await self.get_job(job_id)
+                    if current is None:
+                        raise RepositoryError(f"job {job_id} missing after stale publish")
+                    return TransitionResult(False, current)
+                plan = plan_transition(
+                    str(row["state"]),
+                    "succeeded",
+                    current_resume_state=row["resume_state"],
+                )
                 for peer_id, message_id, role in messages:
                     await conn.execute(
                         "INSERT OR IGNORE INTO published_messages(job_id,peer_id,message_id,role,created_at) VALUES (?,?,?,?,?)",
                         (job_id, int(peer_id), int(message_id), str(role), timestamp),
                     )
-                await conn.execute(
-                    "UPDATE jobs SET state='succeeded', publish_state='succeeded', updated_at=?, finished_at=?, revision=revision+1 WHERE id=?",
-                    (timestamp, timestamp, job_id),
+                cursor = await conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state='succeeded', publish_state='succeeded', updated_at=?, finished_at=?,
+                        revision=revision+1, claim_owner=NULL, claim_kind=NULL, heartbeat_at=NULL
+                    WHERE id=? AND revision=?
+                    """,
+                    (timestamp, timestamp, job_id, int(expected_revision)),
                 )
+                if cursor.rowcount != 1:
+                    await cursor.close()
+                    await conn.rollback()
+                    current = await self.get_job(job_id)
+                    if current is None:
+                        raise RepositoryError(f"job {job_id} missing after publish CAS miss")
+                    return TransitionResult(False, current)
+                await cursor.close()
                 await conn.execute(
                     "INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at) VALUES (?,?,?,?,?,?)",
-                    (job_id, "published", from_state, "succeeded", self._encode_versioned_payload({"schema_version": 1, "count": len(messages)}), timestamp),
+                    (job_id, "published", plan.from_state, "succeeded", self._encode_versioned_payload({"schema_version": 1, "count": len(messages)}), timestamp),
                 )
                 await conn.commit()
             except Exception:
                 await conn.rollback()
                 raise
+        current = await self.get_job(job_id)
+        if current is None:
+            raise RepositoryError(f"job {job_id} missing after publish")
+        return TransitionResult(True, current)
 
     async def list_published_messages(self, job_id: int) -> list[PublishedMessageRecord]:
         conn = self._require_conn()
@@ -730,6 +968,7 @@ class SQLiteRepository:
         cursor = await conn.execute(
             """
             SELECT id, kind, user_id, state, source_kind, revision, accepted_at, updated_at,
+                   resume_state,
                    source_chat_id, source_url, status_chat_id, status_message_id
             FROM jobs WHERE id = ?
             """,
@@ -743,7 +982,7 @@ class SQLiteRepository:
         conn = self._require_conn()
         limit = max(1, min(int(limit), 500))
         sql = (
-            "SELECT id, kind, user_id, state, source_kind, revision, accepted_at, updated_at, "
+            "SELECT id, kind, user_id, state, source_kind, revision, accepted_at, updated_at, resume_state, "
             "source_chat_id, source_url, status_chat_id, status_message_id FROM jobs"
         )
         params: tuple[Any, ...]
@@ -773,6 +1012,7 @@ class SQLiteRepository:
             source_url=row["source_url"],
             status_chat_id=row["status_chat_id"],
             status_message_id=row["status_message_id"],
+            resume_state=row["resume_state"],
         )
 
     async def list_job_events(self, job_id: int) -> list[JobEventRecord]:

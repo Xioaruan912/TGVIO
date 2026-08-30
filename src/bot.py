@@ -898,6 +898,8 @@ class _Pipeline:
                 self.input_q.task_done()
 
     async def _on_pre_download(self, job) -> None:
+        if getattr(self, "job_queue", None) is not None:
+            self.job_queue.shadow_transition(job.seq, "download_started", "downloading")
         await self._safe_edit(job, f"🔄 {self.task_label(job.seq)} 正在下载...")
 
     async def _on_download_progress(
@@ -924,6 +926,8 @@ class _Pipeline:
         await self._update_progress_status(seq)
 
     async def _on_download_done(self, job, paths) -> None:
+        if getattr(self, "job_queue", None) is not None:
+            self.job_queue.shadow_transition(job.seq, "download_completed", "ready")
         await self._safe_edit(
             job,
             f"✅ {self.task_label(job.seq)} 下载完成，等待上传",
@@ -1771,6 +1775,8 @@ class _Pipeline:
         await self._update_progress_status(seq)
 
     async def _on_pre_publish(self, job, payload) -> None:
+        if getattr(self, "job_queue", None) is not None:
+            self.job_queue.shadow_transition(job.seq, "publish_started", "publishing")
         waiting = sum(1 for s, f in self.results.items() if s != job.seq and f.done())
         suffix = f"（另有 {waiting} 个待上传）" if waiting else ""
         label = "🔞 雪花遮挡" if job.spoiler else ""
@@ -2255,6 +2261,8 @@ class _Pipeline:
         job = self.jobs.get(seq)
         if retry_job is not None:
             self.retryable[seq] = _RetryInfo(job=retry_job, path=retry_path)
+            if getattr(self, "job_queue", None) is not None:
+                self.job_queue.shadow_transition(seq, "failed", "failed")
         buttons = None
         if retry_job is not None:
             buttons = [

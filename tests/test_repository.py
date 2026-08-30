@@ -1,3 +1,4 @@
+import asyncio
 import os
 import sqlite3
 import tempfile
@@ -5,6 +6,7 @@ import unittest
 from pathlib import Path
 
 from src.repository import MigrationChecksumError, MigrationError, SQLiteRepository
+from src.state_machine import InvalidTransition
 
 
 class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
@@ -28,7 +30,7 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.close()
 
     async def test_initial_migration_is_idempotent_and_pragmas_are_enforced(self) -> None:
-        self.assertEqual(await self.repo.schema_versions(), [1, 2])
+        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3])
         self.assertEqual(await self.repo.migrate(), [])
         check = await self.repo.self_check()
         self.assertEqual(check["integrity"], "ok")
@@ -56,10 +58,180 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.source_message_id for item in items], [101, 102])
         self.assertEqual(await self.repo.list_job_texts(job.id), ["first", "second"])
 
-        await self.repo.record_published_messages(job.id, [(-1001, 11, "channel"), (-1002, 12, "comment")])
+        for target, event in (
+            ("downloading", "download_started"),
+            ("ready", "download_completed"),
+            ("publishing", "publish_started"),
+        ):
+            current = await self.repo.get_job(job.id)
+            result = await self.repo.transition_job(
+                job.id,
+                expected_revision=current.revision,
+                to_state=target,
+                event_type=event,
+                payload={"schema_version": 1},
+            )
+            self.assertTrue(result.applied)
+        current = await self.repo.get_job(job.id)
+        await self.repo.record_published_messages(
+            job.id,
+            [(-1001, 11, "channel"), (-1002, 12, "comment")],
+            expected_revision=current.revision,
+        )
         refs = await self.repo.list_published_messages(job.id)
         self.assertEqual([(ref.peer_id, ref.message_id) for ref in refs], [(-1001, 11), (-1002, 12)])
         self.assertEqual((await self.repo.get_job(job.id)).state, "succeeded")
+
+    async def test_revision_cas_rejects_stale_transition_without_duplicate_event(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=1,
+            state="queued",
+            source_kind="url",
+            source_url="https://example.invalid/a",
+            event_payload={"schema_version": 1},
+        )
+        first = await self.repo.transition_job(
+            job.id,
+            expected_revision=job.revision,
+            to_state="downloading",
+            event_type="download_started",
+            payload={"schema_version": 1},
+        )
+        self.assertTrue(first.applied)
+        stale = await self.repo.transition_job(
+            job.id,
+            expected_revision=job.revision,
+            to_state="cancelled",
+            event_type="cancelled",
+            payload={"schema_version": 1},
+        )
+        self.assertFalse(stale.applied)
+        self.assertEqual(stale.job.state, "downloading")
+        events = await self.repo.list_job_events(job.id)
+        self.assertEqual([event.event_type for event in events], ["accepted", "download_started"])
+
+    async def test_terminal_transition_is_rejected(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=1,
+            state="cancelled",
+            source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        with self.assertRaises(InvalidTransition):
+            await self.repo.transition_job(
+                job.id,
+                expected_revision=job.revision,
+                to_state="queued",
+                event_type="retry",
+                payload={"schema_version": 1},
+            )
+
+    async def test_concurrent_download_claim_has_single_winner(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=1,
+            state="queued",
+            source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        second = SQLiteRepository(self.db_path, download_root=self.download_root)
+        await second.open()
+        try:
+            claims = await asyncio.gather(
+                self.repo.claim_next_download("worker-a"),
+                second.claim_next_download("worker-b"),
+            )
+        finally:
+            await second.close()
+        winners = [claim for claim in claims if claim is not None]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(winners[0].job.id, job.id)
+        current = await self.repo.get_job(job.id)
+        self.assertEqual(current.state, "downloading")
+
+    async def test_publish_claim_waits_for_earlier_download(self) -> None:
+        first = await self.repo.accept_job(
+            kind="url",
+            user_id=1,
+            state="queued",
+            source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        second = await self.repo.accept_job(
+            kind="url",
+            user_id=1,
+            state="ready",
+            source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        self.assertIsNone(await self.repo.claim_next_publish("publisher"))
+        current = await self.repo.get_job(first.id)
+        await self.repo.transition_job(
+            first.id,
+            expected_revision=current.revision,
+            to_state="cancelled",
+            event_type="cancelled",
+            payload={"schema_version": 1},
+        )
+        claim = await self.repo.claim_next_publish("publisher")
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.job.id, second.id)
+        self.assertEqual(claim.job.state, "publishing")
+
+    async def test_concurrent_publish_claim_keeps_fifo_single_winner(self) -> None:
+        first = await self.repo.accept_job(
+            kind="url",
+            user_id=1,
+            state="ready",
+            source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        await self.repo.accept_job(
+            kind="url",
+            user_id=1,
+            state="ready",
+            source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        other = SQLiteRepository(self.db_path, download_root=self.download_root)
+        await other.open()
+        try:
+            claims = await asyncio.gather(
+                self.repo.claim_next_publish("publisher-a"),
+                other.claim_next_publish("publisher-b"),
+            )
+        finally:
+            await other.close()
+        winners = [claim for claim in claims if claim is not None]
+        self.assertEqual(len(winners), 1)
+        self.assertEqual(winners[0].job.id, first.id)
+
+    async def test_stale_publish_cas_does_not_duplicate_refs_or_event(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=1,
+            state="publishing",
+            source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        result = await self.repo.record_published_messages(
+            job.id,
+            [(-1001, 9, "channel")],
+            expected_revision=job.revision,
+        )
+        self.assertTrue(result.applied)
+        stale = await self.repo.record_published_messages(
+            job.id,
+            [(-1001, 9, "channel")],
+            expected_revision=job.revision,
+        )
+        self.assertFalse(stale.applied)
+        refs = await self.repo.list_published_messages(job.id)
+        self.assertEqual([(ref.peer_id, ref.message_id) for ref in refs], [(-1001, 9)])
+        events = await self.repo.list_job_events(job.id)
+        self.assertEqual([event.event_type for event in events], ["accepted", "published"])
 
     async def test_interaction_session_revisioned_crud(self) -> None:
         record = await self.repo.upsert_interaction_session(
@@ -122,6 +294,56 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
             await second.close()
 
         self.repo = SQLiteRepository(self.db_path, backup_dir=self.backup_dir)
+        await self.repo.open()
+        await self.repo.migrate()
+
+    async def test_upgrade_from_schema_two_preserves_rows_and_adds_claim_columns(self) -> None:
+        await self.repo.close()
+        root = Path(self.tempdir.name)
+        migration_dir = root / "upgrade-r3-migrations"
+        migration_dir.mkdir()
+        source_dir = Path(__file__).parents[1] / "src" / "repository" / "migrations"
+        for name in ("0001_initial.sql", "0002_runtime_entities.sql"):
+            (migration_dir / name).write_bytes((source_dir / name).read_bytes())
+        db = root / "upgrade-r3.sqlite3"
+        first = SQLiteRepository(db, migrations_dir=migration_dir, backup_dir=self.backup_dir)
+        await first.open()
+        await first.migrate()
+        job = await first.accept_job(
+            kind="url",
+            user_id=88,
+            state="queued",
+            source_kind="url",
+            source_url="https://example.invalid/r3",
+            event_payload={"schema_version": 1},
+        )
+        await first.close()
+
+        (migration_dir / "0003_claims.sql").write_bytes(
+            (source_dir / "0003_claims.sql").read_bytes()
+        )
+        second = SQLiteRepository(db, migrations_dir=migration_dir, backup_dir=self.backup_dir)
+        await second.open()
+        try:
+            self.assertEqual(await second.migrate(), [3])
+            self.assertIsNotNone(second.last_backup_path)
+            self.assertTrue(second.last_backup_path.exists())
+            self.assertEqual((await second.get_job(job.id)).source_url, "https://example.invalid/r3")
+            self.assertEqual(await second.schema_versions(), [1, 2, 3])
+            raw = sqlite3.connect(db)
+            try:
+                columns = {row[1] for row in raw.execute("PRAGMA table_info(jobs)").fetchall()}
+            finally:
+                raw.close()
+            self.assertTrue({"claim_owner", "claim_kind", "heartbeat_at"}.issubset(columns))
+        finally:
+            await second.close()
+
+        self.repo = SQLiteRepository(
+            self.db_path,
+            backup_dir=self.backup_dir,
+            download_root=self.download_root,
+        )
         await self.repo.open()
         await self.repo.migrate()
 

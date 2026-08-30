@@ -42,6 +42,9 @@ class ShadowStateTests(unittest.IsolatedAsyncioTestCase):
             spoiler=False,
         )
         self.shadow.transition(500, "confirmed", "queued", spoiler=True)
+        self.shadow.transition(500, "download_started", "downloading")
+        self.shadow.transition(500, "download_completed", "ready")
+        self.shadow.transition(500, "publish_started", "publishing")
         self.shadow.published(500, [(-1001, 10), (-1002, 20)])
         await self.shadow.drain()
 
@@ -50,7 +53,17 @@ class ShadowStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item.source_message_id for item in items], [1, 2])
         self.assertEqual(await self.repo.list_job_texts(job_id), ["alpha", "beta"])
         events = await self.repo.list_job_events(job_id)
-        self.assertEqual([event.event_type for event in events], ["accepted", "confirmed", "published"])
+        self.assertEqual(
+            [event.event_type for event in events],
+            [
+                "accepted",
+                "confirmed",
+                "download_started",
+                "download_completed",
+                "publish_started",
+                "published",
+            ],
+        )
         refs = await self.repo.list_published_messages(job_id)
         self.assertEqual([(ref.peer_id, ref.message_id) for ref in refs], [(-1001, 10), (-1002, 20)])
         self.assertEqual((await self.repo.get_job(job_id)).state, "succeeded")
@@ -77,7 +90,7 @@ class ShadowStateTests(unittest.IsolatedAsyncioTestCase):
             spoiler=False,
         )
         self.shadow.transition(600, "cancelled", "cancelled")
-        self.shadow.transition(600, "retry_requested", "failed", retry_seq=601)
+        self.shadow.event(600, "retry_requested", retry_seq=601)
         await self.shadow.drain()
 
         job_id = self.shadow.job_ids[600]
@@ -102,4 +115,23 @@ class ShadowStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(attempts[0].remote_dir, "backup/2026-08-30/1")
         files = await self.repo.list_backup_files(attempts[0].id)
         self.assertEqual([(f.remote_name, f.size_bytes) for f in files], [("hash.mp4", 3)])
+
+    async def test_pause_resume_uses_persisted_resume_state(self) -> None:
+        self.shadow.accept(
+            700,
+            kind="url",
+            user_id=42,
+            state="queued",
+            source_kind="url",
+            source_url="https://example.invalid/700",
+            texts=[],
+            spoiler=False,
+        )
+        self.shadow.transition(700, "download_started", "downloading")
+        self.shadow.transition(700, "paused", "paused")
+        self.shadow.resume(700)
+        await self.shadow.drain()
+        job = await self.repo.get_job(self.shadow.job_ids[700])
+        self.assertEqual(job.state, "downloading")
+        self.assertIsNone(job.resume_state)
 
