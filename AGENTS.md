@@ -1,14 +1,29 @@
 # 视频转发机器人 — 项目说明（供 Agent 参考）
 
 > 本文件面向后续接手该项目的开发/运维 Agent，说明已实现功能、架构、关键技术点与已知问题、以及未来方向。
-> 最后更新：2026-08-02（v2，含命令菜单 / 看门狗 / VPS 故障排查结论）
+> 最后更新：2026-08-30（当前生产基线 + 完整重构/功能/UI 技术方案）
+>
+> **阅读顺序**：第 0 节和第 11 节以后是当前权威执行说明；第 1～9 节保留大量已实现功能与历史踩坑，若与权威章节冲突，以权威章节为准。
+
+## 0. 当前基线与 Agent 强制规则（权威）
+
+- 当前本地/GitHub 基线：`main`，提交 `ee104c1`（此前两次重构提交为 `b0cc309`、`ee104c1`）。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 最后一次部署验证时容器正常运行，关键源码哈希与本地一致，日志包含 `Bot commands registered` 和 `Bot started`。
+- 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
+- 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
+- `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
+- **严禁同时启动两个使用同一 BOT_TOKEN/session 的实例**。本地测试必须使用 fake client 或独立测试 Bot；不能复制正在运行的生产 Telethon session 后连接。
+- 重构必须渐进进行，不做一次性重写。每个阶段都要保持可部署、可回滚，并且不得改变封面模式、合集、雪花、评论区线程、WebDAV 可靠性、顺序发布等现有语义，除非任务明确要求。
+- 每完成一个可独立交付的阶段：运行测试与语法检查 → 提交并推送 GitHub → 安全部署 VPS → 检查容器、日志、重启次数、源码哈希和核心流程。文档-only 修改无需重建容器。
+- 本文中的复选框：`[ ]` 表示未实现；完成后改为 `[x]`，并在条目后写提交哈希、日期和必要迁移说明。不要把“写了代码但没测试/没部署”标为完成。
+- `.gitignore` 虽保留了 `AGENTS.md` 规则，但该文件已被 Git 跟踪，因此修改会正常进入提交。提交前必须持续脱敏；不得因文件已跟踪而写入 VPS 密码、token、session 或服务凭证。
 
 ## 1. 项目概述
 
 Telegram 机器人（Python / Telethon / MTProto 直连，Docker 部署）。用户把视频/图片**转发给机器人**，机器人**下载到本地后重新上传**到目标频道（独立副本，源频道删除不影响已发布内容）。也可发送 **URL**（抖音/B站/YouTube 等，yt-dlp 下载）后发布。
 
 - 项目目录：`/root/telegram-video-forwarder`
-- 容器：`telegram-video-forwarder`（**当前已 `docker compose stop`**）
+- 容器：`telegram-video-forwarder`（生产环境当前运行；任何变更前仍需重新只读确认）
 - 机器人：`@messAround_bot`（id 8915753494），目标频道 `@messFaround`（「瞎几把整」）
 
 ## 2. 目录结构
@@ -30,6 +45,11 @@ telegram-video-forwarder/
     ├── bot.py             # 队列编排层：_Pipeline + 事件处理 + 命令 + 状态
     ├── media.py           # 独立下载器/发布器（v8 重构，扩展钩子）
     ├── downloader.py      # yt-dlp URL 下载
+    ├── models.py          # Job/Retry/Pending/Album/Session domain dataclass
+    ├── progress.py        # 进度条与队列位置纯 helper
+    ├── storage.py         # 原子替换的 JsonStore
+    ├── ui.py              # 已抽取的模式/键盘/队列 view
+    ├── webdav.py          # WebDAV 协议、确认与重试
     └── video.py           # ffprobe 探测 + ffmpeg 截缩略图 + 类型判断
 ```
 
@@ -286,17 +306,9 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **频道创建者无法退出自己的频道**（Telegram 规则，无离开/转让选项）；bot 作为管理员可独立发帖，用户是否在频道不影响流程。
 - 相册首项（视频）上传前曾有 ~20s 停顿（疑似 `make_thumb`/`UploadMediaRequest` 耗时），暂未优化。
 
-## 8. 未来方向（候选）
+## 8. 未来方向（历史候选；由第 11 节后的权威计划取代）
 
-- [ ] **VPS 重新部署验证**：部署含看门狗的最新代码，确认"卡在正在下载"不再发生（**当前最高优先级**）。
-- [ ] **>2GB 场景**：自建 [Local Bot API Server](https://github.com/tdlib/telegram-bot-api)（官方 2GB+ 方案，需改造发送路径）；或混合用户账号（userbot）上传。
-- [ ] **队列持久化**：当前队列在内存，bot 重启丢失未处理任务；可落盘 JSON/SQLite 断点续传。
-- [ ] **视频预览增强**：缩略图目前截 1s 帧；可截中间帧/多帧供选择。
-- [ ] **频道直发模式**：支持 bot 监听指定源频道自动搬运（当前设计为"用户转发给 bot"）。用户已表示有此需求意向。
-- [ ] **进度条**：下载/上传进度回传（当前仅状态文案 + 日志）。
-- [ ] **/stats 统计**：处理成功/失败数等（`/status`、`/progress` 已完成）。
-- [ ] **调试日志精简**：`bot.py` 中 `on_private_message` 顶部有每消息 INFO 日志（`NewMessage from …`），正式运行可降为 DEBUG。
-- [ ] **相册上传 20s 停顿优化**：调查 `make_thumb`/`UploadMediaRequest` 对视频项的耗时。
+原有候选已经重新评估并映射到第 12～20 节。后续 Agent **不要执行旧 checklist**：队列持久化见 R2/R3，UI/进度/统计见 U1～F4，媒体预览见 M1，源频道模式见 S1，超过 2GB 与 Web Dashboard 仍为明确后置项目。
 
 ## 9. 部署/运维命令
 
@@ -308,34 +320,1192 @@ docker compose restart / stop / start
 
 > VPS 部署见 README.md「部署」小节，注意 `.env` 含密钥需安全传输。
 
-## 10. VPS 部署工作流（每次任务完成必须执行）**本项目的标准发布流程：任何在 `telegram-video-forwarder` 上的改动/任务完成后，都必须把最新代码部署到 VPS 并验证。** 由 `~/deploy_vps.sh`（位于项目外、用户家目录）完成，无需手动 ssh。
+## 10. 当前安全发布协议（权威）
+
+代码变更完成后必须推送 GitHub 并部署生产；但发布包必须排除 `.git/`、`.env`、`session/`、`downloads/`、`__pycache__/`、`*.pyc`。生产配置和运行数据只保留在 VPS，不允许用本地副本覆盖。
+
+发布前：
 
 ```bash
-~/deploy_vps.sh
+git status --short --branch
+python3 -m unittest discover -s tests -v
+python3 -m py_compile src/*.py
+docker compose config --quiet
 ```
 
-脚本自动执行 4 步：
-1. **打包**：`tar` 打包 `/root/telegram-video-forwarder` → `/root/forwarder.tgz`，排除 `session/`、`downloads/`、`__pycache__`（**含 `.env`**，VPS 配置随代码一起同步）
-2. **上传**：`sshpass + scp` 到旧 VPS（`~/deploy_vps.sh` 内 IP）`/tmp/forwarder.tgz`（root 密码明文在脚本内，勿外泄）
-3. **解压覆盖**：VPS `/root/` 下解压覆盖同名目录
-4. **重建启动**：`docker compose up -d --build` + 打印容器状态
+发布顺序：
 
-### 部署后必须验证（不可跳过）
+1. 记录本地提交哈希并推送 `origin/main`。
+2. 只读确认 VPS 容器状态、最近错误、磁盘剩余量和是否有正在下载/上传/WebDAV PUT 的任务。若有活跃大任务，先等待安全窗口；重启进程不能撤销 OpenList 已收到的 PUT。
+3. 创建排除运行数据的源码包，上传到 VPS 临时目录；解压时不得删除或覆盖 `.env`、`session/`、`downloads/`。
+4. 在 VPS 项目目录执行 `docker compose up -d --build`。数据库迁移必须由应用启动时的前向迁移器执行，且迁移前创建一致性备份。
+5. 检查容器 `Up`、重启计数为 0、日志无 traceback，并出现 `Bot commands registered`、`Bot started`。
+6. 在容器内再次运行 `python -m py_compile src/*.py`；对关键源码做 SHA-256 比对，不以远端旧 Git HEAD 代替文件比对。
+7. 观察至少一个健康检查周期；涉及任务链路时执行一个受控的小文件冒烟任务，验证下载、备份、发布、状态卡和缓存清理。
+
+回滚规则：
+
+- 部署前保留上一个可运行源码包/镜像标签和数据库备份；不要使用 `git reset --hard`、递归删除项目目录或覆盖生产运行卷。
+- 代码回滚只能回到兼容当前数据库 schema 的版本。若迁移不可逆，恢复代码时同时恢复迁移前数据库副本；恢复前先停容器。
+- 回滚后重复容器、日志、源码哈希和小文件冒烟验证。
+- 不得在文档或 shell 历史中展开 VPS 密码；从用户提供的安全渠道或本机受限配置读取。
+
+## 11. 重构总目标与已经确定的技术决策（权威）
+
+### 11.1 目标
+
+把项目从一个功能丰富但高度集中在 `src/bot.py` 的单实例脚本，逐步升级为：
+
+- 重启后不会静默丢失任务，能够恢复可恢复阶段，并明确提示不可恢复任务。
+- 每个任务都有持久化、可验证、幂等的生命周期；取消、暂停、重试、撤销不会因重复点击造成重复发布或误删。
+- Telegram 收件、任务调度、媒体传输、WebDAV、持久化和 UI 分层，后续代理可以独立修改某层。
+- 首页、队列、任务详情、失败中心、帮助和设置形成统一交互，不要求用户记住大量命令。
+- 下载、上传和备份都能显示阶段、速度、ETA、总体进度与可执行操作。
+- 磁盘、失败重试、诊断和发布回滚具备生产级护栏。
+- 保持单 VPS 部署简单，不为了“架构漂亮”引入 Redis、Celery、Kubernetes 或额外 Web 服务。
+
+### 11.2 已确定方案
+
+- **继续使用 Telethon/MTProto**。不迁移 aiogram/纯 Bot API；现有并发分片、spoiler、讨论组线程和 2GB 文件链路已经依赖 Telethon。只借鉴 Router、FSM、中间件和 View 分层思想。
+- **Python asyncio + 单进程 worker 继续保留**。发布顺序仍按接受顺序；下载可并发，WebDAV 与 Telegram 发布仍可并行。
+- **SQLite 作为任务、事件、统计和恢复状态的唯一持久化真相**；`JsonStore` 暂时继续承载小型偏好及含秘密的 WebDAV/代理配置，待后续有迁移理由再动。
+- SQLite 第一版使用普通 rollback journal、`foreign_keys=ON`、`busy_timeout=5000`、`synchronous=FULL`。本项目单进程写入量很小，不急于开 WAL；只有确认容器 SQLite 版本、备份策略和并发测试后才评估 WAL。
+- 增加 `aiosqlite` 作为数据库访问层，不允许 handler 到处直接写 SQL。
+- **渐进式抽取，不整库重写**。旧入口和类型通过兼容 re-export 保留，阶段完成并验证后再删除旧实现。
+- **一条任务状态消息贯穿生命周期**。状态消息丢失时补发并更新 message id；队列和首页是独立的可刷新视图。
+- **WebDAV 备份状态与 Telegram 发布状态正交**。默认宽松策略：备份失败不阻止发布，但保留缓存并提示；可选严格策略以后加入。
+- 所有时间在存储层使用 UTC Unix 时间；界面按 `Asia/Shanghai` 显示。
+- 所有稳定对象使用数据库自增整数 ID；队列位置只用于展示，不作为身份。Callback 只传短动作码、对象 ID、必要时 revision，保证不超过 Telegram 的 64-byte 限制。
+
+### 11.3 当前需要解决的代码债务
+
+- `src/bot.py` 约 3045 行，仍同时拥有队列、会话、WebDAV 生命周期、代理、所有 command/callback 和 UI 文案。
+- 任务、pending、合集 session、取消标记、已发布记录主要在内存；重启后不能形成完整恢复闭环。
+- 当前 `_last_progress_edit` 是全局时间闸，多任务可能互相压制进度刷新。
+- `src/downloader.py` 的 yt-dlp 在 `asyncio.to_thread` 中运行，无 progress hook，取消 asyncio task 不保证底层线程立刻停止。
+- `/queue` 没有分页、筛选、详情页；队列增长后可能超过 Telegram 文本/按钮限制。
+- `/about` 是平铺帮助；`/start` 不是完整控制台。
+- WebDAV 远端删除、取消全部、撤销发布等危险操作缺少统一二次确认和过期令牌。
+- 没有统一错误分类、失败中心、磁盘配额、统计、健康检查、结构化事件历史。
+- 没有内容级去重或已上传媒体复用；相同文件仍需重新上传。
+- 配置解析能容忍非法值但不会集中报告错误；README 和旧 AGENTS 中有部分过时描述。
+
+### 11.4 开源项目调研后采用的原则
+
+- [Mirror Leech Telegram Bot](https://github.com/leech-bot/mirror)：采用“限制状态列表长度、重启后通知未完成任务、队列和重复任务护栏”的思路。
+- [Shineii86/LeechBot](https://github.com/Shineii86/LeechBot)：采用任务卡的阶段/速度/ETA/体积展示，以及分类帮助、队列/失败/系统状态入口；暂不照搬 Web Dashboard。
+- [telegram-media-downloader](https://github.com/botnick/telegram-media-downloader)：采用 SHA-256 去重、磁盘轮转、完整性检查、逐任务暂停/恢复/取消/重试的思路。
+- [tg-media-bot](https://github.com/antlis/tg-media-bot)：采用可执行错误提示、临时文件清理、媒体复用和流式 MP4 检查的思路。
+- [yt-dlp](https://github.com/yt-dlp/yt-dlp)：直接使用官方 progress hooks、重试和 archive 能力，不解析普通控制台文本。
+- [aiogram 文档](https://docs.aiogram.dev/en/latest/)：只借鉴 Router/FSM/中间件边界，不迁移框架。
+- [Telegram Bot API](https://core.telegram.org/bots/api)：UI 设计遵守 callback data 1～64 bytes、消息/Caption/按钮约束；虽然传输走 MTProto，这些交互约束仍适用。
+- [SQLite](https://www.sqlite.org/docs.html)：事务、迁移和一致性备份以官方行为为准。
+
+### 11.5 明确暂缓或拒绝的方向
+
+- 暂不做完整 Web 管理后台；Telegram 内控制台完成并稳定后再评估。
+- 暂不引入 Redis/RQ/Celery；单 VPS 单进程没有收益，反而增加故障点。
+- 暂不支持 BT/磁力/Mega/rclone 等通用下载器功能，避免偏离“Telegram 媒体中转与备份”核心。
+- 不默认转码；只做检测和可逆 remux，显式启用时才转码。
+- 暂不部署 Local Bot API Server；现有 MTProto 已覆盖当前文件规模。
+- 暂不做复杂多租户/收费/角色系统；继续使用 allowlist。若以后公开运营，另立安全项目。
+- 不把几十个操作全部暴露为命令；高频入口使用按钮，命令只保留稳定的顶层入口。
+
+## 12. 总任务清单与依赖顺序（权威）
+
+后续代理应按下表顺序推进；一次只实施一个可独立回滚的阶段。P0 未完成前不要直接做 P2 功能。
+
+| ID | 优先级 | 工作包 | 依赖 | 状态 |
+|---|---|---|---|---|
+| R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [ ] |
+| R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [ ] |
+| R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [ ] |
+| R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ] |
+| U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
+| U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [ ] |
+| F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [ ] |
+| F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [ ] |
+| F3 | P1 | 磁盘预检、配额、保留策略和安全清理 | R2 | [ ] |
+| F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [ ] |
+| B1 | P1 | WebDAV 生命周期抽取、连通/容量/策略 UI | R1、U2 | [ ] |
+| D1 | P2 | SHA-256 去重、目标频道媒体复用/秒传 | R2、R3 | [ ] |
+| M1 | P2 | 视频兼容性检查、faststart remux、缩略图增强 | F3 | [ ] |
+| DP1 | P2 | 多目的地发布配置档案 | R3、U2 | [ ] |
+| S1 | P2 | 指定源频道自动中转（仅新消息） | DP1 | [ ] |
+| O1 | Later | 可选 Web Dashboard/外部通知/指标导出 | F4 且用户确认 | [ ] |
+
+所有阶段共同 Definition of Done：
+
+- 旧功能回归测试通过，新功能有单元/集成测试。
+- 所有 accepted job 最终进入可解释的终态或恢复态，不得留下永不结算的 future/seq。
+- 重复 callback、延迟 callback、消息被删除、容器重启都不会重复发布或误删。
+- 日志不含 token、密码、完整代理 URL 凭证或用户私密 caption。
+- 更新本文复选框、README/.env.example（如涉及用户配置）、数据库 migration 和回滚说明。
+- GitHub 推送、生产安全部署、健康检查和受控冒烟均完成后才能标 `[x]`。
+
+## 13. R0/R1：先锁定行为，再拆分边界
+
+### 13.1 R0 行为基线
+
+在移动生产逻辑前补测试。测试不得连接真实 Telegram、WebDAV、yt-dlp 网站或生产 session。
+
+待办：
+
+- [ ] 建立 `tests/fakes/telegram.py`：`FakeClient`、`FakeEvent`、`FakeMessage`、`FakeStatusMessage`，记录 `respond/edit/delete/send_file/delete_messages` 调用。
+- [ ] 建立可注入的 `FakeDownloader`、`FakePublisher`、`FakeBackupClient` 和 controllable clock；禁止测试依赖真实 `time.sleep`。
+- [ ] 覆盖单媒体、相册、collection、URL 四种 Job 的接受和顺序发布。
+- [ ] 覆盖 ask/always_spoiler/always_normal、确认超时自动正常、用户取消、合集 `/begin`/`/end`、文字 caption 拼接。
+- [ ] 覆盖并行下载但 FIFO 上传、暂停后跳过、继续、取消排队项、取消运行项、下载失败、上传失败、缓存重传。
+- [ ] 覆盖封面模式返回 `(peer_id, message_id)`、评论区线程根查找和撤销；已有关键 workaround 不得在抽取时消失。
+- [ ] 覆盖 WebDAV 失败保留缓存、成功清理、远端大小幂等、自动补传和 OpenList 延迟响应确认。
+- [ ] 覆盖重复 callback、callback 到达时任务已完成、状态消息已删除、FloodWait/编辑失败不影响任务结果。
+- [ ] 对现有 `queue_view`、进度条和关键文案做快照式断言；UI 重设计阶段再有意更新快照。
+- [ ] 记录当前 `src/*.py` 行数、主要依赖方向和运行配置，作为拆分前基线。
+
+R0 验收：测试可在无网络环境运行；失败时能指出是调度、传输、备份还是 UI 回归；不改变生产业务行为。
+
+### 13.2 R1 目标目录与依赖方向
+
+建议渐进形成以下结构，文件名可微调，但职责不能重新混回一个大类：
+
+```text
+src/
+  main.py
+  config.py
+  domain/
+    models.py
+    states.py
+    errors.py
+    events.py
+  repositories/
+    database.py
+    jobs.py
+    migrations/
+  services/
+    job_queue.py
+    recovery.py
+    backup_manager.py
+    disk_manager.py
+    dedup.py
+    statistics.py
+  transports/
+    telegram_download.py
+    telegram_publish.py
+    ytdlp_download.py
+    webdav_client.py
+  handlers/
+    common.py
+    collection.py
+    jobs.py
+    settings.py
+    callbacks.py
+  views/
+    dashboard.py
+    jobs.py
+    settings.py
+    help.py
+    keyboards.py
+  bot.py                 # 最终只组装依赖、注册 handlers
+```
+
+渐进兼容要求：
+
+- 第一阶段可继续保留 `src/media.py`、`src/webdav.py`、`src/models.py`；新包通过 adapter 调用旧实现。完成迁移后旧模块只做 re-export，再单独提交删除。
+- `domain/` 不得 import Telethon、WebDAV 或数据库；模型中只放可序列化字段，不保存活跃 `Task`、`Future`、socket 或完整 Message 对象。
+- `services/` 只能依赖 domain、repository 接口和 transport protocol；不得直接渲染中文消息或创建 Telegram Button。
+- `handlers/` 负责鉴权、解析输入、立即 answer callback、调用 service；不得直接改 queue 字典或写 SQL。
+- `views/` 是纯函数：输入 view model，输出 text/buttons；不得改变任务状态。
+- transport 只负责外部 IO 和规范化结果；重试策略由 service 决定，底层只做协议必要的短重试。
+- `main.py` 只负责加载/校验配置、构造 client/repository/services、注册 handler、启动/关闭生命周期。
+
+### 13.3 JobQueue 服务边界
+
+`JobQueue` 是任务状态的唯一写入口，至少提供：
+
+```python
+class JobQueue:
+    async def accept(command: AcceptJob) -> JobSnapshot: ...
+    async def confirm(job_id: int, spoiler: bool, expected_revision: int | None) -> JobSnapshot: ...
+    async def pause(job_id: int) -> JobSnapshot: ...
+    async def resume(job_id: int) -> JobSnapshot: ...
+    async def cancel(job_id: int) -> JobSnapshot: ...
+    async def retry(job_id: int) -> JobSnapshot: ...
+    async def get(job_id: int) -> JobSnapshot | None: ...
+    async def list(query: JobQuery) -> Page[JobSnapshot]: ...
+```
+
+要求：
+
+- 只有状态机 transition 方法可以改变状态；不允许 handler 操作 `active_seqs`、`results` 等内部集合。
+- 每次 transition 在同一事务内写 jobs 当前快照和 job_events；使用 revision 做乐观幂等判断。
+- 下载 worker 领取 queued job 时原子 claim；同一个 job 不得被两个 worker 同时领取。
+- 发布调度按 `accepted_order/id` 排序；paused/cancelled/failed 可跳过，任何异常路径都必须释放 claim 并结算。
+- 服务通过 domain event 通知状态消息、统计、WebDAV；UI 编辑失败不能回滚真实任务成功。
+- 进程内可保留 Queue/Event 提高效率，但数据库才是恢复真相；内存数据可随时由 repository 重建。
+
+### 13.4 BackupManager 服务边界
+
+从 `_Pipeline` 抽出以下职责：
+
+- 读取有效 WebDAV 配置快照；任务开始后该次 attempt 不受用户中途修改配置影响。
+- 建远端日期/批次目录、生成 hash 名、PUT、PROPFIND 大小确认、重试、进度事件。
+- 持久化 backup attempt/file 状态、远端路径、错误分类和 next_retry_at。
+- 管理哪些 job 目录因备份失败必须保留；向 DiskManager 提供 `is_protected(path)`。
+- 自动补传只 claim 到期且未被其它 worker 处理的 attempt；重启后 `running` 先转 `interrupted` 再按文件存在性恢复。
+- 远端删除只接受数据库 file id，禁止 callback 直接携带路径；删除前生成短期确认 token。
+- 默认备份和发布并行。`best_effort` 策略下备份失败不阻止发布；`required` 策略只有用户明确启用后才允许阻止最终完成。
+
+### 13.5 Handler 与 callback 路由
+
+- 把 callback 前缀集中注册成动作表，不能继续增长为一个数百行 `if/elif`。
+- handler 入口先执行 allowlist 与 private-chat 校验，再解析动作；非法/过期 callback 始终 `event.answer("操作已过期，请刷新", alert=False)`。
+- callback 必须在约 1 秒内 answer；下载、删除、代理测试、WebDAV 测试等慢操作放后台 task，然后编辑稳定状态消息。
+- 输入式设置使用显式 `InteractionSession(user_id, kind, field, expires_at, revision)`，替代 `webdav_waiting`/`proxy_waiting` 裸字典；命令或取消按钮可终止。
+- 每个 handler 文件只处理一个领域，目标不超过约 300～400 行；`bot.py` 最终目标不超过约 300～500 行装配代码。
+
+R1 验收：现有 R0 测试完全不改预期即可通过；`bot.py` 明显缩小；没有循环 import；生产行为、文案和 callback 兼容到 U1/U2 正式切换为止。
+
+## 14. R2/R3：SQLite、状态机、恢复和幂等技术方案
+
+### 14.1 数据库位置、连接和迁移
+
+- 文件：`session/state.sqlite3`，随生产 `session/` 卷保留，绝不打入镜像或提交 Git。
+- 依赖：在 `requirements.txt` 固定兼容范围的 `aiosqlite`；Docker build 后打印 Python/SQLite 版本到 DEBUG 日志。
+- 应用只创建一个 repository 生命周期对象；写操作由内部 `asyncio.Lock` 串行化，事务尽量短，任何 Telegram/WebDAV IO 都不得持有数据库事务。
+- 每次连接执行：`PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000; PRAGMA synchronous=FULL;`。第一版保持默认 DELETE journal。
+- migration 文件按 `0001_initial.sql`、`0002_*.sql` 顺序，只允许前向、可重复检测；`schema_migrations(version, applied_at, checksum)` 记录校验和。
+- 启动顺序：打开数据库 → 一致性备份 → 事务执行 migration → repository self-check → 恢复任务 → 启动 workers → 注册 ready health。
+- 数据库损坏或 migration 失败时应用必须 fail closed，不启动消费任务；日志给出脱敏错误和备份位置，不能默默创建空库覆盖旧库。
+
+### 14.2 建议 schema（实现时可拆 migration，但字段语义不可丢）
+
+```sql
+CREATE TABLE jobs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  kind TEXT NOT NULL,
+  user_id INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  resume_state TEXT,
+  download_state TEXT NOT NULL DEFAULT 'pending',
+  publish_state TEXT NOT NULL DEFAULT 'pending',
+  backup_state TEXT NOT NULL DEFAULT 'disabled',
+  backup_policy TEXT NOT NULL DEFAULT 'best_effort',
+  spoiler INTEGER NOT NULL DEFAULT 0,
+  source_kind TEXT NOT NULL,
+  source_chat_id INTEGER,
+  source_url TEXT,
+  status_chat_id INTEGER,
+  status_message_id INTEGER,
+  local_dir TEXT,
+  bytes_done INTEGER NOT NULL DEFAULT 0,
+  bytes_total INTEGER NOT NULL DEFAULT 0,
+  current_item INTEGER NOT NULL DEFAULT 0,
+  total_items INTEGER NOT NULL DEFAULT 0,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at REAL,
+  error_code TEXT,
+  error_message TEXT,
+  publish_result_json TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  accepted_at REAL NOT NULL,
+  started_at REAL,
+  updated_at REAL NOT NULL,
+  finished_at REAL
+);
+
+CREATE INDEX idx_jobs_state_order ON jobs(state, id);
+CREATE INDEX idx_jobs_user_updated ON jobs(user_id, updated_at DESC);
+CREATE INDEX idx_jobs_retry ON jobs(state, next_retry_at);
+
+CREATE TABLE job_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL,
+  source_chat_id INTEGER,
+  source_message_id INTEGER,
+  grouped_id INTEGER,
+  media_kind TEXT,
+  original_name TEXT,
+  mime_type TEXT,
+  local_path TEXT,
+  size_bytes INTEGER NOT NULL DEFAULT 0,
+  sha256 TEXT,
+  download_state TEXT NOT NULL DEFAULT 'pending',
+  publish_state TEXT NOT NULL DEFAULT 'pending',
+  source_descriptor BLOB,
+  metadata_json TEXT,
+  UNIQUE(job_id, ordinal)
+);
+
+CREATE TABLE job_texts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  ordinal INTEGER NOT NULL,
+  text TEXT NOT NULL,
+  UNIQUE(job_id, ordinal)
+);
+
+CREATE TABLE job_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  event_type TEXT NOT NULL,
+  from_state TEXT,
+  to_state TEXT,
+  payload_json TEXT,
+  created_at REAL NOT NULL
+);
+
+CREATE INDEX idx_job_events_job ON job_events(job_id, id);
+
+CREATE TABLE published_messages (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  peer_id INTEGER NOT NULL,
+  message_id INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  created_at REAL NOT NULL,
+  deleted_at REAL,
+  UNIQUE(peer_id, message_id)
+);
+
+CREATE TABLE backup_attempts (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  job_id INTEGER NOT NULL REFERENCES jobs(id) ON DELETE CASCADE,
+  state TEXT NOT NULL,
+  remote_dir TEXT NOT NULL,
+  retry_count INTEGER NOT NULL DEFAULT 0,
+  next_retry_at REAL,
+  error_code TEXT,
+  error_message TEXT,
+  created_at REAL NOT NULL,
+  updated_at REAL NOT NULL,
+  finished_at REAL
+);
+
+CREATE TABLE backup_files (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  attempt_id INTEGER NOT NULL REFERENCES backup_attempts(id) ON DELETE CASCADE,
+  job_item_id INTEGER REFERENCES job_items(id) ON DELETE SET NULL,
+  local_path TEXT NOT NULL,
+  remote_name TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  state TEXT NOT NULL,
+  bytes_done INTEGER NOT NULL DEFAULT 0,
+  error_code TEXT,
+  error_message TEXT,
+  UNIQUE(attempt_id, remote_name)
+);
+
+CREATE TABLE interaction_sessions (
+  user_id INTEGER PRIMARY KEY,
+  kind TEXT NOT NULL,
+  field TEXT,
+  payload_json TEXT,
+  revision INTEGER NOT NULL DEFAULT 1,
+  expires_at REAL NOT NULL,
+  updated_at REAL NOT NULL
+);
+```
+
+后续 migration 再加入 `dedup_entries`、`daily_stats`、`destination_profiles`、`source_profiles`，不要在第一版一次引入全部功能。
+
+字段安全规则：
+
+- `error_message` 最多保存经过清理的 1000 字符；禁止保存 token、Authorization header、含密码 URL。
+- `payload_json/metadata_json` 必须带 schema version，只保存恢复所需字段；不得直接 pickle Python/Telethon 对象。
+- `local_path` 必须经 `realpath` 校验在配置的 download root 下；数据库中的路径不能直接作为任意删除目标。
+- Caption 属于用户内容，只在 `job_texts` 保存实际发布所需文本；按保留策略清理，不写 INFO 日志。
+
+### 14.3 状态模型
+
+总体 `jobs.state`：
+
+```text
+collecting
+  ├─> awaiting_confirmation ─> queued
+  └──────────────────────────> queued
+
+queued ─> downloading ─> ready ─> publishing ─> succeeded
+  │            │           │          │
+  ├────────────┴───────────┴──────────┴─> cancelled
+  └──────────── failure/retry ───────────> failed
+
+queued/downloading/ready ─> paused ─> resume_state
+```
+
+子状态独立保存：
+
+- `download_state`: `pending|running|succeeded|failed|cancelled|interrupted`。
+- `publish_state`: `pending|running|succeeded|partial|failed|cancelled|interrupted`。
+- `backup_state`: `disabled|pending|running|succeeded|failed|interrupted|deleted`。
+
+关键原因：WebDAV 备份当前不阻塞 Telegram 发布，不能把 `backing_up` 设计成唯一总体状态。界面可以显示“Telegram 已发布 · WebDAV 补传中”。
+
+允许的 transition 必须集中定义为表并有测试。至少遵守：
+
+- `succeeded/cancelled` 默认不可再次 transition；“再次发送”创建新 job，不复活旧 job。
+- `failed -> queued` 仅适用于需重下；若本地缓存完整则 `failed -> ready`；仅发布失败则直接重新 claim publishing。
+- `paused` 保存 `resume_state`，恢复时验证对应资源仍存在；不存在则转 `failed(cache_missing)`。
+- `publishing` 取消若已经发布部分消息，必须记 `partial` 和 published ids，再让用户选择“删除已发布部分”或“保留并停止”；不能假装完全取消。
+- `revision` 每次可见状态改变加一；callback 带旧 revision 时只返回当前状态，不重复执行动作。
+- accepted job 创建、job_items/texts 写入、首个 event 写入必须在同一事务。
+- publish 返回消息 ID 后，必须先事务写 `published_messages/publish_state`，再把 UI 改成成功；避免消息已发但数据库仍认为未发。
+
+### 14.4 Worker claim 与顺序发布
+
+- 下载 worker 使用 repository 的原子 claim：事务内选择最小 `queued` 且未暂停 job，更新为 `downloading` 并增加 revision，然后提交；外部下载在事务外执行。
+- 下载可并发，`DOWNLOAD_CONCURRENCY` 仍有效。
+- 发布器只选择最小 `id` 的 `ready` job，但必须忽略 `cancelled/failed/paused`；若更早 job 尚在 downloading，保持当前“下载优先、顺序上传”语义。
+- 不再为每个 seq 创建必须按序等待的永久 Future。通过数据库状态 + `asyncio.Condition` 唤醒发布器，避免 unresolved future 造成全队列死锁。
+- worker 每次 claim 保存 owner token 和 `heartbeat_at`（可加字段 migration）；超过 watchdog 的 running claim 在恢复器中标记 interrupted，不能由两个 worker重复处理。
+- 取消设置持久状态和 cancellation token；下载/上传循环在分片间检查 token。单纯 `Task.cancel()` 只是加速退出，数据库状态才是最终事实。
+
+### 14.5 启动恢复规则
+
+启动恢复必须先扫描数据库和磁盘，再启动 worker：
+
+| 启动时状态 | 恢复行为 |
+|---|---|
+| `queued` | 重新入下载调度 |
+| `downloading` | 标 `interrupted`；URL 可重排，Telegram source 仅在可重建 descriptor 时尝试，否则 `failed/source_expired` 并提示重新转发 |
+| `ready` 且所有本地文件大小/路径有效 | 重新进入发布队列，不重复下载 |
+| `ready` 但缓存缺失 | `failed/cache_missing` |
+| `publishing` 且没有 published_messages | 标 interrupted 后重新发布 |
+| `publishing` 且已有部分消息 | `publish_state=partial`，停止自动重发，进入人工“继续/撤销部分”处理，避免重复 |
+| `succeeded` + backup pending/failed + 缓存存在 | 只恢复 WebDAV，不重复 Telegram 发布 |
+| backup running | 标 interrupted，检查远端大小；完整则成功，否则从未完成文件继续 |
+| `collecting/awaiting_confirmation` | 恢复 UI 元数据；若无法重建 Telegram media descriptor，明确提示用户重新转发，绝不静默丢弃 |
+
+Telegram Bot 无法可靠读取私聊历史，所以第一版恢复承诺是：
+
+- 已完整下载到本地的任务可恢复发布。
+- URL 任务可利用 URL/yt-dlp 重新下载。
+- 尚未下载的 Telegram 私聊媒体，只有经过专项测试可用的 `InputDocument/InputPhoto` descriptor 才自动恢复；否则记录失败并要求重新转发。
+- 禁止为追求“100% 恢复”而 pickle 完整 Telethon Message 或复制生产 session。
+
+### 14.6 source descriptor 试验要求
+
+若实现 Telegram 原消息跨重启恢复，单独做实验提交：
+
+- 只序列化构造 `InputDocument/InputPhoto` 所需的 id、access_hash、file_reference、dc_id、大小和类型，使用明确 JSON/base64 schema version，不使用 pickle。
+- 在独立测试 Bot 上验证容器重启后可直接 `download_media`；验证 file_reference 过期后的错误分类。
+- 若目标频道已有媒体，可通过允许的 `channels.GetMessagesRequest` 按已知 message id 刷新目标媒体引用；不得调用 bot 不支持的 GetHistory/Search。
+- 实验失败就维持“请重新转发”降级，不阻塞 R2/R3 上线。
+
+### 14.7 优雅关闭
+
+- `main.py` 捕获 SIGTERM/SIGINT：先将 readiness 设 false，停止接收新 job，停止 claim 新任务。
+- 给正在进行的数据库写和小型状态编辑短暂完成窗口；向下载/发布/备份设置 cancel token，并在硬超时后取消 Task。
+- 每个退出 worker 在 finally 中把自身 `running` claim 写为 `interrupted`；如果进程被 SIGKILL，则下次启动由 heartbeat/watchdog 修复。
+- 关闭 repository 前 flush 进度的最后快照；高频 bytes progress 不要求每分片落库，最多每 5 秒或每 32MB 持久化一次。
+
+### 14.8 JSON 迁移策略
+
+第一阶段不急着迁移秘密配置：
+
+- `prefs.json`、`proxy.json`、`webdav.json` 继续通过 `JsonStore` 原子保存。
+- `webdav_logs.json` 成功迁移到 backup tables 后保留原文件只读一个版本；migration 记录导入标记，重复启动不会重复导入。
+- 新数据库稳定至少一个发布周期后，才考虑迁移 prefs；代理/WebDAV 密码除非有外部密钥，否则继续放权限受限的 session JSON。
+- migration 前复制原 JSON 到带时间戳备份；不删除旧文件。任何清理必须在用户确认且验证数据库完整后另做。
+
+R2/R3 验收场景：
+
+- 在 queued/downloading/ready/publishing/WebDAV running 五个阶段分别模拟 kill/restart，恢复结果符合表格。
+- 重复执行同一个 confirm/cancel/retry/undo callback 10 次，最多产生一次真实副作用。
+- 任一任务失败、暂停或取消不阻塞其后任务。
+- 数据库无法写入时不继续接收新任务并清晰告警；不能回退成纯内存静默运行。
+- 生产升级后旧 JSON 配置、session 登录状态和 downloads 缓存全部保留。
+
+## 15. U1/U2：Telegram UI、交互和展示规范
+
+### 15.1 统一视觉语言
+
+- 顶部一行只放页面标题和最重要状态；使用固定 emoji 表达阶段：`📥 收集`、`⏳ 排队`、`⬇️ 下载`、`🧩 处理`、`📤 发布`、`☁️ 备份`、`✅ 完成`、`⚠️ 警告`、`❌ 失败`、`⏸ 暂停`。
+- 卡片字段顺序统一：任务/阶段 → 媒体摘要 → 进度 → 速度/ETA → 下一步或错误 → 操作按钮。
+- 使用短横分隔线 `──────────`，不依赖等宽空格对齐中文；文件名和错误过长时截断并保留扩展名。
+- 所有文本通过统一 escape/truncate helper；正文目标 <3500 字符，caption 严格 ≤1024，留出 Telegram 服务端差异余量。
+- 同一页面最多 8～12 个按钮；队列默认每页 5 项。按钮第一行主操作，第二行次要操作，最后一行返回/刷新。
+- 不把密码、完整代理凭证、WebDAV Authorization、绝对本地路径显示给用户。
+- destructive action 使用红色语义 emoji `🗑/⚠️`，必须二次确认；普通“停止但保留缓存”和“删除缓存”文案必须明确区分。
+
+### 15.2 `/start` 首页控制台
+
+目标文案：
+
+```text
+🤖 Telegram 媒体中转站
+──────────
+📥 当前合集：8 个媒体 · 2 条文字
+📋 任务队列：2 运行 · 3 等待 · 1 失败
+☁️ WebDAV：已启用 · 正常
+💾 磁盘：18.4 / 50 GB
+──────────
+请选择一个操作
+```
+
+按钮：
+
+```text
+[➕ 开始合集] [🛑 结束合集]
+[📋 任务队列] [❌ 失败任务]
+[☁️ 备份管理] [⚙️ 设置]
+[📊 运行状态] [❓ 帮助]
+```
+
+规则：
+
+- `/start` 不自动删除；它是稳定控制台。点击刷新只编辑这条消息。
+- 没有当前合集时显示“未开始”，结束按钮 callback 返回当前状态而不是报错。
+- WebDAV 健康状态使用最近一次 probe/attempt 缓存，不因打开首页同步发网络请求。
+- 磁盘数据读取失败显示“未知”，不影响其它入口。
+
+### 15.3 单任务状态卡
+
+下载中：
+
+```text
+⬇️ 任务 #28 · 正在下载
+──────────
+🎬 8 个媒体 · 1.42 GB
+██████░░░░ 63%
+⚡ 24.8 MB/s · 预计剩余 18 秒
+📍 当前：第 5/8 个媒体
+➡️ 下一步：Telegram 发布
+```
+
+按钮：`[⏸ 暂停] [✖️ 取消]`、`[📋 查看队列]`。
+
+Telegram 已发布但备份补传中：
+
+```text
+✅ 任务 #28 · 已发布
+──────────
+🎬 8 个媒体 · 1.42 GB
+📢 Telegram：完成
+☁️ WebDAV：补传中 6/8
+⏱️ 已用时：2 分 36 秒
+```
+
+按钮：`[📢 打开消息] [☁️ 查看备份]`、`[↩️ 撤销发布]`。
+
+失败：
+
+```text
+❌ 任务 #28 · 发布失败
+──────────
+📍 失败阶段：Telegram 上传
+🧾 原因：网络连接超时
+💾 本地缓存：已保留
+💡 可以直接重试上传，无需重新下载
+```
+
+按钮：`[🔄 重试上传] [📄 错误详情]`、`[🗑 删除缓存]`。
+
+规则：
+
+- 一个 job 只维护一条主要状态消息，数据库保存 chat/message id。
+- 阶段切换、终态、用户操作立即刷新；普通 bytes progress 受节流。
+- status edit 失败不改变任务结果；若消息不存在，补发一次并更新 id，避免循环补发。
+- 完成消息默认保留，是否自动删除作为用户偏好；失败消息必须保留到处理或明确关闭。
+- “打开消息”优先生成公开频道链接；私有频道不能安全生成时隐藏按钮。
+- “撤销发布”先进入确认页，显示会删除的频道/评论消息数量；确认后逐 peer 删除并记录每项结果。
+
+### 15.4 进度、速度和 ETA
+
+- 每个 `(job_id, phase)` 独立维护 `ProgressState`，不能再用全局 `_last_progress_edit`。
+- 原始回调更新内存；数据库最多每 5 秒或每 32MB 写一次；Telegram UI 默认每任务 2 秒最多编辑一次。
+- 再加一个账号级 token bucket（例如平均 1 edit/s，burst 3）防止高并发 FloodWait；FloodWait 按服务端秒数暂停 UI 编辑，不暂停真实传输。
+- 速度用最近 10～20 秒的指数移动平均，避免瞬时跳动；少于 2 个样本不显示 ETA。
+- 总大小未知时显示已下载大小和速度，不伪造百分比；ETA 超过 24 小时显示“较长”。
+- 相册总体进度按所有已知 item size 加权；未知 size 时回退 item 完成数，不混用导致百分比倒退。
+- 阶段变化时递增 generation，迟到的旧 phase 回调不得覆盖新阶段/最终卡片。
+
+### 15.5 队列列表、分页、筛选和详情
+
+队列页：
+
+```text
+📋 任务队列 · 第 1/3 页
+──────────
+① ⬇️ #28 下载中 · 63% · 18秒
+② ⏳ #29 等待下载 · 4 个媒体
+③ ⏸ #30 已暂停 · 缓存 812 MB
+④ 📤 #31 发布中 · 21%
+⑤ ⚠️ #32 备份失败 · 已发布
+──────────
+运行 2 · 等待 6 · 暂停 1 · 失败 2
+```
+
+按钮：每项一个 `[① 详情]`，然后 `[⬅️] [🔄 刷新] [➡️]`、`[筛选：全部] [批量操作]`、`[🏠 首页]`。
+
+筛选：`全部|运行中|等待|暂停|失败|已完成`。完成记录默认只看最近 24 小时；repository 必须 SQL 分页，不能取全表后在内存切片。
+
+详情页显示：job id、来源类型、媒体数量/体积、创建时间、当前阶段、各子状态、重试次数、缓存是否存在、发布消息数、备份路径摘要、用户可理解错误。原始 traceback 只进入脱敏诊断，不直接铺在页面。
+
+批量操作：
+
+- “全局暂停/恢复”只影响是否 claim 新任务；当前上传默认继续，除非用户单独停止。
+- “取消全部等待任务”和“清理全部失败缓存”必须先展示数量/体积并二次确认。
+- 操作按 job id 执行并汇总部分失败，不能一个失败中断全部。
+
+### 15.6 失败中心
+
+失败中心按“需要用户处理”优先排序：
+
+- 缓存仍在，可从失败阶段重试。
+- 源已过期，需要重新转发。
+- 磁盘不足，需要清理。
+- 权限/配置错误，需要进入设置。
+- WebDAV 失败但 Telegram 已发布。
+
+每项提供与错误类型匹配的动作，不显示无效“万能重试”。例如 permission error 给 `[⚙️ 检查频道权限]`，disk full 给 `[💾 管理缓存]`，source expired 给 `[关闭记录]`。
+
+### 15.7 分类帮助与设置
+
+帮助首页：
+
+```text
+❓ 帮助中心
+
+[📥 收集与发布]
+[📋 队列与任务]
+[☁️ WebDAV 备份]
+[🌐 URL 与代理]
+[⚙️ 设置说明]
+[🛠 故障排查]
+```
+
+设置首页只显示摘要，进入子页修改：18+ 模式、进度显示、完成消息保留、封面模式说明、WebDAV、代理；危险/需要重启的配置必须标注。`.env` 级静态配置不要伪装成点击后立即生效。
+
+### 15.8 Callback 编码与幂等
+
+统一短格式，示例：
+
+```text
+h:r                 # home refresh
+q:p:2               # queue page 2
+q:f:failed:0        # failed filter page 0
+j:v:28              # job view
+j:c:28:17           # cancel job 28, expected revision 17
+j:r:28:19           # retry
+x:n:83              # destructive confirmation no, operation id 83
+x:y:83              # destructive confirmation yes
+```
+
+- callback parser 必须做长度、段数、整数范围和 action allowlist 校验。
+- destructive operation 使用数据库/内存中短期 `operation_id`，payload 保存真实目标、创建者、到期时间和 expected revision；callback 不放路径、URL 或 JSON。
+- operation token 默认 5 分钟过期，只能由创建它的 user 使用，成功后原子消费。
+- callback 第一动作是 `answer()`；若状态已改变，提示“任务当前已完成/取消”，并刷新当前页。
+- 测试遍历所有 view 生成的 callback，断言 UTF-8 bytes ≤64。
+
+### 15.9 相册/合集发布前预览
+
+`/end` 后在真正入队前提供可选预览（默认快速路径可由偏好关闭）：
+
+```text
+📦 合集发布预览
+──────────
+媒体：18 个（图片 6 · 视频 12）
+大小：约 3.8 GB
+封面：前 6 张图片
+评论区：12 个视频，分 2 组
+文案：4 行 · 186 字
+模式：正常显示
+```
+
+按钮：`[✅ 确认发布] [✏️ 编辑文案]`、`[🖼 封面设置] [🔞 显示模式]`、`[❌ 放弃]`。
+
+第一版只做预览和文案/模式修改；“拖拽排序”Telegram 内不现实，可做每项上移/下移但应后置，避免给大合集生成数十个按钮。
+
+U1/U2 验收：所有页面均可从首页到达并返回；队列 100 个任务仍不超消息/按钮限制；连续快速点击不会产生重复副作用；并发任务都能独立刷新且不触发长 FloodWait。
+
+## 16. F1/F2/F3/F4/B1：核心功能增强技术方案
+
+### 16.1 F1 yt-dlp 实时进度与真正取消
+
+新增统一接口：
+
+```python
+@dataclass(frozen=True)
+class DownloadProgress:
+    status: str
+    downloaded_bytes: int
+    total_bytes: int | None
+    speed_bps: float | None
+    eta_seconds: float | None
+    filename: str | None
+    item_index: int = 1
+    item_total: int = 1
+
+class UrlDownloader:
+    async def download(self, request, on_progress, cancel_token) -> DownloadResult: ...
+```
+
+实现要求：
+
+- 继续使用 yt-dlp Python API 和官方 `progress_hooks`；hook 运行在线程中，通过 `loop.call_soon_threadsafe` 把不可变 progress 投递到 asyncio。
+- 每个 URL job 使用自己的 `downloads/job-<id>/`，不再调用会清空任意目录的 `_clear_dir`；只删除本 job 已知 `.part/.ytdl` 临时文件。
+- cancel 使用 `threading.Event`/共享 token；progress hook 和 postprocessor hook 每次都检查，命中后抛专用取消异常终止 yt-dlp。asyncio 外层取消时先置 token，再有限等待线程退出；不得只取消 `asyncio.to_thread` 后让后台继续占带宽写文件。
+- 若 yt-dlp 某版本包装了取消异常，adapter 根据原始 cause/专用标志归类为 `cancelled`，不能显示下载失败并自动重试。
+- 映射字段：`downloaded_bytes`、`total_bytes` 或 `total_bytes_estimate`、`speed`、`eta`、`filename`；UI 仍使用自己的 EMA/节流。
+- 默认 `noplaylist=True` 不变；未来若支持播放列表，必须先展示项目数量/预计体积并要求确认，不能悄悄批量下载。
+- 限制输出模板长度和字符；最终路径必须验证在 job dir 内。解析完成后扫描并选择 yt-dlp 明确返回的 requested_downloads/filepath，不能只按 mtime 猜任意文件。
+- 下载/合并超时分别记录；ffmpeg postprocess 阶段显示 `🧩 正在合并音视频`。
+- 支持 yt-dlp 的断点文件时，重试同一 job 可续传；用户“删除缓存”才删 `.part`。
+
+测试：mock `YoutubeDL` 主动发 progress、finished、error 和取消；验证取消后没有线程继续写；验证总大小未知、音视频合并、路径逃逸和多个输出文件。
+
+### 16.2 F2 错误分类与重试策略
+
+Domain error 至少包含：
+
+```text
+network_timeout          可自动重试
+network_unreachable      可自动重试/切代理
+telegram_flood_wait      按服务端时间等待
+telegram_auth            不自动重试
+telegram_permission      不自动重试，进入配置检查
+source_expired           不自动重试，需要重新转发
+url_unsupported          不自动重试，可更新 yt-dlp 后再试
+file_too_large           不自动重试
+disk_low                 条件解除后重试
+cache_missing            不自动盲重试
+media_invalid            可尝试兼容性处理
+publish_partial          需人工继续或撤销
+webdav_auth              不自动重试
+webdav_not_found         不自动重试，检查路径
+webdav_locked            延迟验证/重试
+webdav_server            自动退避
+cancelled                不记为失败
+unknown                  有限重试后失败
+```
+
+策略：
+
+- 指数退避：`delay = min(cap, base * 2**attempt) + random_jitter`；网络默认 base 5 秒、cap 5 分钟，WebDAV 可延长到 1 小时。
+- FloodWait 使用 Telegram 指定时间并加小安全余量，不与普通指数退避叠加；UI 显示预计恢复时间。
+- retry budget 按阶段独立，例如 download 3 次、publish 2 次、backup 按现有配置；手动重试不会无限清空历史计数，而是新建 attempt。
+- 切代理只能由集中 NetworkCoordinator 串行执行，避免多个下载同时断开重连互相打架；代理切换后所有受影响任务重新评估。
+- 发布重试必须检查 `published_messages` 和目标频道已知消息，避免上次实际成功但响应超时造成重复。
+- 每次失败保存 `error_code`、安全摘要、attempt 和下一次重试时间；完整 traceback 只写日志并带 job id，不发给用户。
+
+### 16.3 F3 磁盘预检、配额和清理
+
+新增配置，先以监控模式上线，再开启阻断：
+
+```text
+DISK_ENFORCE=false
+MIN_FREE_BYTES=5368709120
+MIN_FREE_PERCENT=10
+MAX_CACHE_BYTES=0
+CACHE_RETENTION_HOURS=72
+FAILED_CACHE_RETENTION_HOURS=168
+DISK_CHECK_INTERVAL=60
+UNKNOWN_JOB_RESERVE_BYTES=2147483648
+```
+
+实现：
+
+- `DiskManager` 使用 `shutil.disk_usage(download_root)`；只管理通过 `realpath/commonpath` 验证位于 download root 的 `job-*` 目录。
+- 接受已知大小 Telegram 媒体前计算所需空间；至少预留 `size + 临时开销 + MIN_FREE_BYTES`。URL 大小未知时使用 `UNKNOWN_JOB_RESERVE_BYTES`，yt-dlp 取得估算后更新 reservation。
+- reservation 持久化或可从 active job 计算，防止 3 个并行任务都看到同一份剩余空间。
+- `DISK_ENFORCE=false` 时只告警和展示，不拒绝；观察生产一段后再启用 true。
+- 清理候选必须满足：job 已终态、无运行 upload/backup、不是 retry protected、无 `.part` 正在写、超过保留期。
+- 清理按最旧优先，达到安全水位立即停止。失败任务缓存保留更久；用户手动删除仍需二次确认。
+- 使用显式文件列表逐项 unlink/rmdir；不要对数据库提供的未校验路径执行 `rm -rf`。
+- 清理前后写 job event 和释放字节数；部分删除失败可下轮继续。
+- 首页/`/stats` 显示总量、已用、可用、受保护缓存、可清理缓存。
+
+### 16.4 F4 统计、健康检查和诊断
+
+新增 migration：
+
+```sql
+CREATE TABLE daily_stats (
+  day_utc TEXT PRIMARY KEY,
+  accepted_jobs INTEGER NOT NULL DEFAULT 0,
+  succeeded_jobs INTEGER NOT NULL DEFAULT 0,
+  failed_jobs INTEGER NOT NULL DEFAULT 0,
+  cancelled_jobs INTEGER NOT NULL DEFAULT 0,
+  downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+  published_bytes INTEGER NOT NULL DEFAULT 0,
+  backed_up_bytes INTEGER NOT NULL DEFAULT 0,
+  saved_upload_bytes INTEGER NOT NULL DEFAULT 0,
+  updated_at REAL NOT NULL
+);
+```
+
+统计只能由 job/item terminal event 幂等累加，event id 或 `(job_id, metric)` 要有去重键，防止重启重复计数。可以从 jobs/events 回算一次校验。
+
+`/stats` 建议：
+
+```text
+📊 运行状态
+──────────
+运行时间：3 天 8 小时
+今日任务：18 完成 · 1 失败
+累计发布：126.8 GB
+秒传节省：14.2 GB
+──────────
+CPU：12% · 内存：684 MB
+磁盘：18.4 / 50 GB（安全）
+Telegram：正常
+WebDAV：正常（3 分钟前）
+队列数据库：正常
+```
+
+技术要求：
+
+- 基础 CPU/内存可读取 `/proc` 和 `resource`；若加入 psutil 必须说明收益并固定版本，不为一个页面无必要加重依赖。
+- Telegram health 只看连接状态和最近成功请求；不要高频主动发消息。
+- WebDAV health 默认 PROPFIND 配置路径并缓存结果，避免首页每次访问打外部服务。
+- Docker `HEALTHCHECK` 调用本地脚本，检查主进程、数据库可读写、事件循环 heartbeat、磁盘硬阈值；不能依赖 Telegram 远端短暂波动导致容器反复重启。
+- readiness 与 liveness 分开：migration/恢复未完成时 not ready，但进程仍 live。
+- 日志统一包含 `job_id`、`phase`、`attempt`、`duration_ms`；可选 JSON formatter，但用户文字、URL query、密码必须 redact。
+- “导出诊断”只生成脱敏文本：版本/commit、Python/SQLite/Telethon/yt-dlp/ffmpeg 版本、配置布尔摘要、容器 uptime、磁盘、队列计数、最近错误 code。不得包含 `.env`、session、密码、完整 URL、caption。
+
+### 16.5 B1 WebDAV 功能与 UI 增强
+
+现有 `src/webdav.py` 的 PUT、stall watchdog、响应等待、PROPFIND 轮询、远端大小校验和 OpenList 423/延迟落盘兼容都必须保留。重构重点是生命周期和交互，不是重写协议后丢掉这些保护。
+
+新增能力：
+
+- `[🧪 测试连接]`：先 PROPFIND 检查认证、路径和读取；“写入测试”作为单独明确操作，用随机 `.tgvf-check-<uuid>` 小文件 PUT + verify + DELETE，并汇报清理结果。
+- 容量：读取服务器支持的 DAV quota properties；不支持时显示“服务器未提供”，不得把本地容量当远端容量。
+- 备份策略：`best_effort`（默认，失败不挡发布）和 `required`（备份完成才把整个任务标最终完成）。启用 required 前显示风险说明。
+- 上传记录按 attempt 分页，状态包括 pending/running/verifying/succeeded/failed/interrupted/deleted；详情显示逐文件状态。
+- 单文件重试、失败文件全部重试、从本地缓存补传都走同一 BackupManager，删除旧重复实现。
+- 远端删除二次确认，列出远端目录、文件数、总大小；只删除数据库记录的具体文件，不递归删除用户目录。
+- 成功 PUT 后仍必须远端大小确认；若响应超时但 PROPFIND 已完整，记成功，不重复 PUT。
+- hash 文件名继续兼容当前 MD5 前 8 位以避免破坏已有目录；D1 引入 SHA-256 是内容索引，不应未经迁移改变现有远端命名。
+- 自动补传启动恢复时先检查本地文件和远端大小；本地不存在时明确 `cache_missing`，不无限每小时重试。
+- 状态消息与主任务卡联动，但备份 UI 更新失败不影响备份实际状态。
+
+B1 验收：模拟 201、204、401、403、404、405、423、500、响应超时但远端成功、断流、远端大小不一致；保证没有假成功、重复上传、提前删缓存或永久 running 记录。
+
+## 17. D1/M1/DP1/S1：第二阶段功能方案
+
+### 17.1 D1 SHA-256 去重与 Telegram 媒体复用
+
+目标是省去重复上传字节，而不是跳过发布。相同媒体再次提交时仍应产生一条新的目标消息，并使用本次 caption/spoiler/profile。
+
+建议 schema：
+
+```sql
+CREATE TABLE dedup_entries (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  sha256 TEXT NOT NULL,
+  size_bytes INTEGER NOT NULL,
+  media_kind TEXT NOT NULL,
+  destination_key TEXT NOT NULL,
+  source_peer_id INTEGER NOT NULL,
+  source_message_id INTEGER NOT NULL,
+  media_id INTEGER,
+  access_hash INTEGER,
+  file_reference BLOB,
+  metadata_json TEXT,
+  verified_at REAL NOT NULL,
+  last_used_at REAL NOT NULL,
+  hit_count INTEGER NOT NULL DEFAULT 0,
+  UNIQUE(sha256, size_bytes, media_kind, destination_key)
+);
+```
+
+流程：
+
+1. 下载完成后流式计算 SHA-256，可与完整性扫描合并，避免反复读取大文件；保存 size + hash。
+2. 按 `sha256,size,media_kind,destination profile` 查询。不同目标频道默认不跨范围复用，避免权限/隐私问题。
+3. 命中时优先用已知目标 `peer_id/message_id` 通过 bot 允许的按 ID 获取方式刷新媒体引用，再构造 `InputDocument/InputPhoto` 发送新消息。
+4. 若消息已删除、file reference 失效、属性不兼容或 API 报错，删除/降级该 dedup entry 并正常上传本地文件；秒传失败不能让整个 job 失败。
+5. 新上传成功后从返回 Message 保存目标消息引用和媒体 descriptor，并更新 dedup entry。
+6. 本次 spoiler、caption、封面/评论区位置照常应用；复用只替代字节上传，不复用旧消息文字。
+
+注意：
+
+- Telethon/MTProto 不是直接依赖 Bot API `file_id`。可以研究 Telethon 的 bot file id pack/unpack，但生产方案必须以“按已知目标消息刷新 InputDocument + 失败回退”为准，经过独立测试再启用。
+- 仅 hash 相同才视为内容相同，不能只按文件名或大小。
+- WebDAV 是否跳传仍由远端 hash 名 + size/PROPFIND 验证决定；Telegram 命中不能直接把备份标成功。
+- dedup entry 有保留期和最大条数；目标消息删除/撤销时更新引用，但不影响其它有效引用。
+- `/stats` 累加 `saved_upload_bytes`，任务卡可提示“⚡ 已复用 Telegram 媒体，节省约 46 秒”。
+
+D1 验收：同一文件改名后命中；同大小不同内容不命中；目标引用失效自动回退；重复发布 caption/spoiler 正确；撤销其中一条不会破坏其它任务记录。
+
+### 17.2 M1 媒体兼容性与预览增强
+
+新增配置：
+
+```text
+MEDIA_COMPAT_MODE=analyze     # off|analyze|remux
+FASTSTART_MAX_BYTES=0         # 0 表示不按大小限制，由磁盘预检控制
+TRANSCODE_ENABLED=false
+THUMBNAIL_POSITION=auto       # auto|seconds
+```
+
+流程：
+
+- 下载后用 ffprobe 生成规范化 metadata：container、video/audio codec、duration、width/height、rotation、bitrate、stream count。
+- 对 MP4 检查是否适合渐进播放；`analyze` 只在任务详情提示，不改文件。
+- `remux` 仅在需要时执行 `ffmpeg -c copy -movflags +faststart` 到同 job dir 临时文件；成功后再次 ffprobe、校验时长/流数量/输出大小，再原子切换发布路径。原文件保留到发布与备份策略确定可清理。
+- remux 需要额外磁盘 reservation；空间不足时跳过并提示，不能为了 faststart 导致任务失败。
+- 非 H.264/AAC 或损坏文件默认按 document/现有逻辑发布；`TRANSCODE_ENABLED=false` 时绝不自动有损转码。
+- 若以后开放转码，必须单独做 preset、CPU/时间/磁盘上限、取消、质量选择和原文件保留，不与 M1 remux 混在一个提交。
+- 缩略图从 10%～30% 时长附近选择，遇到黑帧可最多尝试 3 个候选；仍遵守 Telegram JPEG、尺寸和体积限制。
+- 发布预览显示兼容性结果，例如“✅ 可流式播放”“🧩 将执行 faststart”“⚠️ 将作为文件发送”。
+
+### 17.3 DP1 多目的地配置档案
+
+这不是 P0/P1；只有单目的地流程稳定后实施。
+
+每个 profile 包含：
+
+```text
+name
+destination_peer_id / public username
+discussion_group_id
+channel_at / group_at
+cover_mode
+forward_caption
+default_spoiler_mode
+backup_policy
+footer_template
+enabled
+```
+
+要求：
+
+- 当前 `.env` 目的地自动迁移为只读“默认频道” profile；确认新 profile 可用后才允许从 UI 切换默认。
+- 创建/修改时检查 entity 解析、bot 发消息权限、讨论组关联和必要管理员权限；测试发送属于外部副作用，必须明确按钮确认并立即清理测试消息。
+- job 接受时保存 profile snapshot，执行中修改 profile 不改变已排队 job。
+- 首页显示当前 profile，预览页可选择；callback 只传 profile id。
+- 删除 profile 前检查是否被非终态 job 引用；改为禁用，不级联删除历史任务。
+- footer template 做白名单变量渲染和长度检查，不执行表达式。
+
+### 17.4 S1 指定源频道自动中转
+
+仅处理 bot 实时收到的新消息，不承诺补历史；Telethon bot 的历史读取限制继续成立。
+
+Source profile：
+
+```text
+source_peer_id
+destination_profile_id
+enabled
+album_gather_seconds
+spoiler_policy
+caption_policy
+backup_policy
+```
+
+要求：
+
+- 只有用户显式添加且 bot 有权接收 updates 的源频道/群组才启用。
+- 以 `(source_peer_id, source_message_id)` 唯一约束防止重复 update；媒体组用 grouped_id 聚合并设置有限等待。
+- 自动任务仍进入同一 JobQueue/状态机/磁盘/WebDAV/发布链路，不另写一套转发逻辑。
+- 无人交互场景不能用 `ask`；必须为每个 source profile 选择 normal/spoiler/rule。
+- 失败发送给管理员的失败中心，不在源频道刷错误。
+- 编辑/删除源消息默认不反向修改已发布内容；如以后增加同步删除，必须单独授权并有审计事件。
+
+### 17.5 以后才评估的 O1
+
+Web Dashboard 的启动条件：队列长期超过 Telegram UI 可管理规模、出现多个管理员、需要跨日查询/图表或需要浏览大量文件。若满足：
+
+- 只读 dashboard 先行，复用同一 repository/service，不直接操作数据库。
+- 单独监听 localhost，通过反向代理、TLS、强认证和 CSRF 防护；不得把管理端口直接暴露公网。
+- 删除/重试等 mutation 仍走 service command 和审计事件。
+- 不在 bot 容器内临时拼一个无认证 Flask 页面。
+
+外部通知（Webhook/邮件）同样后置；实现时使用 outbox table + 重试，默认关闭并严格隐藏用户媒体内容。
+
+### 17.6 仍需记录但不进入当前开发队列的需求
+
+- 超过 2GB：先明确真实需求，再选择安全分割、用户账号上传或 Local Bot API；不能通过简单改常量绕过平台限制。
+- 多帧封面选择、媒体手工排序、批量 caption 模板：等 U1/U2 预览稳定后再排期。
+- 多用户速率限制：当前 allowlist 足够；若允许多个用户，增加每用户并发/每日字节配额和公平队列，而不是仅按全局 FIFO。
+- 国际化：当前以中文为主；所有文案集中到 views 后再考虑语言资源文件。
+
+## 18. 配置、性能和安全要求
+
+### 18.1 配置重构
+
+- [ ] 把 `config.py` 的模块级散落常量封装成不可变 `Settings` dataclass，并在 main 启动时构造一次后注入；保留旧常量 re-export 一个迁移周期。
+- [ ] 对必需项 `API_ID/API_HASH/BOT_TOKEN/DEST_CHANNEL/ALLOWED_USERS` fail-fast；错误只显示变量名，不回显值。
+- [ ] 校验并发数、分片大小、超时、文件上限和磁盘阈值的合理范围；例如 `PART_SIZE_KB` 必须符合 Telegram 支持值，worker 不能为负或无限大。
+- [ ] 提供 `settings.safe_summary()` 供启动日志/诊断，只显示布尔、数量和脱敏 host。
+- [ ] 动态设置（WebDAV、代理、用户偏好、destination profile）与静态 env 分开；界面明确哪些立即生效、哪些只影响新任务、哪些需重启。
+- [ ] 更新 `.env.example`，绝不把生产值复制进去。
+
+不强制引入 Pydantic；当前规模用 dataclass + 显式 validator 足够。如果后续配置层显著增长，再评估 Pydantic Settings，不能同时保留两套解析真相。
+
+### 18.2 性能边界
+
+- 大文件始终分块读写和 hash，禁止一次性读入内存。
+- SQLite 事务不包网络/ffmpeg；高频 progress 合并写，job event 只记录有意义的阶段/操作，不每个分片一条。
+- ffmpeg/ffprobe 使用独立 semaphore；默认最多 1～2 个重处理进程，不能与 16 路上传无界叠加。
+- 缩略图和 remux subprocess 必须有 timeout/cancel/return code 检查，并消费 stdout/stderr 防 pipe 堵塞。
+- 队列、历史、日志全部 SQL 分页；首页用聚合 query，不遍历所有 Python 对象。
+- hash 结果复用给 dedup/WebDAV/完整性；避免同一 2GB 文件连续做 MD5、SHA-256、多次全盘扫描。若远端命名必须 MD5，可单次遍历同时计算 MD5+SHA-256。
+- 目标压力测试：100 jobs、1000 items 的列表/聚合操作不阻塞事件循环；内存不随历史任务无限增长。
+
+### 18.3 安全和隐私
+
+- 所有 command/callback/普通消息入口都执行 user allowlist；callback 还要验证 job.user_id 或管理员权限。
+- SQL 全部参数化；不把 callback、caption、文件名拼成 SQL。
+- URL 下载仅接受 `http/https`，拒绝 `file:` 等本地 scheme；输出路径做 root containment。是否阻止内网地址可配置，但默认至少记录风险，公开多用户前必须实现 SSRF 防护。
+- 代理和 WebDAV URL 解析使用标准库，不用包含凭证的 URL 做 UI label；日志通过 redact filter 清理 `user:pass@`、Authorization 和 token。
+- 文件名只作展示；本地由 job/item id 命名或严格 sanitize。远端路径各 segment 单独 quote，禁止 `..` 路径逃逸。
+- 删除操作按数据库已知 job/item/file id 解析目标，并验证 root/peer/profile；不能接收用户提供的任意绝对路径或 peer。
+- 诊断包、测试 fixture、数据库备份和 CI artifact 都不得包含 `.env`、`session/bot.session`、代理/WebDAV 密码或真实私密媒体。
+- 历史任务和 caption 设置保留期；默认保留任务元数据 30 天、事件 30～90 天可配置，媒体按磁盘策略更早清理。用户明确删除历史时清理关联文本，但保留必要匿名统计。
+
+## 19. 测试矩阵与验收门禁
+
+### 19.1 单元测试
+
+- [ ] 状态机每个允许/禁止 transition；revision 乐观锁；重复 command 幂等。
+- [ ] repository CRUD、事务回滚、外键、migration checksum、旧 schema 升级、损坏数据库 fail closed。
+- [ ] queue claim、下载并发、发布 FIFO、paused skip、watchdog reclaim、取消竞态。
+- [ ] recovery 表中每种状态及缓存存在/缺失组合。
+- [ ] Progress EMA、未知总量、ETA、generation 防迟到覆盖、per-job/global throttle。
+- [ ] 所有 view 的空态/大列表/长文件名/长错误/特殊字符；callback bytes ≤64。
+- [ ] confirmation token 的 owner、revision、过期、单次消费。
+- [ ] error classifier 与 retry policy，尤其 FloodWait、permission、disk、source expired、WebDAV 423。
+- [ ] DiskManager reservation、保护路径、保留期、软/硬阈值、symlink/path escape。
+- [ ] dedup hash、目标隔离、失效回退、统计去重。
+- [ ] media metadata、remux 成功/失败/取消/空间不足降级。
+
+### 19.2 集成测试（全部本地 fake）
+
+- [ ] 完整单媒体：接受 → 下载 → WebDAV 并行 → 顺序发布 → 写消息 ID → 清缓存。
+- [ ] 相册/collection：聚合、文字、封面、10 条媒体组拆分、评论区 peer/id、撤销。
+- [ ] URL：progress、合并阶段、取消、重试续传、最终路径。
+- [ ] 上传返回超时但目标消息已产生的幂等协调。
+- [ ] WebDAV fake server：所有重要 HTTP 状态、延迟响应、断流、大小不一致、DELETE 部分失败。
+- [ ] 在每个阶段关闭 repository/service 再启动，验证恢复和用户通知。
+- [ ] 100 个任务并发事件，确认不死锁、不重复发布、UI 更新有界。
+- [ ] 用户重复/乱序/过期 callback，状态和副作用稳定。
+
+使用 `unittest.IsolatedAsyncioTestCase` 和 `unittest.mock` 即可；除非测试明显受限，不为风格切换引入 pytest。测试 clock、随机 jitter、ID 生成必须可注入以保证确定性。
+
+### 19.3 静态与容器门禁
+
+最低门禁：
 
 ```bash
-# VPS 上查看容器状态与启动日志（目标 IP/密码见 deploy_vps.sh）
-sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@<VPS_IP> \
-  'docker ps --filter "name=telegram-video-forwarder" --format "{{.Names}} {{.Status}}" && docker logs --tail 20 telegram-video-forwarder 2>&1'
+python3 -m unittest discover -s tests -v
+python3 -m py_compile src/*.py
+docker compose config --quiet
+docker compose build
 ```
 
-验证要点：
-- 容器状态为 `Up`（不是 `Up X seconds` 后崩溃重启）
-- 日志出现 `Bot commands registered` 与 `Bot started. dest=... allowed=[...]` 即启动成功
-- 本地/远程代码一致性：对比 `src/bot.py` 的 md5（`md5sum` 两侧比对）
+后续建议分阶段加入 Ruff（lint + format）和类型检查，但第一次引入只检查新/改文件，避免一个提交机械重排全仓导致难审。任何 formatter 都不能与功能重构混在同一提交。
 
-### 注意事项
+容器测试：
 
-- **`.env` 会被本地版本覆盖**——改配置请改本地 `.env` 再部署；VPS 上手动改的配置会被下次部署冲掉
-- **session/downloads 不打包**：VPS 的登录会话与下载目录保留，部署不丢登录状态
-- 部署前先跑语法校验：`python3 -m py_compile src/*.py`（防止打包坏代码上生产）
-- 若容器反复重启或日志无 `Bot started`，优先看启动异常（session 损坏/密钥错误），参考第 5 节坑 2
+- 使用临时目录挂载空 `session/`、`downloads/` 和测试 `.env`，验证首次建库/migration。
+- 使用 fake transport 或独立测试凭证；绝不能挂载生产 session 后本地启动。
+- SIGTERM 测试确认 running job 转 interrupted、数据库关闭完整、容器在 compose stop timeout 内退出。
+- Healthcheck 从 starting → healthy；模拟 DB 不可写/磁盘硬阈值时 readiness 行为正确。
+
+### 19.4 生产冒烟矩阵
+
+每个阶段按风险选择最小测试，但涉及核心链路至少验证：
+
+1. `/start` 和 `/queue` 正常、callback 秒响应。
+2. 一个小图片或短视频完整发布，目标频道/评论区正确。
+3. 状态卡完成，数据库/日志记录正确，缓存按策略清理。
+4. WebDAV 开启时远端大小确认；失败模拟不能在生产随意破坏服务，可通过受控无效测试 profile。
+5. 容器重启计数保持 0；部署后持续观察日志。
+
+## 20. 灰度、提交和交接执行手册
+
+### 20.1 推荐发布批次
+
+不要把全部计划一次上线。建议版本顺序：
+
+1. **v16.0 / R0**：测试基础设施与行为基线，无生产行为变化。
+2. **v16.1 / R1**：抽取 views/handlers/JobQueue facade/BackupManager facade，仍用旧内存状态。
+3. **v16.2 / R2**：SQLite migration + repository，先记录任务/history；必要时短期 feature flag shadow compare。
+4. **v16.3 / R3**：状态机成为唯一写入口，启用启动恢复和优雅关闭。
+5. **v16.4 / U1+U2**：新首页、任务卡、分页、失败中心和确认流程。
+6. **v16.5 / F1+F2**：URL 实时进度/取消和统一重试。
+7. **v16.6 / F3+F4+B1**：磁盘、stats、health、WebDAV 管理增强。
+8. **v17.x / D1+M1**：去重秒传与媒体兼容性。
+9. **v18.x / DP1+S1**：多目的地和源频道自动中转，需用户再次确认范围。
+
+过渡 feature flags 可用：`STATE_DB_ENABLED`、`NEW_UI_ENABLED`、`YTDLP_PROGRESS_ENABLED`、`DISK_ENFORCE`、`DEDUP_ENABLED`。每个 flag 稳定两个发布周期后删除旧路径和 flag，禁止永久维护双实现。
+
+### 20.2 每个实现代理开始前
+
+1. 完整阅读本文件，尤其第 0、10～20 节；再读 `docs/REFACTORING.md` 和相关源码。
+2. `git status --short --branch`，保护用户未提交改动；不要清理或覆盖不属于当前阶段的文件。
+3. 只读检查生产容器/日志/实际源码差异。生产代码有本地没有的新逻辑时先同步分析，不能直接部署。
+4. 选择最前面的未完成工作包，再把它拆成最多一个提交可交付的子任务；不要同时实现跨 3 个阶段的大改。
+5. 在动生产逻辑前先补能失败的测试；实现后跑第 19 节门禁。
+
+### 20.3 Commit 规范
+
+建议：
+
+```text
+test(queue): lock current cancellation behavior
+refactor(queue): extract job queue service
+feat(state): persist jobs and recovery events
+feat(ui): add paginated job dashboard
+fix(webdav): preserve cache across interrupted verify
+```
+
+- 一个 commit 只做一种主目的；数据库 migration 与依赖它的最小代码可在同 commit。
+- 不提交 `.env/session/downloads`，不 force push，不改写用户历史。
+- 推送后记录 GitHub commit；部署源码必须来自这个 commit 加明确列出的受控运行配置，不能只在 VPS 手改。
+
+### 20.4 数据库上线与回滚
+
+- 第一次 R2 部署前，确认 `session/` 至少有足够空间容纳数据库和备份。
+- 停止写入或使用 SQLite backup API 创建 `state.sqlite3.pre-<version>-<timestamp>`；普通 `cp` 活跃数据库前必须先停应用。
+- migration 日志打印 from/to version 和耗时，不打印数据内容。
+- 每个 migration 提供代码级兼容说明和 rollback 策略；可逆时提供 down SQL 仅用于人工审查，不自动执行破坏性 downgrade。
+- 部署失败优先回滚代码；若旧代码不认识新 schema，则先停容器、恢复 pre-migration 数据库，再启动旧镜像。
+
+### 20.5 代理在额度/时间耗尽前必须更新的交接记录
+
+在本节末尾追加一条，不要只在聊天里说明：
+
+```text
+### YYYY-MM-DD HH:mm - <Agent/工作包>
+- 状态：进行中 / 已完成未部署 / 已部署 / 阻塞
+- 基线 commit：<hash>
+- 已改文件：...
+- 已完成：...
+- 测试：<命令与结果>
+- GitHub：<commit/push 状态>
+- VPS：<未部署/部署时间/容器与日志结果>
+- 数据迁移：<版本/备份位置/是否可回滚>
+- 未完成与风险：...
+- 下一步精确入口：<文件、类、测试名或命令>
+```
+
+如果尚未完成，不得把工作包主复选框标 `[x]`；应标出已经完成的子项，让下一位代理从具体测试/函数继续，而不是重新调研。
+
+### 20.6 当前下一步（2026-08-30）
+
+下一位实现代理应从 **R0** 开始，不要直接上 SQLite 或改 UI：
+
+1. 为 `_Pipeline` 当前的 submit/enqueue/cancel/pause/resume/retry 和上传顺序建立 fake-based characterization tests。
+2. 为 WebDAV cache retention 和 callback 幂等补回归测试。
+3. 在测试保护下先把 command/callback view 渲染进一步移入 `src/ui.py` 或新 `src/views/`，不改用户文案。
+4. 再抽 `JobQueue` facade；此时只包住旧内存实现，等行为稳定后进入 R2。
+
+这四步是唯一推荐的近期入口。未经用户明确改变优先级，不要先做 Web Dashboard、多频道或转码。
+
+## 21. 执行日志
+
+### 2026-08-30 - 规划与交接文档
+
+- 状态：已完成（文档-only，未改运行代码，未部署容器）
+- 基线 commit：`ee104c1`
+- 已改文件：`AGENTS.md`（gitignored）
+- 已完成：开源项目调研、完整功能清单、架构/SQLite/state/UI/恢复/测试/发布方案。
+- 测试：`git diff --check` 通过；3 个 unittest 通过；`py_compile` 与 `docker compose config --quiet` 通过；Markdown fence 配对和敏感信息模式复核通过。
+- GitHub：随本次文档 commit 推送 `origin/main`；具体提交哈希以 `git log` 为准。
+- VPS：无需重建；生产代码和运行数据未改。
+- 下一步精确入口：第 20.6 节，从 R0 fake-based characterization tests 开始。
