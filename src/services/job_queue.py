@@ -324,10 +324,28 @@ class JobQueue:
             return None
         return await repository.claim_next_publish(owner)
 
+    async def durable_payload(self, seq: int):
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None or self._shadow is None:
+            return None
+        job_id = self._shadow.job_ids.get(seq)
+        if not job_id:
+            return None
+        items = await repository.list_job_items(job_id)
+        paths = [item.local_path for item in items if item.local_path]
+        if not paths or len(paths) != len(items):
+            return None
+        return paths[0] if len(paths) == 1 else paths
+
     async def heartbeat_claim(self, seq: int, kind: str, owner: str) -> bool:
         if self._shadow is None:
             return False
         return await self._shadow.heartbeat_claim(seq, kind, owner)
+
+    async def interrupt_claim(self, seq: int, kind: str, owner: str) -> bool:
+        if self._shadow is None:
+            return False
+        return await self._shadow.interrupt_claim(seq, kind, owner)
 
     async def drain_shadow(self) -> None:
         if self._shadow is not None:

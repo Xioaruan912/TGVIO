@@ -180,6 +180,18 @@ class ShadowState:
             kind=kind,
         )
 
+    async def interrupt_claim(self, seq: int, kind: str, owner: str) -> bool:
+        job_id = self.job_ids.get(seq)
+        if not job_id or self.repository is None:
+            return False
+        result = await self.repository.interrupt_claim(
+            job_id,
+            owner=owner,
+            kind=kind,
+            reason="graceful_shutdown",
+        )
+        return result.applied
+
     def event(self, seq: int, event_type: str, **extra: Any) -> None:
         async def run() -> None:
             job_id = self.job_ids.get(seq)

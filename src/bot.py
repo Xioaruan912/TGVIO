@@ -209,6 +209,9 @@ class _Pipeline:
         self._repo_download_claimed: set[int] = set()
         self._repo_publish_claimed: set[int] = set()
         self._repo_claim_owners: dict[tuple[str, int], str] = {}
+        self._worker_tasks: set[asyncio.Task] = set()
+        self._stopping = False
+        self._shutdown_complete = False
         self.prefs: dict[int, dict] = {}
         self.published: dict[int, list] = {}
         self.retryable: dict[int, _Job] = {}
@@ -484,11 +487,70 @@ class _Pipeline:
         self._set_pref(user_id, "spoiler_mode", mode)
 
     def start(self) -> None:
+        if self._worker_tasks or self._stopping:
+            return
         loop = asyncio.get_running_loop()
         for _ in range(max(1, DOWNLOAD_CONCURRENCY)):
-            loop.create_task(self._download_worker())
-        loop.create_task(self._upload_worker())
-        loop.create_task(self._webdav_autoretry_loop())
+            self._track_worker(loop.create_task(self._download_worker()))
+        self._track_worker(loop.create_task(self._upload_worker()))
+        self._track_worker(loop.create_task(self._webdav_autoretry_loop()))
+
+    def _track_worker(self, task: asyncio.Task) -> None:
+        self._worker_tasks.add(task)
+        task.add_done_callback(self._worker_tasks.discard)
+
+    async def shutdown(self, timeout: float = 20.0) -> None:
+        """Stop claims first, durably interrupt active work, then stop tasks."""
+        if self._shutdown_complete:
+            return
+        self._stopping = True
+
+        # Persist claim settlement before any transport task is cancelled.
+        if getattr(self, "job_queue", None) is not None:
+            await self.job_queue.drain_shadow()
+            for (kind, seq), owner in list(self._repo_claim_owners.items()):
+                try:
+                    await self.job_queue.interrupt_claim(seq, kind, owner)
+                except Exception:
+                    logger.exception("Failed to interrupt %s claim for job #%s", kind, seq)
+
+        transport = {
+            task
+            for task in [*self._download_tasks.values(), *self._upload_tasks.values()]
+            if task is not None and not task.done()
+        }
+        for task in transport:
+            task.cancel()
+        if transport:
+            await asyncio.gather(*transport, return_exceptions=True)
+
+        # Give in-flight WebDAV writes a bounded chance to finish, then cancel.
+        webdav = {task for task in self._webdav_tasks if not task.done()}
+        if webdav:
+            done, pending = await asyncio.wait(webdav, timeout=min(10.0, max(0.0, timeout / 2)))
+            for task in pending:
+                task.cancel()
+            if pending:
+                await asyncio.gather(*pending, return_exceptions=True)
+
+        for pending in self.pending.values():
+            if pending.timeout_task is not None:
+                pending.timeout_task.cancel()
+        for buf in self.albums.values():
+            if buf.task is not None:
+                buf.task.cancel()
+        for session in self.sessions.values():
+            if session.button_task is not None:
+                session.button_task.cancel()
+
+        workers = {task for task in self._worker_tasks if not task.done()}
+        for task in workers:
+            task.cancel()
+        if workers:
+            await asyncio.gather(*workers, return_exceptions=True)
+        if getattr(self, "job_queue", None) is not None:
+            await self.job_queue.drain_shadow()
+        self._shutdown_complete = True
 
     def reserve_seq(self) -> int:
         seq = self._counter
@@ -586,6 +648,8 @@ class _Pipeline:
         return seq
 
     def enqueue(self, job: _Job) -> None:
+        if self._stopping:
+            raise RuntimeError("pipeline is shutting down")
         self._runtime_jobs[job.seq] = job
         self.input_q.put_nowait(job)
         self.active_seqs.add(job.seq)
@@ -886,9 +950,14 @@ class _Pipeline:
 
     async def _download_worker(self) -> None:
         while True:
+            if self._stopping:
+                return
             while self._paused:
                 await asyncio.sleep(1)
             wake_job = await self.input_q.get()
+            if self._stopping:
+                self.input_q.task_done()
+                return
             job = wake_job
             if getattr(self, "repository", None) is not None and getattr(self, "job_queue", None) is not None:
                 await self.job_queue.drain_shadow()
@@ -938,15 +1007,18 @@ class _Pipeline:
                         try:
                             path = task.result()
                         except asyncio.CancelledError:
-                            logger.info(
-                                "Job #%s download stopped by user", job.seq
-                            )
-                            self._cancel_marked.discard(job.seq)
-                            self._set_cancelled(job.seq)
-                            await self._delete_status(job)
-                            if getattr(self, "repository", None) is not None:
-                                self.job_queue.shadow_transition(job.seq, "cancelled", "cancelled")
-                                self._finish_seq(job.seq)
+                            if self._stopping:
+                                logger.info("Job #%s download interrupted by shutdown", job.seq)
+                            else:
+                                logger.info(
+                                    "Job #%s download stopped by user", job.seq
+                                )
+                                self._cancel_marked.discard(job.seq)
+                                self._set_cancelled(job.seq)
+                                await self._delete_status(job)
+                                if getattr(self, "repository", None) is not None:
+                                    self.job_queue.shadow_transition(job.seq, "cancelled", "cancelled")
+                                    self._finish_seq(job.seq)
                         except Exception as exc:
                             if (
                                 _is_network_error(exc)
@@ -1008,9 +1080,10 @@ class _Pipeline:
                     break
             except asyncio.CancelledError:
                 logger.info("Job #%s download worker cancelled", job.seq)
-                self._cancel_marked.discard(job.seq)
-                self._set_cancelled(job.seq)
-                await self._delete_status(job)
+                if not self._stopping:
+                    self._cancel_marked.discard(job.seq)
+                    self._set_cancelled(job.seq)
+                    await self._delete_status(job)
                 if getattr(self, "repository", None) is not None:
                     self.job_queue.shadow_transition(job.seq, "cancelled", "cancelled")
                     self._finish_seq(job.seq)
@@ -1779,6 +1852,8 @@ class _Pipeline:
         """失败记录自动重传循环：每 WEBDAV_AUTORETRY_INTERVAL（默认 1 小时）扫描一次，
         对状态非 ok 且本地缓存仍在的文件重传到原 remote_dir，直到全部完成。"""
         while True:
+            if self._stopping:
+                return
             try:
                 await self._webdav_autoretry_once()
             except Exception as exc:
@@ -2017,6 +2092,8 @@ class _Pipeline:
     async def _upload_worker(self) -> None:
         watchdog = DOWNLOAD_TIMEOUT + 60
         while True:
+            if self._stopping:
+                return
             while self._paused:
                 await asyncio.sleep(1)
             # 下载优先：有未下载任务（排队中或下载中）→ 挂起上传
@@ -2036,17 +2113,32 @@ class _Pipeline:
                 await self._watchdog_unresolved(watchdog)
                 await asyncio.sleep(1)
                 continue
-            fut = self.results[seq]
-            try:
-                path = fut.result()
-            except asyncio.CancelledError:
-                continue
-            except Exception as exc:
-                await self._reply_error(
-                    seq, f"下载失败: {exc}", retry_job=self.jobs.get(seq)
-                )
-                self._finish_seq(seq)
-                continue
+            if getattr(self, "repository", None) is not None:
+                path = await self.job_queue.durable_payload(seq)
+                if path is None:
+                    logger.error("Claimed publish job #%s has no durable local payload", seq)
+                    await self.job_queue.transition_now(
+                        seq,
+                        "publish_payload_missing",
+                        "failed",
+                        reason="durable_local_path_missing",
+                    )
+                    self._finish_seq(seq, keep_cache=True)
+                    self._repo_publish_claimed.discard(seq)
+                    self._repo_claim_owners.pop(("publish", seq), None)
+                    continue
+            else:
+                fut = self.results[seq]
+                try:
+                    path = fut.result()
+                except asyncio.CancelledError:
+                    continue
+                except Exception as exc:
+                    await self._reply_error(
+                        seq, f"下载失败: {exc}", retry_job=self.jobs.get(seq)
+                    )
+                    self._finish_seq(seq)
+                    continue
             if path is _CANCELLED:
                 logger.info("Job #%s skipped (cancelled)", seq)
                 self._finish_seq(seq)
@@ -2070,18 +2162,20 @@ class _Pipeline:
                 done, _ = await asyncio.wait({task}, timeout=UPLOAD_TIMEOUT)
             except asyncio.CancelledError:
                 logger.info("Job #%s upload worker cancelled", seq)
-                self._cancel_marked.discard(seq)
-                await self._delete_status(job)
-                self._finish_seq(seq)
+                if not self._stopping:
+                    self._cancel_marked.discard(seq)
+                    await self._delete_status(job)
+                    self._finish_seq(seq)
             else:
                 if task in done:
                     try:
                         await task
                     except asyncio.CancelledError:
                         logger.info("Job #%s upload stopped by user", seq)
-                        self._cancel_marked.discard(seq)
-                        await self._delete_status(job)
-                        self._finish_seq(seq)
+                        if not self._stopping:
+                            self._cancel_marked.discard(seq)
+                            await self._delete_status(job)
+                            self._finish_seq(seq)
                     except FileTooLargeError as exc:
                         logger.warning("Job #%s %s", seq, exc)
                         if job is not None:

@@ -820,6 +820,78 @@ class SQLiteRepository:
             await conn.commit()
         return changed
 
+    async def interrupt_claim(
+        self,
+        job_id: int,
+        *,
+        owner: str,
+        kind: str,
+        reason: str = "shutdown",
+    ) -> TransitionResult:
+        """Atomically move an owned active claim to interrupted."""
+        conn = self._require_conn()
+        timestamp = time.time()
+        payload_json = self._encode_versioned_payload(
+            {"schema_version": 1, "reason": reason, "owner": owner, "kind": kind}
+        )
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT state,resume_state,revision,claim_owner,claim_kind FROM jobs WHERE id=?",
+                    (job_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RepositoryError(f"job {job_id} not found")
+                if row["claim_owner"] != owner or row["claim_kind"] != kind:
+                    await conn.rollback()
+                    current = await self.get_job(job_id)
+                    if current is None:
+                        raise RepositoryError(f"job {job_id} missing after claim mismatch")
+                    return TransitionResult(False, current)
+                plan = plan_transition(
+                    str(row["state"]),
+                    "interrupted",
+                    current_resume_state=row["resume_state"],
+                )
+                cursor = await conn.execute(
+                    """
+                    UPDATE jobs
+                    SET state='interrupted', resume_state=NULL, claim_owner=NULL,
+                        claim_kind=NULL, heartbeat_at=NULL, updated_at=?, revision=revision+1
+                    WHERE id=? AND revision=? AND claim_owner=? AND claim_kind=?
+                    """,
+                    (timestamp, job_id, int(row["revision"]), owner, kind),
+                )
+                changed = cursor.rowcount == 1
+                await cursor.close()
+                if not changed:
+                    await conn.rollback()
+                    current = await self.get_job(job_id)
+                    if current is None:
+                        raise RepositoryError(f"job {job_id} missing after interrupt CAS miss")
+                    return TransitionResult(False, current)
+                await conn.execute(
+                    """
+                    INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                    VALUES (?,?,?,?,?,?)
+                    """,
+                    (job_id, "shutdown_interrupted", plan.from_state, "interrupted", payload_json, timestamp),
+                )
+                await conn.commit()
+            except InvalidTransition:
+                await conn.rollback()
+                raise
+            except Exception:
+                await conn.rollback()
+                raise
+        current = await self.get_job(job_id)
+        if current is None:
+            raise RepositoryError(f"job {job_id} missing after interrupt")
+        return TransitionResult(True, current)
+
     async def record_download_ready(
         self,
         job_id: int,

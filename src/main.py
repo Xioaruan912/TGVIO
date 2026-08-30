@@ -53,6 +53,7 @@ async def main() -> None:
         "session/state.sqlite3",
         download_root=config.DOWNLOAD_DIR,
     )
+    pipeline = None
     await repository.open()
     try:
         applied = await repository.migrate()
@@ -85,9 +86,9 @@ async def main() -> None:
             sorted(config.ALLOWED_USERS),
         )
         await client.run_until_disconnected()
-        if getattr(pipeline, "job_queue", None) is not None:
-            await pipeline.job_queue.drain_shadow()
     finally:
+        if pipeline is not None:
+            await pipeline.shutdown()
         await repository.close()
 
 
