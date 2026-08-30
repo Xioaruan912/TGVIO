@@ -182,6 +182,18 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("预计剩余 18 秒", card)
         self.assertTrue(all(len(data) <= 64 for data in callback_data(card_buttons)))
 
+        unknown, _ = job_card_view(
+            JobCardView(
+                seq=29,
+                phase="downloading",
+                transferred_bytes=64 * 1024 * 1024,
+                pct=0,
+                speed_bps=8 * 1024 * 1024,
+            )
+        )
+        self.assertIn("已传输：64.0 MB", unknown)
+        self.assertNotIn("0%", unknown)
+
     def test_common_mode_and_session_keyboards_keep_callbacks(self) -> None:
         self.assertEqual(
             MODE_NAMES,

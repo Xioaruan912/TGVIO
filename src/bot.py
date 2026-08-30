@@ -257,6 +257,7 @@ class _Pipeline:
         )
         self.downloader.pre_download_hooks.append(self._on_pre_download)
         self.downloader.progress_hooks.append(self._on_download_progress)
+        self.downloader.status_hooks.append(self._on_download_status)
         self.downloader.post_download_hooks.append(self._on_download_done)
         self.downloader.post_download_hooks.append(self._on_webdav_upload)
         self.publisher.progress_hooks.append(self._on_upload_progress)
@@ -1062,30 +1063,40 @@ class _Pipeline:
                             self._set_result(job.seq, path)
                         break
                     task.cancel()
+                    try:
+                        await task
+                    except asyncio.CancelledError:
+                        pass
+                    except Exception:
+                        if not getattr(job, "url_stage", ""):
+                            logger.exception("Downloader task failed while settling timeout for job #%s", job.seq)
+                    timeout_stage = getattr(job, "url_stage", "download")
+                    timeout_label = "合并音视频" if timeout_stage == "postprocessing" else "下载"
                     if retries < DOWNLOAD_AUTO_RETRY:
                         retries += 1
                         logger.warning(
-                            "Job #%s download timeout, auto-retry %d/%d",
+                            "Job #%s %s timeout, auto-retry %d/%d",
                             job.seq,
+                            timeout_label,
                             retries,
                             DOWNLOAD_AUTO_RETRY,
                         )
                         await asyncio.sleep(2)
                         continue
                     logger.error(
-                        "Job #%s timed out after %ss", job.seq, DOWNLOAD_TIMEOUT
+                        "Job #%s %s timed out after %ss", job.seq, timeout_label, DOWNLOAD_TIMEOUT
                     )
                     if getattr(self, "repository", None) is not None:
                         await self._reply_error(
                             job.seq,
-                            f"下载超时（{DOWNLOAD_TIMEOUT} 秒）",
+                            f"{timeout_label}超时（{DOWNLOAD_TIMEOUT} 秒）",
                             retry_job=job,
                         )
                         self._finish_seq(job.seq)
                     else:
                         self._set_exception(
                             job.seq,
-                            TimeoutError(f"下载超时（{DOWNLOAD_TIMEOUT} 秒）"),
+                            TimeoutError(f"{timeout_label}超时（{DOWNLOAD_TIMEOUT} 秒）"),
                         )
                     break
             except asyncio.CancelledError:
@@ -1149,6 +1160,17 @@ class _Pipeline:
             "Job #%s download progress: %d/%d (%d%%)", seq, received, total, overall
         )
         await self._update_progress_status(seq)
+
+    async def _on_download_status(self, job, status: str) -> None:
+        if status != "postprocessing":
+            return
+        if self._progress_tracker.phase_is_stale(job.seq, "downloading"):
+            return
+        await self._safe_edit(
+            job,
+            f"🧩 任务 #{job.seq} · 正在合并音视频\n──────────\nyt-dlp 后处理进行中，请稍候…",
+            buttons=[Button.inline("✖️ 取消", f"stop:{job.seq}")],
+        )
 
     async def _on_download_done(self, job, paths) -> None:
         self._progress_tracker.begin_phase(job.seq, "ready")
@@ -2067,6 +2089,7 @@ class _Pipeline:
             phase=phase,
             media_count=max(media_count, getattr(progress, "items", 1) if progress else 1),
             total_bytes=total_bytes or (getattr(progress, "total", None) if progress else None),
+            transferred_bytes=(getattr(progress, "received", None) if progress else None),
             pct=getattr(progress, "pct", None),
             speed_bps=getattr(progress, "speed_bps", None),
             eta_seconds=getattr(progress, "eta_seconds", None),
@@ -2372,6 +2395,10 @@ class _Pipeline:
             return False
         self._cancel_marked.add(seq)
         self._set_cancelled(seq)
+        job = self.jobs.get(seq) or self._runtime_jobs.get(seq)
+        token = getattr(job, "url_cancel_token", None) if job is not None else None
+        if token is not None:
+            token.cancel()
         task = self._download_tasks.get(seq)
         if task is not None and not task.done():
             task.cancel()

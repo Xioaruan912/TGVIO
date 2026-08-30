@@ -148,6 +148,7 @@ class FakeDownloader:
     def __init__(self, *_args: Any, **_kwargs: Any) -> None:
         self.pre_download_hooks: list[Any] = []
         self.progress_hooks: list[Any] = []
+        self.status_hooks: list[Any] = []
         self.post_download_hooks: list[Any] = []
         self.calls: list[int] = []
         self.results: dict[int, Any] = {}

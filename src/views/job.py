@@ -38,6 +38,7 @@ class JobCardView:
     phase: str
     media_count: int = 1
     total_bytes: int | None = None
+    transferred_bytes: int | None = None
     pct: int | None = None
     speed_bps: float | None = None
     eta_seconds: float | None = None
@@ -69,7 +70,10 @@ def job_card_view(state: JobCardView) -> tuple[str, list]:
     lines.append(media)
     if state.phase in {"downloading", "publishing"}:
         if state.show_progress and state.pct is not None:
-            lines.append(f"{render_bar(state.pct)} {state.pct}%")
+            if state.total_bytes:
+                lines.append(f"{render_bar(state.pct)} {state.pct}%")
+            elif state.transferred_bytes:
+                lines.append(f"📥 已传输：{_size(state.transferred_bytes)}")
         if state.speed_bps:
             speed = f"{_size(int(state.speed_bps))}/s"
             eta = _duration(state.eta_seconds)

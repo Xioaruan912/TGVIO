@@ -17,7 +17,7 @@ from telethon import TelegramClient, custom, functions, helpers
 from telethon.tl import types
 from telethon.utils import get_input_document, get_input_photo
 
-from .downloader import download_video
+from .downloader import CancelToken, DownloadProgress, download_video
 from .video import guess_mime, is_photo_path, is_video_path, make_cover, make_thumb, probe_video
 
 logger = logging.getLogger(__name__)
@@ -54,6 +54,7 @@ class MediaDownloader:
         self.pre_download_hooks = []   # async (job) -> None
         self.post_download_hooks = []  # async (job, paths) -> None
         self.progress_hooks = []       # async (seq, received, total, item, items) -> None
+        self.status_hooks = []         # async (job, status) -> None
 
     def _workdir(self, seq: int) -> str:
         return self._workdir_fn(seq)
@@ -108,7 +109,37 @@ class MediaDownloader:
                 job.message, workdir, job.seq, 1, 1
             )
         else:
-            path, _ = await download_video(job.url, workdir)
+            cancel_token = CancelToken()
+            job.url_cancel_token = cancel_token
+            job.url_stage = "download"
+
+            def on_url_progress(progress: DownloadProgress) -> None:
+                if progress.status == "postprocessing":
+                    job.url_stage = "postprocessing"
+                    for hook in self.status_hooks:
+                        asyncio.create_task(hook(job, progress.status))
+                    return
+                job.url_stage = "download"
+                for hook in self.progress_hooks:
+                    asyncio.create_task(
+                        hook(
+                            job.seq,
+                            progress.downloaded_bytes,
+                            progress.total_bytes or 0,
+                            progress.item_index,
+                            progress.item_total,
+                        )
+                    )
+
+            try:
+                path, _ = await download_video(
+                    job.url,
+                    workdir,
+                    on_progress=on_url_progress,
+                    cancel_token=cancel_token,
+                )
+            finally:
+                job.url_cancel_token = None
         if not path:
             raise RuntimeError("未能下载媒体文件")
         return path
