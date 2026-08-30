@@ -32,8 +32,9 @@ class JobQueue:
     stable seam for repository-backed transitions and idempotency.
     """
 
-    def __init__(self, pipeline: Any) -> None:
+    def __init__(self, pipeline: Any, shadow: Any | None = None) -> None:
         self._pipeline = pipeline
+        self._shadow = shadow
 
     @property
     def pipeline(self) -> Any:
@@ -139,10 +140,16 @@ class JobQueue:
         )
 
     async def cancel_pending(self, seq: int) -> bool:
-        return await self._pipeline._cancel_pending(seq)
+        ok = await self._pipeline._cancel_pending(seq)
+        if ok and self._shadow is not None:
+            self._shadow.transition(seq, "cancelled", "cancelled")
+        return ok
 
     async def cancel(self, seq: int) -> bool:
-        return await self._pipeline._cancel_seq(seq)
+        ok = await self._pipeline._cancel_seq(seq)
+        if ok and self._shadow is not None:
+            self._shadow.transition(seq, "cancelled", "cancelled")
+        return ok
 
     def pause_all(self) -> None:
         self._pipeline._paused = True
@@ -202,6 +209,22 @@ class JobQueue:
         )
         self._pipeline.active_seqs.add(ticket.new_seq)
         self._pipeline.enqueue(new_job)
+        if self._shadow is not None:
+            self._shadow.transition(ticket.old_seq, "retry_requested", "failed", retry_seq=ticket.new_seq)
+            self._shadow.accept(
+                ticket.new_seq,
+                kind=new_job.kind,
+                user_id=new_job.user_id,
+                state="queued",
+                source_kind="url" if new_job.url else "telegram",
+                message=new_job.message,
+                album=new_job.album,
+                texts=list(new_job.texts or []),
+                source_url=new_job.url or None,
+                spoiler=new_job.spoiler,
+                event_type="retry_accepted",
+                event_extra={"retry_of_legacy_seq": ticket.old_seq},
+            )
         return new_job
 
     def claim_confirmation(self, seq: int) -> ConfirmationTicket | None:
@@ -231,8 +254,47 @@ class JobQueue:
             texts=pending.texts,
         )
         self._pipeline.enqueue(job)
+        if self._shadow is not None:
+            self._shadow.transition(ticket.seq, "confirmed", "queued", spoiler=bool(spoiler))
         return job
 
     def settle_failed_confirmation(self, seq: int) -> None:
         self._pipeline._set_cancelled(seq)
+        if self._shadow is not None:
+            self._shadow.transition(seq, "confirmation_enqueue_failed", "failed")
+
+    def shadow_published(self, seq: int, ids: list) -> None:
+        if self._shadow is not None:
+            self._shadow.published(seq, ids)
+
+    async def drain_shadow(self) -> None:
+        if self._shadow is not None:
+            await self._shadow.drain()
+
+    def shadow_accept_legacy(
+        self,
+        seq: int,
+        *,
+        kind: str,
+        user_id: int,
+        state: str,
+        message: object = None,
+        album: list | None = None,
+        texts: list | None = None,
+        url: str = "",
+        spoiler: bool = False,
+    ) -> None:
+        if self._shadow is not None:
+            self._shadow.accept(
+                seq,
+                kind=kind,
+                user_id=user_id,
+                state=state,
+                source_kind="url" if url else "telegram",
+                message=message,
+                album=album,
+                texts=list(texts or []),
+                source_url=url or None,
+                spoiler=spoiler,
+            )
 

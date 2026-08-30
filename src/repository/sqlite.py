@@ -88,6 +88,42 @@ class BackupFileRecord:
 
 
 @dataclass(frozen=True)
+class JobItemRecord:
+    id: int
+    job_id: int
+    ordinal: int
+    source_chat_id: int | None
+    source_message_id: int | None
+    grouped_id: int | None
+    media_kind: str | None
+    local_path: str | None
+    size_bytes: int
+    metadata_json: str | None
+
+
+@dataclass(frozen=True)
+class PublishedMessageRecord:
+    id: int
+    job_id: int
+    peer_id: int
+    message_id: int
+    role: str
+    created_at: float
+    deleted_at: float | None
+
+
+@dataclass(frozen=True)
+class InteractionSessionRecord:
+    user_id: int
+    kind: str
+    field: str | None
+    payload_json: str | None
+    revision: int
+    expires_at: float
+    updated_at: float
+
+
+@dataclass(frozen=True)
 class _Migration:
     version: int
     name: str
@@ -105,6 +141,10 @@ class SQLiteRepository:
             "backup_attempts",
             "backup_files",
             "settings",
+            "job_items",
+            "job_texts",
+            "published_messages",
+            "interaction_sessions",
         }
     )
 
@@ -426,6 +466,264 @@ class SQLiteRepository:
         if record is None:
             raise RepositoryError(f"created job {job_id} could not be read back")
         return record
+
+    async def accept_job(
+        self,
+        *,
+        kind: str,
+        user_id: int,
+        state: str,
+        source_kind: str,
+        items: list[dict[str, Any]] | None = None,
+        texts: list[str] | None = None,
+        source_chat_id: int | None = None,
+        source_url: str | None = None,
+        spoiler: bool = False,
+        event_type: str = "accepted",
+        event_payload: dict[str, Any] | None = None,
+        now: float | None = None,
+    ) -> JobRecord:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        payload_json = self._encode_versioned_payload(event_payload)
+        prepared = []
+        for ordinal, item in enumerate(items or [], start=1):
+            metadata_json = self._encode_versioned_payload(item.get("metadata"))
+            local_path = item.get("local_path")
+            if local_path:
+                local_path = self._validated_local_path(str(local_path))
+            prepared.append((ordinal, item, local_path, metadata_json))
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    """
+                    INSERT INTO jobs(
+                      kind, user_id, state, spoiler, source_kind, source_chat_id,
+                      source_url, total_items, accepted_at, updated_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (kind, user_id, state, int(spoiler), source_kind, source_chat_id,
+                     source_url, len(prepared), timestamp, timestamp),
+                )
+                job_id = int(cursor.lastrowid)
+                await cursor.close()
+                for ordinal, item, local_path, metadata_json in prepared:
+                    await conn.execute(
+                        """
+                        INSERT INTO job_items(
+                          job_id, ordinal, source_chat_id, source_message_id, grouped_id,
+                          media_kind, original_name, mime_type, local_path, size_bytes,
+                          download_state, publish_state, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (job_id, ordinal, item.get("source_chat_id"), item.get("source_message_id"),
+                         item.get("grouped_id"), item.get("media_kind"), item.get("original_name"),
+                         item.get("mime_type"), local_path, int(item.get("size_bytes") or 0),
+                         item.get("download_state") or "pending", item.get("publish_state") or "pending",
+                         metadata_json),
+                    )
+                for ordinal, text in enumerate(texts or [], start=1):
+                    await conn.execute(
+                        "INSERT INTO job_texts(job_id, ordinal, text) VALUES (?, ?, ?)",
+                        (job_id, ordinal, str(text)),
+                    )
+                await conn.execute(
+                    """
+                    INSERT INTO job_events(job_id, event_type, from_state, to_state, payload_json, created_at)
+                    VALUES (?, ?, NULL, ?, ?, ?)
+                    """,
+                    (job_id, event_type, state, payload_json, timestamp),
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        record = await self.get_job(job_id)
+        if record is None:
+            raise RepositoryError(f"accepted job {job_id} could not be read back")
+        return record
+
+    async def record_job_event(
+        self,
+        job_id: int,
+        event_type: str,
+        *,
+        to_state: str | None = None,
+        payload: dict[str, Any] | None = None,
+    ) -> None:
+        conn = self._require_conn()
+        timestamp = time.time()
+        payload_json = self._encode_versioned_payload(payload)
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute("SELECT state FROM jobs WHERE id=?", (job_id,))
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RepositoryError(f"job {job_id} not found")
+                from_state = str(row[0])
+                if to_state is not None:
+                    await conn.execute(
+                        "UPDATE jobs SET state=?, updated_at=?, revision=revision+1 WHERE id=?",
+                        (to_state, timestamp, job_id),
+                    )
+                await conn.execute(
+                    "INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at) VALUES (?,?,?,?,?,?)",
+                    (job_id, event_type, from_state, to_state, payload_json, timestamp),
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def list_job_items(self, job_id: int) -> list[JobItemRecord]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT id,job_id,ordinal,source_chat_id,source_message_id,grouped_id,media_kind,local_path,size_bytes,metadata_json FROM job_items WHERE job_id=? ORDER BY ordinal",
+            (job_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [JobItemRecord(int(r["id"]), int(r["job_id"]), int(r["ordinal"]), r["source_chat_id"], r["source_message_id"], r["grouped_id"], r["media_kind"], r["local_path"], int(r["size_bytes"]), r["metadata_json"]) for r in rows]
+
+    async def append_job_items(self, job_id: int, items: list[dict[str, Any]]) -> None:
+        if not items:
+            return
+        conn = self._require_conn()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT COALESCE(MAX(ordinal),0) FROM job_items WHERE job_id=?",
+                    (job_id,),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                base = int(row[0])
+                for offset, item in enumerate(items, start=1):
+                    metadata_json = self._encode_versioned_payload(item.get("metadata"))
+                    local_path = item.get("local_path")
+                    if local_path:
+                        local_path = self._validated_local_path(str(local_path))
+                    await conn.execute(
+                        """
+                        INSERT INTO job_items(
+                          job_id, ordinal, source_chat_id, source_message_id, grouped_id,
+                          media_kind, original_name, mime_type, local_path, size_bytes,
+                          download_state, publish_state, metadata_json
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (job_id, base + offset, item.get("source_chat_id"), item.get("source_message_id"),
+                         item.get("grouped_id"), item.get("media_kind"), item.get("original_name"),
+                         item.get("mime_type"), local_path, int(item.get("size_bytes") or 0),
+                         item.get("download_state") or "pending", item.get("publish_state") or "pending",
+                         metadata_json),
+                    )
+                await conn.execute(
+                    "UPDATE jobs SET total_items=total_items+?, updated_at=?, revision=revision+1 WHERE id=?",
+                    (len(items), time.time(), job_id),
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def list_backup_attempts(self, job_id: int) -> list[BackupAttemptRecord]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT id,job_id,state,remote_dir,retry_count,next_retry_at,created_at,updated_at FROM backup_attempts WHERE job_id=? ORDER BY id",
+            (job_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [BackupAttemptRecord(int(r["id"]), int(r["job_id"]), str(r["state"]), str(r["remote_dir"]), int(r["retry_count"]), r["next_retry_at"], float(r["created_at"]), float(r["updated_at"])) for r in rows]
+
+    async def list_backup_files(self, attempt_id: int) -> list[BackupFileRecord]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT id,attempt_id,local_path,remote_name,size_bytes,state,bytes_done FROM backup_files WHERE attempt_id=? ORDER BY id",
+            (attempt_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [BackupFileRecord(int(r["id"]), int(r["attempt_id"]), str(r["local_path"]), str(r["remote_name"]), int(r["size_bytes"]), str(r["state"]), int(r["bytes_done"])) for r in rows]
+
+    async def list_job_texts(self, job_id: int) -> list[str]:
+        conn = self._require_conn()
+        cursor = await conn.execute("SELECT text FROM job_texts WHERE job_id=? ORDER BY ordinal", (job_id,))
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [str(r[0]) for r in rows]
+
+    async def record_published_messages(self, job_id: int, messages: list[tuple[int, int, str]]) -> None:
+        conn = self._require_conn()
+        timestamp = time.time()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute("SELECT state FROM jobs WHERE id=?", (job_id,))
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RepositoryError(f"job {job_id} not found")
+                from_state = str(row[0])
+                for peer_id, message_id, role in messages:
+                    await conn.execute(
+                        "INSERT OR IGNORE INTO published_messages(job_id,peer_id,message_id,role,created_at) VALUES (?,?,?,?,?)",
+                        (job_id, int(peer_id), int(message_id), str(role), timestamp),
+                    )
+                await conn.execute(
+                    "UPDATE jobs SET state='succeeded', publish_state='succeeded', updated_at=?, finished_at=?, revision=revision+1 WHERE id=?",
+                    (timestamp, timestamp, job_id),
+                )
+                await conn.execute(
+                    "INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at) VALUES (?,?,?,?,?,?)",
+                    (job_id, "published", from_state, "succeeded", self._encode_versioned_payload({"schema_version": 1, "count": len(messages)}), timestamp),
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def list_published_messages(self, job_id: int) -> list[PublishedMessageRecord]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT id,job_id,peer_id,message_id,role,created_at,deleted_at FROM published_messages WHERE job_id=? ORDER BY id",
+            (job_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [PublishedMessageRecord(int(r["id"]), int(r["job_id"]), int(r["peer_id"]), int(r["message_id"]), str(r["role"]), float(r["created_at"]), r["deleted_at"]) for r in rows]
+
+    async def upsert_interaction_session(self, *, user_id: int, kind: str, field: str | None, payload: dict[str, Any] | None, revision: int, expires_at: float) -> InteractionSessionRecord:
+        conn = self._require_conn()
+        timestamp = time.time()
+        payload_json = self._encode_versioned_payload(payload)
+        async with self._write_lock:
+            await conn.execute(
+                """
+                INSERT INTO interaction_sessions(user_id,kind,field,payload_json,revision,expires_at,updated_at)
+                VALUES (?,?,?,?,?,?,?)
+                ON CONFLICT(user_id) DO UPDATE SET kind=excluded.kind,field=excluded.field,payload_json=excluded.payload_json,revision=excluded.revision,expires_at=excluded.expires_at,updated_at=excluded.updated_at
+                """,
+                (user_id, kind, field, payload_json, int(revision), float(expires_at), timestamp),
+            )
+            await conn.commit()
+        return InteractionSessionRecord(user_id, kind, field, payload_json, int(revision), float(expires_at), timestamp)
+
+    async def delete_interaction_session(self, user_id: int, *, revision: int | None = None) -> bool:
+        conn = self._require_conn()
+        async with self._write_lock:
+            if revision is None:
+                cursor = await conn.execute("DELETE FROM interaction_sessions WHERE user_id=?", (user_id,))
+            else:
+                cursor = await conn.execute("DELETE FROM interaction_sessions WHERE user_id=? AND revision=?", (user_id, int(revision)))
+            changed = cursor.rowcount > 0
+            await cursor.close()
+            await conn.commit()
+        return changed
 
     async def get_job(self, job_id: int) -> JobRecord | None:
         conn = self._require_conn()

@@ -83,6 +83,8 @@ async def main() -> None:
             sorted(config.ALLOWED_USERS),
         )
         await client.run_until_disconnected()
+        if getattr(pipeline, "job_queue", None) is not None:
+            await pipeline.job_queue.drain_shadow()
     finally:
         await repository.close()
 

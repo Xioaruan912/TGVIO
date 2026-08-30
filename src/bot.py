@@ -50,7 +50,7 @@ from .models import AlbumBuffer, Job, PendingJob, RetryInfo, Session
 from .progress import position_token, render_bar
 from .storage import JsonStore
 from .handlers import HandlerContext, install_handlers
-from .services import BackupManager, InteractionSessions, JobQueue, ProxyManager
+from .services import BackupManager, InteractionSessions, JobQueue, ProxyManager, ShadowState
 from .views import (
     PendingQueueItemView,
     ProxyViewState,
@@ -561,6 +561,15 @@ class _Pipeline:
                 user_id=user_id,
             )
         )
+        if getattr(self, "job_queue", None) is not None:
+            self.job_queue.shadow_accept_legacy(
+                seq,
+                kind=kind,
+                user_id=user_id,
+                state="queued",
+                message=message,
+                url=url,
+            )
         return seq
 
     def enqueue(self, job: _Job) -> None:
@@ -970,6 +979,15 @@ class _Pipeline:
         # 批次开始即落盘（进行中在 /webdav 记录里可见，重启也能恢复）
         self.webdav_logs[log["key"]] = log
         self._save_webdav_logs()
+        if getattr(self, "backup_manager", None) is not None:
+            shadow_files = []
+            for item in log["files"]:
+                try:
+                    size = os.path.getsize(item["local"])
+                except OSError:
+                    size = 0
+                shadow_files.append({**item, "size": size})
+            self.backup_manager.shadow_attempt_started(seq, remote_dir, shadow_files)
 
         total = len(log["files"])
         status_msg = None
@@ -1774,6 +1792,8 @@ class _Pipeline:
 
     async def _on_published(self, job, ids: list) -> None:
         self._remember_published(job.seq, ids)
+        if getattr(self, "job_queue", None) is not None:
+            self.job_queue.shadow_published(job.seq, ids)
         if job.kind == "collection":
             text = f"✅ 合集已发布到 {DEST_CHANNEL}"
         elif job.kind == "album":
@@ -2111,6 +2131,17 @@ class _Pipeline:
                     added = [m for m in album if getattr(m, "id", None) not in seen]
                     if added:
                         existing.album.extend(added)
+                        if getattr(self, "job_queue", None) is not None:
+                            self.job_queue.shadow_accept_legacy(
+                                existing_seq,
+                                kind=existing.kind,
+                                user_id=user_id,
+                                state="queued",
+                                message=existing.message,
+                                album=added,
+                                texts=existing.texts,
+                                spoiler=existing.spoiler,
+                            )
                         try:
                             await existing.status.edit(
                                 f"🔄 相册已合并，共 {len(existing.album)} 条，等待处理"
@@ -2157,6 +2188,17 @@ class _Pipeline:
             self.album_jobs[seq] = job
             self.pending_albums[user_id] = seq
         self.enqueue(job)
+        if getattr(self, "job_queue", None) is not None:
+            self.job_queue.shadow_accept_legacy(
+                seq,
+                kind=kind,
+                user_id=user_id,
+                state="queued",
+                message=message,
+                album=album,
+                texts=texts,
+                spoiler=spoiler,
+            )
         logger.info("Job #%s auto-enqueued spoiler=%s (mode=%s)", seq, spoiler, mode)
         return seq
 
@@ -2192,6 +2234,16 @@ class _Pipeline:
                 ],
             )
             self.set_pending_status(seq, status)
+            if getattr(self, "job_queue", None) is not None:
+                self.job_queue.shadow_accept_legacy(
+                    seq,
+                    kind=kind,
+                    user_id=user_id,
+                    state="awaiting_confirmation",
+                    message=message,
+                    album=album,
+                    texts=texts,
+                )
         except Exception:
             self.pending.pop(seq, None)
             self._set_cancelled(seq)
@@ -2224,14 +2276,16 @@ def register_handlers(client: TelegramClient, repository=None):
     # source of truth until the explicit R2-B dual-write migration stage.
     pipeline.repository = repository
     pipeline.start()
-    queue = JobQueue(pipeline)
-    backup = BackupManager(pipeline)
+    shadow = ShadowState(repository)
+    queue = JobQueue(pipeline, shadow=shadow)
+    backup = BackupManager(pipeline, shadow=shadow)
     proxy = ProxyManager(pipeline)
     interactions = InteractionSessions()
     pipeline.job_queue = queue
     pipeline.backup_manager = backup
     pipeline.proxy_manager = proxy
     pipeline.interactions = interactions
+    pipeline.shadow_state = shadow
     ctx = HandlerContext(
         client=client,
         pipeline=pipeline,

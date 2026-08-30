@@ -28,7 +28,7 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.close()
 
     async def test_initial_migration_is_idempotent_and_pragmas_are_enforced(self) -> None:
-        self.assertEqual(await self.repo.schema_versions(), [1])
+        self.assertEqual(await self.repo.schema_versions(), [1, 2])
         self.assertEqual(await self.repo.migrate(), [])
         check = await self.repo.self_check()
         self.assertEqual(check["integrity"], "ok")
@@ -36,6 +36,94 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertGreaterEqual(check["busy_timeout"], 5000)
         self.assertEqual(check["synchronous"], 2)
         self.assertTrue(SQLiteRepository.REQUIRED_TABLES.issubset(check["tables"]))
+
+    async def test_runtime_entities_preserve_item_and_text_order(self) -> None:
+        job = await self.repo.accept_job(
+            kind="collection",
+            user_id=42,
+            state="queued",
+            source_kind="telegram",
+            items=[
+                {"source_chat_id": 9, "source_message_id": 101, "grouped_id": 7, "media_kind": "photo", "metadata": {"schema_version": 1}},
+                {"source_chat_id": 9, "source_message_id": 102, "grouped_id": 7, "media_kind": "document", "metadata": {"schema_version": 1}},
+            ],
+            texts=["first", "second"],
+            event_payload={"schema_version": 1, "legacy_seq": 500},
+            now=130.0,
+        )
+        items = await self.repo.list_job_items(job.id)
+        self.assertEqual([item.ordinal for item in items], [1, 2])
+        self.assertEqual([item.source_message_id for item in items], [101, 102])
+        self.assertEqual(await self.repo.list_job_texts(job.id), ["first", "second"])
+
+        await self.repo.record_published_messages(job.id, [(-1001, 11, "channel"), (-1002, 12, "comment")])
+        refs = await self.repo.list_published_messages(job.id)
+        self.assertEqual([(ref.peer_id, ref.message_id) for ref in refs], [(-1001, 11), (-1002, 12)])
+        self.assertEqual((await self.repo.get_job(job.id)).state, "succeeded")
+
+    async def test_interaction_session_revisioned_crud(self) -> None:
+        record = await self.repo.upsert_interaction_session(
+            user_id=42,
+            kind="webdav",
+            field="url",
+            payload={"schema_version": 1, "step": "url"},
+            revision=3,
+            expires_at=999.0,
+        )
+        self.assertEqual(record.revision, 3)
+        self.assertFalse(await self.repo.delete_interaction_session(42, revision=2))
+        self.assertTrue(await self.repo.delete_interaction_session(42, revision=3))
+
+    async def test_backup_files_now_reference_job_items(self) -> None:
+        raw = sqlite3.connect(self.db_path)
+        try:
+            fks = raw.execute("PRAGMA foreign_key_list(backup_files)").fetchall()
+        finally:
+            raw.close()
+        self.assertTrue(any(row[2] == "job_items" and row[3] == "job_item_id" for row in fks))
+
+    async def test_upgrade_from_schema_one_preserves_existing_rows_and_creates_backup(self) -> None:
+        await self.repo.close()
+        root = Path(self.tempdir.name)
+        migration_dir = root / "upgrade-migrations"
+        migration_dir.mkdir()
+        source_dir = Path(__file__).parents[1] / "src" / "repository" / "migrations"
+        (migration_dir / "0001_initial.sql").write_bytes(
+            (source_dir / "0001_initial.sql").read_bytes()
+        )
+        db = root / "upgrade.sqlite3"
+        first = SQLiteRepository(db, migrations_dir=migration_dir, backup_dir=self.backup_dir)
+        await first.open()
+        await first.migrate()
+        job = await first.create_job(
+            kind="url",
+            user_id=77,
+            state="queued",
+            source_kind="url",
+            source_url="https://example.invalid/keep",
+            event_payload={"schema_version": 1},
+        )
+        await first.close()
+
+        (migration_dir / "0002_runtime_entities.sql").write_bytes(
+            (source_dir / "0002_runtime_entities.sql").read_bytes()
+        )
+        second = SQLiteRepository(db, migrations_dir=migration_dir, backup_dir=self.backup_dir)
+        await second.open()
+        try:
+            self.assertEqual(await second.migrate(), [2])
+            self.assertIsNotNone(second.last_backup_path)
+            self.assertTrue(second.last_backup_path.exists())
+            preserved = await second.get_job(job.id)
+            self.assertIsNotNone(preserved)
+            self.assertEqual(preserved.source_url, "https://example.invalid/keep")
+            self.assertEqual(await second.schema_versions(), [1, 2])
+        finally:
+            await second.close()
+
+        self.repo = SQLiteRepository(self.db_path, backup_dir=self.backup_dir)
+        await self.repo.open()
+        await self.repo.migrate()
 
     async def test_job_event_backup_and_setting_crud(self) -> None:
         job = await self.repo.create_job(

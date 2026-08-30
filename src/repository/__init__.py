@@ -3,8 +3,11 @@
 from .sqlite import (
     BackupAttemptRecord,
     BackupFileRecord,
+    InteractionSessionRecord,
+    JobItemRecord,
     JobEventRecord,
     JobRecord,
+    PublishedMessageRecord,
     MigrationChecksumError,
     MigrationError,
     RepositoryError,
@@ -14,6 +17,9 @@ from .sqlite import (
 __all__ = [
     "BackupAttemptRecord",
     "BackupFileRecord",
+    "InteractionSessionRecord",
+    "JobItemRecord",
+    "PublishedMessageRecord",
     "JobEventRecord",
     "JobRecord",
     "MigrationChecksumError",

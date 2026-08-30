@@ -4,6 +4,7 @@ from .backup_manager import BackupManager
 from .interactions import InteractionSession, InteractionSessions
 from .job_queue import ConfirmationTicket, JobQueue, RetryTicket
 from .proxy_manager import ProxyManager
+from .shadow_state import ShadowState
 
 __all__ = [
     "BackupManager",
@@ -12,5 +13,6 @@ __all__ = [
     "InteractionSessions",
     "JobQueue",
     "ProxyManager",
+    "ShadowState",
     "RetryTicket",
 ]

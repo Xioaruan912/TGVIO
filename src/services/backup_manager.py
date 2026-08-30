@@ -13,8 +13,9 @@ class BackupManager:
     repository-backed implementation without changing Telegram handlers.
     """
 
-    def __init__(self, pipeline: Any) -> None:
+    def __init__(self, pipeline: Any, shadow: Any | None = None) -> None:
         self._pipeline = pipeline
+        self._shadow = shadow
 
     def config(self) -> dict:
         return self._pipeline.webdav_cfg
@@ -49,4 +50,8 @@ class BackupManager:
             key: dict(value) if isinstance(value, dict) else value
             for key, value in self._pipeline.webdav_logs.items()
         }
+
+    def shadow_attempt_started(self, seq: int, remote_dir: str, files: list[dict]) -> None:
+        if self._shadow is not None:
+            self._shadow.backup_started(seq, remote_dir, files)
 
