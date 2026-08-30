@@ -6,6 +6,7 @@ from .job_queue import ConfirmationTicket, JobQueue, RetryTicket
 from .proxy_manager import ProxyManager
 from .shadow_state import ShadowState
 from .recovery import RecoveryAction, recover_jobs
+from .operations import OperationStore, PendingOperation
 
 __all__ = [
     "BackupManager",
@@ -18,4 +19,6 @@ __all__ = [
     "RecoveryAction",
     "recover_jobs",
     "RetryTicket",
+    "OperationStore",
+    "PendingOperation",
 ]

@@ -168,7 +168,7 @@ async def callback_mode(ctx: HandlerContext, event: Any, data: str) -> None:
     await ctx.edit(
         event,
         f"✅ 已设置 18+ 模式：{MODE_NAMES[mode]}",
-        buttons=[home_button()],
+        buttons=home_button(),
     )
 
 
@@ -203,19 +203,16 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         await ctx.edit(event, text, buttons=buttons)
         return
     if action == "q":
-        from ..views import queue_view
+        from .jobs import _durable_queue
 
-        text, buttons = queue_view(ctx.queue.view_state(event.sender_id))
+        text, buttons = await _durable_queue(ctx, event.sender_id, "all", 0)
         await ctx.edit(event, text, buttons=buttons)
         return
     if action == "f":
-        snapshot = await ctx.queue.home_snapshot(event.sender_id)
-        failed = int(snapshot.get("failed") or 0)
-        text = (
-            "❌ 失败任务\n──────────\n"
-            + (f"当前有 {failed} 个失败任务。\n可从 /queue 查看并重试。" if failed else "当前没有失败任务。")
-        )
-        await ctx.edit(event, text, buttons=[home_button()])
+        from .jobs import _failure_center
+
+        text, buttons = await _failure_center(ctx, event.sender_id, 0)
+        await ctx.edit(event, text, buttons=buttons)
         return
     if action == "w":
         text, buttons = webdav_cfg_view(_webdav_state(ctx))
@@ -258,10 +255,36 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
             f"全局队列：{'暂停' if snapshot['paused'] else '运行中'}\n"
             f"WebDAV：{_webdav_health(ctx)}"
         )
-        await ctx.edit(event, text, buttons=[home_button()])
+        await ctx.edit(event, text, buttons=home_button())
         return
     if action == "help":
-        await ctx.edit(event, ctx.about_text, buttons=[home_button()])
+        text = "❓ 帮助中心\n──────────\n请选择主题："
+        buttons = [
+            [Button.inline("📥 收集与发布", "h:help:collect"), Button.inline("📋 队列与任务", "h:help:queue")],
+            [Button.inline("☁️ WebDAV 备份", "h:help:webdav"), Button.inline("🌐 URL 与代理", "h:help:proxy")],
+            [Button.inline("⚙️ 设置说明", "h:help:settings"), Button.inline("🛠 故障排查", "h:help:trouble")],
+            home_button(),
+        ]
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action.startswith("help:"):
+        topic = action.split(":", 1)[1]
+        help_text = {
+            "collect": "📥 收集与发布\n──────────\n转发媒体会进入队列；需要合集时先开始合集，结束后统一发布。相册与合集会保持原顺序。",
+            "queue": "📋 队列与任务\n──────────\n队列页支持分页、筛选和任务详情。取消、删除缓存、撤销发布都会先要求二次确认。",
+            "webdav": "☁️ WebDAV 备份\n──────────\nTelegram 发布与 WebDAV 备份相互独立。备份失败不会撤回已发布消息，可在备份管理中重试。",
+            "proxy": "🌐 URL 与代理\n──────────\nURL 下载失败时可按配置自动切换 HTTP 代理。代理凭证只显示脱敏摘要。",
+            "settings": "⚙️ 设置说明\n──────────\n18+ 模式与进度显示可即时修改；.env 中的静态配置需要重启后生效。",
+            "trouble": "🛠 故障排查\n──────────\n先查看失败中心的任务详情。缓存存在时可能可直接重试；源失效、权限或配置错误需要按详情提示处理。",
+        }.get(topic)
+        if help_text is None:
+            await ctx.answer(event, "帮助主题不存在")
+            return
+        await ctx.edit(
+            event,
+            help_text,
+            buttons=[[Button.inline("⬅️ 帮助首页", "h:help")], home_button()],
+        )
         return
     await ctx.answer(event, "操作已过期，请刷新")
 

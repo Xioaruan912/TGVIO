@@ -18,6 +18,10 @@ class JobStateMachineTests(unittest.TestCase):
         self.assertEqual(plan_transition("failed", "queued").to_state, "queued")
         self.assertEqual(plan_transition("failed", "ready").to_state, "ready")
 
+    def test_paused_job_can_be_cancelled(self) -> None:
+        plan = plan_transition("paused", "cancelled", current_resume_state="ready")
+        self.assertEqual(plan.to_state, "cancelled")
+
     def test_terminal_states_cannot_transition(self) -> None:
         for state in ("succeeded", "cancelled"):
             with self.subTest(state=state):

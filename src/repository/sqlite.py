@@ -14,6 +14,7 @@ import json
 import logging
 import os
 import platform
+import re
 import sqlite3
 import time
 from dataclasses import dataclass
@@ -25,6 +26,13 @@ import aiosqlite
 from ..state_machine import InvalidTransition, plan_transition
 
 logger = logging.getLogger(__name__)
+
+
+def _sanitize_error_message(value: object) -> str:
+    text = str(value or "")[:1000]
+    text = re.sub(r"https?://[^\s/@:]+:[^\s/@]+@", "https://***@", text)
+    text = re.sub(r"(?i)(authorization|token|password|passwd)\s*[:=]\s*[^\s]+", r"\1=***", text)
+    return text
 
 
 class RepositoryError(RuntimeError):
@@ -658,17 +666,24 @@ class SQLiteRepository:
                     to_state,
                     current_resume_state=row["resume_state"],
                 )
+                error_message = None
+                if plan.to_state == "failed" and payload:
+                    error_message = _sanitize_error_message(
+                        payload.get("error_message") or payload.get("message") or payload.get("reason")
+                    )
                 cursor = await conn.execute(
                     """
                     UPDATE jobs
                     SET state=?, resume_state=?, updated_at=?, revision=revision+1,
-                        claim_owner=NULL, claim_kind=NULL, heartbeat_at=NULL
+                        claim_owner=NULL, claim_kind=NULL, heartbeat_at=NULL,
+                        error_message=COALESCE(?,error_message)
                     WHERE id=? AND revision=?
                     """,
                     (
                         plan.to_state,
                         plan.resume_state,
                         timestamp,
+                        error_message or None,
                         job_id,
                         int(expected_revision),
                     ),
@@ -1164,6 +1179,107 @@ class SQLiteRepository:
         await cursor.close()
         return [PublishedMessageRecord(int(r["id"]), int(r["job_id"]), int(r["peer_id"]), int(r["message_id"]), str(r["role"]), float(r["created_at"]), r["deleted_at"]) for r in rows]
 
+    async def mark_published_deleted(
+        self,
+        job_id: int,
+        *,
+        expected_revision: int,
+        message_ids: list[int],
+    ) -> bool:
+        conn = self._require_conn()
+        timestamp = time.time()
+        ids = sorted({int(value) for value in message_ids})
+        if not ids:
+            return False
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT revision FROM jobs WHERE id=?", (int(job_id),)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None or int(row["revision"]) != int(expected_revision):
+                    await conn.rollback()
+                    return False
+                marks = ",".join("?" for _ in ids)
+                await conn.execute(
+                    f"UPDATE published_messages SET deleted_at=? WHERE job_id=? AND id IN ({marks}) AND deleted_at IS NULL",
+                    (timestamp, int(job_id), *ids),
+                )
+                cursor = await conn.execute(
+                    "UPDATE jobs SET revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+                    (timestamp, int(job_id), int(expected_revision)),
+                )
+                changed = cursor.rowcount == 1
+                await cursor.close()
+                if not changed:
+                    await conn.rollback()
+                    return False
+                await conn.execute(
+                    "INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at) "
+                    "SELECT id,'published_messages_deleted',state,state,?,? FROM jobs WHERE id=?",
+                    (
+                        self._encode_versioned_payload(
+                            {"schema_version": 1, "count": len(ids)}
+                        ),
+                        timestamp,
+                        int(job_id),
+                    ),
+                )
+                await conn.commit()
+                return True
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def clear_failed_cache(self, job_id: int, *, expected_revision: int) -> bool:
+        """Clear local cache references for a failed job using revision CAS."""
+        conn = self._require_conn()
+        timestamp = time.time()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT state,revision FROM jobs WHERE id=?", (int(job_id),)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if (
+                    row is None
+                    or str(row["state"]) != "failed"
+                    or int(row["revision"]) != int(expected_revision)
+                ):
+                    await conn.rollback()
+                    return False
+                await conn.execute(
+                    "UPDATE job_items SET local_path=NULL WHERE job_id=?",
+                    (int(job_id),),
+                )
+                cursor = await conn.execute(
+                    "UPDATE jobs SET local_dir=NULL,revision=revision+1,updated_at=? WHERE id=? AND revision=?",
+                    (timestamp, int(job_id), int(expected_revision)),
+                )
+                changed = cursor.rowcount == 1
+                await cursor.close()
+                if not changed:
+                    await conn.rollback()
+                    return False
+                await conn.execute(
+                    "INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at) "
+                    "VALUES (?,'cache_deleted','failed','failed',?,?)",
+                    (
+                        int(job_id),
+                        self._encode_versioned_payload({"schema_version": 1}),
+                        timestamp,
+                    ),
+                )
+                await conn.commit()
+                return True
+            except Exception:
+                await conn.rollback()
+                raise
+
     async def upsert_interaction_session(self, *, user_id: int, kind: str, field: str | None, payload: dict[str, Any] | None, revision: int, expires_at: float) -> InteractionSessionRecord:
         conn = self._require_conn()
         timestamp = time.time()
@@ -1240,6 +1356,141 @@ class SQLiteRepository:
         rows = await cursor.fetchall()
         await cursor.close()
         return {str(row["state"]): int(row["n"]) for row in rows}
+
+    async def page_jobs(
+        self,
+        *,
+        user_id: int,
+        filter_name: str = "all",
+        page: int = 0,
+        page_size: int = 5,
+        completed_since: float | None = None,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return one SQL-backed queue page and total count.
+
+        The filter is an allowlisted UI value; no caller-provided SQL fragments
+        are interpolated. Terminal rows are optionally bounded by updated_at so
+        the default queue view does not grow forever.
+        """
+        conn = self._require_conn()
+        page = max(0, int(page))
+        page_size = max(1, min(int(page_size), 20))
+        filters = {
+            "all": None,
+            "running": ("downloading", "publishing"),
+            "waiting": ("collecting", "awaiting_confirmation", "queued", "ready", "interrupted"),
+            "paused": ("paused",),
+            "failed": ("failed",),
+            "completed": ("succeeded", "cancelled"),
+        }
+        if filter_name not in filters:
+            raise RepositoryError(f"unsupported queue filter: {filter_name}")
+        clauses = ["user_id=?"]
+        params: list[Any] = [int(user_id)]
+        states = filters[filter_name]
+        if states:
+            marks = ",".join("?" for _ in states)
+            clauses.append(f"state IN ({marks})")
+            params.extend(states)
+        if completed_since is not None:
+            if filter_name == "completed":
+                clauses.append("updated_at>=?")
+                params.append(float(completed_since))
+            elif filter_name == "all":
+                clauses.append("(state NOT IN ('succeeded','cancelled') OR updated_at>=?)")
+                params.append(float(completed_since))
+        where = " AND ".join(clauses)
+        cursor = await conn.execute(f"SELECT COUNT(*) AS n FROM jobs WHERE {where}", tuple(params))
+        row = await cursor.fetchone()
+        await cursor.close()
+        total = int(row["n"] if row is not None else 0)
+        cursor = await conn.execute(
+            f"""
+            SELECT id,legacy_seq,kind,state,revision,source_kind,bytes_done,bytes_total,
+                   current_item,total_items,retry_count,error_code,error_message,updated_at
+            FROM jobs
+            WHERE {where}
+            ORDER BY id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, page * page_size),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows], total
+
+    async def job_detail(self, job_id: int, *, user_id: int) -> dict[str, Any] | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            """
+            SELECT id,legacy_seq,kind,user_id,state,resume_state,download_state,publish_state,
+                   backup_state,source_kind,bytes_done,bytes_total,current_item,total_items,
+                   retry_count,error_code,error_message,revision,accepted_at,started_at,
+                   updated_at,finished_at
+            FROM jobs WHERE id=? AND user_id=?
+            """,
+            (int(job_id), int(user_id)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return None
+        detail = dict(row)
+        cursor = await conn.execute(
+            "SELECT COUNT(*) AS n,COALESCE(SUM(size_bytes),0) AS bytes FROM job_items WHERE job_id=?",
+            (int(job_id),),
+        )
+        item_row = await cursor.fetchone()
+        await cursor.close()
+        detail["item_count"] = int(item_row["n"] if item_row else 0)
+        detail["item_bytes"] = int(item_row["bytes"] if item_row else 0)
+        cursor = await conn.execute(
+            "SELECT local_path,size_bytes FROM job_items WHERE job_id=? ORDER BY ordinal",
+            (int(job_id),),
+        )
+        detail["items"] = [dict(item) for item in await cursor.fetchall()]
+        await cursor.close()
+        cursor = await conn.execute(
+            "SELECT COUNT(*) AS n FROM published_messages WHERE job_id=? AND deleted_at IS NULL",
+            (int(job_id),),
+        )
+        pub = await cursor.fetchone()
+        await cursor.close()
+        detail["published_count"] = int(pub["n"] if pub else 0)
+        cursor = await conn.execute(
+            """
+            SELECT state,remote_dir,retry_count,error_code,error_message,updated_at
+            FROM backup_attempts WHERE job_id=? ORDER BY id DESC LIMIT 1
+            """,
+            (int(job_id),),
+        )
+        backup = await cursor.fetchone()
+        await cursor.close()
+        detail["backup"] = dict(backup) if backup is not None else None
+        return detail
+
+    async def batch_targets(self, *, user_id: int, kind: str) -> list[dict[str, Any]]:
+        conn = self._require_conn()
+        if kind == "waiting":
+            states = ("collecting", "awaiting_confirmation", "queued", "ready", "interrupted")
+        elif kind == "failed":
+            states = ("failed",)
+        else:
+            raise RepositoryError(f"unsupported batch target kind: {kind}")
+        marks = ",".join("?" for _ in states)
+        cursor = await conn.execute(
+            f"""
+            SELECT j.id,j.revision,j.legacy_seq,j.state,
+                   COALESCE((SELECT SUM(size_bytes) FROM job_items i WHERE i.job_id=j.id AND i.local_path IS NOT NULL),0) AS cache_bytes
+            FROM jobs j
+            WHERE j.user_id=? AND j.state IN ({marks})
+            ORDER BY j.id
+            """,
+            (int(user_id), *states),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
 
     async def set_status_reference(
         self,

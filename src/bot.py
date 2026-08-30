@@ -57,6 +57,7 @@ from .services import (
     BackupManager,
     InteractionSessions,
     JobQueue,
+    OperationStore,
     ProxyManager,
     ShadowState,
     recover_jobs,
@@ -2536,7 +2537,12 @@ class _Pipeline:
             self.retryable[seq] = _RetryInfo(job=retry_job, path=retry_path)
             if getattr(self, "job_queue", None) is not None:
                 if getattr(self, "repository", None) is not None:
-                    await self.job_queue.transition_now(seq, "failed", "failed")
+                    await self.job_queue.transition_now(
+                        seq,
+                        "failed",
+                        "failed",
+                        error_message=text,
+                    )
                 else:
                     self.job_queue.shadow_transition(seq, "failed", "failed")
         if job is not None:
@@ -2560,10 +2566,12 @@ def register_handlers(client: TelegramClient, repository=None, *, start_workers:
     backup = BackupManager(pipeline, shadow=shadow)
     proxy = ProxyManager(pipeline)
     interactions = InteractionSessions()
+    operations = OperationStore()
     pipeline.job_queue = queue
     pipeline.backup_manager = backup
     pipeline.proxy_manager = proxy
     pipeline.interactions = interactions
+    pipeline.operations = operations
     pipeline.shadow_state = shadow
     ctx = HandlerContext(
         client=client,
@@ -2572,6 +2580,7 @@ def register_handlers(client: TelegramClient, repository=None, *, start_workers:
         backup=backup,
         proxy=proxy,
         interactions=interactions,
+        operations=operations,
         allowed_users=set(ALLOWED_USERS),
         auto_delete_seconds=AUTO_DELETE_SECONDS,
         session_collect=SESSION_COLLECT,

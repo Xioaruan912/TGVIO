@@ -5,6 +5,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import os
 import shutil
+import time
 from typing import Any
 
 from ..models import Job, PendingJob, RetryInfo, Session
@@ -92,6 +93,198 @@ class JobQueue:
             "disk_used_gb": disk_used,
             "disk_total_gb": disk_total,
         }
+
+    async def durable_queue_page(
+        self,
+        user_id: int,
+        *,
+        filter_name: str = "all",
+        page: int = 0,
+        page_size: int = 5,
+    ) -> dict[str, Any] | None:
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return None
+        completed_since = time.time() - 24 * 3600
+        rows, total = await repository.page_jobs(
+            user_id=user_id,
+            filter_name=filter_name,
+            page=page,
+            page_size=page_size,
+            completed_since=completed_since,
+        )
+        counts = await repository.count_jobs_by_state(user_id=user_id)
+        pages = max(1, (total + page_size - 1) // page_size)
+        page = min(max(0, int(page)), pages - 1)
+        if total and page * page_size >= total:
+            rows, total = await repository.page_jobs(
+                user_id=user_id,
+                filter_name=filter_name,
+                page=page,
+                page_size=page_size,
+                completed_since=completed_since,
+            )
+        return {
+            "filter_name": filter_name,
+            "page": page,
+            "pages": pages,
+            "total": total,
+            "running": sum(counts.get(state, 0) for state in ("downloading", "publishing")),
+            "waiting": sum(
+                counts.get(state, 0)
+                for state in ("collecting", "awaiting_confirmation", "queued", "ready", "interrupted")
+            ),
+            "paused": counts.get("paused", 0),
+            "failed": counts.get("failed", 0),
+            "items": rows,
+        }
+
+    async def durable_job_detail(self, user_id: int, job_id: int) -> dict[str, Any] | None:
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return None
+        detail = await repository.job_detail(job_id, user_id=user_id)
+        if detail is None:
+            return None
+        cache_exists = False
+        for item in detail.pop("items", []):
+            path = item.get("local_path")
+            size = int(item.get("size_bytes") or 0)
+            if path and os.path.isfile(path):
+                try:
+                    if size <= 0 or os.path.getsize(path) == size:
+                        cache_exists = True
+                except OSError:
+                    pass
+        detail["cache_exists"] = cache_exists
+        seq = detail.get("legacy_seq")
+        detail["can_retry"] = bool(seq is not None and int(seq) in self._pipeline.retryable)
+        backup = detail.get("backup")
+        if backup:
+            remote_dir = str(backup.get("remote_dir") or "")
+            detail["backup_summary"] = os.path.basename(remote_dir.rstrip("/")) or "最近一次尝试"
+        else:
+            detail["backup_summary"] = ""
+        detail["error_message"] = str(detail.get("error_message") or "")[:1000]
+        return detail
+
+    async def durable_record(self, user_id: int, job_id: int):
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return None
+        record = await repository.get_job(job_id)
+        if record is None or record.user_id != int(user_id):
+            return None
+        return record
+
+    def durable_job_id(self, seq: int) -> int | None:
+        if self._shadow is None:
+            return None
+        value = self._shadow.job_ids.get(int(seq))
+        return int(value) if value is not None else None
+
+    async def cancel_job_by_id(self, user_id: int, job_id: int, expected_revision: int) -> str:
+        record = await self.durable_record(user_id, job_id)
+        if record is None:
+            return "missing"
+        if record.revision != int(expected_revision):
+            return "stale"
+        if record.state in {"succeeded", "cancelled", "failed"}:
+            return "terminal"
+        repository = getattr(self._pipeline, "repository", None)
+        if record.legacy_seq is not None and await self.cancel(int(record.legacy_seq)):
+            return "ok"
+        if repository is None:
+            return "unavailable"
+        current = await repository.get_job(job_id)
+        if current is None or current.revision != int(expected_revision):
+            return "stale"
+        result = await repository.transition_job(
+            job_id,
+            expected_revision=expected_revision,
+            to_state="cancelled",
+            event_type="cancelled_ui",
+            payload={"schema_version": 1, "source": "u2", "runtime_missing": True},
+        )
+        return "ok" if result.applied else "stale"
+
+    async def retry_job_by_id(self, user_id: int, job_id: int, expected_revision: int):
+        record = await self.durable_record(user_id, job_id)
+        if record is None:
+            return "missing", None
+        if record.revision != int(expected_revision):
+            return "stale", None
+        if record.state != "failed" or record.legacy_seq is None:
+            return "terminal", None
+        ticket = self.claim_retry(int(record.legacy_seq))
+        return ("ok", ticket) if ticket is not None else ("unavailable", None)
+
+    async def delete_failed_cache_by_id(self, user_id: int, job_id: int, expected_revision: int) -> str:
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return "unavailable"
+        detail = await repository.job_detail(job_id, user_id=user_id)
+        if detail is None:
+            return "missing"
+        if int(detail["revision"]) != int(expected_revision):
+            return "stale"
+        if str(detail["state"]) != "failed":
+            return "terminal"
+        paths: list[str] = []
+        root = os.path.realpath(self._pipeline.download_dir)
+        for item in detail.get("items", []):
+            raw = item.get("local_path")
+            if not raw:
+                continue
+            path = os.path.realpath(str(raw))
+            try:
+                if os.path.commonpath([root, path]) != root:
+                    continue
+            except ValueError:
+                continue
+            paths.append(path)
+        if not await repository.clear_failed_cache(job_id, expected_revision=expected_revision):
+            return "stale"
+        for path in paths:
+            try:
+                if os.path.isfile(path):
+                    os.remove(path)
+            except OSError:
+                pass
+        return "ok"
+
+    async def published_refs_by_id(self, user_id: int, job_id: int, expected_revision: int):
+        repository = getattr(self._pipeline, "repository", None)
+        record = await self.durable_record(user_id, job_id)
+        if repository is None or record is None:
+            return "missing", []
+        if record.revision != int(expected_revision):
+            return "stale", []
+        refs = [item for item in await repository.list_published_messages(job_id) if item.deleted_at is None]
+        return "ok", refs
+
+    async def mark_published_deleted_by_id(
+        self,
+        user_id: int,
+        job_id: int,
+        expected_revision: int,
+        record_ids: list[int],
+    ) -> bool:
+        repository = getattr(self._pipeline, "repository", None)
+        record = await self.durable_record(user_id, job_id)
+        if repository is None or record is None or record.revision != int(expected_revision):
+            return False
+        return await repository.mark_published_deleted(
+            job_id,
+            expected_revision=expected_revision,
+            message_ids=record_ids,
+        )
+
+    async def batch_targets(self, user_id: int, kind: str) -> list[dict[str, Any]]:
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return []
+        return await repository.batch_targets(user_id=user_id, kind=kind)
 
     def session(self, user_id: int) -> Session | None:
         return self._pipeline.sessions.get(user_id)

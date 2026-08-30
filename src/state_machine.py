@@ -21,7 +21,7 @@ ALLOWED_TRANSITIONS: dict[str, frozenset[str]] = {
     "ready": frozenset({"publishing", "paused", "cancelled", "failed"}),
     "publishing": frozenset({"succeeded", "cancelled", "failed"}),
     "interrupted": frozenset({"queued", "ready", "failed", "cancelled"}),
-    "paused": RESUMABLE_STATES,
+    "paused": frozenset(set(RESUMABLE_STATES) | {"cancelled", "failed"}),
     "failed": frozenset({"queued", "ready"}),
     "succeeded": frozenset(),
     "cancelled": frozenset(),
@@ -61,6 +61,8 @@ def plan_transition(
             raise InvalidTransition(f"state cannot be paused: {from_state}")
         resume_state = from_state
     elif from_state == "paused":
+        if to_state in {"cancelled", "failed"}:
+            return TransitionPlan(from_state, to_state, None)
         if current_resume_state not in RESUMABLE_STATES:
             raise InvalidTransition("paused job has invalid resume_state")
         if to_state != current_resume_state:

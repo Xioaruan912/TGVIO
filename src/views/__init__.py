@@ -22,6 +22,17 @@ from .webdav import (
     webdav_cfg_lines,
     webdav_cfg_view,
 )
+from .tasks import (
+    DurableQueueItemView,
+    DurableQueuePageView,
+    FailureItemView,
+    JobDetailViewState,
+    confirmation_view,
+    batch_actions_view,
+    durable_queue_view,
+    failure_center_view,
+    job_detail_view,
+)
 
 __all__ = [
     "MODE_NAMES",
@@ -45,4 +56,13 @@ __all__ = [
     "webdav_cfg_lines",
     "webdav_cfg_view",
     "webdav_cfg_fields_view",
+    "DurableQueueItemView",
+    "DurableQueuePageView",
+    "FailureItemView",
+    "JobDetailViewState",
+    "confirmation_view",
+    "batch_actions_view",
+    "durable_queue_view",
+    "failure_center_view",
+    "job_detail_view",
 ]

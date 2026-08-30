@@ -7,7 +7,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Awaitable, Callable, Pattern
 
-from ..services import BackupManager, InteractionSessions, JobQueue, ProxyManager
+from ..services import BackupManager, InteractionSessions, JobQueue, OperationStore, ProxyManager
 
 
 logger = logging.getLogger(__name__)
@@ -21,6 +21,7 @@ class HandlerContext:
     backup: BackupManager
     proxy: ProxyManager
     interactions: InteractionSessions
+    operations: OperationStore
     allowed_users: set[int]
     auto_delete_seconds: float
     session_collect: bool
