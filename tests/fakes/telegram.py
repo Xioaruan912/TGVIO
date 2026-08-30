@@ -1,0 +1,149 @@
+"""Small Telethon-shaped fakes that never perform network IO."""
+
+import asyncio
+from dataclasses import dataclass
+from typing import Any
+
+
+class FakeStatusMessage:
+    _next_id = 1
+
+    def __init__(self, text: str = "") -> None:
+        self.id = self._next_id
+        type(self)._next_id += 1
+        self.text = text
+        self.edits: list[dict[str, Any]] = []
+        self.delete_calls = 0
+
+    @property
+    def deleted(self) -> bool:
+        return self.delete_calls > 0
+
+    async def edit(self, text: str, **kwargs: Any) -> "FakeStatusMessage":
+        self.text = text
+        self.edits.append({"text": text, **kwargs})
+        return self
+
+    async def delete(self) -> None:
+        self.delete_calls += 1
+
+
+@dataclass
+class FakeMessage:
+    id: int
+    media: object = None
+    grouped_id: int | None = None
+    raw_text: str = ""
+
+
+class FakeClient:
+    def __init__(self) -> None:
+        self.handlers: dict[str, Any] = {}
+        self.sent_messages: list[dict[str, Any]] = []
+        self.sent_files: list[dict[str, Any]] = []
+        self.deleted_messages: list[tuple[object, object]] = []
+        self.send_exception: Exception | None = None
+        self.connected = True
+
+    def on(self, _event_builder: object):
+        def decorator(handler):
+            self.handlers[handler.__name__] = handler
+            return handler
+
+        return decorator
+
+    async def send_message(self, peer: object, text: str, **kwargs: Any):
+        if self.send_exception is not None:
+            raise self.send_exception
+        message = FakeStatusMessage(text)
+        self.sent_messages.append(
+            {"peer": peer, "text": text, "message": message, **kwargs}
+        )
+        return message
+
+    async def send_file(self, peer: object, file: object, **kwargs: Any):
+        message = FakeStatusMessage()
+        self.sent_files.append(
+            {"peer": peer, "file": file, "message": message, **kwargs}
+        )
+        return message
+
+    async def delete_messages(self, peer: object, message_ids: object) -> None:
+        self.deleted_messages.append((peer, message_ids))
+
+    async def disconnect(self) -> None:
+        self.connected = False
+
+    async def connect(self) -> None:
+        self.connected = True
+
+
+class FakeCallbackEvent:
+    def __init__(
+        self,
+        client: FakeClient,
+        data: bytes,
+        sender_id: int = 42,
+        chat_id: int | None = None,
+    ) -> None:
+        self.client = client
+        self.data = data
+        self.sender_id = sender_id
+        self.chat_id = sender_id if chat_id is None else chat_id
+        self.answers: list[str] = []
+        self.edits: list[dict[str, Any]] = []
+        self.responses: list[FakeStatusMessage] = []
+        self.delete_calls = 0
+
+    async def answer(self, text: str = "") -> None:
+        self.answers.append(text)
+
+    async def edit(self, text: str, **kwargs: Any) -> None:
+        self.edits.append({"text": text, **kwargs})
+
+    async def delete(self) -> None:
+        self.delete_calls += 1
+
+    async def respond(self, text: str, **kwargs: Any) -> FakeStatusMessage:
+        message = FakeStatusMessage(text)
+        self.responses.append(message)
+        return message
+
+
+class FakeDownloader:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.pre_download_hooks: list[Any] = []
+        self.progress_hooks: list[Any] = []
+        self.post_download_hooks: list[Any] = []
+        self.calls: list[int] = []
+        self.results: dict[int, Any] = {}
+        self.failures: dict[int, Exception] = {}
+
+    async def run(self, job: object):
+        seq = job.seq
+        self.calls.append(seq)
+        if seq in self.failures:
+            raise self.failures[seq]
+        return self.results.get(seq, f"/fake/job-{seq}/media.mp4")
+
+
+class FakePublisher:
+    def __init__(self, *_args: Any, **_kwargs: Any) -> None:
+        self.pre_publish_hooks: list[Any] = []
+        self.progress_hooks: list[Any] = []
+        self.post_publish_hooks: list[Any] = []
+        self.calls: list[int] = []
+        self.payloads: list[Any] = []
+        self.failures: dict[int, Exception] = {}
+        self.expected_calls = 0
+        self.completed = asyncio.Event()
+
+    async def publish(self, job: object, payload: Any) -> list[int]:
+        seq = job.seq
+        self.calls.append(seq)
+        self.payloads.append(payload)
+        if seq in self.failures:
+            raise self.failures[seq]
+        if self.expected_calls and len(self.calls) >= self.expected_calls:
+            self.completed.set()
+        return [seq]
