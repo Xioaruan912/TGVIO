@@ -1,6 +1,5 @@
 import asyncio
 import hashlib
-import json
 import logging
 import os
 import re
@@ -52,6 +51,8 @@ from .config import (
 )
 from . import webdav
 from .media import FileTooLargeError, MediaDownloader, MediaPublisher
+from .progress import position_token, render_bar
+from .storage import JsonStore
 
 logger = logging.getLogger(__name__)
 
@@ -144,15 +145,8 @@ def _reply_keyboard() -> ReplyKeyboardMarkup:
     )
 
 
-def render_bar(pct: int, width: int = 10) -> str:
-    filled = max(0, min(width, round(pct * width / 100)))
-    return "█" * filled + "░" * (width - filled)
-
-
 def _pos_token(n: int) -> str:
-    if 1 <= n <= 9:
-        return "①②③④⑤⑥⑦⑧⑨"[n - 1]
-    return str(n)
+    return position_token(n)
 
 
 async def _delete_after(message: object, seconds: float) -> None:
@@ -332,16 +326,15 @@ class _Pipeline:
         self.publisher.post_publish_hooks.append(self._on_published)
 
     def _load_prefs(self) -> None:
-        try:
-            with open(PREFS_FILE) as f:
-                data = json.load(f)
-            self.prefs = {int(k): dict(v) for k, v in data.items()}
-        except Exception:
-            self.prefs = {}
+        data = JsonStore(PREFS_FILE, {}).load()
+        self.prefs = (
+            {int(k): dict(v) for k, v in data.items()}
+            if isinstance(data, dict)
+            else {}
+        )
         if not self.prefs:
             try:
-                with open(LEGACY_PREFS_FILE) as f:
-                    legacy = json.load(f)
+                legacy = JsonStore(LEGACY_PREFS_FILE, {}).load()
                 for uid, show in legacy.items():
                     self.prefs.setdefault(int(uid), {})["show_progress"] = bool(show)
                 if self.prefs:
@@ -350,13 +343,7 @@ class _Pipeline:
                 pass
 
     def _save_prefs(self) -> None:
-        try:
-            with open(PREFS_FILE, "w") as f:
-                json.dump(
-                    {str(k): v for k, v in self.prefs.items()}, f, ensure_ascii=False
-                )
-        except Exception:
-            pass
+        JsonStore(PREFS_FILE, {}).save({str(k): v for k, v in self.prefs.items()})
 
     def _get_pref(self, user_id: int, key: str, default):
         return self.prefs.get(user_id, {}).get(key, default)
@@ -374,90 +361,61 @@ class _Pipeline:
             "path": WEBDAV_PATH,
             "retry": WEBDAV_RETRY,
         }
-        try:
-            with open(WEBDAV_CFG_FILE) as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                for key in cfg:
-                    if key in data:
-                        cfg[key] = data[key]
-        except Exception:
-            pass
+        data = JsonStore(WEBDAV_CFG_FILE, {}).load()
+        if isinstance(data, dict):
+            for key in cfg:
+                if key in data:
+                    cfg[key] = data[key]
         return cfg
 
     def _save_webdav_cfg(self) -> None:
-        try:
-            with open(WEBDAV_CFG_FILE, "w") as f:
-                json.dump(self.webdav_cfg, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        JsonStore(WEBDAV_CFG_FILE, {}).save(self.webdav_cfg)
 
     def _load_webdav_logs(self) -> dict:
-        try:
-            with open(WEBDAV_LOGS_FILE) as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
+        data = JsonStore(WEBDAV_LOGS_FILE, {}).load()
+        return data if isinstance(data, dict) else {}
 
     def _save_webdav_logs(self) -> None:
-        try:
-            cutoff = time.time() - WEBDAV_LOG_HOURS * 3600
-            self.webdav_logs = {
-                k: v
-                for k, v in self.webdav_logs.items()
-                if isinstance(v, dict) and v.get("ts", 0) >= cutoff
-            }
-            with open(WEBDAV_LOGS_FILE, "w") as f:
-                json.dump(self.webdav_logs, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        cutoff = time.time() - WEBDAV_LOG_HOURS * 3600
+        self.webdav_logs = {
+            k: v
+            for k, v in self.webdav_logs.items()
+            if isinstance(v, dict) and v.get("ts", 0) >= cutoff
+        }
+        JsonStore(WEBDAV_LOGS_FILE, {}).save(self.webdav_logs)
 
     def _load_webdav_count(self) -> dict:
-        try:
-            with open(WEBDAV_COUNT_FILE) as f:
-                data = json.load(f)
-            return data if isinstance(data, dict) else {}
-        except Exception:
-            return {}
+        data = JsonStore(WEBDAV_COUNT_FILE, {}).load()
+        return data if isinstance(data, dict) else {}
 
     def _save_webdav_count(self) -> None:
-        try:
-            # 只保留最近 7 天的计数，避免文件无限增长
-            self.webdav_count = {
-                k: v
-                for k, v in self.webdav_count.items()
-                if isinstance(v, int) and k >= (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
-            }
-            with open(WEBDAV_COUNT_FILE, "w") as f:
-                json.dump(self.webdav_count, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        # 只保留最近 7 天的计数，避免文件无限增长
+        self.webdav_count = {
+            k: v
+            for k, v in self.webdav_count.items()
+            if isinstance(v, int) and k >= (datetime.now() - timedelta(days=7)).strftime("%Y-%m-%d")
+        }
+        JsonStore(WEBDAV_COUNT_FILE, {}).save(self.webdav_count)
 
     def _load_proxy_cfg(self) -> dict:
         cfg = {"auto": True, "current": -1, "proxies": []}
-        try:
-            with open(PROXY_FILE) as f:
-                data = json.load(f)
-            if isinstance(data, dict):
-                cfg["auto"] = bool(data.get("auto", True))
+        data = JsonStore(PROXY_FILE, {}).load()
+        if isinstance(data, dict):
+            cfg["auto"] = bool(data.get("auto", True))
+            try:
                 cfg["current"] = int(data.get("current", -1))
-                proxies = data.get("proxies", [])
-                cfg["proxies"] = (
-                    [p for p in proxies if isinstance(p, dict) and p.get("url")]
-                    if isinstance(proxies, list)
-                    else []
-                )
-        except Exception:
-            pass
+            except (TypeError, ValueError):
+                cfg["current"] = -1
+            proxies = data.get("proxies", [])
+            cfg["proxies"] = (
+                [p for p in proxies if isinstance(p, dict) and p.get("url")]
+                if isinstance(proxies, list)
+                else []
+            )
         return cfg
 
     def _save_proxy_cfg(self) -> None:
-        try:
-            with open(PROXY_FILE, "w") as f:
-                json.dump(self.proxy_cfg, f, ensure_ascii=False, indent=2)
-        except Exception:
-            pass
+        JsonStore(PROXY_FILE, {}).save(self.proxy_cfg)
 
     @staticmethod
     def _parse_proxy_url(url: str):
