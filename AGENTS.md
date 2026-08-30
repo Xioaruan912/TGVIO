@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `b031154`（修复确认超时序号泄漏并扩展 R0 测试）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 最后一次部署验证时容器正常运行，关键源码哈希与本地一致，日志包含 `Bot commands registered` 和 `Bot started`。
+- 当前分支：`main`。当前生产运行代码基线为 `e055200`（R1-A：纯 view 边界抽取）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 22:04 CST 最后一次部署验证时容器 `running`、`restart=0`，关键源码哈希与 `e055200` 一致，日志包含 `Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -302,7 +302,7 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - 上传超 2GB 仍会被平台拒绝（护栏保留）。
 - 大文件需注意 `downloads/` 卷磁盘空间（单文件最大 ~2GB）。
 - `session/` 与 `downloads/` 为运行时状态，已 gitignore，部署到新机器会自动重建。
-- 相册确认超时整组取消；单条失败不影响队列后续。
+- 相册确认超时会整组按正常（非 18+）模式继续处理；用户主动取消仍丢弃整组。单条失败不影响队列后续。
 - **频道创建者无法退出自己的频道**（Telegram 规则，无离开/转让选项）；bot 作为管理员可独立发帖，用户是否在频道不影响流程。
 - 相册首项（视频）上传前曾有 ~20s 停顿（疑似 `make_thumb`/`UploadMediaRequest` 耗时），暂未优化。
 
@@ -417,8 +417,8 @@ docker compose config --quiet
 
 | ID | 优先级 | 工作包 | 依赖 | 状态 |
 |---|---|---|---|---|
-| R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [ ] |
-| R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [ ] |
+| R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [x] `744ca98`（2026-08-30） |
+| R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [ ]（R1-A views 已完成 `e055200`；下一步 R1-B handlers） |
 | R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [ ] |
 | R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ] |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
@@ -452,15 +452,15 @@ docker compose config --quiet
 待办：
 
 - [x] 建立 `tests/fakes/telegram.py`：`FakeClient`、`FakeCallbackEvent`、`FakeMessage`、`FakeStatusMessage`，记录 `respond/edit/delete/send_file/delete_messages` 调用。（2026-08-30，`fecb832`）
-- [ ] 建立可注入的 `FakeDownloader`、`FakePublisher`、`FakeBackupClient` 和 controllable clock；禁止测试依赖真实 `time.sleep`。其中 Downloader/Publisher 已完成（`fecb832`），BackupClient/clock 待补。
-- [ ] 覆盖单媒体、相册、collection、URL 四种 Job 的接受和顺序发布。四种 Job 接受、album 未开始合并、collection 展平和通用 ready job FIFO 已覆盖（`fecb832`、`b031154`）；各媒体 kind 到 FakePublisher 的参数化发布仍待补。
-- [ ] 覆盖 ask/always_spoiler/always_normal、确认超时自动正常、用户取消、合集 `/begin`/`/end`、文字 caption 拼接。ask/always_spoiler/force_normal、超时、pending cancel、session 展平与文字顺序已覆盖（`fecb832`、`b031154`）；`/begin`/`/end` handler 与 publisher caption 拼接待补。
+- [x] 建立可注入的 `FakeDownloader`、`FakePublisher`、`FakeBackupClient` 和 controllable clock；禁止测试依赖真实 `time.sleep`。（`fecb832`、`744ca98`，2026-08-30）
+- [x] 覆盖单媒体、相册、collection、URL 四种 Job 的接受、参数传递和顺序发布。（`fecb832`、`b031154`、`acdf741`，2026-08-30）
+- [x] 覆盖 ask/always_spoiler/always_normal、确认超时自动正常、用户取消、合集 `/begin`/`/end`、文字 caption 拼接。（`fecb832`、`b031154`、`acdf741`、`744ca98`，2026-08-30）
 - [x] 覆盖并行下载但 FIFO 上传、暂停后跳过、继续、取消排队项、取消运行项、下载失败、上传失败、缓存重传。（2026-08-30，`fecb832`、`b031154`）
-- [ ] 覆盖封面模式返回 `(peer_id, message_id)`、评论区线程根查找和撤销；已有关键 workaround 不得在抽取时消失。
-- [ ] 覆盖 WebDAV 失败保留缓存、成功清理、远端大小幂等、自动补传和 OpenList 延迟响应确认。延迟清理期间失败标记保留缓存已完成（`fecb832`），其余待补。
-- [ ] 覆盖重复 callback、callback 到达时任务已完成、状态消息已删除、FloodWait/编辑失败不影响任务结果。重复 confirm/retry 不重复入队已完成（`fecb832`），其余待补。
-- [ ] 对现有 `queue_view`、进度条和关键文案做快照式断言；UI 重设计阶段再有意更新快照。
-- [ ] 记录当前 `src/*.py` 行数、主要依赖方向和运行配置，作为拆分前基线。
+- [x] 覆盖封面模式返回 `(peer_id, message_id)`、评论区线程根查找和撤销；已有关键 workaround 不得在抽取时消失。（`744ca98`，2026-08-30）
+- [x] 覆盖 WebDAV 失败保留缓存、成功清理、远端大小幂等、自动补传和 OpenList 延迟响应确认。（`fecb832`、`744ca98`，2026-08-30）
+- [x] 覆盖重复 callback、callback 到达时任务已完成、状态消息已删除、FloodWait/编辑失败不影响任务结果。confirm/retry/undo 一次性副作用及状态 edit/delete catch-all 降级路径已锁定。（`fecb832`、`acdf741`、`744ca98`，2026-08-30）
+- [x] 对现有 `queue_view`、进度条和关键文案做快照式断言；UI 重设计阶段再有意更新快照。（`744ca98`，2026-08-30）
+- [x] 记录当前 `src/*.py` 行数、主要依赖方向和运行配置，作为拆分前基线。（`4fcc633` 的 `docs/R0_BASELINE.md`，2026-08-30）
 
 R0 验收：测试可在无网络环境运行；失败时能指出是调度、传输、备份还是 UI 回归；不改变生产业务行为。
 
@@ -1488,13 +1488,13 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-下一位实现代理继续 **R0**，不要直接上 SQLite 或改 UI。`fecb832` + `b031154` 已完成 18 个队列/合集行为测试并修复确认超时幽灵序号，准确入口如下：
+R0 已完成，R1-A 已由 `e055200` 完成并部署。当前进入 **R1-B：handler 注册/分派抽取**，不要直接上 SQLite、状态机或新 UI。
 
-1. 在 `tests/test_pipeline.py` 增加 `/begin`/`/end` handler、publisher collection caption 拼接，以及 status edit/delete 失败测试。
-2. 参数化四种 Job 到 FakePublisher 的发布调用，补 FileTooLarge/上传 timeout 行为。
-3. 新建 FakeBackupClient/本地 WebDAV server，覆盖成功清理、远端大小幂等、自动补传和延迟响应。
-4. 为 cover mode 返回 peer/message pairs、撤销和 `queue_view`/progress 文案补快照测试。
-5. 记录 `src/*.py` 行数、依赖方向和配置基线；R0 全部通过后才进入 R1 view/handler 抽取。
+1. 保持现有 54 项离线测试与 `src/views/` renderer 预期不变；新增 handler 测试必须继续使用 FakeClient/Event，不连接真实 Telegram。
+2. 将 `register_handlers()` 中 command、callback、private-message 分派渐进移动到独立 handler 模块；第一提交只抽注册/分派和薄适配，不移动队列/WebDAV 业务状态。
+3. handler 只做鉴权、输入解析、调用 service/pipeline、选择 view；不得重新实现 queue、backup 或 media 逻辑。
+4. `src/ui.py` 继续作为 R1 兼容层，暂不删除；`src/views/` 不得反向 import `bot`/handler。
+5. R1-B 完成并部署后，再进入 R1-C `JobQueue`/`BackupManager` 边界抽取；不要跨阶段同时改持久化。
 
 未经用户明确改变优先级，不要先做 Web Dashboard、多频道、SQLite 或转码。
 
@@ -1541,3 +1541,32 @@ fix(webdav): preserve cache across interrupted verify
 - 数据迁移：无；不触碰 `.env`、`session/`、`downloads/`。
 - 未完成与风险：R0 的 WebDAV 协议矩阵、cover/undo、view snapshot 和 handler 异常仍待覆盖。
 - 下一步精确入口：`tests/test_pipeline.py` 补 handler/status failure；随后为 `src/webdav.py` 建本地协议 fake。
+
+### 2026-08-30 21:59 - R0-C 媒体/WebDAV/安全行为基线收尾
+
+- 状态：R0 已完成、推送并部署生产。
+- 基线 commit：`acdf741`
+- 实现 commit：`744ca98`（`fix(r0): complete media and backup behavior baseline`）
+- 已改文件：`src/bot.py`、`src/downloader.py`、`scripts/ensure_webdav.py`、`.dockerignore`、`tests/fakes/*`、`tests/test_media.py`、`tests/test_pipeline.py`、`tests/test_webdav.py`、`tests/test_helpers.py`。
+- 已完成：cover/comment peer pair 与线程根、跨 peer undo、queue/progress 文案、未决 Future watchdog、WebDAV 初传/手动重试/自动补传/远端大小幂等/OpenList 423 与响应超时确认、本地缓存保护；代理 UI/日志隐藏凭证；Docker context 排除 `.env/session/downloads/.git`；修复补传丢失哈希远端文件名和 `ensure_webdav.py` 缺失 `time` import。
+- 测试：本地与生产容器均通过 49 项 unittest；`py_compile`、`git diff --check`、`docker compose config --quiet`、`docker compose build` 通过；构建镜像静态检查不含 `.env/session/downloads/.git`。
+- GitHub：`744ca98` 已推送；R0 文档校正随后以 `4fcc633` 推送。
+- VPS：2026-08-30 21:56 CST 安全部署；部署前确认生产实际源码与上一基线一致且无活动传输。容器 `running`、`restart=0`，日志正常；运行 `.env/session/downloads` 保持原位，镜像中不固化运行数据。
+- 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-744ca98` 与 `/root/telegram-video-forwarder-releases/pre-744ca98.tar.gz`。
+- 数据迁移：无。
+- 下一步精确入口：R1-A `src/views/` 纯 renderer 抽取。
+
+### 2026-08-30 22:04 - R1-A 纯 view 边界抽取
+
+- 状态：已完成、推送并部署生产；R1 总工作包仍在进行中。
+- 基线 commit：`4fcc633`
+- 实现 commit：`e055200`（`refactor(views): extract immutable presentation layer`）
+- 已改文件：`src/views/__init__.py`、`src/views/common.py`、`src/views/queue.py`、`src/views/proxy.py`、`src/views/webdav.py`、`src/ui.py`、`src/bot.py`、`tests/test_views.py`。
+- 已完成：mode/reply keyboard、queue、proxy、WebDAV config renderer 移入 `src/views/`；renderer 仅接收 frozen dataclass/basic values，不直接持有 `_Pipeline`；`src/ui.py` 保留兼容 re-export/legacy adapter；`bot.py` 只负责从运行状态构建 view model。现有文案与 callback data 未改变。
+- 测试：本地与生产容器均通过 54 项 unittest；`src/views` 反向依赖检查确认不 import `bot/ui`；`py_compile`、`git diff --check`、`docker compose config --quiet`、`docker compose build` 与镜像秘密路径检查全部通过。
+- GitHub：`4fcc633`、`e055200` 已推送 `origin/main`；本条交接记录随其后的 docs-only commit 推送。
+- VPS：部署前确认生产 `src/bot.py`、`src/ui.py` 与 `744ca98` 一致且近 5 分钟无活动传输；2026-08-30 22:02 CST 用 Git archive 部署 `e055200`。容器 `running`、`restart=0`，启动日志有 `Bot commands registered`、`Bot started`；本地/主机/容器关键源码 SHA-256 一致。
+- 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-e055200` 和 `/root/telegram-video-forwarder-releases/pre-e055200.tar.gz`。
+- 数据迁移：无；`.env`、`session/`、`downloads/` 未打包、未覆盖。
+- 未完成与风险：`register_handlers()` 仍在 `src/bot.py`，JobQueue/BackupManager 也尚未抽取；R1 不能标总完成。
+- 下一步精确入口：第 20.6 节 R1-B，从 `register_handlers()` 的 command/callback/private-message 分派开始，只抽 handler 边界。
