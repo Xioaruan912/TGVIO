@@ -177,14 +177,17 @@ class U2ViewTests(unittest.TestCase):
                 source_kind="url", item_count=1, item_bytes=1024, bytes_done=0,
                 bytes_total=0, retry_count=1, cache_exists=True, published_count=2,
                 backup_state="failed", error_message="network timeout", can_retry=True,
+                error_code="network_timeout",
             )
         )
         self.assertIn("network timeout", detail_text)
+        self.assertIn("检查网络或代理后重试", detail_text)
         self.assertIn(b"j:d:9:4", callbacks(detail_buttons))
         failure_text, failure_buttons = failure_center_view(
-            (FailureItemView(9, 109, 4, True, "network timeout", True),), page=0, pages=1
+            (FailureItemView(9, 109, 4, True, "network timeout", True, "network_timeout"),), page=0, pages=1
         )
         self.assertIn("失败中心", failure_text)
+        self.assertIn("[network_timeout]", failure_text)
         batch_text, batch_buttons = batch_actions_view(waiting_count=8, failed_count=2, failed_bytes=2048)
         self.assertIn("等待任务：8", batch_text)
         confirm_text, confirm_buttons = confirmation_view(

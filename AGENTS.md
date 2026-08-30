@@ -1488,13 +1488,14 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1 已完成。下一阶段进入 **F2：错误分类、失败中心与阶段级重试/退避**；不要同时夹带 F3 磁盘配额、Web Dashboard、多频道或转码。
+R0、R1、R2、R3、U1、U2、F1 已完成。当前正在执行 **F2：错误分类、失败中心与阶段级重试/退避**；不要同时夹带 F3 磁盘配额、Web Dashboard、多频道或转码。
 
-1. 先按第 16.2 节建立集中 domain error taxonomy 和安全错误摘要，至少覆盖 network/Telegram/source/url/file/disk/cache/publish/WebDAV/cancelled/unknown。
-2. retry budget 按 download/publish/backup 阶段独立；网络使用指数退避 + jitter，FloodWait 使用 Telegram 指定时间，不与普通 backoff 叠加。
-3. 失败写入 `error_code/error_message/retry_count/next_retry_at`，完整 traceback 只写脱敏日志；失败中心动作继续按错误类型决定，不能退回“万能重试”。
-4. publish retry 必须先检查 `published_messages`，避免响应超时后重复发布；WebDAV 保留现有远端大小幂等确认。
-5. F2 门禁继续保持 121+ 回归，并新增错误分类、退避、retry budget、FloodWait、partial publish 幂等和失败中心动作映射测试。
+- [x] F2-A：集中 domain error taxonomy、安全摘要/脱敏 traceback frame、download retry budget、指数退避+jitter、FloodWait 精确等待、可立即取消的 backoff、`error_code/error_message/retry_count/next_retry_at` 持久化、失败中心错误码/动作提示。（2026-08-31；实现 commit 待本条提交后回填）
+- [ ] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试，已有 refs 必须进入继续/撤销人工动作。
+- [ ] F2-C：把 WebDAV 初传/自动补传/手动重试接入同一 classifier/policy，按现有配置形成独立 backup budget，并持久化 attempt/file 的 error/retry/next time；保留远端大小幂等确认。
+- [ ] F2-D：集中 `NetworkCoordinator` 串行代理切换，补 download/publish/backup budget 隔离、partial publish 和错误专属按钮集成测试；全部部署验证后才标 F2 主项完成。
+
+下一位代理必须从 F2-B 开始：先读 `src/media.py` 的所有 publish 分支及 `src/services/shadow_state.py::complete_publish`，新增“每次 Telegram send 成功即 callback checkpoint”协议和失败注入测试，不能先开启 publish 自动重试。
 
 ## 21. 执行日志
 
@@ -1692,3 +1693,18 @@ R0、R1、R2、R3、U1、U2、F1 已完成。下一阶段进入 **F2：错误分
 - VPS：部署前确认生产实际源码与 `c5355ab` 一致、容器 `restart=0`、无活动传输、DB schema4/`integrity=ok` 且无未完成任务；2026-08-31 00:09 CST 安全部署 `b5450e6`。部署后容器 `running`、`restart=0`，镜像 `sha256:4393cdd6b8da5f0d9f6a492012eac9e55ac3e5b51673dea61a7b630a5f86c38c`，生产关键源码哈希与 commit 完全一致；生产镜像内 cancel 专项再次通过。
 - 回滚：部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-b5450e6-20260831-000926.sqlite3`；镜像 `telegram-video-forwarder:rollback-pre-b5450e6`；源码 `/root/telegram-video-forwarder-releases/pre-b5450e6.tar.gz`。F1 无 schema 变更，回滚到 U2 不需要降库。
 - 下一步精确入口：第 16.2 节 F2；先做 domain error classifier + retry policy，不同时实现 F3 磁盘配额。
+
+### 2026-08-31 07:38 - F2-A 统一错误模型与下载阶段退避
+
+- 状态：实现与本地候选镜像门禁完成，等待提交/GitHub/生产部署；F2 主工作包仍在进行中。
+- 基线 commit：`ad1a42e`；实现 commit：待提交后回填。
+- 已改文件：`src/domain/__init__.py`、`src/domain/errors.py`、`src/bot.py`、`src/repository/sqlite.py`、`src/services/shadow_state.py`、`src/services/job_queue.py`、`src/handlers/jobs.py`、`src/views/tasks.py`、`tests/test_errors.py`、`tests/test_repository.py`、`tests/test_pipeline.py`、`tests/test_recovery_pipeline.py`、`tests/test_u2.py`、`AGENTS.md`。
+- 已完成：新增 transport-independent `ErrorCode/ErrorInfo/RetryPolicy`，覆盖第 16.2 节列出的 network/Telegram/source/url/file/disk/cache/media/partial publish/WebDAV/cancelled/unknown；用户只看到固定安全摘要，日志记录错误码、异常类型和不含异常文本的 stack frame 路径。download 使用独立 budget（沿用 `DOWNLOAD_AUTO_RETRY`）、`base*2**(attempt-1)+jitter`（5 秒起、300 秒 cap）；FloodWait 只使用服务端秒数 + 1 秒安全量；unknown 有限重试，非 retryable 错误直接失败。
+- 持久化/UI：非终态失败 attempt 原子写 `error_code/error_message/retry_count/next_retry_at` 与 `<phase>_retry_scheduled` event；终态失败写安全错误码/摘要并清 `next_retry_at`，后续非失败 transition 清活动错误但保留 retry count 历史。任务详情/失败中心显示错误码、专属处理建议和仍有效的预计重试时间；不显示 URL、凭证、原异常或 traceback。
+- 取消语义：backoff 使用 per-job interrupt event，用户在退避期间取消会立即唤醒，不会启动下一次 download；测试 sleep 可注入，生产仍用真实 asyncio sleep。
+- 测试：最终候选镜像 **130 项 unittest 全通过**；`python3 -m compileall -q src tests`、`git diff --check`、`docker compose config --quiet`、`docker compose build bot` 全通过。此前一次 121 项结果来自构建前旧镜像，已明确作废；一次旧测试因真实退避超过 1 秒而失败，已通过注入测试 sleep 修复，不能计入最终结果。
+- GitHub：未提交/未推送。
+- VPS：未部署；生产仍为 `b5450e6`，本批未接触远端 `.env/session/downloads`。
+- 数据迁移：无；复用 schema 1 已有字段，0001～0004 migration 不修改。回滚代码不需要降库，新增 event/错误字段可由旧代码忽略。
+- 未完成与风险：publish 仍只在整批成功后保存 refs，不能安全自动重试；WebDAV 仍使用旧内部 retry；代理切换尚未集中串行。因此 F2 主复选框保持 `[ ]`。
+- 下一步精确入口：完成本批最终 130+ 测试、提交/推送/安全部署并回填本条；之后按上方 F2-B 从 `MediaPublisher` 每次成功 send 的副作用 checkpoint 开始。

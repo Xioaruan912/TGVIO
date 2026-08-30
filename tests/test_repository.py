@@ -111,6 +111,45 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         events = await self.repo.list_job_events(job.id)
         self.assertEqual([event.event_type for event in events], ["accepted", "download_started"])
 
+    async def test_retry_metadata_and_terminal_error_are_persisted_safely(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url", user_id=1, state="downloading", source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        await self.repo.record_job_retry(
+            job.id,
+            phase="download",
+            error_code="network_timeout",
+            error_message="https://user:secret@example.invalid token=secret",
+            retry_count=1,
+            next_retry_at=150.0,
+        )
+        detail = await self.repo.job_detail(job.id, user_id=1)
+        self.assertEqual(detail["error_code"], "network_timeout")
+        self.assertEqual(detail["retry_count"], 1)
+        self.assertEqual(detail["next_retry_at"], 150.0)
+        self.assertNotIn("secret", detail["error_message"])
+        events = await self.repo.list_job_events(job.id)
+        self.assertEqual(events[-1].event_type, "download_retry_scheduled")
+
+        current = await self.repo.get_job(job.id)
+        result = await self.repo.transition_job(
+            job.id,
+            expected_revision=current.revision,
+            to_state="failed",
+            event_type="failed",
+            payload={
+                "schema_version": 1,
+                "error_code": "network_timeout",
+                "error_message": "safe summary",
+                "retry_count": 2,
+            },
+        )
+        self.assertTrue(result.applied)
+        detail = await self.repo.job_detail(job.id, user_id=1)
+        self.assertEqual(detail["retry_count"], 2)
+        self.assertIsNone(detail["next_retry_at"])
+
     async def test_terminal_transition_is_rejected(self) -> None:
         job = await self.repo.accept_job(
             kind="url",

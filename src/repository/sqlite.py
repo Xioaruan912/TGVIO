@@ -667,23 +667,35 @@ class SQLiteRepository:
                     current_resume_state=row["resume_state"],
                 )
                 error_message = None
+                error_code = None
+                retry_count = None
+                next_retry_at = None
                 if plan.to_state == "failed" and payload:
                     error_message = _sanitize_error_message(
                         payload.get("error_message") or payload.get("message") or payload.get("reason")
                     )
+                    error_code = str(payload.get("error_code") or "unknown")[:64]
+                    retry_count = max(0, int(payload.get("retry_count") or 0))
+                    next_retry_at = payload.get("next_retry_at")
                 cursor = await conn.execute(
                     """
                     UPDATE jobs
                     SET state=?, resume_state=?, updated_at=?, revision=revision+1,
                         claim_owner=NULL, claim_kind=NULL, heartbeat_at=NULL,
-                        error_message=COALESCE(?,error_message)
+                        error_code=?,
+                        error_message=?,
+                        retry_count=COALESCE(?,retry_count),
+                        next_retry_at=?
                     WHERE id=? AND revision=?
                     """,
                     (
                         plan.to_state,
                         plan.resume_state,
                         timestamp,
+                        error_code,
                         error_message or None,
+                        retry_count,
+                        next_retry_at,
                         job_id,
                         int(expected_revision),
                     ),
@@ -721,6 +733,55 @@ class SQLiteRepository:
         if current is None:
             raise RepositoryError(f"job {job_id} missing after transition")
         return TransitionResult(True, current)
+
+    async def record_job_retry(
+        self,
+        job_id: int,
+        *,
+        phase: str,
+        error_code: str,
+        error_message: str,
+        retry_count: int,
+        next_retry_at: float,
+    ) -> None:
+        """Persist a non-terminal failed attempt without releasing its claim."""
+        conn = self._require_conn()
+        timestamp = time.time()
+        safe_code = str(error_code or "unknown")[:64]
+        safe_message = _sanitize_error_message(error_message)
+        payload_json = self._encode_versioned_payload(
+            {
+                "schema_version": 1,
+                "phase": str(phase),
+                "error_code": safe_code,
+                "error_message": safe_message,
+                "retry_count": max(0, int(retry_count)),
+                "next_retry_at": float(next_retry_at),
+            }
+        )
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute("SELECT state FROM jobs WHERE id=?", (int(job_id),))
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RepositoryError(f"job {job_id} not found")
+                await conn.execute(
+                    """UPDATE jobs
+                       SET error_code=?,error_message=?,retry_count=?,next_retry_at=?,updated_at=?
+                       WHERE id=?""",
+                    (safe_code, safe_message, max(0, int(retry_count)), float(next_retry_at), timestamp, int(job_id)),
+                )
+                await conn.execute(
+                    """INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                       VALUES (?,?,?,?,?,?)""",
+                    (int(job_id), f"{phase}_retry_scheduled", str(row["state"]), str(row["state"]), payload_json, timestamp),
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
 
     async def _claim_job(self, *, kind: str, owner: str) -> JobClaim | None:
         if kind not in {"download", "publish"}:
@@ -1425,7 +1486,7 @@ class SQLiteRepository:
             """
             SELECT id,legacy_seq,kind,user_id,state,resume_state,download_state,publish_state,
                    backup_state,source_kind,bytes_done,bytes_total,current_item,total_items,
-                   retry_count,error_code,error_message,revision,accepted_at,started_at,
+                   retry_count,next_retry_at,error_code,error_message,revision,accepted_at,started_at,
                    updated_at,finished_at
             FROM jobs WHERE id=? AND user_id=?
             """,

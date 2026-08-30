@@ -67,6 +67,11 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.pipeline = bot._Pipeline(self.client)
         self.pipeline._counter = 100
 
+        async def skip_retry_delay(_seconds: float) -> None:
+            return None
+
+        self.pipeline._retry_sleep = skip_retry_delay
+
     def make_job(self, seq: int, path: str = "") -> Job:
         return Job(
             seq=seq,
@@ -449,6 +454,28 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(str(failure), "bad media")
         self.assertEqual(self.pipeline._active_downloads, 0)
         self.pipeline._finish_seq(190)
+
+    async def test_cancel_during_retry_backoff_does_not_start_another_download(self) -> None:
+        entered = asyncio.Event()
+        release = asyncio.Event()
+
+        async def controlled_retry_delay(_seconds: float) -> None:
+            entered.set()
+            await release.wait()
+
+        self.pipeline._retry_sleep = controlled_retry_delay
+        self.pipeline.downloader.failures[191] = ConnectionError("secret endpoint")
+        self.pipeline.enqueue(self.make_job(191))
+        worker = asyncio.create_task(self.pipeline._download_worker())
+        await asyncio.wait_for(entered.wait(), timeout=1)
+        self.assertTrue(await self.pipeline._cancel_seq(191))
+        release.set()
+        await asyncio.wait_for(self.pipeline.input_q.join(), timeout=1)
+        await cancel_task(worker)
+
+        self.assertEqual(self.pipeline.downloader.calls, [191])
+        self.assertIs(self.pipeline.results[191].result(), bot._CANCELLED)
+        self.pipeline._finish_seq(191)
 
     async def test_begin_and_end_handlers_publish_collected_session(self) -> None:
         pipeline, client = self.register_callback_pipeline()

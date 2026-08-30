@@ -61,6 +61,8 @@ class JobDetailViewState:
     backup_state: str
     backup_summary: str = ""
     error_message: str = ""
+    error_code: str = ""
+    next_retry_at: float | None = None
     accepted_at: float = 0.0
     can_retry: bool = False
 
@@ -73,6 +75,29 @@ class FailureItemView:
     cache_exists: bool
     error_message: str
     can_retry: bool
+    error_code: str = ""
+    next_retry_at: float | None = None
+
+
+ERROR_ACTIONS = {
+    "telegram_auth": "重新登录并检查 session",
+    "telegram_permission": "检查目标频道权限",
+    "source_expired": "重新转发源消息",
+    "url_unsupported": "更新 yt-dlp 或更换来源",
+    "file_too_large": "压缩文件或调整发布上限",
+    "disk_low": "清理缓存或扩容",
+    "cache_missing": "重新下载源文件",
+    "media_invalid": "检查媒体或执行兼容性处理",
+    "publish_partial": "检查已发布消息后继续或撤销",
+    "webdav_auth": "检查 WebDAV 账号密码",
+    "webdav_not_found": "检查 WebDAV 远端路径",
+    "webdav_locked": "等待文件解锁后重试",
+    "webdav_server": "等待 WebDAV 服务恢复",
+    "network_timeout": "检查网络或代理后重试",
+    "network_unreachable": "检查网络或切换代理",
+    "telegram_flood_wait": "等待 Telegram 限流解除",
+    "unknown": "重试；持续失败请导出诊断",
+}
 
 
 def _state_text(state: str) -> tuple[str, str]:
@@ -166,6 +191,14 @@ def job_detail_view(state: JobDetailViewState) -> tuple[str, list]:
         lines.append(f"{render_bar(pct)} {pct}%")
     if state.error_message:
         lines.append(f"🧾 原因：{state.error_message[:300]}")
+    if state.error_code:
+        lines.append(f"🏷 错误码：{state.error_code}")
+        action = ERROR_ACTIONS.get(state.error_code)
+        if action:
+            lines.append(f"💡 建议：{action}")
+    if state.next_retry_at and state.next_retry_at > datetime.now().timestamp():
+        retry_at = datetime.fromtimestamp(state.next_retry_at).strftime("%m-%d %H:%M:%S")
+        lines.append(f"⏰ 预计重试：{retry_at}")
     buttons = []
     if state.state not in {"succeeded", "cancelled", "failed"}:
         buttons.append([Button.inline("⚠️ 取消任务", f"j:c:{state.job_id}:{state.revision}")])
@@ -189,7 +222,8 @@ def failure_center_view(items: tuple[FailureItemView, ...], *, page: int, pages:
         seq = item.legacy_seq if item.legacy_seq is not None else item.job_id
         cache = "缓存可用" if item.cache_exists else "无缓存"
         reason = item.error_message[:80] if item.error_message else "需要检查任务详情"
-        lines.append(f"{index}. ❌ #{seq} · {cache}\n   {reason}")
+        code = f" [{item.error_code}]" if item.error_code else ""
+        lines.append(f"{index}. ❌ #{seq} · {cache}{code}\n   {reason}")
         buttons.append([Button.inline(f"{index} 查看处理", f"j:v:{item.job_id}")])
     nav = []
     if page > 0:

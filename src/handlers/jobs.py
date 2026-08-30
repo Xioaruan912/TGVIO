@@ -74,6 +74,8 @@ async def _detail(ctx: HandlerContext, user_id: int, job_id: int):
         backup_state=str(backup.get("state") or detail.get("backup_state") or "disabled"),
         backup_summary=str(detail.get("backup_summary") or ""),
         error_message=str(detail.get("error_message") or ""),
+        error_code=str(detail.get("error_code") or ""),
+        next_retry_at=detail.get("next_retry_at"),
         accepted_at=float(detail.get("accepted_at") or 0),
         can_retry=bool(detail.get("can_retry")),
     )
@@ -99,6 +101,8 @@ async def _failure_center(ctx: HandlerContext, user_id: int, page: int):
                 cache_exists=bool(detail.get("cache_exists")),
                 error_message=str(detail.get("error_message") or ""),
                 can_retry=bool(detail.get("can_retry")),
+                error_code=str(detail.get("error_code") or ""),
+                next_retry_at=detail.get("next_retry_at"),
             )
         )
     return failure_center_view(tuple(items), page=int(snapshot["page"]), pages=int(snapshot["pages"]))
@@ -600,4 +604,3 @@ def register_job_callbacks(router: Any) -> None:
     router.prefix("resume:", callback_resume)
     router.prefix("retry:", callback_retry)
     router.prefix("confirm:", callback_confirm)
-

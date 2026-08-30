@@ -54,6 +54,11 @@ class RepositoryBackedPipelineTests(unittest.IsolatedAsyncioTestCase):
         )
         self.pipeline._counter = 2000
 
+        async def skip_retry_delay(_seconds: float) -> None:
+            return None
+
+        self.pipeline._retry_sleep = skip_retry_delay
+
     async def asyncTearDown(self) -> None:
         await self.pipeline.job_queue.drain_shadow()
         await self.repo.close()
@@ -153,4 +158,3 @@ class RepositoryBackedPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current.state, "failed")
         self.assertIn(seq, self.pipeline.retryable)
         self.assertNotIn(seq, self.pipeline.active_seqs)
-

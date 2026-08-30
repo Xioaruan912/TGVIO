@@ -47,6 +47,7 @@ from .config import (
     WEBDAV_URL,
     WEBDAV_USER,
 )
+from .domain import ErrorCode, RetryPolicy, classify_error, safe_traceback
 from . import webdav
 from .media import FileTooLargeError, MediaDownloader, MediaPublisher
 from .models import AlbumBuffer, Job, PendingJob, RetryInfo, Session
@@ -93,33 +94,6 @@ WEBDAV_COUNT_FILE = os.path.join("session", "webdav_count.json")
 WEBDAV_LOG_HOURS = 24
 WEBDAV_AUTORETRY_INTERVAL = 3600  # 失败记录自动重传间隔（秒，默认 1 小时）
 PROXY_FILE = os.path.join("session", "proxy.json")
-
-_NETWORK_ERROR_NAMES = {
-    "TimedOutError",
-    "ServerError",
-    "RpcCallFailError",
-    "RpcMcgetFailError",
-    "InterdcCallErrorError",
-    "InterdcCallRichErrorError",
-    "NetworkError",
-    "ConnectionError",
-    "ConnectionResetError",
-    "ConnectionAbortedError",
-    "ConnectionRefusedError",
-    "TimeoutError",
-}
-
-
-def _is_network_error(exc: Exception) -> bool:
-    if isinstance(exc, (OSError, TimeoutError, ConnectionError)):
-        return True
-    name = exc.__class__.__name__
-    if name in _NETWORK_ERROR_NAMES:
-        return True
-    if "Request was unsuccessful" in str(exc):
-        return True
-    return False
-
 
 def _file_md5_short(path: str) -> str:
     """文件内容 MD5 前 8 位（分块读取，大文件不占内存）。"""
@@ -222,6 +196,9 @@ class _Pipeline:
         self.retryable: dict[int, _Job] = {}
         self._paused = False
         self._progress_tracker = ProgressTracker(ui_interval=PROGRESS_MIN_INTERVAL)
+        self._retry_policy = RetryPolicy(budgets={"download": DOWNLOAD_AUTO_RETRY})
+        self._retry_sleep = asyncio.sleep
+        self._retry_interrupts: dict[int, asyncio.Event] = {}
         self._status_rebound: set[int] = set()
         self._cancel_marked: set[int] = set()
         self._paused_files: set[int] = set()
@@ -1009,6 +986,15 @@ class _Pipeline:
             try:
                 retries = 0
                 while True:
+                    if job.seq in self._cancel_marked:
+                        logger.info("Job #%s cancelled during retry backoff", job.seq)
+                        self._cancel_marked.discard(job.seq)
+                        self._set_cancelled(job.seq)
+                        await self._delete_status(job)
+                        if getattr(self, "repository", None) is not None:
+                            self.job_queue.shadow_transition(job.seq, "cancelled", "cancelled")
+                            self._finish_seq(job.seq)
+                        break
                     task = asyncio.get_running_loop().create_task(
                         self.downloader.run(job)
                     )
@@ -1031,30 +1017,53 @@ class _Pipeline:
                                     self.job_queue.shadow_transition(job.seq, "cancelled", "cancelled")
                                     self._finish_seq(job.seq)
                         except Exception as exc:
-                            if (
-                                _is_network_error(exc)
-                                and retries < DOWNLOAD_AUTO_RETRY
-                            ):
-                                switched = await self._try_switch_proxy(job.seq)
-                                retries += 1
+                            error = classify_error(exc, stage="download")
+                            decision = self._retry_policy.decide(
+                                error,
+                                stage="download",
+                                attempt=retries + 1,
+                                now=time.time(),
+                            )
+                            if decision.should_retry:
+                                switched = False
+                                if error.code in {ErrorCode.NETWORK_TIMEOUT, ErrorCode.NETWORK_UNREACHABLE}:
+                                    switched = await self._try_switch_proxy(job.seq)
+                                retries = decision.attempt
+                                if getattr(self, "repository", None) is not None:
+                                    await self.job_queue.record_retry(
+                                        job.seq,
+                                        phase="download",
+                                        error_code=error.code.value,
+                                        error_message=error.summary,
+                                        retry_count=retries,
+                                        next_retry_at=float(decision.next_retry_at),
+                                    )
                                 logger.warning(
-                                    "Job #%s download failed (%s), auto-retry %d/%d%s",
+                                    "Job #%s download failed code=%s, auto-retry %d/%d in %.1fs%s",
                                     job.seq,
-                                    exc.__class__.__name__,
+                                    error.code.value,
                                     retries,
-                                    DOWNLOAD_AUTO_RETRY,
+                                    decision.budget,
+                                    float(decision.delay_seconds),
                                     "（已切换代理）" if switched else "",
                                 )
-                                await asyncio.sleep(2)
+                                await self._wait_retry(job.seq, float(decision.delay_seconds))
                                 continue
-                            logger.exception(
-                                "Download failed for job #%s", job.seq
+                            logger.error(
+                                "Download failed job=%s phase=download code=%s exception_type=%s traceback=%s",
+                                job.seq,
+                                error.code.value,
+                                exc.__class__.__name__,
+                                safe_traceback(exc),
                             )
                             if getattr(self, "repository", None) is not None:
                                 await self._reply_error(
                                     job.seq,
-                                    f"下载失败: {exc}",
+                                    f"下载失败：{error.summary}",
                                     retry_job=job,
+                                    exc=exc,
+                                    phase="download",
+                                    retry_count=retries,
                                 )
                                 self._finish_seq(job.seq)
                             else:
@@ -1072,16 +1081,33 @@ class _Pipeline:
                             logger.exception("Downloader task failed while settling timeout for job #%s", job.seq)
                     timeout_stage = getattr(job, "url_stage", "download")
                     timeout_label = "合并音视频" if timeout_stage == "postprocessing" else "下载"
-                    if retries < DOWNLOAD_AUTO_RETRY:
-                        retries += 1
+                    timeout_error = classify_error(TimeoutError(timeout_label), stage="download")
+                    decision = self._retry_policy.decide(
+                        timeout_error,
+                        stage="download",
+                        attempt=retries + 1,
+                        now=time.time(),
+                    )
+                    if decision.should_retry:
+                        retries = decision.attempt
+                        if getattr(self, "repository", None) is not None:
+                            await self.job_queue.record_retry(
+                                job.seq,
+                                phase="download",
+                                error_code=timeout_error.code.value,
+                                error_message=timeout_error.summary,
+                                retry_count=retries,
+                                next_retry_at=float(decision.next_retry_at),
+                            )
                         logger.warning(
-                            "Job #%s %s timeout, auto-retry %d/%d",
+                            "Job #%s %s timeout, auto-retry %d/%d in %.1fs",
                             job.seq,
                             timeout_label,
                             retries,
-                            DOWNLOAD_AUTO_RETRY,
+                            decision.budget,
+                            float(decision.delay_seconds),
                         )
-                        await asyncio.sleep(2)
+                        await self._wait_retry(job.seq, float(decision.delay_seconds))
                         continue
                     logger.error(
                         "Job #%s %s timed out after %ss", job.seq, timeout_label, DOWNLOAD_TIMEOUT
@@ -1091,6 +1117,9 @@ class _Pipeline:
                             job.seq,
                             f"{timeout_label}超时（{DOWNLOAD_TIMEOUT} 秒）",
                             retry_job=job,
+                            exc=TimeoutError(timeout_label),
+                            phase="download",
+                            retry_count=retries,
                         )
                         self._finish_seq(job.seq)
                     else:
@@ -1114,6 +1143,29 @@ class _Pipeline:
                 self._repo_claim_owners.pop(("download", job.seq), None)
                 self._active_downloads = max(0, self._active_downloads - 1)
                 self.input_q.task_done()
+
+    async def _wait_retry(self, seq: int, delay_seconds: float) -> bool:
+        """Wait for backoff or return early when the job is cancelled."""
+        if seq in self._cancel_marked:
+            return True
+        interrupt = asyncio.Event()
+        self._retry_interrupts[seq] = interrupt
+        if seq in self._cancel_marked:
+            interrupt.set()
+        sleeper = asyncio.create_task(self._retry_sleep(max(0.0, delay_seconds)))
+        cancelled = asyncio.create_task(interrupt.wait())
+        try:
+            done, _ = await asyncio.wait(
+                {sleeper, cancelled}, return_when=asyncio.FIRST_COMPLETED
+            )
+            return cancelled in done and bool(cancelled.result())
+        finally:
+            for task in (sleeper, cancelled):
+                if not task.done():
+                    task.cancel()
+            await asyncio.gather(sleeper, cancelled, return_exceptions=True)
+            if self._retry_interrupts.get(seq) is interrupt:
+                self._retry_interrupts.pop(seq, None)
 
     async def _on_pre_download(self, job) -> None:
         self._progress_tracker.begin_phase(job.seq, "downloading")
@@ -2225,16 +2277,29 @@ class _Pipeline:
                             self._finish_seq(seq)
                     except FileTooLargeError as exc:
                         logger.warning("Job #%s %s", seq, exc)
-                        if job is not None:
-                            await self._safe_edit(job, f"❌ {exc}")
+                        await self._reply_error(
+                            seq,
+                            "上传失败：文件超过当前发布上限",
+                            exc=exc,
+                            phase="publish",
+                        )
                         self._finish_seq(seq)
                     except Exception as exc:
-                        logger.exception("Upload failed for job #%s", seq)
+                        error = classify_error(exc, stage="publish")
+                        logger.error(
+                            "Publish failed job=%s phase=publish code=%s exception_type=%s traceback=%s",
+                            seq,
+                            error.code.value,
+                            exc.__class__.__name__,
+                            safe_traceback(exc),
+                        )
                         await self._reply_error(
                             seq,
                             f"上传失败: {exc}",
                             retry_job=job,
                             retry_path=path if not isinstance(path, list) else "",
+                            exc=exc,
+                            phase="publish",
                         )
                         self._finish_seq(seq, keep_cache=True)
                     else:
@@ -2251,6 +2316,8 @@ class _Pipeline:
                         f"上传超时（{UPLOAD_TIMEOUT} 秒）",
                         retry_job=job,
                         retry_path=path if not isinstance(path, list) else "",
+                        exc=TimeoutError("publish timeout"),
+                        phase="publish",
                     )
                     self._finish_seq(seq, keep_cache=True)
             finally:
@@ -2394,6 +2461,9 @@ class _Pipeline:
         ):
             return False
         self._cancel_marked.add(seq)
+        retry_interrupt = self._retry_interrupts.get(seq)
+        if retry_interrupt is not None:
+            retry_interrupt.set()
         self._set_cancelled(seq)
         job = self.jobs.get(seq) or self._runtime_jobs.get(seq)
         token = getattr(job, "url_cancel_token", None) if job is not None else None
@@ -2556,28 +2626,46 @@ class _Pipeline:
             raise
 
     async def _reply_error(
-        self, seq: int, text: str, retry_job: _Job = None, retry_path: str = ""
+        self,
+        seq: int,
+        text: str,
+        retry_job: _Job = None,
+        retry_path: str = "",
+        *,
+        exc: BaseException | None = None,
+        phase: str = "unknown",
+        retry_count: int = 0,
+        next_retry_at: float | None = None,
     ) -> None:
         job = self.jobs.get(seq)
         self._progress_tracker.begin_phase(seq, "failed")
-        if retry_job is not None:
+        error = classify_error(exc or RuntimeError(text), stage=phase)
+        display_text = text
+        if exc is not None:
+            prefix = text.split(":", 1)[0].split("：", 1)[0]
+            display_text = f"{prefix}：{error.summary}"
+        if retry_job is not None and error.retryable:
             self.retryable[seq] = _RetryInfo(job=retry_job, path=retry_path)
-            if getattr(self, "job_queue", None) is not None:
-                if getattr(self, "repository", None) is not None:
-                    await self.job_queue.transition_now(
-                        seq,
-                        "failed",
-                        "failed",
-                        error_message=text,
-                    )
-                else:
-                    self.job_queue.shadow_transition(seq, "failed", "failed")
+        if getattr(self, "job_queue", None) is not None:
+            if getattr(self, "repository", None) is not None:
+                await self.job_queue.transition_now(
+                    seq,
+                    "failed",
+                    "failed",
+                    error_code=error.code.value,
+                    error_message=error.summary if exc is not None else display_text,
+                    retry_count=retry_count,
+                    next_retry_at=next_retry_at,
+                    phase=phase,
+                )
+            else:
+                self.job_queue.shadow_transition(seq, "failed", "failed")
         if job is not None:
             card, buttons = self._job_card(
                 job,
                 "failed",
                 payload=retry_path or getattr(job, "cached_path", ""),
-                error=text,
+                error=display_text,
             )
             await self._safe_edit(job, card, buttons=buttons)
 

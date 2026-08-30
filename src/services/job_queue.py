@@ -590,6 +590,26 @@ class JobQueue:
                 items=items,
             )
 
+    async def record_retry(
+        self,
+        seq: int,
+        *,
+        phase: str,
+        error_code: str,
+        error_message: str,
+        retry_count: int,
+        next_retry_at: float,
+    ) -> None:
+        if self._shadow is not None:
+            await self._shadow.record_retry(
+                seq,
+                phase=phase,
+                error_code=error_code,
+                error_message=error_message,
+                retry_count=retry_count,
+                next_retry_at=next_retry_at,
+            )
+
     async def heartbeat_claim(self, seq: int, kind: str, owner: str) -> bool:
         if self._shadow is None:
             return False
@@ -634,4 +654,3 @@ class JobQueue:
                 status=status,
                 status_chat_id=status_chat_id,
             )
-

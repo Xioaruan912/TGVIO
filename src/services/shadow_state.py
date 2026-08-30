@@ -214,6 +214,28 @@ class ShadowState:
             total_items=items,
         )
 
+    async def record_retry(
+        self,
+        seq: int,
+        *,
+        phase: str,
+        error_code: str,
+        error_message: str,
+        retry_count: int,
+        next_retry_at: float,
+    ) -> None:
+        job_id = self.job_ids.get(int(seq))
+        if not job_id or self.repository is None:
+            return
+        await self.repository.record_job_retry(
+            job_id,
+            phase=phase,
+            error_code=error_code,
+            error_message=error_message,
+            retry_count=retry_count,
+            next_retry_at=next_retry_at,
+        )
+
     async def heartbeat_claim(self, seq: int, kind: str, owner: str) -> bool:
         job_id = self.job_ids.get(seq)
         if not job_id or self.repository is None:
