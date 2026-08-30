@@ -50,13 +50,23 @@ from .media import FileTooLargeError, MediaDownloader, MediaPublisher
 from .models import AlbumBuffer, Job, PendingJob, RetryInfo, Session
 from .progress import position_token, render_bar
 from .storage import JsonStore
-from .ui import (
+from .views import (
     MODE_NAMES,
+    PendingQueueItemView,
+    ProxyViewState,
+    QueueItemView,
+    QueueViewState,
     SESSION_BTN_BEGIN,
     SESSION_BTN_END,
+    WebDavConfigViewState,
     mode_buttons,
-    queue_view,
+    proxy_list_view as render_proxy_list_view,
+    proxy_view as render_proxy_view,
+    queue_view as render_queue_view,
     reply_keyboard,
+    webdav_cfg_fields_view as render_webdav_cfg_fields_view,
+    webdav_cfg_lines as render_webdav_cfg_lines,
+    webdav_cfg_view as render_webdav_cfg_view,
 )
 
 logger = logging.getLogger(__name__)
@@ -118,6 +128,11 @@ _mode_buttons = mode_buttons
 _SESSION_BTN_BEGIN = SESSION_BTN_BEGIN
 _SESSION_BTN_END = SESSION_BTN_END
 _reply_keyboard = reply_keyboard
+
+
+def queue_view(pipeline, user_id: int):
+    """Compatibility entry point backed by the immutable R1 queue view model."""
+    return render_queue_view(pipeline._queue_view_state(user_id))
 
 
 def _pos_token(n: int) -> str:
@@ -360,6 +375,15 @@ class _Pipeline:
         auth = "***@" if username else ""
         return f"http://{auth}{host}:{port}"
 
+    def _proxy_view_state(self) -> ProxyViewState:
+        proxies = self.proxy_cfg.get("proxies", [])
+        return ProxyViewState(
+            current=self.proxy_cfg.get("current", -1),
+            auto=bool(self.proxy_cfg.get("auto")),
+            labels=tuple(self._proxy_label(idx) for idx in range(len(proxies))),
+            current_label=self._proxy_label(self.proxy_cfg.get("current", -1)),
+        )
+
     async def _apply_proxy(self, idx: int) -> bool:
         """应用代理（idx=-1 直连）：改 client._proxy + 重建连接，session 保留免重登。"""
         try:
@@ -438,57 +462,11 @@ class _Pipeline:
 
     def _proxy_view(self) -> tuple:
         """/proxy 主视图。"""
-        cfg = self.proxy_cfg
-        current = cfg.get("current", -1)
-        label = self._proxy_label(current)
-        if current >= 0:
-            conn = f"代理 #{current + 1}：{label}"
-        else:
-            conn = "直连"
-        auto = "✅ 已开启" if cfg.get("auto") else "⛔ 已关闭"
-        lines = [
-            "🌐 代理设置（仅 HTTP 代理）",
-            "",
-            f"当前连接：{conn}",
-            f"自动切换：{auto}",
-            f"代理数量：{len(cfg.get('proxies', []))}",
-            "",
-            "下载网络失败时自动切换到下一个可用代理。",
-        ]
-        buttons = [
-            [Button.inline("➕ 添加代理", "proxy:add")],
-            [
-                Button.inline(
-                    "⛔ 关闭自动切换" if cfg.get("auto") else "🔛 开启自动切换",
-                    "proxy:auto",
-                )
-            ],
-            [
-                Button.inline("🔀 管理代理", "proxy:list"),
-                Button.inline("🔌 直连", "proxy:direct"),
-            ],
-        ]
-        return "\n".join(lines), buttons
+        return render_proxy_view(self._proxy_view_state())
 
     def _proxy_list_view(self) -> tuple:
         """/proxy 管理列表。"""
-        proxies = self.proxy_cfg.get("proxies", [])
-        current = self.proxy_cfg.get("current", -1)
-        lines = ["🔀 代理列表", ""]
-        buttons = [[Button.inline("⬅️ 返回", "proxy:back")]]
-        if not proxies:
-            lines.append("（暂无代理，点 ➕ 添加）")
-        for idx, p in enumerate(proxies):
-            mark = "✅ " if idx == current else ""
-            lines.append(f"{mark}代理 #{idx + 1}：{self._proxy_label(idx)}")
-            buttons.append(
-                [
-                    Button.inline("✅ 使用", f"proxy:use:{idx}"),
-                    Button.inline("🧪 测试", f"proxy:test:{idx}"),
-                    Button.inline("🗑 删除", f"proxy:del:{idx}"),
-                ]
-            )
-        return "\n".join(lines), buttons
+        return render_proxy_list_view(self._proxy_view_state())
 
     def _show_progress(self, user_id: int) -> bool:
         return self._get_pref(user_id, "show_progress", True)
@@ -607,6 +585,47 @@ class _Pipeline:
 
     def task_label(self, seq: int) -> str:
         return f"队列第 {self._queue_position(seq)} 位"
+
+    def _queue_view_state(self, user_id: int) -> QueueViewState:
+        active = []
+        for seq in sorted(self.active_seqs):
+            info = self.active.get(seq) or {}
+            if seq in self._download_tasks:
+                state = "download"
+            elif seq == self._uploading:
+                state = "upload"
+            elif seq in self._paused_files:
+                state = "paused"
+            elif seq in self.jobs:
+                state = "ready"
+            else:
+                state = "queued"
+            active.append(
+                QueueItemView(
+                    seq=seq,
+                    position=self._queue_position(seq),
+                    state=state,
+                    pct=info.get("pct"),
+                    item=info.get("item", 1),
+                    items=info.get("items", 1),
+                )
+            )
+        pending = tuple(
+            PendingQueueItemView(
+                seq=seq,
+                position=index,
+                kind=self.pending[seq].kind,
+            )
+            for index, seq in enumerate(sorted(self.pending), start=1)
+        )
+        return QueueViewState(
+            show_progress=self._show_progress(user_id),
+            active=tuple(active),
+            pending=pending,
+            has_sessions=bool(self.sessions),
+            session_media=sum(s.media_count for s in self.sessions.values()),
+            session_texts=sum(s.text_count for s in self.sessions.values()),
+        )
 
     def register_pending(
         self,
@@ -1145,67 +1164,26 @@ class _Pipeline:
 
     def _wd_cfg_lines(self, cfg: dict) -> list:
         """WebDAV 配置字段行（主视图与编辑页共享），前缀定宽对齐。"""
-        val = {
-            "url": cfg.get("url") or "（未设置）",
-            "user": cfg.get("user") or "（未设置）",
-            "pass": "***" if cfg.get("pass") else "（未设置）",
-            "path": cfg.get("path") or "（未设置）",
-            "retry": f"{cfg.get('retry')} 次",
-        }
-        return [
-            f"🔗 地址    {val['url']}",
-            f"👤 账号    {val['user']}",
-            f"🔑 密码    {val['pass']}",
-            f"📂 路径    {val['path']}",
-            f"🔄 重试    {val['retry']}",
-        ]
+        return render_webdav_cfg_lines(self._webdav_cfg_state(cfg))
+
+    def _webdav_cfg_state(self, cfg: dict | None = None) -> WebDavConfigViewState:
+        cfg = self.webdav_cfg if cfg is None else cfg
+        return WebDavConfigViewState(
+            enabled=bool(cfg.get("enabled")),
+            url=cfg.get("url") or "",
+            user=cfg.get("user") or "",
+            has_password=bool(cfg.get("pass")),
+            path=cfg.get("path") or "",
+            retry=cfg.get("retry"),
+        )
 
     def _webdav_cfg_view(self) -> tuple:
         """按钮式配置主视图（/webdav）：状态卡片 + 3 个入口按钮，避免臃肿。"""
-        cfg = self.webdav_cfg
-        status = "✅ 已启用" if cfg.get("enabled") else "⛔ 已停用"
-        lines = [
-            "📁 WebDAV 备份配置",
-            "下载完成后自动备份媒体",
-            "────────────────────────",
-            f"状态    {status}",
-            *self._wd_cfg_lines(cfg),
-            "────────────────────────",
-        ]
-        toggle = (
-            Button.inline("⛔ 停用", "wd_cfg:off")
-            if cfg.get("enabled")
-            else Button.inline("🔛 启用", "wd_cfg:on")
-        )
-        buttons = [
-            [toggle],
-            [Button.inline("⚙️ 修改配置", "wd_cfg:edit")],
-        ]
-        return "\n".join(lines), buttons
+        return render_webdav_cfg_view(self._webdav_cfg_state())
 
     def _webdav_cfg_fields_view(self) -> tuple:
         """「修改配置」字段页：一次可连续修改多个字段，完成后返回。"""
-        cfg = self.webdav_cfg
-        lines = [
-            "⚙️ WebDAV 修改配置",
-            "────────────────────────",
-            *self._wd_cfg_lines(cfg),
-            "────────────────────────",
-            "点击按钮，直接回复新值即可：",
-        ]
-        buttons = [
-            [
-                Button.inline("✏️ 地址", "wd_cfg:url"),
-                Button.inline("✏️ 账号", "wd_cfg:user"),
-            ],
-            [
-                Button.inline("✏️ 密码", "wd_cfg:pass"),
-                Button.inline("✏️ 路径", "wd_cfg:path"),
-            ],
-            [Button.inline("✏️ 重试", "wd_cfg:retry")],
-            [Button.inline("⬅️ 返回", "wd_cfg:back")],
-        ]
-        return "\n".join(lines), buttons
+        return render_webdav_cfg_fields_view(self._webdav_cfg_state())
 
     def _webdav_cache_dirs(self) -> list:
         """扫描 downloads/ 下的 job-* 目录，找出仍含文件的待上传缓存。
