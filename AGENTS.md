@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `5604113`（R3 完成：repository worker/recovery + graceful SIGTERM shutdown）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 23:35 CST 最后一次部署/stop-start 验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`；真实 `docker compose stop` 1 秒内 `exit=0`，日志出现 `SIGTERM received; disconnecting Telegram client` 且无 traceback/asyncio callback error，随后 `docker compose start` 正常恢复并再次出现 `SQLite repository ready...` 与 `Bot started`。
+- 当前分支：`main`。当前生产运行代码基线为 `2da964d`（U1：稳定首页控制台、统一任务卡、per-job/per-phase 进度节流完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 23:47 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`，生产容器 104 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`，U1 未新增 migration，R3 的 SIGTERM/recovery 基线继续由现有测试保护。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -421,7 +421,7 @@ docker compose config --quiet
 | R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [x] `15b4012`（2026-08-30） |
 | R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [x] `3a2775e`（2026-08-30；schema 1→2 + shadow dual-write，旧 `_Pipeline` 仍是运行真相源） |
 | R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [x] `5604113`（2026-08-30；R3-A/B/C 完成） |
-| U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
+| U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [x] `2da964d`（2026-08-30） |
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [ ] |
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [ ] |
 | F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [ ] |
@@ -1488,13 +1488,13 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-R0、R1、R2、R3 已完成。下一阶段进入 **U1：Telegram 首页控制台 + 统一任务状态卡 + 每任务进度节流**；不要同时夹带 U2 分页详情、Web Dashboard、多频道或转码。
+R0、R1、R2、R3、U1 已完成。下一阶段进入 **U2：队列分页/筛选/详情 + 失败中心 + destructive confirmation**；不要同时夹带 F1 yt-dlp 新下载器、Web Dashboard、多频道或转码。
 
-1. 先按第 15.1/15.2 节建立统一 UI state/view model 与 `/start` 稳定控制台；刷新只编辑原消息，WebDAV/磁盘状态读取失败不得拖垮首页。
-2. 再按第 15.3 节把 job 主要状态消息统一成单卡模型，优先复用 schema 中已有 `status_chat_id/status_message_id`，阶段/终态/用户操作立即刷新。
-3. 把当前全局 `_last_progress_edit` 改为 `(job_id, phase)` 独立 ProgressState，并按第 15.4 节做 generation + 每任务 2 秒 UI 节流；先不实现 F1 的完整 yt-dlp speed/ETA 功能扩展。
-4. 保持现有 callback data/旧命令兼容，U1 阶段不做 U2 的完整队列分页、筛选、详情/确认页；先用 characterization tests 锁住旧入口，再逐步切 view。
-5. U1 仍需独立门禁：98+ 回归、构建镜像、生产部署和 Telegram UI 核心路径验证；不要因 R3 已稳定而跳过部署前无活动传输检查。
+1. 先按第 15.5 节把队列改成 repository SQL 分页（默认 5 项），支持 `全部|运行中|等待|暂停|失败|已完成`；不能把全表拉进内存后切片。
+2. 增加 job 详情页：来源类型、媒体数/体积、阶段、retry/cache/published/backup 摘要、用户可理解错误；原始 traceback 仍不得直接展示。
+3. 按第 15.6 节做失败中心，动作必须与错误类型匹配；优先“缓存可重试/源失效/磁盘不足/权限配置/WebDAV 已发布但备份失败”。
+4. 按第 15.8 节引入短 callback + expected revision 与 5 分钟 operation token；取消/删除缓存/撤销发布等 destructive action 先进入确认页，连续点击要幂等。
+5. 保持 U1 首页和任务卡文案/节流不回退；U2 门禁继续要求 104+ 回归、callback UTF-8 ≤64 bytes、100 个任务分页不超 Telegram 消息/按钮限制，并安全部署生产。
 
 ## 21. 执行日志
 
@@ -1655,3 +1655,15 @@ R0、R1、R2、R3 已完成。下一阶段进入 **U1：Telegram 首页控制台
 - VPS：最终生产运行代码为 `5604113`，容器 `running`、`restart=0`，镜像 `sha256:8e432f565882e0def925e6b3f124540f348fda58eeb0f11e2600a4247066812b`；最终源码哈希与 commit 一致。真实 `docker compose stop` 1 秒内正常退出 `exit=0`/`OOMKilled=false`，stop 后 DB `integrity=ok`；`docker compose start` 后 schema `[1,2,3,4]`、`integrity=ok`、`restart=0`、`Bot started` 正常。
 - 回滚：R3-C 首次部署前 DB 备份 `/root/telegram-video-forwarder-releases/state-pre-76f9368-20260830-233021.sqlite3`；保留 `telegram-video-forwarder:rollback-pre-76f9368`、`/root/telegram-video-forwarder-releases/pre-76f9368.tar.gz`，以及后续 `rollback-pre-65fe81d` / `rollback-pre-5604113` 与对应源码包。R3-C 无 schema 变更，回滚到 R3-B 不要求降库。
 - 下一步精确入口：第 15.1～15.4 节 U1；先做 `/start` 稳定首页控制台与统一 view/state model，再做单任务状态卡和 per-job progress throttling，不同时进入 U2。
+
+### 2026-08-30 23:47 - U1 首页控制台、统一任务卡与进度节流
+
+- 状态：U1 已完成、推送并部署生产；下一阶段进入 U2。
+- 基线 commit：`a39c3db`；实现 commit：`2da964d`（`feat(ui): add U1 home console and task cards`）。
+- 已完成：新增纯 `HomeViewState/home_view`，`/start` 改为稳定首页控制台，`h:*` 短 callback 覆盖合集开始/结束、队列、失败摘要、WebDAV、设置、代理、运行状态、帮助和原消息刷新；queue/WebDAV/proxy/settings/help 均可返回首页，首页 WebDAV 只读本地配置/最近日志、不做同步网络 probe，磁盘读取失败降级“未知”。
+- 任务卡：新增 `JobCardView/job_card_view`，下载/ready/发布/成功/失败统一为单卡；status edit 失败时 repository 模式最多补发一次并更新已有 `status_chat_id/status_message_id`，首次 accept/retry/confirm/recovery 也同步主状态消息引用。U1 未新增 schema，直接复用 schema 1 已存在字段。
+- 进度：`src/progress.py` 新增 `(seq, phase)` 独立 `ProgressTracker/ProgressState`，移除全局 `_last_progress_edit`；阶段 generation 阻止迟到的旧下载回调覆盖 publishing/terminal 卡，Telegram UI 默认每任务按 `PROGRESS_MIN_INTERVAL`（默认 2 秒）节流，并有账号级 token bucket；FloodWait 只延后 UI 编辑，不影响 transport。SQLite progress 最多每 5 秒或每 32MB 写一次，下载/上传 heartbeat 语义不变。
+- 测试：最终本地绑定源码、最终构建镜像、生产容器均 **104 项 unittest 全通过**；新增首页导航、统一任务卡、callback 长度、per-job/phase throttle、speed/ETA、DB 5秒/32MB gate、FloodWait defer、status/progress/state-count repository 测试。`py_compile`、`git diff --check`、compose config、Docker build、静态镜像秘密路径检查全部通过；schema 仍 `[1,2,3,4]`，0001～0004 未修改。
+- VPS：部署前确认生产实际源码与 `5604113` 一致、容器 `restart=0`、近 5 分钟无活动传输、DB `integrity=ok`/schema4 且 runtime tables 为空；2026-08-30 23:47 CST 安全部署 `2da964d`。部署后容器 `running`、`restart=0`，镜像 `sha256:940c027785edd10bf66a3207f1c0bafc9dd213b3614bbd64fb116e4e9ee8c72c`，生产关键源码哈希与 commit 完全一致。
+- 回滚：部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-2da964d-20260830-234704.sqlite3`；镜像 `telegram-video-forwarder:rollback-pre-2da964d`；源码 `/root/telegram-video-forwarder-releases/pre-2da964d.tar.gz`。U1 无 schema 变更，回滚到 R3 不需要降库。
+- 下一步精确入口：第 15.5/15.6/15.8 节 U2；从 repository SQL 分页/count DAO + queue view model 开始，先做分页/筛选/详情，再做失败中心和 destructive confirmation。

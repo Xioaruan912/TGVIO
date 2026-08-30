@@ -13,14 +13,16 @@
 ## Current boundaries
 
 - `src/models.py`: job, album and session domain objects.
-- `src/progress.py`: progress/position presentation helpers.
+- `src/progress.py`: progress/position helpers plus per-job/per-phase generation,
+  UI throttling, account token-bucket and DB-write gates.
 - `src/storage.py`: atomic best-effort JSON persistence.
 - `src/media.py`: Telegram media download and publish transport.
 - `src/webdav.py`: WebDAV protocol, integrity verification and retry.
-- `src/views/`: pure Telegram renderers fed by immutable/basic view state.
+- `src/views/`: pure Telegram renderers fed by immutable/basic view state,
+  including the U1 stable home console and unified task status card.
 - `src/handlers/`: command, callback and private-message parsing/dispatch.
-- `src/services/job_queue.py`: handler-facing queue transition facade over the
-  existing in-memory pipeline.
+- `src/services/job_queue.py`: handler-facing queue transition facade plus U1
+  home snapshot/status-reference/progress persistence seams.
 - `src/services/backup_manager.py`: handler-facing WebDAV lifecycle facade.
 - `src/services/proxy_manager.py`: proxy settings/switching facade.
 - `src/services/interactions.py`: revisioned input interaction sessions.
@@ -47,14 +49,14 @@
 
 ## Next extraction targets
 
-1. U1: build the stable `/start` control console from immutable/basic view
-   state, keeping network probes out of synchronous rendering.
-2. U1: converge per-job presentation on one main status card and persist its
-   Telegram chat/message identifiers.
-3. U1: replace the global progress edit throttle with `(job_id, phase)` state,
-   generation guards and per-job Telegram edit throttling.
-4. Keep U2 pagination/detail/confirmation flows separate until the U1 console,
-   job card and throttling deployment is stable.
+1. U2: add SQL-backed queue pagination/filter counts and immutable page/detail
+   view models; never fetch the full jobs table just to slice in memory.
+2. U2: add a failure center whose available actions depend on durable failure
+   type/cache/published/backup state.
+3. U2: add revision-bound, expiring destructive-operation tokens for cancel,
+   cache delete and undo confirmation; callbacks must stay <=64 UTF-8 bytes.
+4. Preserve the U1 stable home/task-card/progress behavior while U2 navigation
+   is introduced incrementally.
 
 ## UI direction
 
