@@ -25,30 +25,33 @@
 - `src/services/proxy_manager.py`: proxy settings/switching facade.
 - `src/services/interactions.py`: revisioned input interaction sessions.
 - `src/repository/`: SQLite lifecycle, checksum-verified forward migrations,
-  schema 3 runtime entities/claim metadata, revision-CAS transitions, atomic
-  download/publish claims, accepted aggregates, events, published refs, backup
-  and interaction-session DAOs. Production schema 3 exists at
-  `session/state.sqlite3`; legacy workers are still the execution source of truth.
+  schema 4 runtime/recovery metadata, revision-CAS transitions, atomic
+  download/publish claims, claim heartbeat, local-cache persistence, accepted
+  aggregates, events, published refs, backup and interaction-session DAOs.
+  Production schema 4 exists at `session/state.sqlite3` and now drives worker
+  acquisition/restart classification.
+- `src/services/recovery.py`: fail-closed startup recovery planner for queued,
+  downloading, ready, publishing and interrupted durable jobs.
 - `src/services/shadow_state.py`: serialized best-effort mirror from the legacy
   queue/WebDAV paths into SQLite, now using the explicit job state machine for
   durable lifecycle transitions.
 - `src/state_machine.py`: authoritative allowed job-state transition table,
   terminal rules and pause/resume validation.
-- `src/bot.py`: legacy in-memory worker/orchestration implementation plus thin
-  dependency assembly for the extracted handlers/services.
+- `src/bot.py`: transport/orchestration compatibility layer; repository claims
+  choose durable download/publish work while process-local queues/Futures still
+  coordinate live transport and UI state.
 
 ## Next extraction targets
 
-1. Add startup recovery classification before workers start, initially only for
-   states/sources that can be recovered safely without Telegram history access.
-2. Move download/publish worker acquisition to repository claims while keeping
-   process-local queues/conditions only as wake-up mechanisms.
-3. Add heartbeat/interrupted repair and restart tests for queued/downloading/
-   ready/publishing, with partial published refs stopping automatic replay.
-4. Add graceful shutdown and remove the legacy Future-based truth path only
-   after repository-backed workers have survived a separate deployment cycle.
-5. Keep the characterization suite unchanged while replacing legacy worker
-   internals incrementally.
+1. Add explicit graceful shutdown: stop intake/new claims, settle active claims
+   as interrupted when needed, and drain WebDAV work within a bounded stop
+   timeout.
+2. Add SIGTERM/repeated-shutdown tests and restart verification that consumes
+   the interrupted states created by shutdown.
+3. Remove remaining places that treat Future/input_q membership as durable job
+   truth; retain them only for in-process wake-up/transport coordination.
+4. Mark R3 complete only after production stop/start/recovery smoke succeeds,
+   then move to U1 without mixing UI work into shutdown cleanup.
 
 ## UI direction
 

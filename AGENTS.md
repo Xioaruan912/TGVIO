@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `3e187d9`（R3-A：显式状态机、revision CAS、原子 claim 基础完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 23:07 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3]`、`integrity=ok`，日志包含 `Applied SQLite migration 0003_claims.sql`、`SQLite repository ready. schema=[1, 2, 3] integrity=ok`、`Bot commands registered` 和 `Bot started`。
+- 当前分支：`main`。当前生产运行代码基线为 `3245303`（R3-B：repository claim 驱动 worker + startup recovery 完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 23:21 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`，日志包含 `Applied SQLite migration 0004_recovery.sql`、`SQLite repository ready. schema=[1, 2, 3, 4] integrity=ok`、`Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -420,7 +420,7 @@ docker compose config --quiet
 | R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [x] `744ca98`（2026-08-30） |
 | R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [x] `15b4012`（2026-08-30） |
 | R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [x] `3a2775e`（2026-08-30；schema 1→2 + shadow dual-write，旧 `_Pipeline` 仍是运行真相源） |
-| R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ]（R3-A `3e187d9` 已完成状态机/CAS/claim 基础；下一步 R3-B worker claim 切换 + startup recovery） |
+| R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ]（R3-A/B 已完成 `3e187d9`/`3245303`；下一步 R3-C graceful shutdown + legacy truth-path 收尾） |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [ ] |
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [ ] |
@@ -1488,13 +1488,13 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-R0、R1、R2 已完成，R3-A 已由 `3e187d9` 完成并部署。下一阶段进入 **R3-B：repository claim 驱动 worker + startup recovery**；仍不要同时做新 UI 或完整 SIGTERM graceful shutdown。
+R0、R1、R2 已完成，R3-A/R3-B 已分别由 `3e187d9`、`3245303` 完成并部署。下一阶段进入 **R3-C：graceful shutdown + claim interruption/legacy truth-path 收尾**；完成前不要开始新 UI。
 
-1. 在 worker 启动前实现 repository recovery scan：按第 14.5 节处理 `queued/downloading/ready/publishing`，第一批只自动恢复可安全判定的 URL/完整本地缓存任务；Telegram 私聊 source descriptor 不足时必须 fail closed 为明确错误，不得伪装可恢复。
-2. 把下载 worker 的新任务领取从内存 `input_q` 主入口逐步切到 `claim_next_download()`，发布器改用 `claim_next_publish()`；保留必要的进程内 Queue/Condition 只做唤醒，不再作为持久真相源。
-3. claim 完成/失败/取消必须经 `transition_job()` CAS 结算并清除 claim owner；补 heartbeat/update DAO 和 interrupted repair，但不要在 DB transaction 内做 Telegram/WebDAV IO。
-4. 加 restart/fake 测试：queued 重排、downloading→interrupted/requeue、ready 缓存存在恢复发布、ready 缓存缺失 failed、publishing 无 published refs 可重试、有 partial refs 停止自动重发；并验证旧 FIFO/并行下载语义不变。
-5. R3-B 完成前旧 `_Pipeline` Future/内存 worker 兼容路径不得一次性删除；先灰度 repository-backed claims，确认 85+ 回归稳定后再在 R3-C 做 graceful shutdown/旧路径收尾。
+1. 为 `_Pipeline` 增加显式 shutdown lifecycle：停止 intake/新 claim，等待或中断 download/publish/WebDAV task，在 compose stop timeout 内退出；shutdown 期间不得领取新任务。
+2. 对仍持有 claim 的 `downloading/publishing` job 做原子 interrupted repair：清 claim owner/heartbeat 并记录 shutdown event；`ready/queued` 保持可恢复，partial published refs 仍禁止自动重发。
+3. 增加 SIGTERM/stop fake 测试：下载中、发布中、WebDAV 后台、空闲、重复 shutdown；repository 关闭前必须先完成 claim settlement，下一次 startup recovery 应能承接 interrupted job。
+4. 在 repository-backed worker 已稳定的前提下，逐步移除把 Future/input_q 当“任务真相”的判断；允许保留 Queue/Event 作为进程内 wake-up/transport coordination，但 durable 排序、状态与恢复必须只读 SQLite。
+5. R3-C 通过 93+ 回归、生产 stop/start/recovery 冒烟后，才把 R3 主项标 `[x]`，随后进入 U1 首页控制台；不要在本阶段夹带 Web Dashboard、多频道或转码。
 
 ## 21. 执行日志
 
@@ -1628,3 +1628,18 @@ R0、R1、R2 已完成，R3-A 已由 `3e187d9` 完成并部署。下一阶段进
 - 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-3e187d9`、`/root/telegram-video-forwarder-releases/pre-3e187d9.tar.gz` 和上述 schema-2 数据库备份；回滚到 R2 代码前应停容器并恢复 schema-2 DB，因为旧 migration 集合不认识 version 3。
 - 未完成与风险：claim DAO 目前只作为 repository/service seam 和 shadow lifecycle 使用，旧 download/upload worker 尚未从 DB claim；没有 startup recovery、heartbeat repair 或 SIGTERM graceful shutdown，不能宣称重启任务已可恢复。
 - 下一步精确入口：第 20.6 节 R3-B；从 repository recovery scan + download/publish claim worker 适配器开始，先写 restart/fake tests 再切运行入口。
+
+### 2026-08-30 23:21 - R3-B repository worker claim 与 startup recovery
+
+- 状态：R3-B 已完成、推送并部署生产；R3 总工作包仍待 R3-C graceful shutdown/旧 truth-path 收尾。
+- 基线 commit：`52eecf5`
+- 实现 commit：`3245303`（`feat(recovery): add R3-B repository worker recovery`）
+- 已改文件：`src/repository/migrations/0004_recovery.sql`、`src/repository/sqlite.py`、`src/services/recovery.py`、`src/services/shadow_state.py`、`src/services/job_queue.py`、`src/state_machine.py`、`src/bot.py`、`src/main.py`、`tests/test_recovery.py`、`tests/test_recovery_pipeline.py`、`tests/test_repository.py` 等。
+- 已完成：schema 4 持久化 `legacy_seq`；worker 启动前执行 recovery scan；queued URL 可重新下载，downloading 经 `interrupted -> queued` 重排，ready 完整本地缓存恢复发布，缺失缓存 fail closed，publishing 无 published refs 且缓存完整回 ready，有 refs 则停止自动重发并 failed/manual-review。Telegram source descriptor 不足时明确 fail closed。下载/发布 worker 在 repository 存在时由 `claim_next_download/publish()` 决定执行对象，`input_q` 只保留 wake-up/运行对象兼容；下载完成原子写 local_path/size + ready，发布完成原子写 refs + succeeded；failure/cancel 直接 revision-CAS 结算，claim progress 可 heartbeat。
+- 测试：本地挂载源码与最终构建镜像均 93 项 unittest 全通过；新增 recovery planner、pipeline rebind、repository-claimed download success/failure、schema 3→4 数据保留/自动 backup 测试。`py_compile`、`git diff --check`、compose config、Docker build、schema `[1,2,3,4]` smoke、旧 0001/0002/0003 checksum、静态镜像秘密路径检查全部通过。
+- GitHub：实现提交 `3245303` 已推送 `origin/main`；本条部署记录随其后的 docs-only commit 推送。
+- VPS：部署前确认生产实际源码与 `3e187d9` 完全一致、容器 `restart=0`、近 5 分钟无活动传输、DB schema `[1,2,3]`/`integrity=ok` 且 runtime tables 为 0；2026-08-30 23:21 CST 安全部署 `3245303`。部署后容器 `running`、`restart=0`，镜像 `sha256:18c0c318f8a15901606a142d86ae792b355fe57ecdafa9570c1f1d6377adfb6d`，生产容器 93 tests 全通过。
+- 数据迁移：部署前 SQLite backup API 建 `/root/telegram-video-forwarder-releases/state-pre-3245303-20260830-232114.sqlite3`；migration 4 自动建 `session/db_backups/state-pre-migrate-20260830-232126.sqlite3`。迁移后 schema `[1,2,3,4]`、`integrity=ok`、`legacy_seq` column/index 存在，原 jobs/events/items/published 计数仍为 0。
+- 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-3245303`、`/root/telegram-video-forwarder-releases/pre-3245303.tar.gz` 和 schema-3 DB 备份；回滚 R3-A 前必须停容器并恢复 schema-3 DB，因为旧 migration 集合不认识 version 4。
+- 未完成与风险：进程内 `Future`/`input_q` 仍承担 transport coordination 和部分旧状态展示；尚未实现 SIGTERM graceful shutdown/停止新 claim/主动 interrupted settlement。R3 尚不能标总完成。
+- 下一步精确入口：第 20.6 节 R3-C；先为 pipeline shutdown + claim interruption 写 fake tests，再接 main/container stop lifecycle。
