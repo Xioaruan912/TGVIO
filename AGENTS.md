@@ -7,7 +7,7 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前本地/GitHub 基线：`main`，提交 `ee104c1`（此前两次重构提交为 `b0cc309`、`ee104c1`）。
+- 当前分支：`main`。最后一个影响生产运行代码的提交是 `ee104c1`；之后有规划文档 `ff8340a` 和 R0 测试提交 `fecb832`，均不改变容器运行逻辑。开始工作时仍须用 `git log -1` 确认最新 HEAD。
 - 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 最后一次部署验证时容器正常运行，关键源码哈希与本地一致，日志包含 `Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
@@ -451,14 +451,14 @@ docker compose config --quiet
 
 待办：
 
-- [ ] 建立 `tests/fakes/telegram.py`：`FakeClient`、`FakeEvent`、`FakeMessage`、`FakeStatusMessage`，记录 `respond/edit/delete/send_file/delete_messages` 调用。
-- [ ] 建立可注入的 `FakeDownloader`、`FakePublisher`、`FakeBackupClient` 和 controllable clock；禁止测试依赖真实 `time.sleep`。
-- [ ] 覆盖单媒体、相册、collection、URL 四种 Job 的接受和顺序发布。
-- [ ] 覆盖 ask/always_spoiler/always_normal、确认超时自动正常、用户取消、合集 `/begin`/`/end`、文字 caption 拼接。
-- [ ] 覆盖并行下载但 FIFO 上传、暂停后跳过、继续、取消排队项、取消运行项、下载失败、上传失败、缓存重传。
+- [x] 建立 `tests/fakes/telegram.py`：`FakeClient`、`FakeCallbackEvent`、`FakeMessage`、`FakeStatusMessage`，记录 `respond/edit/delete/send_file/delete_messages` 调用。（2026-08-30，`fecb832`）
+- [ ] 建立可注入的 `FakeDownloader`、`FakePublisher`、`FakeBackupClient` 和 controllable clock；禁止测试依赖真实 `time.sleep`。其中 Downloader/Publisher 已完成（`fecb832`），BackupClient/clock 待补。
+- [ ] 覆盖单媒体、相册、collection、URL 四种 Job 的接受和顺序发布。单媒体、URL 接受及 ready job FIFO 发布已完成（`fecb832`），相册/collection 待补。
+- [ ] 覆盖 ask/always_spoiler/always_normal、确认超时自动正常、用户取消、合集 `/begin`/`/end`、文字 caption 拼接。pending 取消和 confirmation callback 一次性消费已完成（`fecb832`），其余待补。
+- [ ] 覆盖并行下载但 FIFO 上传、暂停后跳过、继续、取消排队项、取消运行项、下载失败、上传失败、缓存重传。FIFO、暂停/继续、排队取消、上传失败保留缓存与一次性缓存重试已完成（`fecb832`）；并行下载、运行中取消和下载失败待补。
 - [ ] 覆盖封面模式返回 `(peer_id, message_id)`、评论区线程根查找和撤销；已有关键 workaround 不得在抽取时消失。
-- [ ] 覆盖 WebDAV 失败保留缓存、成功清理、远端大小幂等、自动补传和 OpenList 延迟响应确认。
-- [ ] 覆盖重复 callback、callback 到达时任务已完成、状态消息已删除、FloodWait/编辑失败不影响任务结果。
+- [ ] 覆盖 WebDAV 失败保留缓存、成功清理、远端大小幂等、自动补传和 OpenList 延迟响应确认。延迟清理期间失败标记保留缓存已完成（`fecb832`），其余待补。
+- [ ] 覆盖重复 callback、callback 到达时任务已完成、状态消息已删除、FloodWait/编辑失败不影响任务结果。重复 confirm/retry 不重复入队已完成（`fecb832`），其余待补。
 - [ ] 对现有 `queue_view`、进度条和关键文案做快照式断言；UI 重设计阶段再有意更新快照。
 - [ ] 记录当前 `src/*.py` 行数、主要依赖方向和运行配置，作为拆分前基线。
 
@@ -1488,14 +1488,15 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-下一位实现代理应从 **R0** 开始，不要直接上 SQLite 或改 UI：
+下一位实现代理继续 **R0**，不要直接上 SQLite 或改 UI。`fecb832` 已完成队列/取消/暂停/重试首批 10 个行为测试，准确入口如下：
 
-1. 为 `_Pipeline` 当前的 submit/enqueue/cancel/pause/resume/retry 和上传顺序建立 fake-based characterization tests。
-2. 为 WebDAV cache retention 和 callback 幂等补回归测试。
-3. 在测试保护下先把 command/callback view 渲染进一步移入 `src/ui.py` 或新 `src/views/`，不改用户文案。
-4. 再抽 `JobQueue` facade；此时只包住旧内存实现，等行为稳定后进入 R2。
+1. 在 `tests/test_pipeline.py` 增加 album/collection 接受、ask/always 模式、确认超时、`/begin`/`/end` 和文字 caption 测试。
+2. 增加并行下载、运行中取消、下载失败与状态消息 edit/delete 失败测试。
+3. 新建 FakeBackupClient/本地 WebDAV server，覆盖成功清理、远端大小幂等、自动补传和延迟响应。
+4. 为 cover mode 返回 peer/message pairs、撤销和 `queue_view`/progress 文案补快照测试。
+5. 记录 `src/*.py` 行数、依赖方向和配置基线；R0 全部通过后才进入 R1 view/handler 抽取。
 
-这四步是唯一推荐的近期入口。未经用户明确改变优先级，不要先做 Web Dashboard、多频道或转码。
+未经用户明确改变优先级，不要先做 Web Dashboard、多频道、SQLite 或转码。
 
 ## 21. 执行日志
 
@@ -1503,9 +1504,23 @@ fix(webdav): preserve cache across interrupted verify
 
 - 状态：已完成（文档-only，未改运行代码，未部署容器）
 - 基线 commit：`ee104c1`
-- 已改文件：`AGENTS.md`（gitignored）
+- 已改文件：`AGENTS.md`（已跟踪；`.gitignore` 中仍有历史规则）
 - 已完成：开源项目调研、完整功能清单、架构/SQLite/state/UI/恢复/测试/发布方案。
 - 测试：`git diff --check` 通过；3 个 unittest 通过；`py_compile` 与 `docker compose config --quiet` 通过；Markdown fence 配对和敏感信息模式复核通过。
 - GitHub：随本次文档 commit 推送 `origin/main`；具体提交哈希以 `git log` 为准。
 - VPS：无需重建；生产代码和运行数据未改。
 - 下一步精确入口：第 20.6 节，从 R0 fake-based characterization tests 开始。
+
+### 2026-08-30 21:20 - R0-A 队列与 callback 行为基线
+
+- 状态：已完成并通过本地门禁；R0 总工作包仍在进行中。
+- 基线 commit：`ff8340a`
+- 实现 commit：`fecb832`（`test(queue): lock current orchestration behavior`）
+- 已改文件：`tests/__init__.py`、`tests/fakes/__init__.py`、`tests/fakes/telegram.py`、`tests/test_pipeline.py`、`AGENTS.md`。
+- 已完成：离线 FakeClient/CallbackEvent/Message/Status、FakeDownloader/Publisher；submit 顺序、pending/queued cancel、paused skip、FIFO publish、上传失败缓存、WebDAV 延迟清理保留、retry/confirm 一次性 callback、任务/全局暂停恢复测试。
+- 测试：`python3 -m unittest discover -s tests -v` 共 13 项通过；`git diff --check`、`py_compile src/tests`、`docker compose config --quiet` 通过。
+- GitHub：实现提交 `fecb832` 与本次 AGENTS 交接提交均推送 `origin/main`。
+- VPS：本批只有 tests/文档，不改变镜像运行代码；不重建容器，只做只读健康确认。
+- 数据迁移：无。
+- 未完成与风险：album/collection/mode/session、并行下载与运行中取消、WebDAV 协议矩阵、cover/undo 和 view snapshot 尚未覆盖，不能把 R0 主项标完成。
+- 下一步精确入口：`tests/test_pipeline.py`，先增加 `_auto_enqueue` album merge、`_session_finalize` 和 `_confirm_timeout` 测试。
