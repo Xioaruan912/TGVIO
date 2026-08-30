@@ -24,28 +24,31 @@
 - `src/services/backup_manager.py`: handler-facing WebDAV lifecycle facade.
 - `src/services/proxy_manager.py`: proxy settings/switching facade.
 - `src/services/interactions.py`: revisioned input interaction sessions.
-- `src/repository/`: R2 SQLite lifecycle, checksum-verified forward migrations,
-  schema 2 runtime entities, atomic accepted aggregates, events, published refs,
-  backup and interaction-session DAOs. Production schema 2 exists at
-  `session/state.sqlite3`, but is still not the runtime source of truth.
+- `src/repository/`: SQLite lifecycle, checksum-verified forward migrations,
+  schema 3 runtime entities/claim metadata, revision-CAS transitions, atomic
+  download/publish claims, accepted aggregates, events, published refs, backup
+  and interaction-session DAOs. Production schema 3 exists at
+  `session/state.sqlite3`; legacy workers are still the execution source of truth.
 - `src/services/shadow_state.py`: serialized best-effort mirror from the legacy
-  queue/WebDAV paths into SQLite, including album merge de-duplication and
-  published peer/message references.
+  queue/WebDAV paths into SQLite, now using the explicit job state machine for
+  durable lifecycle transitions.
+- `src/state_machine.py`: authoritative allowed job-state transition table,
+  terminal rules and pause/resume validation.
 - `src/bot.py`: legacy in-memory worker/orchestration implementation plus thin
   dependency assembly for the extracted handlers/services.
 
 ## Next extraction targets
 
-1. Add the explicit R3 job-state transition table and repository revision/CAS
-   operations; make stale/repeated commands idempotent.
-2. Add atomic download/publish claims and concurrency tests while preserving the
-   current legacy worker behavior as a compatibility path.
-3. Route handler-facing queue transitions through the state-machine seam, then
-   move worker truth to SQLite only after the shadow path remains stable.
-4. Add restart recovery and graceful shutdown in a later R3 batch, not in the
-   first state-machine commit.
-5. Keep the R0/R1 characterization suite unchanged while replacing the legacy
-   `_Pipeline` internals incrementally.
+1. Add startup recovery classification before workers start, initially only for
+   states/sources that can be recovered safely without Telegram history access.
+2. Move download/publish worker acquisition to repository claims while keeping
+   process-local queues/conditions only as wake-up mechanisms.
+3. Add heartbeat/interrupted repair and restart tests for queued/downloading/
+   ready/publishing, with partial published refs stopping automatic replay.
+4. Add graceful shutdown and remove the legacy Future-based truth path only
+   after repository-backed workers have survived a separate deployment cycle.
+5. Keep the characterization suite unchanged while replacing legacy worker
+   internals incrementally.
 
 ## UI direction
 

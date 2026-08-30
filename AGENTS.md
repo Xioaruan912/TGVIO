@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `3a2775e`（R2-B：runtime entities + 非权威 shadow dual-write 完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 22:59 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2]`、`integrity=ok`，日志包含 `Applied SQLite migration 0002_runtime_entities.sql`、`SQLite repository ready. schema=[1, 2] integrity=ok`、`Bot commands registered` 和 `Bot started`。
+- 当前分支：`main`。当前生产运行代码基线为 `3e187d9`（R3-A：显式状态机、revision CAS、原子 claim 基础完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 23:07 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3]`、`integrity=ok`，日志包含 `Applied SQLite migration 0003_claims.sql`、`SQLite repository ready. schema=[1, 2, 3] integrity=ok`、`Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -420,7 +420,7 @@ docker compose config --quiet
 | R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [x] `744ca98`（2026-08-30） |
 | R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [x] `15b4012`（2026-08-30） |
 | R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [x] `3a2775e`（2026-08-30；schema 1→2 + shadow dual-write，旧 `_Pipeline` 仍是运行真相源） |
-| R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ] |
+| R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ]（R3-A `3e187d9` 已完成状态机/CAS/claim 基础；下一步 R3-B worker claim 切换 + startup recovery） |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [ ] |
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [ ] |
@@ -1488,13 +1488,13 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-R0、R1、R2 已完成并部署。下一阶段进入 **R3-A：显式状态机 + repository 原子 transition/claim/idempotency 基础**；这一小阶段先不做完整重启恢复和新 UI。
+R0、R1、R2 已完成，R3-A 已由 `3e187d9` 完成并部署。下一阶段进入 **R3-B：repository claim 驱动 worker + startup recovery**；仍不要同时做新 UI 或完整 SIGTERM graceful shutdown。
 
-1. 把允许的 `jobs.state` transition 集中定义为显式表，并为 terminal state、paused/resume、failed retry 等规则加单元测试；handler/pipeline 不得自行发明状态字符串。
-2. repository 增加基于 `revision` 的原子 transition 与 compare-and-swap；重复 callback/旧 revision 必须无重复副作用，并在同一事务写 `job_events`。
-3. 增加下载/发布 claim DAO（先测试/服务边界，不立刻删除旧 worker Future）；验证两个并发 claimant 最多一个成功。
-4. 通过 `JobQueue` seam 开始把 confirm/cancel/retry/hold/resume 的状态写入口统一到状态机；仍保留旧 `_Pipeline` 调度作为兼容执行路径，直到 R3-B recovery/worker 切换完成。
-5. 不在 R3-A 同时实现 startup recovery、SIGTERM graceful shutdown、Web Dashboard、多频道或新 UI。
+1. 在 worker 启动前实现 repository recovery scan：按第 14.5 节处理 `queued/downloading/ready/publishing`，第一批只自动恢复可安全判定的 URL/完整本地缓存任务；Telegram 私聊 source descriptor 不足时必须 fail closed 为明确错误，不得伪装可恢复。
+2. 把下载 worker 的新任务领取从内存 `input_q` 主入口逐步切到 `claim_next_download()`，发布器改用 `claim_next_publish()`；保留必要的进程内 Queue/Condition 只做唤醒，不再作为持久真相源。
+3. claim 完成/失败/取消必须经 `transition_job()` CAS 结算并清除 claim owner；补 heartbeat/update DAO 和 interrupted repair，但不要在 DB transaction 内做 Telegram/WebDAV IO。
+4. 加 restart/fake 测试：queued 重排、downloading→interrupted/requeue、ready 缓存存在恢复发布、ready 缓存缺失 failed、publishing 无 published refs 可重试、有 partial refs 停止自动重发；并验证旧 FIFO/并行下载语义不变。
+5. R3-B 完成前旧 `_Pipeline` Future/内存 worker 兼容路径不得一次性删除；先灰度 repository-backed claims，确认 85+ 回归稳定后再在 R3-C 做 graceful shutdown/旧路径收尾。
 
 ## 21. 执行日志
 
@@ -1613,3 +1613,18 @@ R0、R1、R2 已完成并部署。下一阶段进入 **R3-A：显式状态机 + 
 - 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-3a2775e`、`/root/telegram-video-forwarder-releases/pre-3a2775e.tar.gz` 和上述两份数据库备份；回滚 R2-A 代码前应先停容器并恢复 schema-1 数据库备份，因为旧代码的 REQUIRED_TABLES 与 migration 集合不认识 schema 2。
 - 未完成与风险：shadow 数据目前只在当前进程维护 `legacy seq -> DB job id` 映射，重启后不会用于恢复或调度；WebDAV shadow 当前记录 attempt/file 起点，旧 JSON 仍是 WebDAV 实际恢复来源。不要把 schema 2 当作 R3 已完成。
 - 下一步精确入口：第 20.6 节 R3-A；先做显式 transition 表、revision CAS 与并发 claim 测试，再逐步把 service 写入口切到状态机。
+
+### 2026-08-30 23:07 - R3-A 状态机、revision CAS 与原子 claim 基础
+
+- 状态：R3-A 已完成、推送并部署生产；R3 总工作包仍在进行中，旧 `_Pipeline` worker 尚未切为 repository 真相源。
+- 基线 commit：`efdc40a`
+- 实现 commit：`3e187d9`（`feat(state): add R3-A CAS and claim foundations`）
+- 已改文件：`src/state_machine.py`、`src/repository/migrations/0003_claims.sql`、`src/repository/sqlite.py`、`src/services/job_queue.py`、`src/services/shadow_state.py`、`src/bot.py`、`tests/test_state_machine.py`、`tests/test_repository.py`、`tests/test_shadow_state.py` 等。
+- 已完成：集中定义 durable job transition 表；terminal state 禁止复活，paused 持久化/验证 `resume_state`，failed 只允许回 `queued/ready`；repository `transition_job()` 使用 `revision` CAS，在同事务更新 snapshot + `job_events`，stale revision 不写重复 event；published refs + succeeded 也改为 CAS 原子提交。migration 3 为 jobs 增 `claim_owner/claim_kind/heartbeat_at`；新增原子 download/publish claim，两个独立 SQLite connection 并发领取最多一个成功，publish claim 会被更早 queued/downloading/ready/publishing job 阻塞以保持 FIFO。`JobQueue` 已暴露 claim seam，并把 confirm/cancel/retry/hold/resume 与 worker shadow phase 写入统一走状态机；旧 worker 仍负责实际调度。
+- 测试：本地挂载源码测试与最终构建镜像均 85 项 unittest 全通过；新增 terminal/paused/failed 规则、stale transition、stale publish、双连接 download/publish claim、FIFO claim、schema 2→3 数据保留/自动 backup 测试。`py_compile`、`git diff --check`、compose config、Docker build、schema `[1,2,3]` smoke、旧 migration checksum、镜像秘密路径检查全部通过。
+- GitHub：实现提交 `3e187d9` 已推送 `origin/main`；本条部署记录随其后的 docs-only commit 推送。
+- VPS：部署前确认生产实际为 R2 `3a2775e`、容器 `restart=0`、近 5 分钟无活动传输、DB schema `[1,2]`/`integrity=ok` 且 runtime tables 为空；2026-08-30 23:07 CST 安全部署 `3e187d9`。部署后容器 `running`、`restart=0`，镜像 `sha256:aca1911f4267e07073c89cef78b169d43d26d1d92f5d69010b35b9764ba7d76c`；生产容器 85 tests 全通过。
+- 数据迁移：部署前用 SQLite backup API 建 `/root/telegram-video-forwarder-releases/state-pre-3e187d9-20260830-230716.sqlite3`；migration 3 启动前自动建 `session/db_backups/state-pre-migrate-20260830-230728.sqlite3`。迁移后 schema `[1,2,3]`、`integrity=ok`、claim columns 存在，原 jobs/events/published 计数保持 0。
+- 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-3e187d9`、`/root/telegram-video-forwarder-releases/pre-3e187d9.tar.gz` 和上述 schema-2 数据库备份；回滚到 R2 代码前应停容器并恢复 schema-2 DB，因为旧 migration 集合不认识 version 3。
+- 未完成与风险：claim DAO 目前只作为 repository/service seam 和 shadow lifecycle 使用，旧 download/upload worker 尚未从 DB claim；没有 startup recovery、heartbeat repair 或 SIGTERM graceful shutdown，不能宣称重启任务已可恢复。
+- 下一步精确入口：第 20.6 节 R3-B；从 repository recovery scan + download/publish claim worker 适配器开始，先写 restart/fake tests 再切运行入口。
