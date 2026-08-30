@@ -1,0 +1,10 @@
+.git
+.gitignore
+.env
+.venv
+session
+downloads
+__pycache__
+*.pyc
+*.pyo
+*Zone.Identifier

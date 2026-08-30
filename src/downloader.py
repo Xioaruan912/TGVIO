@@ -1,6 +1,7 @@
 import asyncio
 import logging
 import os
+import urllib.parse
 
 from yt_dlp import YoutubeDL
 
@@ -32,7 +33,8 @@ def _download_sync(url: str, download_dir: str) -> tuple[str, str]:
         title = info.get("title") or url
         path = _resolve_path(ydl, info, download_dir)
 
-    logger.info("Downloaded %s -> %s", url, path)
+    parsed = urllib.parse.urlsplit(url)
+    logger.info("Downloaded URL host=%s -> %s", parsed.hostname or "unknown", path)
     return path, title
 
 

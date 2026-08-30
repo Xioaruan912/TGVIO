@@ -8,8 +8,10 @@ from unittest.mock import patch
 from src import bot
 from src.models import Job, RetryInfo
 from tests.fakes import (
+    FakeBackupClient,
     FakeCallbackEvent,
     FakeClient,
+    FakeClock,
     FakeDownloader,
     FakeMessage,
     FakeNewMessageEvent,
@@ -250,11 +252,13 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         await callback(hold)
         self.assertIn(20, pipeline._paused_files)
         self.assertIn("已暂停", job.status.text)
+        self.assertNotIn("队列第 队列第", job.status.text)
 
         resume = FakeCallbackEvent(client, b"resume:20")
         await callback(resume)
         self.assertNotIn(20, pipeline._paused_files)
         self.assertIn("已继续", job.status.text)
+        self.assertNotIn("队列第 队列第", job.status.text)
 
         await callback(FakeCallbackEvent(client, b"q_pause"))
         self.assertTrue(pipeline._paused)
@@ -498,6 +502,42 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.status.text, "")
         self.assertEqual(self.pipeline.retryable[200].path, "/cached/video.mp4")
 
+    async def test_download_complete_copy_uses_single_queue_label(self) -> None:
+        job = self.make_job(205)
+        self.pipeline.jobs[205] = job
+        self.pipeline.active_seqs.add(205)
+
+        await self.pipeline._on_download_done(job, "/fake/video.mp4")
+
+        self.assertEqual(
+            job.status.text,
+            "✅ 队列第 1 位 下载完成，等待上传",
+        )
+
+    def test_start_copy_matches_confirmation_timeout_behavior(self) -> None:
+        self.assertIn("自动按正常（非 18+）模式处理", bot._START_TEXT)
+        self.assertNotIn("自动取消该任务", bot._START_TEXT)
+
+    def test_proxy_views_mask_credentials(self) -> None:
+        secret = "super-secret-password"
+        self.pipeline.proxy_cfg = {
+            "auto": True,
+            "current": 0,
+            "proxies": [
+                {"url": f"http://username:{secret}@proxy.example:8080"}
+            ],
+        }
+
+        label = self.pipeline._proxy_label(0)
+        main_text, _ = self.pipeline._proxy_view()
+        list_text, _ = self.pipeline._proxy_list_view()
+
+        self.assertEqual(label, "http://***@proxy.example:8080")
+        self.assertNotIn(secret, main_text)
+        self.assertNotIn(secret, list_text)
+        self.assertNotIn("username", main_text)
+        self.assertNotIn("username", list_text)
+
     async def test_upload_worker_passes_all_job_kinds_in_sequence(self) -> None:
         self.pipeline.publisher.expected_calls = 4
         self.pipeline._schedule_cleanup = lambda _seq, _cleanup: None
@@ -572,6 +612,435 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(os.path.isfile(path))
         self.assertEqual(self.pipeline.retryable[seq].path, path)
         self.assertIn("上传超时", job.status.text)
+
+    async def test_undo_callback_deletes_cover_and_comments_by_peer_once(self) -> None:
+        pipeline, client = self.register_callback_pipeline()
+        callback = client.handlers["on_callback"]
+        pipeline.published[240] = [
+            ("channel-input", 101),
+            ("discussion-input", 202),
+        ]
+
+        first = FakeCallbackEvent(client, b"undo:240")
+        await callback(first)
+
+        self.assertEqual(
+            client.deleted_messages,
+            [("channel-input", 101), ("discussion-input", 202)],
+        )
+        self.assertEqual(first.delete_calls, 1)
+        self.assertEqual(first.answers[-1], "已撤销")
+
+        second = FakeCallbackEvent(client, b"undo:240")
+        await callback(second)
+        self.assertEqual(second.answers[-1], "该发布已无法撤销")
+        self.assertEqual(len(client.deleted_messages), 2)
+
+    async def test_queue_and_progress_views_match_current_copy_and_callbacks_fit(self) -> None:
+        seq = 250
+        job = self.make_job(seq)
+        self.pipeline.jobs[seq] = job
+        self.pipeline.active_seqs.add(seq)
+        self.pipeline.active[seq] = {
+            "phase": "download",
+            "pct": 25,
+            "item": 1,
+            "items": 4,
+            "user_id": 42,
+        }
+        self.pipeline._download_tasks[seq] = object()
+        self.pipeline.pending[300] = bot._PendingJob(
+            seq=300,
+            kind="media",
+            message=FakeMessage(300),
+            user_id=42,
+        )
+        session = bot._Session(user_id=42)
+        session.items = [[FakeMessage(1), FakeMessage(2)]]
+        session.texts = ["comment"]
+        self.pipeline.sessions[42] = session
+
+        text, buttons = bot.queue_view(self.pipeline, 42)
+        self.assertEqual(
+            text,
+            "📋 队列管理\n"
+            "每个按钮带位置序号，对应下方第 N 位。\n\n"
+            "▶ 进行中（1）\n"
+            "队列第 1 位 ⬇ 下载 1/4 ██░░░░░░░░  25%\n\n"
+            "❓ 待确认\n"
+            "❓① 待确认（媒体）\n\n"
+            "📦 合集会话进行中：2 个媒体 · 1 条评论已收录（发 /end 结束并发布）",
+        )
+        callback_data = [button.data for row in buttons for button in row]
+        self.assertTrue(callback_data)
+        self.assertTrue(all(len(data) <= 64 for data in callback_data))
+
+        with patch.object(bot.time, "time", return_value=100.0):
+            await self.pipeline._update_progress_status(seq)
+        self.assertEqual(
+            job.status.text,
+            "⬇ 队列第 1 位 下载 1/4 ██░░░░░░░░  25%",
+        )
+        self.assertEqual(
+            [button.data for button in job.status.edits[-1]["buttons"]],
+            [b"toggle_progress", b"stop:250"],
+        )
+
+    async def test_webdav_manual_retry_keeps_hashed_remote_name(self) -> None:
+        seq = 260
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "original-name.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        key = "260:1"
+        self.pipeline.webdav_cfg.update(
+            {
+                "enabled": True,
+                "url": "https://dav.invalid/dav",
+                "user": "user",
+                "pass": "pass",
+                "retry": 0,
+            }
+        )
+        self.pipeline.webdav_logs[key] = {
+            "key": key,
+            "seq": seq,
+            "ts": bot.time.time(),
+            "remote_dir": "backup/1",
+            "files": [
+                {
+                    "name": "deadbeef.mp4",
+                    "local": path,
+                    "status": "failed",
+                }
+            ],
+        }
+        self.pipeline._schedule_cleanup = lambda _seq, _cleanup: None
+        fake = FakeBackupClient()
+
+        with patch.object(
+            bot.webdav,
+            "remote_file_size",
+            side_effect=fake.remote_file_size,
+        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+            result = await self.pipeline._webdav_retry(key)
+            tasks = [
+                task
+                for task, task_seq in self.pipeline._webdav_tasks.items()
+                if task_seq == seq
+            ]
+            await asyncio.gather(*tasks)
+
+        self.assertIn("正在重试", result)
+        self.assertEqual(fake.upload_calls[0]["remote_name"], "deadbeef.mp4")
+        self.assertEqual(
+            self.pipeline.webdav_logs[key]["files"][0]["status"], "ok"
+        )
+
+    async def test_webdav_manual_retry_skips_put_when_remote_size_matches(self) -> None:
+        seq = 265
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "original-name.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        key = "265:1"
+        remote_dir = "backup/2"
+        remote_name = "facefeed.mp4"
+        self.pipeline.webdav_cfg.update(
+            {
+                "enabled": True,
+                "url": "https://dav.invalid/dav",
+                "user": "user",
+                "pass": "pass",
+                "retry": 0,
+            }
+        )
+        self.pipeline.webdav_logs[key] = {
+            "key": key,
+            "seq": seq,
+            "user_id": 0,
+            "ts": bot.time.time(),
+            "remote_dir": remote_dir,
+            "files": [
+                {
+                    "name": remote_name,
+                    "local": path,
+                    "status": "failed",
+                }
+            ],
+        }
+        self.pipeline.webdav_keep_cache.add(seq)
+        self.pipeline._schedule_cleanup = lambda _seq, _cleanup: None
+        fake = FakeBackupClient()
+        fake.remote_sizes[(remote_dir, remote_name)] = os.path.getsize(path)
+
+        with patch.object(
+            bot.webdav,
+            "remote_file_size",
+            side_effect=fake.remote_file_size,
+        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+            result = await self.pipeline._webdav_retry(key)
+            tasks = [
+                task
+                for task, task_seq in self.pipeline._webdav_tasks.items()
+                if task_seq == seq
+            ]
+            await asyncio.gather(*tasks)
+            await asyncio.sleep(0)
+
+        self.assertIn("正在重试", result)
+        self.assertFalse(fake.upload_calls)
+        self.assertEqual(
+            self.pipeline.webdav_logs[key]["files"][0]["status"], "ok"
+        )
+        self.assertNotIn(seq, self.pipeline.webdav_keep_cache)
+
+    async def test_webdav_autoretry_keeps_hashed_name_and_releases_cache(self) -> None:
+        seq = 270
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "original-name.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        key = "270:1"
+        self.pipeline.webdav_cfg.update(
+            {
+                "enabled": True,
+                "url": "https://dav.invalid/dav",
+                "user": "user",
+                "pass": "pass",
+                "retry": 0,
+            }
+        )
+        self.pipeline.webdav_logs[key] = {
+            "key": key,
+            "seq": seq,
+            "user_id": 0,
+            "ts": bot.time.time(),
+            "remote_dir": "backup/2",
+            "files": [
+                {
+                    "name": "cafebabe.mp4",
+                    "local": path,
+                    "status": "failed",
+                }
+            ],
+        }
+        self.pipeline.webdav_keep_cache.add(seq)
+        cleaned: list[int] = []
+        self.pipeline._schedule_cleanup = lambda cleanup_seq, _extra: cleaned.append(
+            cleanup_seq
+        )
+        fake = FakeBackupClient()
+
+        with patch.object(
+            bot.webdav,
+            "remote_file_size",
+            side_effect=fake.remote_file_size,
+        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+            await self.pipeline._webdav_autoretry_once()
+
+        self.assertEqual(fake.upload_calls[0]["remote_name"], "cafebabe.mp4")
+        self.assertNotIn(seq, self.pipeline.webdav_keep_cache)
+        self.assertEqual(cleaned, [seq])
+        self.assertEqual(
+            self.pipeline.webdav_logs[key]["files"][0]["status"], "ok"
+        )
+
+    async def test_webdav_cache_upload_skips_matching_remote_file(self) -> None:
+        seq = 280
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "original-name.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        self.pipeline.webdav_cfg.update(
+            {
+                "enabled": True,
+                "url": "https://dav.invalid/dav",
+                "user": "user",
+                "pass": "pass",
+                "path": "/backup",
+                "retry": 0,
+            }
+        )
+        remote_name = f"{bot._file_md5_short(path)}.mp4"
+        fake = FakeBackupClient()
+        fake.remote_sizes[("backup/existing", remote_name)] = os.path.getsize(path)
+        self.pipeline.webdav_logs["existing"] = {
+            "key": "existing",
+            "seq": seq,
+            "ts": 1,
+            "remote_dir": "backup/existing",
+            "files": [
+                {
+                    "name": remote_name,
+                    "local": path,
+                    "status": "failed",
+                }
+            ],
+        }
+
+        with patch.object(
+            bot.webdav,
+            "remote_file_size",
+            side_effect=fake.remote_file_size,
+        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+            result = await self.pipeline._webdav_upload_cache(seq)
+
+        self.assertIn("缓存上传完成", result)
+        self.assertFalse(fake.upload_calls)
+        self.assertFalse(os.path.exists(path))
+        self.assertFalse(os.path.exists(workdir))
+
+    async def test_unresolved_watchdog_settles_job_and_offers_retry(self) -> None:
+        seq = 290
+        job = self.make_job(seq)
+        self.pipeline.jobs[seq] = job
+        self.pipeline.active_seqs.add(seq)
+        future = asyncio.get_running_loop().create_future()
+        self.pipeline.results[seq] = future
+        self.pipeline._future_created[seq] = 900.0
+        clock = FakeClock(1000.0)
+
+        with patch.object(bot.time, "time", side_effect=clock.time):
+            with self.assertLogs("src.bot", level="ERROR"):
+                await self.pipeline._watchdog_unresolved(60)
+
+        self.assertIs(future.result(), bot._CANCELLED)
+        self.assertIn(seq, self.pipeline.retryable)
+        self.assertIn("处理超时", job.status.text)
+
+    async def test_webdav_initial_success_releases_cache_for_cleanup(self) -> None:
+        seq = 300
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "video.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        job = self.make_job(seq)
+        job.user_id = 0
+        self.pipeline.webdav_cfg.update(
+            {
+                "enabled": True,
+                "url": "https://dav.invalid/dav",
+                "user": "user",
+                "pass": "pass",
+                "path": "/backup",
+                "retry": 0,
+            }
+        )
+        fake = FakeBackupClient()
+
+        with patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+            await self.pipeline._on_webdav_upload(job, path)
+            tasks = [
+                task
+                for task, task_seq in self.pipeline._webdav_tasks.items()
+                if task_seq == seq
+            ]
+            await asyncio.gather(*tasks)
+            await asyncio.sleep(0)
+
+        log = max(
+            (entry for entry in self.pipeline.webdav_logs.values() if entry["seq"] == seq),
+            key=lambda entry: entry["ts"],
+        )
+        self.assertEqual(log["files"][0]["status"], "ok")
+        self.assertEqual(fake.upload_calls[0]["remote_name"], log["files"][0]["name"])
+        self.assertNotIn(seq, self.pipeline.webdav_keep_cache)
+
+        self.pipeline._schedule_cleanup(seq, "")
+        self.assertFalse(os.path.exists(workdir))
+
+    async def test_webdav_initial_failure_protects_cache_from_cleanup(self) -> None:
+        seq = 310
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "video.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        job = self.make_job(seq)
+        job.user_id = 0
+        self.pipeline.webdav_cfg.update(
+            {
+                "enabled": True,
+                "url": "https://dav.invalid/dav",
+                "user": "user",
+                "pass": "pass",
+                "path": "/backup",
+                "retry": 0,
+            }
+        )
+        fake = FakeBackupClient()
+        fake.upload_result = False
+
+        with patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+            await self.pipeline._on_webdav_upload(job, path)
+            tasks = [
+                task
+                for task, task_seq in self.pipeline._webdav_tasks.items()
+                if task_seq == seq
+            ]
+            await asyncio.gather(*tasks)
+            await asyncio.sleep(0)
+
+        self.assertIn(seq, self.pipeline.webdav_keep_cache)
+        self.pipeline._schedule_cleanup(seq, "")
+        self.assertTrue(os.path.isfile(path))
+
+    async def test_webdav_autoretry_skips_put_when_remote_size_matches(self) -> None:
+        seq = 320
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "original-name.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        key = "320:1"
+        remote_dir = "backup/3"
+        remote_name = "1234abcd.mp4"
+        self.pipeline.webdav_cfg.update(
+            {
+                "enabled": True,
+                "url": "https://dav.invalid/dav",
+                "user": "user",
+                "pass": "pass",
+                "retry": 0,
+            }
+        )
+        self.pipeline.webdav_logs[key] = {
+            "key": key,
+            "seq": seq,
+            "user_id": 0,
+            "ts": bot.time.time(),
+            "remote_dir": remote_dir,
+            "files": [
+                {
+                    "name": remote_name,
+                    "local": path,
+                    "status": "uploading",
+                }
+            ],
+        }
+        self.pipeline.webdav_keep_cache.add(seq)
+        self.pipeline._schedule_cleanup = lambda _seq, _cleanup: None
+        fake = FakeBackupClient()
+        fake.remote_sizes[(remote_dir, remote_name)] = os.path.getsize(path)
+
+        with patch.object(
+            bot.webdav,
+            "remote_file_size",
+            side_effect=fake.remote_file_size,
+        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+            await self.pipeline._webdav_autoretry_once()
+
+        self.assertFalse(fake.upload_calls)
+        self.assertEqual(
+            self.pipeline.webdav_logs[key]["files"][0]["status"], "ok"
+        )
+        self.assertNotIn(seq, self.pipeline.webdav_keep_cache)
 
 
 if __name__ == "__main__":

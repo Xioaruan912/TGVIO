@@ -144,7 +144,7 @@ _START_TEXT = (
     "合集进行中只显示一条状态消息，不会随每次转发反复弹出；发 /end 结束。\n\n"
     "18+ 处理默认「总是正常」；需要雪花遮挡请用 /mode 设置「总是雪花遮挡」或「每次询问」。\n"
     "选「是（雪花遮挡）」时，用 Telegram 内置雪花效果遮挡发布，文件内容不被修改。\n\n"
-    f"⚠️ 确认弹窗 {CONFIRM_TIMEOUT} 秒内未回复将自动取消该任务。\n"
+    f"⚠️ 确认弹窗 {CONFIRM_TIMEOUT} 秒内未回复将自动按正常（非 18+）模式处理。\n"
     f"⚠️ 单个上传文件上限 {MAX_FILE_SIZE // (1024 * 1024)}MB（平台上限）\n\n"
     "ℹ️ 关于：视频转发机器人，把转发内容处理后发布到频道。输入 /about 查看全部命令说明。"
 )
@@ -352,7 +352,13 @@ class _Pipeline:
         proxies = self.proxy_cfg.get("proxies", [])
         if idx < 0 or idx >= len(proxies):
             return "直连"
-        return proxies[idx].get("url", f"#{idx + 1}")
+        url = proxies[idx].get("url", "")
+        parsed = self._parse_proxy_url(url)
+        if parsed is None:
+            return f"代理 #{idx + 1}（地址无效）"
+        _, host, port, username, _password, _rdns = parsed
+        auth = "***@" if username else ""
+        return f"http://{auth}{host}:{port}"
 
     async def _apply_proxy(self, idx: int) -> bool:
         """应用代理（idx=-1 直连）：改 client._proxy + 重建连接，session 保留免重登。"""
@@ -474,7 +480,7 @@ class _Pipeline:
             lines.append("（暂无代理，点 ➕ 添加）")
         for idx, p in enumerate(proxies):
             mark = "✅ " if idx == current else ""
-            lines.append(f"{mark}代理 #{idx + 1}：{p.get('url', '')}")
+            lines.append(f"{mark}代理 #{idx + 1}：{self._proxy_label(idx)}")
             buttons.append(
                 [
                     Button.inline("✅ 使用", f"proxy:use:{idx}"),
@@ -905,7 +911,7 @@ class _Pipeline:
     async def _on_download_done(self, job, paths) -> None:
         await self._safe_edit(
             job,
-            f"✅ 队列第 {self.task_label(job.seq)} 下载完成，等待上传",
+            f"✅ {self.task_label(job.seq)} 下载完成，等待上传",
             buttons=[
                 Button.inline("⏸ 暂停", f"hold:{job.seq}"),
                 Button.inline("⏭ 跳过", f"hold:{job.seq}"),
@@ -1362,6 +1368,24 @@ class _Pipeline:
         async def _upload() -> None:
             try:
                 for f in failed:
+                    local_size = os.path.getsize(f["local"])
+                    remote_size = await asyncio.to_thread(
+                        webdav.remote_file_size,
+                        cfg.get("url"),
+                        log["remote_dir"],
+                        f["name"],
+                        cfg.get("user"),
+                        cfg.get("pass"),
+                    )
+                    if remote_size is not None and remote_size == local_size:
+                        f["status"] = "ok"
+                        logger.info(
+                            "Job #%s webdav retry skip（远端已完整）%s (%d bytes)",
+                            log["seq"],
+                            f["name"],
+                            local_size,
+                        )
+                        continue
                     ok = await asyncio.to_thread(
                         webdav.upload_file,
                         cfg.get("url"),
@@ -1370,6 +1394,7 @@ class _Pipeline:
                         cfg.get("user"),
                         cfg.get("pass"),
                         int(cfg.get("retry", 2)),
+                        remote_name=f["name"],
                     )
                     f["status"] = "ok" if ok else "failed"
                     logger.info(
@@ -1665,15 +1690,34 @@ class _Pipeline:
                     all_ok = False
                     continue
                 try:
-                    ok = await asyncio.to_thread(
-                        webdav.upload_file,
+                    local_size = os.path.getsize(local)
+                    remote_size = await asyncio.to_thread(
+                        webdav.remote_file_size,
                         cfg.get("url"),
                         log["remote_dir"],
-                        local,
+                        f.get("name", ""),
                         cfg.get("user"),
                         cfg.get("pass"),
-                        int(cfg.get("retry", 2)),
                     )
+                    if remote_size is not None and remote_size == local_size:
+                        ok = True
+                        logger.info(
+                            "WebDAV 自动重传跳过 PUT（远端已完整）%s -> %s/%s",
+                            f.get("name"),
+                            log["remote_dir"],
+                            f.get("name"),
+                        )
+                    else:
+                        ok = await asyncio.to_thread(
+                            webdav.upload_file,
+                            cfg.get("url"),
+                            log["remote_dir"],
+                            local,
+                            cfg.get("user"),
+                            cfg.get("pass"),
+                            int(cfg.get("retry", 2)),
+                            remote_name=f["name"],
+                        )
                 except Exception as exc:
                     logger.warning("自动重传 %s 异常: %s", f.get("name"), exc)
                     ok = False
@@ -2585,7 +2629,8 @@ def register_handlers(client: TelegramClient):
                     try:
                         await event.respond(
                             f"🧪 代理 #{idx + 1}："
-                            f"{'✅ 可用' if ok else '❌ 不可用'}\n{url}"
+                            f"{'✅ 可用' if ok else '❌ 不可用'}\n"
+                            f"{pipeline._proxy_label(idx)}"
                         )
                     except Exception:
                         pass
@@ -2610,7 +2655,14 @@ def register_handlers(client: TelegramClient):
                 elif current > idx:
                     pipeline.proxy_cfg["current"] = current - 1
                 pipeline._save_proxy_cfg()
-                await _answer(f"已删除代理 {removed.get('url', '')}")
+                removed_url = removed.get("url", "")
+                removed_parsed = pipeline._parse_proxy_url(removed_url)
+                if removed_parsed is None:
+                    removed_label = f"代理 #{idx + 1}"
+                else:
+                    _, host, port, username, _password, _rdns = removed_parsed
+                    removed_label = f"http://{'***@' if username else ''}{host}:{port}"
+                await _answer(f"已删除代理 {removed_label}")
                 text, buttons = pipeline._proxy_list_view()
                 await _refresh(text, buttons)
                 return
@@ -2734,7 +2786,7 @@ def register_handlers(client: TelegramClient):
             if job is not None:
                 try:
                     await job.status.edit(
-                        f"⏸ 队列第 {pipeline.task_label(seq)} 已暂停（缓存保留）",
+                        f"⏸ {pipeline.task_label(seq)} 已暂停（缓存保留）",
                         buttons=[
                             Button.inline("▶ 继续", f"resume:{seq}"),
                             Button.inline("🗑 删除", f"q_cancel:{seq}"),
@@ -2756,7 +2808,7 @@ def register_handlers(client: TelegramClient):
             if job is not None:
                 try:
                     await job.status.edit(
-                        f"🔄 队列第 {pipeline.task_label(seq)} 已继续，等待上传",
+                        f"🔄 {pipeline.task_label(seq)} 已继续，等待上传",
                         buttons=[
                             Button.inline("⏸ 暂停", f"hold:{seq}"),
                             Button.inline("⏭ 跳过", f"hold:{seq}"),
@@ -2968,7 +3020,12 @@ def register_handlers(client: TelegramClient):
                 return
             pipeline.proxy_cfg.setdefault("proxies", []).append({"url": text})
             pipeline._save_proxy_cfg()
-            await _respond(event, f"✅ 已添加代理：{text}", auto_delete=False)
+            added_idx = len(pipeline.proxy_cfg.get("proxies", [])) - 1
+            await _respond(
+                event,
+                f"✅ 已添加代理：{pipeline._proxy_label(added_idx)}",
+                auto_delete=False,
+            )
             text, buttons = pipeline._proxy_view()
             await _respond(event, text, buttons=buttons, auto_delete=False)
             return

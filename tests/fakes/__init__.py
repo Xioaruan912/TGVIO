@@ -9,6 +9,8 @@ from .telegram import (
     FakePublisher,
     FakeStatusMessage,
 )
+from .webdav import FakeBackupClient
+from .clock import FakeClock
 
 __all__ = [
     "FakeCallbackEvent",
@@ -18,4 +20,6 @@ __all__ = [
     "FakeNewMessageEvent",
     "FakePublisher",
     "FakeStatusMessage",
+    "FakeBackupClient",
+    "FakeClock",
 ]

@@ -2,6 +2,7 @@ import json
 import os
 import tempfile
 import unittest
+from pathlib import Path
 
 from src.progress import position_token, render_bar
 from src.storage import JsonStore
@@ -28,6 +29,18 @@ class HelperTests(unittest.TestCase):
             with open(path, "w", encoding="utf-8") as f:
                 f.write("not json")
             self.assertEqual(JsonStore(path, {"fallback": 1}).load(), {"fallback": 1})
+
+    def test_docker_context_excludes_runtime_secrets(self):
+        project_root = Path(__file__).resolve().parents[1]
+        patterns = {
+            line.strip()
+            for line in (project_root / ".dockerignore").read_text(
+                encoding="utf-8"
+            ).splitlines()
+            if line.strip() and not line.lstrip().startswith("#")
+        }
+
+        self.assertTrue({".env", "session", "downloads", ".git"} <= patterns)
 
 
 if __name__ == "__main__":
