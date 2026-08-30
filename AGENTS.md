@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `2da964d`（U1：稳定首页控制台、统一任务卡、per-job/per-phase 进度节流完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 23:47 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`，生产容器 104 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`，U1 未新增 migration，R3 的 SIGTERM/recovery 基线继续由现有测试保护。
+- 当前分支：`main`。当前生产运行代码基线为 `c5355ab`（U2：SQL 队列分页/筛选/详情、失败中心、分类帮助与 revision-bound destructive confirmation 完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 00:00 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`，生产容器 115 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。U2 未新增 migration，R3 recovery/shutdown 与 U1 进度基线继续由现有测试保护。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -422,7 +422,7 @@ docker compose config --quiet
 | R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [x] `3a2775e`（2026-08-30；schema 1→2 + shadow dual-write，旧 `_Pipeline` 仍是运行真相源） |
 | R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [x] `5604113`（2026-08-30；R3-A/B/C 完成） |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [x] `2da964d`（2026-08-30） |
-| U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [ ] |
+| U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [x] `c5355ab`（2026-08-31） |
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [ ] |
 | F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [ ] |
 | F3 | P1 | 磁盘预检、配额、保留策略和安全清理 | R2 | [ ] |
@@ -1486,15 +1486,15 @@ fix(webdav): preserve cache across interrupted verify
 
 如果尚未完成，不得把工作包主复选框标 `[x]`；应标出已经完成的子项，让下一位代理从具体测试/函数继续，而不是重新调研。
 
-### 20.6 当前下一步（2026-08-30）
+### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1 已完成。下一阶段进入 **U2：队列分页/筛选/详情 + 失败中心 + destructive confirmation**；不要同时夹带 F1 yt-dlp 新下载器、Web Dashboard、多频道或转码。
+R0、R1、R2、R3、U1、U2 已完成。下一阶段进入 **F1：yt-dlp 实时进度、速度/ETA 与真正取消**；不要同时夹带 F2 完整错误分类、Web Dashboard、多频道或转码。
 
-1. 先按第 15.5 节把队列改成 repository SQL 分页（默认 5 项），支持 `全部|运行中|等待|暂停|失败|已完成`；不能把全表拉进内存后切片。
-2. 增加 job 详情页：来源类型、媒体数/体积、阶段、retry/cache/published/backup 摘要、用户可理解错误；原始 traceback 仍不得直接展示。
-3. 按第 15.6 节做失败中心，动作必须与错误类型匹配；优先“缓存可重试/源失效/磁盘不足/权限配置/WebDAV 已发布但备份失败”。
-4. 按第 15.8 节引入短 callback + expected revision 与 5 分钟 operation token；取消/删除缓存/撤销发布等 destructive action 先进入确认页，连续点击要幂等。
-5. 保持 U1 首页和任务卡文案/节流不回退；U2 门禁继续要求 104+ 回归、callback UTF-8 ≤64 bytes、100 个任务分页不超 Telegram 消息/按钮限制，并安全部署生产。
+1. 先按第 16.1 节把 URL 下载封装成独立 adapter/request/result 接口，继续 `noplaylist=True`，并使用 yt-dlp 官方 `progress_hooks` 把不可变进度从线程安全投递回 asyncio。
+2. 每个 URL job 使用自己的 job dir；取消必须设置共享 cancel token 并有限等待 yt-dlp 线程真正退出，不能只取消 `asyncio.to_thread` 后让后台继续写文件。
+3. 将 downloaded/total/speed/eta/item 状态接入现有 U1 `ProgressTracker`，保持 Telegram 2 秒 UI throttle、账号 token bucket 与 SQLite 5秒/32MB gate；不要重复造第二套进度状态。
+4. 最终路径必须校验在 job dir 内，优先使用 yt-dlp 明确返回 filepath/requested_downloads；`.part/.ytdl` 只在“删除缓存”时删除，普通重试允许续传。
+5. F1 门禁必须增加 mock YoutubeDL progress/finished/error/cancel、未知总大小、postprocess、路径逃逸和“取消后线程不继续写”测试，并保持现有 115+ 回归与生产安全部署流程。
 
 ## 21. 执行日志
 
@@ -1667,3 +1667,16 @@ R0、R1、R2、R3、U1 已完成。下一阶段进入 **U2：队列分页/筛选
 - VPS：部署前确认生产实际源码与 `5604113` 一致、容器 `restart=0`、近 5 分钟无活动传输、DB `integrity=ok`/schema4 且 runtime tables 为空；2026-08-30 23:47 CST 安全部署 `2da964d`。部署后容器 `running`、`restart=0`，镜像 `sha256:940c027785edd10bf66a3207f1c0bafc9dd213b3614bbd64fb116e4e9ee8c72c`，生产关键源码哈希与 commit 完全一致。
 - 回滚：部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-2da964d-20260830-234704.sqlite3`；镜像 `telegram-video-forwarder:rollback-pre-2da964d`；源码 `/root/telegram-video-forwarder-releases/pre-2da964d.tar.gz`。U1 无 schema 变更，回滚到 R3 不需要降库。
 - 下一步精确入口：第 15.5/15.6/15.8 节 U2；从 repository SQL 分页/count DAO + queue view model 开始，先做分页/筛选/详情，再做失败中心和 destructive confirmation。
+
+### 2026-08-31 00:00 - U2 durable 队列、失败中心与确认流程
+
+- 状态：U2 已完成、推送并部署生产；下一阶段进入 F1。
+- 基线 commit：`b1c7ac7`；实现 commit：`c5355ab`（`feat(ui): add U2 durable queue workflows`）。
+- 队列与详情：repository 新增 SQL-backed `page_jobs()`/`job_detail()`/`batch_targets()`，筛选 allowlist 为 `all/running/waiting/paused/failed/completed`，每页 5 项；`all/completed` 的 terminal 记录默认只看最近 24 小时。新增 durable queue/detail/failure view model；队列每项只放一个详情按钮，100 job 测试确认使用 SQL LIMIT/OFFSET，不取全表后切片。详情只显示来源类型、媒体数量/体积、阶段、重试、缓存、发布数量、备份摘要和脱敏错误，不显示完整 URL、绝对本地路径或 traceback。
+- 确认与幂等：新增 `OperationStore`，destructive token 默认 5 分钟、随机短 id、绑定 user/action/job/revision，成功后单次消费；`j:c/j:d/j:u`、旧 `q_cancel/stop/undo` repository 路径以及批量取消/清缓存都先进入 `x:y/x:n` 二次确认。执行时再次检查 revision；stale、跨用户、过期和重复 token 均不产生副作用。批量操作冻结 `(job_id,revision)` 目标，逐项执行并汇总成功/跳过。
+- destructive 实现：U2 cancel 在 runtime 对象缺失时直接走 repository revision-CAS，因此重启后的 durable-only queued/paused 等任务仍可取消；paused 状态机允许显式 `cancelled/failed` 终止。失败缓存删除先验证所有路径位于 `downloads/` 根，再清 DB 引用/删除文件；跨 peer undo 按 `published_messages` refs 删除，并只把成功删除的 refs 标记 `deleted_at`。
+- 失败中心与帮助：首页失败入口已切 durable failure center；只有 runtime `retryable` 可安全直重试时才显示重试按钮，避免万能重试。新增分类帮助：收集与发布、队列与任务、WebDAV、URL/代理、设置、故障排查。失败结算会把最多 1000 字符的用户错误同步到 `jobs.error_message`，写入前脱敏 URL credentials、Authorization/token/password。
+- 测试：最终本地绑定源码、最终构建镜像、生产容器均 **115 项 unittest 全通过**；新增 100 job SQL 分页、24h completed filter、详情/缓存 CAS、错误脱敏、operation token 用户隔离/过期/单次消费、queue/detail/cache-delete handler、durable-only cancel、批量 cancel、跨 peer undo 与 callback ≤64 bytes 测试。`py_compile`、`git diff --check`、compose config、Docker build、静态镜像秘密路径检查全部通过；schema 仍 `[1,2,3,4]`，0001～0004 checksum 未修改。
+- VPS：部署前确认生产实际源码与 `2da964d` 一致、容器 `restart=0`、无活动传输、DB schema4/`integrity=ok` 且 durable tables 为空；2026-08-31 00:00 CST 安全部署 `c5355ab`。部署后容器 `running`、`restart=0`，镜像 `sha256:0ac843e8a2a659e5a0d9a6452384c0b0c19d55ed18b72a0597f83d2f2ea07826`，生产关键源码哈希与 commit 完全一致。
+- 回滚：部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-c5355ab-20260830-235950.sqlite3`；镜像 `telegram-video-forwarder:rollback-pre-c5355ab`；源码 `/root/telegram-video-forwarder-releases/pre-c5355ab.tar.gz`。U2 无 schema 变更，回滚到 U1 不需要降库。
+- 下一步精确入口：第 16.1 节 F1；先抽 URL downloader adapter + cancel token + progress hook fake，不同时实现 F2 完整错误分类。

@@ -19,10 +19,13 @@
 - `src/media.py`: Telegram media download and publish transport.
 - `src/webdav.py`: WebDAV protocol, integrity verification and retry.
 - `src/views/`: pure Telegram renderers fed by immutable/basic view state,
-  including the U1 stable home console and unified task status card.
+  including stable home/task cards plus U2 durable queue/detail/failure/
+  confirmation pages.
 - `src/handlers/`: command, callback and private-message parsing/dispatch.
-- `src/services/job_queue.py`: handler-facing queue transition facade plus U1
-  home snapshot/status-reference/progress persistence seams.
+- `src/services/job_queue.py`: handler-facing queue transition facade plus home,
+  progress, durable SQL queue/detail and revision-bound U2 operation seams.
+- `src/services/operations.py`: user-scoped, expiring single-use confirmation
+  tokens for destructive single/batch operations.
 - `src/services/backup_manager.py`: handler-facing WebDAV lifecycle facade.
 - `src/services/proxy_manager.py`: proxy settings/switching facade.
 - `src/services/interactions.py`: revisioned input interaction sessions.
@@ -49,14 +52,14 @@
 
 ## Next extraction targets
 
-1. U2: add SQL-backed queue pagination/filter counts and immutable page/detail
-   view models; never fetch the full jobs table just to slice in memory.
-2. U2: add a failure center whose available actions depend on durable failure
-   type/cache/published/backup state.
-3. U2: add revision-bound, expiring destructive-operation tokens for cancel,
-   cache delete and undo confirmation; callbacks must stay <=64 UTF-8 bytes.
-4. Preserve the U1 stable home/task-card/progress behavior while U2 navigation
-   is introduced incrementally.
+1. F1: isolate URL/yt-dlp execution behind an adapter with immutable progress
+   events and a real cancellation token that stops the worker thread.
+2. Reuse the existing U1 `ProgressTracker` for yt-dlp speed/ETA/UI/DB gating;
+   do not create a second throttling path.
+3. Give every URL job its own download directory and validate final yt-dlp
+   paths before they enter durable `job_items.local_path`.
+4. Keep F2 error taxonomy separate until F1 progress/cancel behavior is tested
+   and deployed.
 
 ## UI direction
 
