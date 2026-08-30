@@ -9,8 +9,11 @@ from typing import Any
 from telethon import Button, events
 
 from ..views import (
+    HomeViewState,
     MODE_NAMES,
     WebDavConfigViewState,
+    home_button,
+    home_view,
     mode_buttons,
     reply_keyboard,
     webdav_cfg_fields_view,
@@ -34,17 +37,46 @@ def _webdav_state(ctx: HandlerContext) -> WebDavConfigViewState:
     )
 
 
+def _webdav_health(ctx: HandlerContext) -> str:
+    cfg = ctx.backup.config_snapshot()
+    if not cfg.get("enabled"):
+        return "未启用"
+    logs = list(ctx.backup.logs_snapshot().values())
+    if not logs:
+        return "正常"
+    latest = max(
+        (item for item in logs if isinstance(item, dict)),
+        key=lambda item: float(item.get("ts") or 0),
+        default=None,
+    )
+    if latest is None:
+        return "正常"
+    files = latest.get("files") or []
+    if any(isinstance(item, dict) and item.get("status") not in ("ok", "deleted") for item in files):
+        return "有待处理备份"
+    return "正常"
+
+
+async def _home(ctx: HandlerContext, user_id: int) -> tuple[str, list]:
+    snapshot = await ctx.queue.home_snapshot(user_id)
+    snapshot.update(
+        webdav_enabled=bool(ctx.backup.get_config("enabled")),
+        webdav_health=_webdav_health(ctx),
+    )
+    return home_view(HomeViewState(**snapshot))
+
+
 def register_setting_commands(ctx: HandlerContext) -> None:
     @ctx.client.on(events.NewMessage(pattern="/start$"))
     async def on_start(event: events.NewMessage.Event) -> None:
         logger.info("CMD /start from %s", event.sender_id)
         if not ctx.authorized(event):
             return
-        mode = ctx.queue.spoiler_mode(event.sender_id)
+        text, buttons = await _home(ctx, event.sender_id)
         await ctx.respond(
             event,
-            ctx.start_text + f"\n\n当前 18+ 模式：{MODE_NAMES[mode]}（/mode 可修改）",
-            buttons=reply_keyboard(),
+            text,
+            buttons=buttons,
             auto_delete=False,
         )
 
@@ -133,7 +165,105 @@ async def callback_mode(ctx: HandlerContext, event: Any, data: str) -> None:
         return
     ctx.queue.set_spoiler_mode(event.sender_id, mode)
     await ctx.answer(event, f"已设置：{MODE_NAMES[mode]}")
-    await ctx.edit(event, f"✅ 已设置 18+ 模式：{MODE_NAMES[mode]}")
+    await ctx.edit(
+        event,
+        f"✅ 已设置 18+ 模式：{MODE_NAMES[mode]}",
+        buttons=[home_button()],
+    )
+
+
+async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
+    await ctx.answer(event)
+    action = data.split(":", 1)[1] if ":" in data else "r"
+    if action == "r":
+        text, buttons = await _home(ctx, event.sender_id)
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "begin":
+        session = ctx.queue.session(event.sender_id)
+        if session is None:
+            ctx.queue.begin_session(event.sender_id)
+            await ctx.answer(event, "合集会话已开始")
+        else:
+            await ctx.answer(event, "合集会话已在进行中")
+        text, buttons = await _home(ctx, event.sender_id)
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "end":
+        if not ctx.queue.has_session(event.sender_id):
+            await ctx.answer(event, "当前没有进行中的合集")
+        else:
+            try:
+                count = await ctx.queue.finalize_session(event.sender_id, event.chat_id)
+                await ctx.answer(event, f"已结束合集，共 {count} 个媒体")
+            except Exception:
+                logger.exception("Home session finalize failed")
+                await ctx.answer(event, "结束合集失败")
+        text, buttons = await _home(ctx, event.sender_id)
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "q":
+        from ..views import queue_view
+
+        text, buttons = queue_view(ctx.queue.view_state(event.sender_id))
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "f":
+        snapshot = await ctx.queue.home_snapshot(event.sender_id)
+        failed = int(snapshot.get("failed") or 0)
+        text = (
+            "❌ 失败任务\n──────────\n"
+            + (f"当前有 {failed} 个失败任务。\n可从 /queue 查看并重试。" if failed else "当前没有失败任务。")
+        )
+        await ctx.edit(event, text, buttons=[home_button()])
+        return
+    if action == "w":
+        text, buttons = webdav_cfg_view(_webdav_state(ctx))
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "s":
+        mode = MODE_NAMES[ctx.queue.spoiler_mode(event.sender_id)]
+        progress = "开启" if ctx.queue.progress_enabled(event.sender_id) else "关闭"
+        text = (
+            "⚙️ 设置\n──────────\n"
+            f"🔞 18+ 模式：{mode}\n"
+            f"📊 任务进度：{progress}\n"
+            f"☁️ WebDAV：{'启用' if ctx.backup.get_config('enabled') else '停用'}\n"
+            "──────────\n静态 .env 配置需重启后生效。"
+        )
+        buttons = [
+            [Button.inline("🔞 18+ 模式", "h:mode"), Button.inline("📊 切换进度", "toggle_progress")],
+            [Button.inline("☁️ WebDAV", "h:w"), Button.inline("🌐 代理", "h:p")],
+            home_button(),
+        ]
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "mode":
+        mode = ctx.queue.spoiler_mode(event.sender_id)
+        await ctx.edit(
+            event,
+            f"🔞 18+ 模式\n──────────\n当前：{MODE_NAMES[mode]}\n请选择新的处理方式：",
+            buttons=[*mode_buttons(), home_button()],
+        )
+        return
+    if action == "p":
+        text, buttons = ctx.pipeline._proxy_view()
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "status":
+        snapshot = await ctx.queue.home_snapshot(event.sender_id)
+        text = (
+            "📊 运行状态\n──────────\n"
+            f"运行：{snapshot['running']}\n等待：{snapshot['waiting']}\n失败：{snapshot['failed']}\n"
+            f"全局队列：{'暂停' if snapshot['paused'] else '运行中'}\n"
+            f"WebDAV：{_webdav_health(ctx)}"
+        )
+        await ctx.edit(event, text, buttons=[home_button()])
+        return
+    if action == "help":
+        await ctx.edit(event, ctx.about_text, buttons=[home_button()])
+        return
+    await ctx.answer(event, "操作已过期，请刷新")
 
 
 async def callback_webdav_config(ctx: HandlerContext, event: Any, data: str) -> None:
@@ -266,6 +396,7 @@ async def handle_webdav_input(ctx: HandlerContext, event: Any, session: Any) -> 
 
 
 def register_setting_callbacks(router: Any) -> None:
+    router.prefix("h:", callback_home)
     router.prefix("wd_cfg:", callback_webdav_config)
     router.prefix("wd_retry:", callback_webdav_retry)
     router.prefix("wd_del:", callback_webdav_delete)

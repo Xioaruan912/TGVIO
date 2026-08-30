@@ -63,6 +63,8 @@ class ShadowState:
     async def _accept(self, seq: int, **kwargs: Any) -> None:
         message = kwargs.pop("message", None)
         album = kwargs.pop("album", None)
+        status = kwargs.pop("status", None)
+        status_chat_id = kwargs.pop("status_chat_id", None)
         items = [self._item(m) for m in list(album or ([] if message is None else [message]))]
         if seq in self.job_ids:
             job_id = self.job_ids[seq]
@@ -75,6 +77,12 @@ class ShadowState:
                     new_items.append(item)
             if new_items:
                 await self.repository.append_job_items(job_id, new_items)
+            if status is not None:
+                await self.repository.set_status_reference(
+                    job_id,
+                    chat_id=status_chat_id,
+                    message_id=getattr(status, "id", None),
+                )
             await self.repository.record_job_event(
                 job_id,
                 "shadow_update",
@@ -90,6 +98,12 @@ class ShadowState:
             **kwargs,
         )
         self.job_ids[seq] = record.id
+        if status is not None:
+            await self.repository.set_status_reference(
+                record.id,
+                chat_id=status_chat_id,
+                message_id=getattr(status, "id", None),
+            )
         self._seen_items[seq] = {
             (item.get("source_chat_id"), item.get("source_message_id")) for item in items
         }
@@ -169,6 +183,36 @@ class ShadowState:
 
     def bind_existing(self, seq: int, job_id: int) -> None:
         self.job_ids[int(seq)] = int(job_id)
+
+    async def set_status_reference(self, seq: int, status: Any, *, chat_id: int | None = None) -> None:
+        job_id = self.job_ids.get(int(seq))
+        if not job_id or self.repository is None or status is None:
+            return
+        await self.repository.set_status_reference(
+            job_id,
+            chat_id=chat_id,
+            message_id=getattr(status, "id", None),
+        )
+
+    async def persist_progress(
+        self,
+        seq: int,
+        *,
+        received: int,
+        total: int,
+        item: int,
+        items: int,
+    ) -> None:
+        job_id = self.job_ids.get(int(seq))
+        if not job_id or self.repository is None:
+            return
+        await self.repository.update_job_progress(
+            job_id,
+            bytes_done=received,
+            bytes_total=total,
+            current_item=item,
+            total_items=items,
+        )
 
     async def heartbeat_claim(self, seq: int, kind: str, owner: str) -> bool:
         job_id = self.job_ids.get(seq)

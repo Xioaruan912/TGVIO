@@ -50,6 +50,7 @@ def webdav_cfg_view(state: WebDavConfigViewState) -> tuple:
     buttons = [
         [toggle],
         [Button.inline("⚙️ 修改配置", "wd_cfg:edit")],
+        [Button.inline("🏠 首页", "h:r")],
     ]
     return "\n".join(lines), buttons
 
@@ -73,5 +74,6 @@ def webdav_cfg_fields_view(state: WebDavConfigViewState) -> tuple:
         ],
         [Button.inline("✏️ 重试", "wd_cfg:retry")],
         [Button.inline("⬅️ 返回", "wd_cfg:back")],
+        [Button.inline("🏠 首页", "h:r")],
     ]
     return "\n".join(lines), buttons

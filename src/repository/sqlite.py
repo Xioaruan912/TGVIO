@@ -1228,6 +1228,62 @@ class SQLiteRepository:
         await cursor.close()
         return [self._job_from_row(row) for row in rows]
 
+    async def count_jobs_by_state(self, *, user_id: int | None = None) -> dict[str, int]:
+        conn = self._require_conn()
+        if user_id is None:
+            cursor = await conn.execute("SELECT state,COUNT(*) AS n FROM jobs GROUP BY state")
+        else:
+            cursor = await conn.execute(
+                "SELECT state,COUNT(*) AS n FROM jobs WHERE user_id=? GROUP BY state",
+                (int(user_id),),
+            )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {str(row["state"]): int(row["n"]) for row in rows}
+
+    async def set_status_reference(
+        self,
+        job_id: int,
+        *,
+        chat_id: int | None,
+        message_id: int | None,
+    ) -> None:
+        conn = self._require_conn()
+        async with self._write_lock:
+            await conn.execute(
+                "UPDATE jobs SET status_chat_id=?,status_message_id=?,updated_at=? WHERE id=?",
+                (chat_id, message_id, time.time(), int(job_id)),
+            )
+            await conn.commit()
+
+    async def update_job_progress(
+        self,
+        job_id: int,
+        *,
+        bytes_done: int,
+        bytes_total: int,
+        current_item: int,
+        total_items: int,
+    ) -> None:
+        conn = self._require_conn()
+        async with self._write_lock:
+            await conn.execute(
+                """
+                UPDATE jobs
+                SET bytes_done=?,bytes_total=?,current_item=?,total_items=?,updated_at=?
+                WHERE id=? AND state IN ('downloading','publishing')
+                """,
+                (
+                    max(0, int(bytes_done)),
+                    max(0, int(bytes_total)),
+                    max(1, int(current_item)),
+                    max(1, int(total_items)),
+                    time.time(),
+                    int(job_id),
+                ),
+            )
+            await conn.commit()
+
     @staticmethod
     def _job_from_row(row: aiosqlite.Row) -> JobRecord:
         return JobRecord(

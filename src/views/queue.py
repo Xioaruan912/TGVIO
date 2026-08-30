@@ -126,5 +126,7 @@ def queue_view(state: QueueViewState):
     buttons.append(
         [Button.inline("⏸ 全局暂停", "q_pause"), Button.inline("▶ 全局恢复", "q_resume")]
     )
-    buttons.append([Button.inline("🔄 刷新队列", "queue:refresh")])
+    buttons.append(
+        [Button.inline("🔄 刷新队列", "queue:refresh"), Button.inline("🏠 首页", "h:r")]
+    )
     return "\n".join(lines), buttons

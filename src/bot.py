@@ -10,6 +10,7 @@ from datetime import datetime, timedelta
 from types import SimpleNamespace
 
 from telethon import Button, TelegramClient
+from telethon.errors import FloodWaitError
 from telethon.tl.types import (
     MessageMediaDocument,
     MessageMediaPhoto,
@@ -49,7 +50,7 @@ from .config import (
 from . import webdav
 from .media import FileTooLargeError, MediaDownloader, MediaPublisher
 from .models import AlbumBuffer, Job, PendingJob, RetryInfo, Session
-from .progress import position_token, render_bar
+from .progress import ProgressTracker, position_token, render_bar
 from .storage import JsonStore
 from .handlers import HandlerContext, install_handlers
 from .services import (
@@ -61,6 +62,7 @@ from .services import (
     recover_jobs,
 )
 from .views import (
+    JobCardView,
     PendingQueueItemView,
     ProxyViewState,
     QueueItemView,
@@ -68,6 +70,7 @@ from .views import (
     WebDavConfigViewState,
     proxy_list_view as render_proxy_list_view,
     proxy_view as render_proxy_view,
+    job_card_view as render_job_card_view,
     queue_view as render_queue_view,
     webdav_cfg_fields_view as render_webdav_cfg_fields_view,
     webdav_cfg_lines as render_webdav_cfg_lines,
@@ -190,6 +193,7 @@ _Session = Session
 class _Pipeline:
     def __init__(self, client: TelegramClient) -> None:
         self.client = client
+        self.download_dir = DOWNLOAD_DIR
         self.input_q: asyncio.Queue = asyncio.Queue()
         self._runtime_jobs: dict[int, _Job] = {}
         self.jobs: dict[int, _Job] = {}
@@ -216,7 +220,8 @@ class _Pipeline:
         self.published: dict[int, list] = {}
         self.retryable: dict[int, _Job] = {}
         self._paused = False
-        self._last_progress_edit = 0.0
+        self._progress_tracker = ProgressTracker(ui_interval=PROGRESS_MIN_INTERVAL)
+        self._status_rebound: set[int] = set()
         self._cancel_marked: set[int] = set()
         self._paused_files: set[int] = set()
         self._future_created: dict[int, float] = {}
@@ -644,6 +649,8 @@ class _Pipeline:
                 state="queued",
                 message=message,
                 url=url,
+                status=status,
+                status_chat_id=user_id,
             )
         return seq
 
@@ -690,6 +697,8 @@ class _Pipeline:
                 )
             except Exception:
                 status = None
+            if status is not None and getattr(self, "job_queue", None) is not None:
+                await self.job_queue.set_status_reference(seq, status, chat_id=record.user_id)
             job = _Job(
                 seq=seq,
                 kind=record.kind,
@@ -1095,9 +1104,11 @@ class _Pipeline:
                 self.input_q.task_done()
 
     async def _on_pre_download(self, job) -> None:
+        self._progress_tracker.begin_phase(job.seq, "downloading")
         if getattr(self, "job_queue", None) is not None and job.seq not in self._repo_download_claimed:
             self.job_queue.shadow_transition(job.seq, "download_started", "downloading")
-        await self._safe_edit(job, f"🔄 {self.task_label(job.seq)} 正在下载...")
+        text, buttons = self._job_card(job, "downloading")
+        await self._safe_edit(job, text, buttons=buttons)
 
     async def _on_download_progress(
         self, seq: int, received: int, total: int, item: int, items: int
@@ -1105,14 +1116,15 @@ class _Pipeline:
         job = self.jobs.get(seq)
         if job is None:
             return
+        if self._progress_tracker.phase_is_stale(seq, "downloading"):
+            return
         owner = self._repo_claim_owners.get(("download", seq))
         if owner and getattr(self, "job_queue", None) is not None:
             await self.job_queue.heartbeat_claim(seq, "download", owner)
-        if items <= 1:
-            overall = int(received * 100 / total) if total else 0
-        else:
-            frac = received / total if total else 0
-            overall = round(((item - 1) + frac) * 100 / items)
+        progress = self._progress_tracker.update(
+            seq, "downloading", received, total, item, items
+        )
+        overall = progress.pct
         self.active[seq] = {
             "phase": "download",
             "pct": overall,
@@ -1120,27 +1132,33 @@ class _Pipeline:
             "items": items,
             "user_id": job.user_id,
         }
+        if (
+            getattr(self, "repository", None) is not None
+            and getattr(self, "job_queue", None) is not None
+            and self._progress_tracker.allow_db(progress)
+        ):
+            await self.job_queue.persist_progress(
+                seq,
+                received=received,
+                total=total,
+                item=item,
+                items=items,
+            )
         logger.info(
             "Job #%s download progress: %d/%d (%d%%)", seq, received, total, overall
         )
         await self._update_progress_status(seq)
 
     async def _on_download_done(self, job, paths) -> None:
+        self._progress_tracker.begin_phase(job.seq, "ready")
         if getattr(self, "job_queue", None) is not None:
             file_list = [paths] if isinstance(paths, str) else list(paths or [])
             if getattr(self, "repository", None) is not None:
                 await self.job_queue.complete_download(job.seq, file_list)
             else:
                 self.job_queue.shadow_download_completed(job.seq, file_list)
-        await self._safe_edit(
-            job,
-            f"✅ {self.task_label(job.seq)} 下载完成，等待上传",
-            buttons=[
-                Button.inline("⏸ 暂停", f"hold:{job.seq}"),
-                Button.inline("⏭ 跳过", f"hold:{job.seq}"),
-                Button.inline("⏹ 取消", f"q_cancel:{job.seq}"),
-            ],
-        )
+        text, buttons = self._job_card(job, "ready", payload=paths)
+        await self._safe_edit(job, text, buttons=buttons)
 
     async def _on_webdav_upload(self, job, paths) -> None:
         """下载完成后后台上传到 WebDAV，不阻塞主流程。
@@ -1966,14 +1984,15 @@ class _Pipeline:
         job = self.jobs.get(seq)
         if job is None:
             return
+        if self._progress_tracker.phase_is_stale(seq, "publishing"):
+            return
         owner = self._repo_claim_owners.get(("publish", seq))
         if owner and getattr(self, "job_queue", None) is not None:
             await self.job_queue.heartbeat_claim(seq, "publish", owner)
-        if items <= 1:
-            overall = int(received * 100 / total) if total else 0
-        else:
-            frac = received / total if total else 0
-            overall = round(((item - 1) + frac) * 100 / items)
+        progress = self._progress_tracker.update(
+            seq, "publishing", received, total, item, items
+        )
+        overall = progress.pct
         self.active[seq] = {
             "phase": "upload",
             "pct": overall,
@@ -1981,105 +2000,107 @@ class _Pipeline:
             "items": items,
             "user_id": job.user_id,
         }
+        if (
+            getattr(self, "repository", None) is not None
+            and getattr(self, "job_queue", None) is not None
+            and self._progress_tracker.allow_db(progress)
+        ):
+            await self.job_queue.persist_progress(
+                seq,
+                received=received,
+                total=total,
+                item=item,
+                items=items,
+            )
         await self._update_progress_status(seq)
 
     async def _on_pre_publish(self, job, payload) -> None:
+        self._progress_tracker.begin_phase(job.seq, "publishing")
         if getattr(self, "job_queue", None) is not None and job.seq not in self._repo_publish_claimed:
             self.job_queue.shadow_transition(job.seq, "publish_started", "publishing")
-        waiting = sum(1 for s, f in self.results.items() if s != job.seq and f.done())
-        suffix = f"（另有 {waiting} 个待上传）" if waiting else ""
-        label = "🔞 雪花遮挡" if job.spoiler else ""
-        if isinstance(payload, list):
-            total = sum(os.path.getsize(p) for p in payload)
-            unit = "个媒体" if job.kind == "collection" else "张"
-            title = "合集" if job.kind == "collection" else "相册"
-            await self._safe_edit(
-                job,
-                f"✅ {title}下载完成（{len(payload)} {unit}，共 {total / 1024 / 1024:.1f}MB）"
-                f"{label}，正在上传{suffix}...",
-            )
-        else:
-            size = os.path.getsize(payload)
-            await self._safe_edit(
-                job,
-                f"✅ 下载完成（{size / 1024 / 1024:.1f}MB）{label}，正在上传{suffix}...",
-            )
+        text, buttons = self._job_card(job, "publishing", payload=payload)
+        await self._safe_edit(job, text, buttons=buttons)
 
     async def _on_published(self, job, ids: list) -> None:
+        self._progress_tracker.begin_phase(job.seq, "succeeded")
         self._remember_published(job.seq, ids)
         if getattr(self, "job_queue", None) is not None:
             if getattr(self, "repository", None) is not None:
                 await self.job_queue.complete_publish(job.seq, ids)
             else:
                 self.job_queue.shadow_published(job.seq, ids)
-        if job.kind == "collection":
-            text = f"✅ 合集已发布到 {DEST_CHANNEL}"
-        elif job.kind == "album":
-            text = f"✅ 相册已发布到 {DEST_CHANNEL}"
-        else:
-            text = f"✅ 已发布到 {DEST_CHANNEL}"
-        await self._safe_edit(
-            job, text, buttons=[Button.inline("↩️ 撤销", f"undo:{job.seq}")]
-        )
+        text, buttons = self._job_card(job, "succeeded")
+        await self._safe_edit(job, text, buttons=buttons)
         if AUTO_DELETE_SECONDS > 0:
             asyncio.get_running_loop().create_task(
                 _delete_after(job.status, AUTO_DELETE_SECONDS)
             )
 
     async def _update_progress_status(self, seq: int) -> None:
-        now = time.time()
-        if now - self._last_progress_edit < PROGRESS_MIN_INTERVAL:
-            return
-        self._last_progress_edit = now
         job = self.jobs.get(seq)
         info = self.active.get(seq)
         if job is None or info is None:
             return
-        show = self._show_progress(info["user_id"])
-        phase, item, items, pct = (
-            info["phase"],
-            info["item"],
-            info["items"],
-            info["pct"],
+        phase = "downloading" if info["phase"] == "download" else "publishing"
+        state = self._progress_tracker.state(seq, phase)
+        if state is None or not self._progress_tracker.allow_ui(state):
+            return
+        text, buttons = self._job_card(job, phase, progress=state)
+        await self._safe_edit(job, text, buttons=buttons)
+
+    def _job_card(self, job, phase: str, *, payload=None, progress=None, error: str | None = None):
+        media_count = len(job.album or []) if getattr(job, "album", None) else 1
+        total_bytes = None
+        if payload:
+            paths = payload if isinstance(payload, list) else [payload]
+            try:
+                total_bytes = sum(
+                    os.path.getsize(path)
+                    for path in paths
+                    if path and os.path.isfile(path)
+                )
+            except OSError:
+                total_bytes = None
+        view = JobCardView(
+            seq=job.seq,
+            phase=phase,
+            media_count=max(media_count, getattr(progress, "items", 1) if progress else 1),
+            total_bytes=total_bytes or (getattr(progress, "total", None) if progress else None),
+            pct=getattr(progress, "pct", None),
+            speed_bps=getattr(progress, "speed_bps", None),
+            eta_seconds=getattr(progress, "eta_seconds", None),
+            item=getattr(progress, "item", 1),
+            items=getattr(progress, "items", media_count),
+            show_progress=self._show_progress(job.user_id),
+            error=error,
+            cache_retained=bool(getattr(job, "cached_path", "")),
         )
-        if items > 1:
-            prefix = (
-                f"⬇ {self.task_label(seq)} 下载 {item}/{items}"
-                if phase == "download"
-                else f"📤 {self.task_label(seq)} 上传 {item}/{items}"
-            )
-        else:
-            prefix = (
-                f"🔄 {self.task_label(seq)} 正在下载"
-                if phase == "download"
-                else f"📤 {self.task_label(seq)} 正在上传"
-            )
-        if show:
-            text = f"{prefix} {render_bar(pct)} {pct:3d}%"
-        else:
-            text = f"{prefix}..."
-        toggle = (
-            Button.inline("🔕 关闭进度", "toggle_progress")
-            if show
-            else Button.inline("🔔 显示进度", "toggle_progress")
-        )
-        buttons = [toggle]
-        if phase == "download":
-            buttons.append(Button.inline("⏹ 停止下载", f"stop:{seq}"))
-        elif phase == "upload":
-            buttons.append(Button.inline("⏹ 取消", f"stop:{seq}"))
-        try:
-            await job.status.edit(text, buttons=buttons)
-        except Exception:
-            pass
+        return render_job_card_view(view)
 
     async def _safe_edit(self, job, text: str, buttons=None) -> None:
         if job is None:
             return
         try:
             await job.status.edit(text, buttons=buttons)
-        except Exception:
-            pass
+        except Exception as exc:
+            if isinstance(exc, FloodWaitError):
+                self._progress_tracker.defer_ui(getattr(exc, "seconds", 1))
+                logger.warning("Task card edit rate-limited for %ss", getattr(exc, "seconds", 1))
+                return
+            if (
+                getattr(self, "repository", None) is None
+                or not getattr(job, "user_id", None)
+                or job.seq in self._status_rebound
+            ):
+                return
+            self._status_rebound.add(job.seq)
+            try:
+                status = await self.client.send_message(job.user_id, text, buttons=buttons)
+            except Exception:
+                return
+            job.status = status
+            if getattr(self, "job_queue", None) is not None:
+                await self.job_queue.set_status_reference(job.seq, status, chat_id=job.user_id)
 
     async def _delete_status(self, job) -> None:
         if job is None:
@@ -2392,6 +2413,8 @@ class _Pipeline:
                                 album=added,
                                 texts=existing.texts,
                                 spoiler=existing.spoiler,
+                                status=existing.status,
+                                status_chat_id=user_id,
                             )
                         try:
                             await existing.status.edit(
@@ -2449,6 +2472,8 @@ class _Pipeline:
                 album=album,
                 texts=texts,
                 spoiler=spoiler,
+                status=status,
+                status_chat_id=user_id,
             )
         logger.info("Job #%s auto-enqueued spoiler=%s (mode=%s)", seq, spoiler, mode)
         return seq
@@ -2494,6 +2519,8 @@ class _Pipeline:
                     message=message,
                     album=album,
                     texts=texts,
+                    status=status,
+                    status_chat_id=chat_id,
                 )
         except Exception:
             self.pending.pop(seq, None)
@@ -2504,6 +2531,7 @@ class _Pipeline:
         self, seq: int, text: str, retry_job: _Job = None, retry_path: str = ""
     ) -> None:
         job = self.jobs.get(seq)
+        self._progress_tracker.begin_phase(seq, "failed")
         if retry_job is not None:
             self.retryable[seq] = _RetryInfo(job=retry_job, path=retry_path)
             if getattr(self, "job_queue", None) is not None:
@@ -2511,18 +2539,14 @@ class _Pipeline:
                     await self.job_queue.transition_now(seq, "failed", "failed")
                 else:
                     self.job_queue.shadow_transition(seq, "failed", "failed")
-        buttons = None
-        if retry_job is not None:
-            buttons = [
-                Button.inline("🔄 重试", f"retry:{seq}"),
-                Button.inline("⏭ 跳过", f"hold:{seq}"),
-                Button.inline("⏹ 取消", f"q_cancel:{seq}"),
-            ]
         if job is not None:
-            try:
-                await job.status.edit(f"❌ {text}", buttons=buttons)
-            except Exception:
-                pass
+            card, buttons = self._job_card(
+                job,
+                "failed",
+                payload=retry_path or getattr(job, "cached_path", ""),
+                error=text,
+            )
+            await self._safe_edit(job, card, buttons=buttons)
 
 
 def register_handlers(client: TelegramClient, repository=None, *, start_workers: bool = True):

@@ -90,12 +90,34 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
 
     def test_callback_router_resolves_exact_and_prefix_actions(self) -> None:
         router = build_callback_router()
+        self.assertIsNotNone(router.resolve("h:r"))
         self.assertIsNotNone(router.resolve("q_pause"))
         self.assertIsNotNone(router.resolve("confirm:10:0"))
         self.assertIsNotNone(router.resolve("wd_cfg:on"))
         self.assertIsNotNone(router.resolve("proxy:add"))
         self.assertIsNotNone(router.resolve("session_end:42"))
         self.assertIsNone(router.resolve("unknown:action"))
+
+    async def test_start_is_stable_home_console_and_home_refresh_edits_message(self) -> None:
+        start = self.client.handlers["on_start"]
+        event = FakeNewMessageEvent(self.client, "/start")
+        await start(event)
+        self.assertEqual(len(event.responses), 1)
+        self.assertIn("🤖 Telegram 媒体中转站", event.responses[0].text)
+        sent = self.client.sent_messages[-1]
+        callbacks = [button.data for row in sent["buttons"] for button in row]
+        self.assertIn(b"h:r", callbacks)
+        self.assertIn(b"h:q", callbacks)
+
+        callback = self.client.handlers["on_callback"]
+        refresh = FakeCallbackEvent(self.client, b"h:r")
+        await callback(refresh)
+        self.assertIn("🤖 Telegram 媒体中转站", refresh.edits[-1]["text"])
+
+        end = FakeCallbackEvent(self.client, b"h:end")
+        await callback(end)
+        self.assertIn("当前没有进行中的合集", end.answers)
+        self.assertIn("📥 当前合集：未开始", end.edits[-1]["text"])
 
     async def test_webdav_input_uses_explicit_interaction_session(self) -> None:
         callback = self.client.handlers["on_callback"]

@@ -8,6 +8,8 @@ from .common import (
     reply_keyboard,
 )
 from .proxy import ProxyViewState, proxy_list_view, proxy_view
+from .home import HomeViewState, home_button, home_view
+from .job import JobCardView, job_card_view
 from .queue import (
     PendingQueueItemView,
     QueueItemView,
@@ -30,6 +32,11 @@ __all__ = [
     "ProxyViewState",
     "proxy_view",
     "proxy_list_view",
+    "HomeViewState",
+    "home_view",
+    "home_button",
+    "JobCardView",
+    "job_card_view",
     "QueueItemView",
     "PendingQueueItemView",
     "QueueViewState",

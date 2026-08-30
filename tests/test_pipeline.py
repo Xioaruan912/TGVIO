@@ -509,10 +509,8 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         await self.pipeline._on_download_done(job, "/fake/video.mp4")
 
-        self.assertEqual(
-            job.status.text,
-            "✅ 队列第 1 位 下载完成，等待上传",
-        )
+        self.assertIn("⏳ 任务 #205 · 等待发布", job.status.text)
+        self.assertIn("➡️ 下一步：Telegram 发布", job.status.text)
 
     def test_start_copy_matches_confirmation_timeout_behavior(self) -> None:
         self.assertIn("自动按正常（非 18+）模式处理", bot._START_TEXT)
@@ -675,15 +673,12 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(callback_data)
         self.assertTrue(all(len(data) <= 64 for data in callback_data))
 
-        with patch.object(bot.time, "time", return_value=100.0):
-            await self.pipeline._update_progress_status(seq)
+        await self.pipeline._on_download_progress(seq, 25, 100, 1, 4)
+        self.assertIn("⬇️ 任务 #250 · 正在下载", job.status.text)
+        self.assertIn("6%", job.status.text)
         self.assertEqual(
-            job.status.text,
-            "⬇ 队列第 1 位 下载 1/4 ██░░░░░░░░  25%",
-        )
-        self.assertEqual(
-            [button.data for button in job.status.edits[-1]["buttons"]],
-            [b"toggle_progress", b"stop:250"],
+            [button.data for row in job.status.edits[-1]["buttons"] for button in row],
+            [b"hold:250", b"q_cancel:250", b"h:q", b"h:r"],
         )
 
     async def test_webdav_manual_retry_keeps_hashed_remote_name(self) -> None:

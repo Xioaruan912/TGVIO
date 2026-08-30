@@ -1,6 +1,8 @@
 import unittest
 
 from src.views import (
+    HomeViewState,
+    JobCardView,
     MODE_NAMES,
     PendingQueueItemView,
     ProxyViewState,
@@ -10,6 +12,8 @@ from src.views import (
     SESSION_BTN_END,
     WebDavConfigViewState,
     mode_buttons,
+    home_view,
+    job_card_view,
     proxy_list_view,
     proxy_view,
     queue_view,
@@ -68,6 +72,7 @@ class ViewRenderingTests(unittest.TestCase):
                 b"q_pause",
                 b"q_resume",
                 b"queue:refresh",
+                b"h:r",
             ],
         )
 
@@ -87,12 +92,13 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertNotIn("password", main_text + list_text)
         self.assertEqual(
             callback_data(main_buttons),
-            [b"proxy:add", b"proxy:auto", b"proxy:list", b"proxy:direct"],
+            [b"proxy:add", b"proxy:auto", b"proxy:list", b"proxy:direct", b"h:r"],
         )
         self.assertEqual(
             callback_data(list_buttons),
             [
                 b"proxy:back",
+                b"h:r",
                 b"proxy:use:0",
                 b"proxy:test:0",
                 b"proxy:del:0",
@@ -120,7 +126,7 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("🔄 重试    5 次", fields_text)
         self.assertEqual(
             callback_data(main_buttons),
-            [b"wd_cfg:off", b"wd_cfg:edit"],
+            [b"wd_cfg:off", b"wd_cfg:edit", b"h:r"],
         )
         self.assertEqual(
             callback_data(fields_buttons),
@@ -131,8 +137,50 @@ class ViewRenderingTests(unittest.TestCase):
                 b"wd_cfg:path",
                 b"wd_cfg:retry",
                 b"wd_cfg:back",
+                b"h:r",
             ],
         )
+
+    def test_home_console_and_task_card_use_short_callbacks(self) -> None:
+        text, buttons = home_view(
+            HomeViewState(
+                session_active=True,
+                session_media=8,
+                session_texts=2,
+                running=2,
+                waiting=3,
+                failed=1,
+                webdav_enabled=True,
+                webdav_health="正常",
+                disk_used_gb=18.4,
+                disk_total_gb=50.0,
+            )
+        )
+        self.assertIn("🤖 Telegram 媒体中转站", text)
+        self.assertIn("📥 当前合集：8 个媒体 · 2 条文字", text)
+        self.assertIn("📋 任务队列：2 运行 · 3 等待 · 1 失败", text)
+        self.assertEqual(
+            callback_data(buttons),
+            [b"h:begin", b"h:end", b"h:q", b"h:f", b"h:w", b"h:s", b"h:status", b"h:help", b"h:r"],
+        )
+
+        card, card_buttons = job_card_view(
+            JobCardView(
+                seq=28,
+                phase="downloading",
+                media_count=8,
+                total_bytes=1524713390,
+                pct=63,
+                speed_bps=24.8 * 1024 * 1024,
+                eta_seconds=18,
+                item=5,
+                items=8,
+            )
+        )
+        self.assertIn("⬇️ 任务 #28 · 正在下载", card)
+        self.assertIn("63%", card)
+        self.assertIn("预计剩余 18 秒", card)
+        self.assertTrue(all(len(data) <= 64 for data in callback_data(card_buttons)))
 
     def test_common_mode_and_session_keyboards_keep_callbacks(self) -> None:
         self.assertEqual(

@@ -406,6 +406,26 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.id, 1)
         self.assertEqual((await self.repo.get_job(job.id)).source_url, job.source_url)
         self.assertEqual([item.id for item in await self.repo.list_jobs(user_id=42)], [job.id])
+        await self.repo.set_status_reference(job.id, chat_id=42, message_id=9001)
+        current = await self.repo.get_job(job.id)
+        self.assertEqual((current.status_chat_id, current.status_message_id), (42, 9001))
+        await self.repo.update_job_progress(
+            job.id,
+            bytes_done=128,
+            bytes_total=1024,
+            current_item=1,
+            total_items=2,
+        )
+        raw = sqlite3.connect(self.db_path)
+        try:
+            progress = raw.execute(
+                "SELECT bytes_done,bytes_total,current_item,total_items FROM jobs WHERE id=?",
+                (job.id,),
+            ).fetchone()
+        finally:
+            raw.close()
+        # queued jobs do not accept transport progress writes.
+        self.assertEqual(progress, (0, 0, 0, 0))
         events = await self.repo.list_job_events(job.id)
         self.assertEqual(len(events), 1)
         self.assertEqual(events[0].event_type, "accepted")
@@ -430,6 +450,47 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.repo.set_setting("example", {"enabled": False}), 2)
         self.assertEqual(await self.repo.get_setting("example"), {"enabled": False})
         self.assertEqual(await self.repo.get_setting("missing", default="fallback"), "fallback")
+
+    async def test_u1_status_progress_and_state_counts(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="queued",
+            source_kind="url",
+            source_url="https://example.invalid/u1",
+            event_payload={"schema_version": 1},
+        )
+        await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="failed",
+            source_kind="url",
+            source_url="https://example.invalid/failed",
+            event_payload={"schema_version": 1},
+        )
+        claim = await self.repo.claim_next_download("u1-worker")
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.job.id, job.id)
+        await self.repo.set_status_reference(job.id, chat_id=42, message_id=9010)
+        await self.repo.update_job_progress(
+            job.id,
+            bytes_done=64,
+            bytes_total=256,
+            current_item=2,
+            total_items=4,
+        )
+        raw = sqlite3.connect(self.db_path)
+        try:
+            values = raw.execute(
+                "SELECT status_chat_id,status_message_id,bytes_done,bytes_total,current_item,total_items FROM jobs WHERE id=?",
+                (job.id,),
+            ).fetchone()
+        finally:
+            raw.close()
+        self.assertEqual(values, (42, 9010, 64, 256, 2, 4))
+        counts = await self.repo.count_jobs_by_state(user_id=42)
+        self.assertEqual(counts.get("downloading"), 1)
+        self.assertEqual(counts.get("failed"), 1)
 
     async def test_payload_version_and_backup_path_are_validated(self) -> None:
         with self.assertRaisesRegex(Exception, "schema_version"):

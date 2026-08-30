@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
+import shutil
 from typing import Any
 
 from ..models import Job, PendingJob, RetryInfo, Session
@@ -54,6 +55,43 @@ class JobQueue:
 
     def toggle_progress(self, user_id: int) -> bool:
         return self._pipeline.toggle_progress_pref(user_id)
+
+    def progress_enabled(self, user_id: int) -> bool:
+        return self._pipeline._show_progress(user_id)
+
+    async def home_snapshot(self, user_id: int) -> dict[str, Any]:
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is not None:
+            counts = await repository.count_jobs_by_state(user_id=user_id)
+            running = sum(counts.get(state, 0) for state in ("downloading", "publishing"))
+            waiting = sum(
+                counts.get(state, 0)
+                for state in ("collecting", "awaiting_confirmation", "queued", "ready", "interrupted", "paused")
+            )
+            failed = counts.get("failed", 0)
+        else:
+            running = len(self._pipeline._download_tasks) + (1 if self._pipeline._uploading else 0)
+            waiting = max(0, len(self._pipeline.active_seqs) - running)
+            failed = len(self._pipeline.retryable)
+        session = self.session(user_id)
+        disk_used = disk_total = None
+        try:
+            usage = shutil.disk_usage(self._pipeline.download_dir)
+            disk_used = (usage.total - usage.free) / (1024 ** 3)
+            disk_total = usage.total / (1024 ** 3)
+        except OSError:
+            pass
+        return {
+            "session_active": session is not None,
+            "session_media": session.media_count if session is not None else 0,
+            "session_texts": session.text_count if session is not None else 0,
+            "running": running,
+            "waiting": waiting,
+            "failed": failed,
+            "paused": bool(self._pipeline._paused),
+            "disk_used_gb": disk_used,
+            "disk_total_gb": disk_total,
+        }
 
     def session(self, user_id: int) -> Session | None:
         return self._pipeline.sessions.get(user_id)
@@ -337,6 +375,28 @@ class JobQueue:
             return None
         return paths[0] if len(paths) == 1 else paths
 
+    async def set_status_reference(self, seq: int, status: object, *, chat_id: int | None = None) -> None:
+        if self._shadow is not None:
+            await self._shadow.set_status_reference(seq, status, chat_id=chat_id)
+
+    async def persist_progress(
+        self,
+        seq: int,
+        *,
+        received: int,
+        total: int,
+        item: int,
+        items: int,
+    ) -> None:
+        if self._shadow is not None:
+            await self._shadow.persist_progress(
+                seq,
+                received=received,
+                total=total,
+                item=item,
+                items=items,
+            )
+
     async def heartbeat_claim(self, seq: int, kind: str, owner: str) -> bool:
         if self._shadow is None:
             return False
@@ -363,6 +423,8 @@ class JobQueue:
         texts: list | None = None,
         url: str = "",
         spoiler: bool = False,
+        status: object = None,
+        status_chat_id: int | None = None,
     ) -> None:
         if self._shadow is not None:
             self._shadow.accept(
@@ -376,5 +438,7 @@ class JobQueue:
                 texts=list(texts or []),
                 source_url=url or None,
                 spoiler=spoiler,
+                status=status,
+                status_chat_id=status_chat_id,
             )
 

@@ -7,7 +7,7 @@ from typing import Any
 
 from telethon import Button, events
 
-from ..views import queue_view as render_queue_view
+from ..views import home_button, queue_view as render_queue_view
 from .common import HandlerContext
 
 
@@ -160,6 +160,7 @@ async def callback_retry(ctx: HandlerContext, event: Any, data: str) -> None:
     except Exception:
         new_status = ticket.info.job.status
     ctx.queue.commit_retry(ticket, new_status)
+    await ctx.queue.set_status_reference(ticket.new_seq, new_status, chat_id=event.chat_id)
     await ctx.edit(event, "🔄 已重新入队")
     await ctx.answer(event, "已重新入队")
     logger.info(
@@ -176,6 +177,7 @@ async def callback_toggle_progress(ctx: HandlerContext, event: Any, _data: str) 
     await ctx.edit(
         event,
         "🔔 进度条显示已开启" if show else "🔕 进度条显示已关闭",
+        buttons=[home_button()],
     )
 
 
@@ -205,6 +207,7 @@ async def callback_confirm(ctx: HandlerContext, event: Any, data: str) -> None:
             pass
     try:
         ctx.queue.commit_confirmation(ticket, new_status, spoiler)
+        await ctx.queue.set_status_reference(seq, new_status, chat_id=event.chat_id)
     except Exception:
         logger.exception("Enqueue failed for job #%s", seq)
         ctx.queue.settle_failed_confirmation(seq)
