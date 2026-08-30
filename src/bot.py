@@ -5,17 +5,13 @@ import os
 import re
 import shutil
 import time
-from dataclasses import dataclass
 from datetime import datetime, timedelta
 
 from telethon import Button, TelegramClient, events
 from telethon.tl.types import (
-    KeyboardButton,
-    KeyboardButtonRow,
     MessageEntityBotCommand,
     MessageMediaDocument,
     MessageMediaPhoto,
-    ReplyKeyboardMarkup,
 )
 
 from .config import (
@@ -51,8 +47,17 @@ from .config import (
 )
 from . import webdav
 from .media import FileTooLargeError, MediaDownloader, MediaPublisher
+from .models import AlbumBuffer, Job, PendingJob, RetryInfo, Session
 from .progress import position_token, render_bar
 from .storage import JsonStore
+from .ui import (
+    MODE_NAMES,
+    SESSION_BTN_BEGIN,
+    SESSION_BTN_END,
+    mode_buttons,
+    queue_view,
+    reply_keyboard,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -108,41 +113,11 @@ def _file_md5_short(path: str) -> str:
             h.update(c)
     return h.hexdigest()[:8]
 
-_MODE_NAMES = {
-    "ask": "每次询问",
-    "always_spoiler": "总是雪花遮挡",
-    "always_normal": "总是正常",
-}
-
-
-def _mode_buttons():
-    return [
-        [Button.inline("🟡 每次询问", "mode:ask")],
-        [Button.inline("🔞 总是雪花遮挡", "mode:always_spoiler")],
-        [Button.inline("✅ 总是正常", "mode:always_normal")],
-    ]
-
-
-_SESSION_BTN_BEGIN = "📥 开始合集"
-_SESSION_BTN_END = "🛑 结束合集"
-
-
-def _reply_keyboard() -> ReplyKeyboardMarkup:
-    """打字框上方的常驻回复键盘（点击按钮即发送对应文本，走命令处理逻辑）。"""
-    return ReplyKeyboardMarkup(
-        rows=[
-            KeyboardButtonRow(
-                buttons=[
-                    KeyboardButton(_SESSION_BTN_BEGIN),
-                    KeyboardButton(_SESSION_BTN_END),
-                ]
-            )
-        ],
-        resize=True,
-        persistent=True,
-        single_use=False,
-        selective=False,
-    )
+_MODE_NAMES = MODE_NAMES
+_mode_buttons = mode_buttons
+_SESSION_BTN_BEGIN = SESSION_BTN_BEGIN
+_SESSION_BTN_END = SESSION_BTN_END
+_reply_keyboard = reply_keyboard
 
 
 def _pos_token(n: int) -> str:
@@ -192,72 +167,11 @@ _ABOUT_TEXT = (
 )
 
 
-@dataclass
-class _Job:
-    seq: int
-    kind: str
-    status: object
-    message: object = None
-    album: list = None
-    url: str = ""
-    spoiler: bool = False
-    user_id: int = 0
-    cached_path: str = ""
-    cleanup_extra: str = ""
-    started: bool = False
-    texts: list = None
-
-
-@dataclass
-class _RetryInfo:
-    job: object
-    path: str = ""
-
-
-@dataclass
-class _PendingJob:
-    seq: int
-    kind: str
-    message: object = None
-    album: list = None
-    status: object = None
-    timeout_task: object = None
-    user_id: int = 0
-    texts: list = None
-
-
-@dataclass
-class _AlbumBuffer:
-    chat_id: int
-    messages: list
-    grouped_ids: set
-    task: object = None
-
-
-@dataclass
-class _Session:
-    user_id: int
-    items: list = None
-    status: object = None
-    button_task: object = None
-    started_at: float = 0.0
-    texts: list = None
-
-    def __post_init__(self) -> None:
-        if self.items is None:
-            self.items = []
-        if self.texts is None:
-            self.texts = []
-        if not self.started_at:
-            self.started_at = time.time()
-
-    @property
-    def media_count(self) -> int:
-        return sum(len(item) for item in self.items)
-
-    @property
-    def text_count(self) -> int:
-        return len(self.texts)
+_Job = Job
+_RetryInfo = RetryInfo
+_PendingJob = PendingJob
+_AlbumBuffer = AlbumBuffer
+_Session = Session
 
 
 class _Pipeline:
@@ -2459,92 +2373,8 @@ def register_handlers(client: TelegramClient):
         logger.info("CMD /queue from %s", event.sender_id)
         if not _authorized(event):
             return
-        lines = ["📋 队列管理", "每个按钮带位置序号，对应上方第 N 位。"]
-        buttons = []
-
-        active_lines = []
-        for seq in sorted(pipeline.active_seqs):
-            pos = pipeline.task_label(seq)
-            info = pipeline.active.get(seq)
-            show = pipeline._show_progress(event.sender_id)
-            if seq in pipeline._download_tasks:
-                if info and show:
-                    prefix = (
-                        f"⬇ 下载 {info['item']}/{info['items']}"
-                        if info["items"] > 1
-                        else "🔄 正在下载"
-                    )
-                    state = f"{pos} {prefix} {render_bar(info['pct'])} {info['pct']:3d}%"
-                else:
-                    state = f"{pos} 🔄 正在下载"
-            elif seq == pipeline._uploading:
-                if info and show:
-                    prefix = (
-                        f"📤 上传 {info['item']}/{info['items']}"
-                        if info["items"] > 1
-                        else "📤 正在上传"
-                    )
-                    state = f"{pos} {prefix} {render_bar(info['pct'])} {info['pct']:3d}%"
-                else:
-                    state = f"{pos} 📤 正在上传"
-            elif seq in pipeline._paused_files:
-                state = f"{pos} ⏸ 已暂停"
-            elif seq in pipeline.jobs:
-                state = f"{pos} ✅ 等待上传"
-            else:
-                state = f"{pos} ⏳ 等待下载"
-            active_lines.append(state)
-            token = _pos_token(pipeline._queue_position(seq))
-            if seq in pipeline._paused_files:
-                buttons.append(
-                    [
-                        Button.inline(f"{token} ▶ 继续", f"resume:{seq}"),
-                        Button.inline(f"{token} 🗑 删除", f"q_cancel:{seq}"),
-                    ]
-                )
-            else:
-                buttons.append(
-                    [
-                        Button.inline(f"{token} ⏸ 暂停", f"hold:{seq}"),
-                        Button.inline(f"{token} ⏹ 取消", f"q_cancel:{seq}"),
-                    ]
-                )
-
-        if active_lines:
-            lines.append(f"\n▶ 进行中（{len(active_lines)}）")
-            lines.extend(active_lines)
-        else:
-            lines.append("\n▶ 进行中：无")
-
-        pending_lines = []
-        for idx, seq in enumerate(sorted(pipeline.pending), start=1):
-            p = pipeline.pending[seq]
-            kind_label = "相册" if p.kind == "album" else "媒体"
-            pending_lines.append(f"❓{_pos_token(idx)} 待确认（{kind_label}）")
-            buttons.append(
-                [Button.inline(f"{_pos_token(idx)} ❌ 取消", f"cancel:{seq}")]
-            )
-        if pending_lines:
-            lines.append("\n❓ 待确认")
-            lines.extend(pending_lines)
-
-        if pipeline.sessions:
-            total = sum(s.media_count for s in pipeline.sessions.values())
-            texts = sum(s.text_count for s in pipeline.sessions.values())
-            lines.append(
-                f"\n📦 合集会话进行中：{total} 个媒体 · {texts} 条评论已收录"
-                "（发 /end 结束并发布）"
-            )
-
-        buttons.append(
-            [
-                Button.inline("⏸ 全局暂停", "q_pause"),
-                Button.inline("▶ 全局恢复", "q_resume"),
-            ]
-        )
-        await _respond(
-            event, "\n".join(lines), buttons=buttons, auto_delete=True
-        )
+        text, buttons = queue_view(pipeline, event.sender_id)
+        await _respond(event, text, buttons=buttons, auto_delete=False)
 
     @client.on(events.CallbackQuery())
     async def on_callback(event: events.CallbackQuery.Event) -> None:
@@ -2559,6 +2389,15 @@ def register_handlers(client: TelegramClient):
             return
 
         data_text = event.data.decode(errors="replace")
+
+        if data_text == "queue:refresh":
+            text, buttons = queue_view(pipeline, event.sender_id)
+            try:
+                await event.edit(text, buttons=buttons)
+            except Exception:
+                pass
+            await _answer("队列已刷新")
+            return
 
         if data_text.startswith("wd_cfg:"):
             field = data_text.split(":", 1)[1]

@@ -186,8 +186,6 @@ def remote_file_size(
     except Exception as exc:
         logger.warning("WebDAV remote_file_size %s/%s failed: %s", remote_dir, filename, exc)
         return None
-    except Exception:
-        return None
 
 
 def _upload_once(
