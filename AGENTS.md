@@ -7,7 +7,7 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前待发布/生产运行代码基线为 `b031154`（修复确认超时序号泄漏并扩展 R0 测试）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 当前分支：`main`。当前生产运行代码基线为 `b031154`（修复确认超时序号泄漏并扩展 R0 测试）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
 - 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 最后一次部署验证时容器正常运行，关键源码哈希与本地一致，日志包含 `Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
@@ -1527,15 +1527,17 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 2026-08-30 21:35 - R0-B 合集/并发下载与确认超时修复
 
-- 状态：实现和本地门禁已完成，等待本条记录提交后部署生产。
+- 状态：已完成、推送并部署生产。
 - 基线 commit：`53a2802`
 - 实现 commit：`b031154`（`fix(queue): preserve sequence on confirmation timeout`）
 - 已改文件：`src/bot.py`、`tests/fakes/telegram.py`、`tests/test_pipeline.py`、`AGENTS.md`。
 - 已完成：album 未开始批次去重合并、collection 批次展平与文字顺序、ask/spoiler/force-normal、确认超时、双下载 worker 并发、运行中取消、下载失败结算测试。
 - 修复：确认超时此前为已预留的任务重新分配 seq，导致旧 seq 永久留在 `active_seqs` 并破坏队列顺序；现在 `_auto_enqueue(reserved_seq=...)` 复用原序号，且该路径不参与相册自动合并。
 - 测试：先由新增测试稳定复现 `queued.seq 101 != reserved seq 100`，修复后 `python3 -m unittest discover -s tests -v` 共 21 项通过；`git diff --check`、`py_compile`、compose config 均通过。
-- GitHub：实现提交 `b031154` 与本次 AGENTS 交接提交将一起推送 `origin/main`。
-- VPS：这是运行代码修复，必须在推送后按第 10 节部署并验证；部署结果追加到本条记录。
+- GitHub：实现提交 `b031154`、首个交接提交 `7d8fa6d` 已推送 `origin/main`；本条部署结果随其后的文档提交推送。
+- VPS：2026-08-30 21:23 CST 已由 Git archive 安全部署，归档不含 `.env/session/downloads`。容器 `running`、`restart=0`，启动日志正常；容器内 21 tests 与 `py_compile` 通过；本地/远端 `src/bot.py` SHA-256 均为 `3668f880...5d74e3`。
+- 回滚：VPS 保留镜像标签 `telegram-video-forwarder:rollback-pre-7d8fa6d` 和源码包 `/root/telegram-video-forwarder-releases/pre-7d8fa6d.tar.gz`。
+- 运维观察：部署时 VPS 时钟比 Git 归档时间约慢 115 秒，tar 仅提示 future timestamp，未影响镜像；后续运维可单独检查 NTP，不属于本次代码故障。
 - 数据迁移：无；不触碰 `.env`、`session/`、`downloads/`。
 - 未完成与风险：R0 的 WebDAV 协议矩阵、cover/undo、view snapshot 和 handler 异常仍待覆盖。
 - 下一步精确入口：`tests/test_pipeline.py` 补 handler/status failure；随后为 `src/webdav.py` 建本地协议 fake。
