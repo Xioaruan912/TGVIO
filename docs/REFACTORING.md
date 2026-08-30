@@ -24,18 +24,23 @@
 - `src/services/backup_manager.py`: handler-facing WebDAV lifecycle facade.
 - `src/services/proxy_manager.py`: proxy settings/switching facade.
 - `src/services/interactions.py`: revisioned input interaction sessions.
+- `src/repository/`: R2 SQLite lifecycle, checksum-verified forward migrations,
+  integrity checks and basic job/event/backup/settings DAOs. Production schema
+  1 exists at `session/state.sqlite3`, but is not yet the runtime source of truth.
 - `src/bot.py`: legacy in-memory worker/orchestration implementation plus thin
   dependency assembly for the extracted handlers/services.
 
 ## Next extraction targets
 
-1. Add SQLite migrations and repositories without changing the current runtime
-   source of truth.
-2. Move durable queue/backup state behind repositories, using the existing R1
-   service facades as the compatibility seam.
-3. Add the explicit job state machine, idempotent transitions and restart
+1. Add migration 2 for job items/texts/published refs/interaction sessions and
+   atomically persist accepted job aggregates.
+2. Shadow-write queue/backup lifecycle through the existing R1 service facades
+   while the legacy in-memory pipeline remains authoritative.
+3. Only after shadow state is verified, move durable queue/backup truth behind
+   repositories and remove duplicated legacy mutations incrementally.
+4. Add the explicit job state machine, idempotent transitions and restart
    recovery only after persistence is stable.
-4. Keep the R0/R1 characterization suite unchanged while replacing the legacy
+5. Keep the R0/R1 characterization suite unchanged while replacing the legacy
    `_Pipeline` internals incrementally.
 
 ## UI direction

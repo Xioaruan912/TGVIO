@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `15b4012`（R1：views/handlers/service facade 边界完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 22:19 CST 最后一次部署验证时容器 `running`、`restart=0`，关键源码哈希与 `15b4012` 一致，日志包含 `Bot commands registered` 和 `Bot started`。
+- 当前分支：`main`。当前生产运行代码基线为 `36cc8bf`（R2-A：SQLite repository/migration 基础完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-30 22:28 CST 最后一次部署验证时容器 `running`、`restart=0`，关键源码哈希与 `36cc8bf` 一致，日志包含 `SQLite repository ready. schema=[1] integrity=ok`、`Bot commands registered` 和 `Bot started`。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -419,7 +419,7 @@ docker compose config --quiet
 |---|---|---|---|---|
 | R0 | P0 | 行为基线、fake client、关键回归测试 | 无 | [x] `744ca98`（2026-08-30） |
 | R1 | P0 | 拆分 JobQueue、BackupManager、handlers、views | R0 | [x] `15b4012`（2026-08-30） |
-| R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [ ] |
+| R2 | P0 | SQLite repository、迁移器、任务/事件 schema | R1 | [ ]（R2-A 基础 schema/lifecycle 已完成 `36cc8bf`；下一步 R2-B shadow dual-write） |
 | R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [ ] |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [ ] |
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [ ] |
@@ -1488,13 +1488,13 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-30）
 
-R0、R1 已完成并部署。下一阶段进入 **R2-A：SQLite repository 与 migration 基础**；不要同时实现 R3 状态机或新 UI。
+R0、R1 已完成，R2-A 已由 `36cc8bf` 完成并部署。下一阶段进入 **R2-B：完整运行实体 schema + 非权威 shadow dual-write**；不要同时实现 R3 状态机、恢复器或新 UI。
 
-1. 在 `session/state.sqlite3` 建立单连接 repository 生命周期与前向 migration runner；先只创建 schema/DAO，不切换生产任务真相源。
-2. 第一版 migration 建 `schema_migrations`、`jobs`、`job_events`、`backup_attempts`、`backup_files`、`settings`，字段遵循第 14 节定义；依赖新增 `aiosqlite`。
-3. repository 写入必须经 `asyncio.Lock` 串行化，启用 foreign keys、busy timeout、FULL synchronous；Telegram/WebDAV IO 不得持有事务。
-4. 新增临时 SQLite 文件的 migration/repository 单元测试，验证重复启动幂等、checksum、事务回滚和基本 CRUD；现有 60 项离线回归必须继续通过。
-5. R2-A 只把 DB 基础设施接入启动/关闭生命周期并做 self-check；旧内存 `_Pipeline` 仍负责运行任务，等 R2-B 明确双写/迁移路径后再切换。
+1. 新增 `0002_runtime_entities.sql`，建立第 14.2 节尚缺的 `job_items`、`job_texts`、`published_messages`、`interaction_sessions`；不要修改已应用的 `0001_initial.sql`，checksum 必须保持不变。
+2. repository 增加原子 `accept job + items + texts + first event`、published message refs、interaction session 等 DAO；所有 payload/metadata 带 `schema_version`，路径继续受 download root 约束。
+3. 通过 R1 `JobQueue`/`BackupManager` seam 增加 **shadow dual-write**：旧 `_Pipeline` 仍是生产运行真相源，SQLite 只记录镜像状态；handler 不得绕过 service 直接写库。
+4. shadow write 必须有独立 fake/repository 测试，验证 album/collection/text 顺序、confirm/cancel/retry、publish peer/message refs 和 WebDAV attempt 映射；不得改变现有 67 项行为预期。
+5. 部署前备份现有 `session/state.sqlite3`，migration 2 必须自动生成一致性 pre-migrate backup；部署后核对 schema `[1, 2]`、旧 DB 内容未丢失、Bot 行为仍由内存 pipeline 驱动。
 
 未经用户明确改变优先级，不要先做 Web Dashboard、多频道、R3 状态机或转码。
 
@@ -1585,3 +1585,18 @@ R0、R1 已完成并部署。下一阶段进入 **R2-A：SQLite repository 与 m
 - 数据迁移：无；R1 仍使用旧内存任务状态与 JSON 设置，未引入 SQLite。
 - 未完成与风险：`JobQueue`/`BackupManager` 当前是 R1 facade，底层 worker/WebDAV 生命周期仍委托 `_Pipeline`；这是 R2/R3 持久化和状态机替换的兼容 seam，不应在 handler 中绕过。
 - 下一步精确入口：第 20.6 节 R2-A；先实现 SQLite migration/repository 基础，不同时切状态机。
+
+### 2026-08-30 22:28 - R2-A SQLite repository 与 migration 基础
+
+- 状态：R2-A 已完成、推送并部署生产；R2 总工作包仍在进行中。
+- 基线 commit：`d2c9180`
+- 实现 commit：`36cc8bf`（`feat(storage): add SQLite repository foundation`）
+- 已改文件：`requirements.txt`、`src/repository/__init__.py`、`src/repository/sqlite.py`、`src/repository/migrations/0001_initial.sql`、`src/main.py`、`src/bot.py`、`tests/test_repository.py`。
+- 已完成：新增 `aiosqlite>=0.22.1,<0.23.0`；单连接 SQLite repository、写锁、foreign keys/busy timeout/FULL synchronous、前向 migration runner、已应用 migration checksum 校验、迁移前 SQLite backup、integrity/schema self-check；schema 1 建 `schema_migrations/jobs/job_events/backup_attempts/backup_files/settings`；提供 job/event/backup/settings 基础 DAO；payload 强制 `schema_version`，backup `local_path` 限制在 download root。`main.py` 在 Telegram client/workers 启动前完成 open → migrate → self-check，并在断开后关闭 repository；`_Pipeline` 仅持有 repository seam，运行任务仍完全以旧内存状态为真相源。
+- 测试：宿主因 PEP 668 不污染系统 Python，使用临时 `--system-site-packages` venv 安装 aiosqlite；本地、构建镜像、生产容器均 67 项 unittest 全通过。`py_compile`、repository 依赖边界、`git diff --check`、`docker compose config --quiet`、`docker compose build`、镜像 migration smoke、秘密路径检查全部通过；checksum 篡改 fail-closed、失败 migration 事务回滚/一致性备份、FK、CRUD、路径/payload 安全均有测试。
+- GitHub：`36cc8bf` 已推送 `origin/main`；本条部署记录随其后的 docs-only commit 推送。
+- VPS：部署前确认实际代码为 `15b4012`、容器 `restart=0`、近 5 分钟无活动传输、`session/state.sqlite3` 不存在；2026-08-30 22:28 CST 用 Git archive 部署 `36cc8bf`。容器 `running`、`restart=0`，镜像 `sha256:98caffe21b6b8c42cda77f4425e0a4df3fb7910efca465be3e581e6e02f3dd91`；本地/主机/容器关键源码哈希一致。repository 自身连接复核 `foreign_keys=1`、`busy_timeout=5000`、`synchronous=2`。
+- 数据迁移：首次创建生产 `session/state.sqlite3`，schema version `[1]`、`integrity=ok`、`jobs=0`、`job_events=0`；未导入/删除任何 JSON 或旧任务数据。因为部署前没有旧 state DB，本次无需 pre-migrate DB backup；代码回滚后该 DB 可原样保留不影响旧版本。
+- 回滚：VPS 保留 `telegram-video-forwarder:rollback-pre-36cc8bf` 和 `/root/telegram-video-forwarder-releases/pre-36cc8bf.tar.gz`。
+- 未完成与风险：SQLite 目前只是基础设施，尚未 shadow-write 实际任务，也不是恢复真相源；不得误认为容器重启后任务已经可恢复。`backup_files.job_item_id` 暂未建立 FK，待 R2-B `job_items` 表落地后通过新 migration 补全运行实体关系，不得修改已应用的 0001。
+- 下一步精确入口：第 20.6 节 R2-B；先建 `0002_runtime_entities.sql` 和 repository 原子 accept/item/text/published DAO，再从 `JobQueue`/`BackupManager` 做非权威双写。
