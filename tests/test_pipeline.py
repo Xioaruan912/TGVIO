@@ -285,6 +285,165 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         with suppress(asyncio.CancelledError):
             await timeout_task
 
+    async def test_album_auto_enqueue_merges_unstarted_batches(self) -> None:
+        first_batch = [FakeMessage(1), FakeMessage(2)]
+        second_batch = [FakeMessage(2), FakeMessage(3)]
+
+        first_seq = await self.pipeline._auto_enqueue(
+            "album", None, first_batch, user_id=42
+        )
+        second_seq = await self.pipeline._auto_enqueue(
+            "album", None, second_batch, user_id=42
+        )
+
+        self.assertEqual(first_seq, second_seq)
+        self.assertEqual(self.pipeline.input_q.qsize(), 1)
+        queued = self.pipeline.input_q.get_nowait()
+        self.pipeline.input_q.task_done()
+        self.assertEqual([message.id for message in queued.album], [1, 2, 3])
+        self.assertEqual(self.pipeline.pending_albums[42], first_seq)
+        self.assertIn("共 3 条", queued.status.text)
+
+    async def test_collection_session_flattens_batches_and_preserves_texts(self) -> None:
+        await self.pipeline._session_add_batch(42, [FakeMessage(1)], 42)
+        session_status = self.pipeline.sessions[42].status
+        await self.pipeline._session_add_batch(
+            42, [FakeMessage(2), FakeMessage(3)], 42
+        )
+        await self.pipeline._session_add_text(42, "第一行", 42)
+        await self.pipeline._session_add_text(42, "第二行", 42)
+
+        self.assertEqual(len(self.client.sent_messages), 1)
+        count = await self.pipeline._session_finalize(42, 42)
+        queued = self.pipeline.input_q.get_nowait()
+        self.pipeline.input_q.task_done()
+
+        self.assertEqual(count, 3)
+        self.assertEqual(queued.kind, "collection")
+        self.assertEqual([message.id for message in queued.album], [1, 2, 3])
+        self.assertEqual(queued.texts, ["第一行", "第二行"])
+        self.assertNotIn(42, self.pipeline.sessions)
+        self.assertIn("已结束收集", session_status.text)
+
+    async def test_ask_mode_session_finalize_creates_pending_collection(self) -> None:
+        self.pipeline.set_spoiler_mode(42, "ask")
+        await self.pipeline._session_add_batch(
+            42, [FakeMessage(1), FakeMessage(2)], 42
+        )
+        await self.pipeline._session_add_text(42, "合集说明", 42)
+
+        count = await self.pipeline._session_finalize(42, 42)
+
+        self.assertEqual(count, 2)
+        self.assertTrue(self.pipeline.input_q.empty())
+        self.assertEqual(len(self.pipeline.pending), 1)
+        pending = next(iter(self.pipeline.pending.values()))
+        self.assertEqual(pending.kind, "collection")
+        self.assertEqual([message.id for message in pending.album], [1, 2])
+        self.assertEqual(pending.texts, ["合集说明"])
+        timeout_task = pending.timeout_task
+        await self.pipeline._cancel_pending(pending.seq)
+        with suppress(asyncio.CancelledError):
+            await timeout_task
+
+    async def test_spoiler_preference_and_force_normal_are_copied_to_jobs(self) -> None:
+        self.pipeline.set_spoiler_mode(42, "always_spoiler")
+        await self.pipeline._auto_enqueue(
+            "media", FakeMessage(1), None, user_id=42
+        )
+        await self.pipeline._auto_enqueue(
+            "media", FakeMessage(2), None, user_id=42, force_normal=True
+        )
+
+        spoiler_job = self.pipeline.input_q.get_nowait()
+        normal_job = self.pipeline.input_q.get_nowait()
+        self.pipeline.input_q.task_done()
+        self.pipeline.input_q.task_done()
+        self.assertTrue(spoiler_job.spoiler)
+        self.assertFalse(normal_job.spoiler)
+
+    async def test_confirmation_timeout_reuses_reserved_sequence(self) -> None:
+        status = FakeStatusMessage("confirm")
+        with patch.object(bot, "CONFIRM_TIMEOUT", 0):
+            seq = self.pipeline.reserve_seq()
+            self.pipeline.register_pending(
+                seq, "media", message=FakeMessage(1), user_id=42
+            )
+            self.pipeline.set_pending_status(seq, status)
+            timeout_task = self.pipeline.pending[seq].timeout_task
+            await timeout_task
+
+        queued = self.pipeline.input_q.get_nowait()
+        self.pipeline.input_q.task_done()
+        self.assertEqual(queued.seq, seq)
+        self.assertFalse(queued.spoiler)
+        self.assertEqual(self.pipeline.active_seqs, {seq})
+        self.assertTrue(status.deleted)
+
+    async def test_two_download_workers_run_jobs_concurrently(self) -> None:
+        first_release = asyncio.Event()
+        second_release = asyncio.Event()
+        self.pipeline.downloader.expected_calls = 2
+        self.pipeline.downloader.blockers = {
+            170: first_release,
+            171: second_release,
+        }
+        self.pipeline.enqueue(self.make_job(170))
+        self.pipeline.enqueue(self.make_job(171))
+
+        workers = [
+            asyncio.create_task(self.pipeline._download_worker()),
+            asyncio.create_task(self.pipeline._download_worker()),
+        ]
+        await asyncio.wait_for(self.pipeline.downloader.started.wait(), timeout=1)
+        self.assertEqual(set(self.pipeline.downloader.calls), {170, 171})
+        self.assertEqual(self.pipeline._active_downloads, 2)
+
+        first_release.set()
+        second_release.set()
+        await asyncio.wait_for(self.pipeline.input_q.join(), timeout=1)
+        for worker in workers:
+            await cancel_task(worker)
+
+        self.assertEqual(self.pipeline._active_downloads, 0)
+        self.assertTrue(self.pipeline.results[170].done())
+        self.assertTrue(self.pipeline.results[171].done())
+        self.pipeline._finish_seq(170)
+        self.pipeline._finish_seq(171)
+
+    async def test_running_download_cancel_stops_task_and_settles_job(self) -> None:
+        release = asyncio.Event()
+        self.pipeline.downloader.expected_calls = 1
+        self.pipeline.downloader.blockers[180] = release
+        job = self.make_job(180)
+        self.pipeline.enqueue(job)
+
+        worker = asyncio.create_task(self.pipeline._download_worker())
+        await asyncio.wait_for(self.pipeline.downloader.started.wait(), timeout=1)
+        self.assertTrue(await self.pipeline._cancel_seq(180))
+        await asyncio.wait_for(self.pipeline.input_q.join(), timeout=1)
+        await cancel_task(worker)
+
+        self.assertIs(self.pipeline.results[180].result(), bot._CANCELLED)
+        self.assertTrue(job.status.deleted)
+        self.assertNotIn(180, self.pipeline._download_tasks)
+        self.pipeline._finish_seq(180)
+
+    async def test_download_failure_settles_future_without_blocking_worker(self) -> None:
+        self.pipeline.downloader.failures[190] = ValueError("bad media")
+        self.pipeline.enqueue(self.make_job(190))
+
+        with self.assertLogs("src.bot", level="ERROR"):
+            worker = asyncio.create_task(self.pipeline._download_worker())
+            await asyncio.wait_for(self.pipeline.input_q.join(), timeout=1)
+        await cancel_task(worker)
+
+        failure = self.pipeline.results[190].exception()
+        self.assertIsInstance(failure, ValueError)
+        self.assertEqual(str(failure), "bad media")
+        self.assertEqual(self.pipeline._active_downloads, 0)
+        self.pipeline._finish_seq(190)
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -14,17 +14,23 @@ class FakeStatusMessage:
         self.text = text
         self.edits: list[dict[str, Any]] = []
         self.delete_calls = 0
+        self.edit_exception: Exception | None = None
+        self.delete_exception: Exception | None = None
 
     @property
     def deleted(self) -> bool:
         return self.delete_calls > 0
 
     async def edit(self, text: str, **kwargs: Any) -> "FakeStatusMessage":
+        if self.edit_exception is not None:
+            raise self.edit_exception
         self.text = text
         self.edits.append({"text": text, **kwargs})
         return self
 
     async def delete(self) -> None:
+        if self.delete_exception is not None:
+            raise self.delete_exception
         self.delete_calls += 1
 
 
@@ -118,10 +124,18 @@ class FakeDownloader:
         self.calls: list[int] = []
         self.results: dict[int, Any] = {}
         self.failures: dict[int, Exception] = {}
+        self.blockers: dict[int, asyncio.Event] = {}
+        self.expected_calls = 0
+        self.started = asyncio.Event()
 
     async def run(self, job: object):
         seq = job.seq
         self.calls.append(seq)
+        if self.expected_calls and len(self.calls) >= self.expected_calls:
+            self.started.set()
+        blocker = self.blockers.get(seq)
+        if blocker is not None:
+            await blocker.wait()
         if seq in self.failures:
             raise self.failures[seq]
         return self.results.get(seq, f"/fake/job-{seq}/media.mp4")

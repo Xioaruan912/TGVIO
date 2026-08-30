@@ -670,7 +670,6 @@ class _Pipeline:
         if pending is None:
             return
         logger.info("Job #%s confirmation timeout, auto as normal", seq)
-        self.active_seqs.add(seq)
         try:
             await self._auto_enqueue(
                 pending.kind,
@@ -679,6 +678,7 @@ class _Pipeline:
                 pending.user_id,
                 force_normal=True,
                 texts=pending.texts,
+                reserved_seq=seq,
             )
         except Exception as exc:
             logger.exception("Auto-process timeout job failed: %s", exc)
@@ -2090,9 +2090,10 @@ class _Pipeline:
         user_id: int,
         force_normal: bool = False,
         texts: list = None,
+        reserved_seq: int | None = None,
     ) -> int:
         # 队列级合并：同一用户已有"入队未下载"的相册任务时，追加消息而非新建任务
-        if kind == "album" and album:
+        if reserved_seq is None and kind == "album" and album:
             existing_seq = self.pending_albums.get(user_id)
             if existing_seq is not None:
                 existing = self.album_jobs.get(existing_seq)
@@ -2122,7 +2123,7 @@ class _Pipeline:
         else:
             spoiler = mode == "always_spoiler"
             label = "🔞 雪花遮挡" if spoiler else "✅ 正常"
-        seq = self.reserve_seq()
+        seq = reserved_seq if reserved_seq is not None else self.reserve_seq()
         self.active_seqs.add(seq)
         try:
             status = await self.client.send_message(
