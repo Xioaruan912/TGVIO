@@ -16,7 +16,10 @@
 - `src/progress.py`: progress/position helpers plus per-job/per-phase generation,
   UI throttling, account token-bucket and DB-write gates.
 - `src/storage.py`: atomic best-effort JSON persistence.
-- `src/media.py`: Telegram media download and publish transport.
+- `src/downloader.py`: cancellable yt-dlp Python-API adapter with immutable
+  progress events, cooperative thread stop and validated per-job outputs.
+- `src/media.py`: Telegram media download and publish transport plus URL adapter
+  integration; URL progress reuses the shared U1 progress pipeline.
 - `src/webdav.py`: WebDAV protocol, integrity verification and retry.
 - `src/views/`: pure Telegram renderers fed by immutable/basic view state,
   including stable home/task cards plus U2 durable queue/detail/failure/
@@ -52,14 +55,14 @@
 
 ## Next extraction targets
 
-1. F1: isolate URL/yt-dlp execution behind an adapter with immutable progress
-   events and a real cancellation token that stops the worker thread.
-2. Reuse the existing U1 `ProgressTracker` for yt-dlp speed/ETA/UI/DB gating;
-   do not create a second throttling path.
-3. Give every URL job its own download directory and validate final yt-dlp
-   paths before they enter durable `job_items.local_path`.
-4. Keep F2 error taxonomy separate until F1 progress/cancel behavior is tested
-   and deployed.
+1. F2: introduce a centralized domain error classifier and safe error summary
+   used by workers, repository snapshots and the failure center.
+2. Add phase-specific retry budgets/backoff without changing the durable FIFO
+   and publish idempotency guarantees established in R3.
+3. Treat Telegram FloodWait separately from normal exponential backoff and
+   persist retry timing/error codes for restart-safe behavior.
+4. Keep F3 disk quota/enforcement separate until F2 failure/retry behavior is
+   tested and deployed.
 
 ## UI direction
 

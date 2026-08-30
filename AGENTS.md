@@ -1,14 +1,14 @@
 # 视频转发机器人 — 项目说明（供 Agent 参考）
 
 > 本文件面向后续接手该项目的开发/运维 Agent，说明已实现功能、架构、关键技术点与已知问题、以及未来方向。
-> 最后更新：2026-08-30（当前生产基线 + 完整重构/功能/UI 技术方案）
+> 最后更新：2026-08-31（当前生产基线 + 完整重构/功能/UI 技术方案）
 >
 > **阅读顺序**：第 0 节和第 11 节以后是当前权威执行说明；第 1～9 节保留大量已实现功能与历史踩坑，若与权威章节冲突，以权威章节为准。
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `c5355ab`（U2：SQL 队列分页/筛选/详情、失败中心、分类帮助与 revision-bound destructive confirmation 完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 00:00 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`，生产容器 115 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。U2 未新增 migration，R3 recovery/shutdown 与 U1 进度基线继续由现有测试保护。
+- 当前分支：`main`。当前生产运行代码基线为 `b5450e6`（F1：yt-dlp 实时进度、断点续传安全路径与真正取消完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 00:09 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`，生产容器 121 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。F1 未新增 migration，R3 recovery/shutdown、U1 progress 和 U2 durable UI 基线继续由现有测试保护。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -423,7 +423,7 @@ docker compose config --quiet
 | R3 | P0 | 显式状态机、幂等命令、启动恢复与优雅关闭 | R2 | [x] `5604113`（2026-08-30；R3-A/B/C 完成） |
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [x] `2da964d`（2026-08-30） |
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [x] `c5355ab`（2026-08-31） |
-| F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [ ] |
+| F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [x] `b5450e6`（2026-08-31） |
 | F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [ ] |
 | F3 | P1 | 磁盘预检、配额、保留策略和安全清理 | R2 | [ ] |
 | F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [ ] |
@@ -1488,13 +1488,13 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2 已完成。下一阶段进入 **F1：yt-dlp 实时进度、速度/ETA 与真正取消**；不要同时夹带 F2 完整错误分类、Web Dashboard、多频道或转码。
+R0、R1、R2、R3、U1、U2、F1 已完成。下一阶段进入 **F2：错误分类、失败中心与阶段级重试/退避**；不要同时夹带 F3 磁盘配额、Web Dashboard、多频道或转码。
 
-1. 先按第 16.1 节把 URL 下载封装成独立 adapter/request/result 接口，继续 `noplaylist=True`，并使用 yt-dlp 官方 `progress_hooks` 把不可变进度从线程安全投递回 asyncio。
-2. 每个 URL job 使用自己的 job dir；取消必须设置共享 cancel token 并有限等待 yt-dlp 线程真正退出，不能只取消 `asyncio.to_thread` 后让后台继续写文件。
-3. 将 downloaded/total/speed/eta/item 状态接入现有 U1 `ProgressTracker`，保持 Telegram 2 秒 UI throttle、账号 token bucket 与 SQLite 5秒/32MB gate；不要重复造第二套进度状态。
-4. 最终路径必须校验在 job dir 内，优先使用 yt-dlp 明确返回 filepath/requested_downloads；`.part/.ytdl` 只在“删除缓存”时删除，普通重试允许续传。
-5. F1 门禁必须增加 mock YoutubeDL progress/finished/error/cancel、未知总大小、postprocess、路径逃逸和“取消后线程不继续写”测试，并保持现有 115+ 回归与生产安全部署流程。
+1. 先按第 16.2 节建立集中 domain error taxonomy 和安全错误摘要，至少覆盖 network/Telegram/source/url/file/disk/cache/publish/WebDAV/cancelled/unknown。
+2. retry budget 按 download/publish/backup 阶段独立；网络使用指数退避 + jitter，FloodWait 使用 Telegram 指定时间，不与普通 backoff 叠加。
+3. 失败写入 `error_code/error_message/retry_count/next_retry_at`，完整 traceback 只写脱敏日志；失败中心动作继续按错误类型决定，不能退回“万能重试”。
+4. publish retry 必须先检查 `published_messages`，避免响应超时后重复发布；WebDAV 保留现有远端大小幂等确认。
+5. F2 门禁继续保持 121+ 回归，并新增错误分类、退避、retry budget、FloodWait、partial publish 幂等和失败中心动作映射测试。
 
 ## 21. 执行日志
 
@@ -1680,3 +1680,15 @@ R0、R1、R2、R3、U1、U2 已完成。下一阶段进入 **F1：yt-dlp 实时�
 - VPS：部署前确认生产实际源码与 `2da964d` 一致、容器 `restart=0`、无活动传输、DB schema4/`integrity=ok` 且 durable tables 为空；2026-08-31 00:00 CST 安全部署 `c5355ab`。部署后容器 `running`、`restart=0`，镜像 `sha256:0ac843e8a2a659e5a0d9a6452384c0b0c19d55ed18b72a0597f83d2f2ea07826`，生产关键源码哈希与 commit 完全一致。
 - 回滚：部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-c5355ab-20260830-235950.sqlite3`；镜像 `telegram-video-forwarder:rollback-pre-c5355ab`；源码 `/root/telegram-video-forwarder-releases/pre-c5355ab.tar.gz`。U2 无 schema 变更，回滚到 U1 不需要降库。
 - 下一步精确入口：第 16.1 节 F1；先抽 URL downloader adapter + cancel token + progress hook fake，不同时实现 F2 完整错误分类。
+
+### 2026-08-31 00:09 - F1 yt-dlp 实时进度与真正取消
+
+- 状态：F1 已完成、推送并部署生产；下一阶段进入 F2。
+- 基线 commit：`7808706`；实现 commit：`b5450e6`（`feat(download): add cancellable yt-dlp progress`）。
+- 已完成：`src/downloader.py` 改为独立 `UrlDownloader` adapter，继续使用 yt-dlp Python API；新增不可变 `DownloadProgress/DownloadResult` 与线程安全 `CancelToken`。`progress_hooks/postprocessor_hooks` 从 worker thread 用 `loop.call_soon_threadsafe` 投递到 asyncio；外层 task cancel 会先置 token、再等待 yt-dlp thread cooperative 退出，避免旧线程与重试同时写同一 job 目录。
+- 路径与缓存：删除旧 `_clear_dir()` 行为，URL job 目录不再在每次重试前清空，`.part` 可继续续传；输出模板限制 id/title 长度并保持 `noplaylist=True/restrictfilenames=True`。最终文件只从 yt-dlp 的 top-level filepath/_filename/prepare filename/requested_downloads 候选解析，并对 job dir 做 realpath/commonpath 校验；最终 merged filepath 优先于音视频分片，路径逃逸 fail closed。
+- UI/进度：URL bytes progress 复用 U1 `ProgressTracker`，不新增第二套 throttle；未知总大小显示已传输字节/速度而不显示伪 0%；postprocessor 阶段主任务卡显示 `🧩 正在合并音视频`。pipeline timeout 取消 downloader 后会等待线程退出再重试，并按 `url_stage` 区分“下载超时”与“合并音视频超时”。用户取消会主动触发 URL cancel token。
+- 测试：最终本地绑定源码、最终构建镜像、生产容器均 **121 项 unittest 全通过**；新增 mock YoutubeDL progress/unknown-total/postprocess、保留 partial、merged-vs-fragments、路径逃逸、pre-cancel 和“取消 await 返回后线程不再继续写”测试。`py_compile`、`git diff --check`、compose config、Docker build、静态镜像秘密路径检查全部通过；schema 仍 `[1,2,3,4]`，0001～0004 checksum 未修改。
+- VPS：部署前确认生产实际源码与 `c5355ab` 一致、容器 `restart=0`、无活动传输、DB schema4/`integrity=ok` 且无未完成任务；2026-08-31 00:09 CST 安全部署 `b5450e6`。部署后容器 `running`、`restart=0`，镜像 `sha256:4393cdd6b8da5f0d9f6a492012eac9e55ac3e5b51673dea61a7b630a5f86c38c`，生产关键源码哈希与 commit 完全一致；生产镜像内 cancel 专项再次通过。
+- 回滚：部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-b5450e6-20260831-000926.sqlite3`；镜像 `telegram-video-forwarder:rollback-pre-b5450e6`；源码 `/root/telegram-video-forwarder-releases/pre-b5450e6.tar.gz`。F1 无 schema 变更，回滚到 U2 不需要降库。
+- 下一步精确入口：第 16.2 节 F2；先做 domain error classifier + retry policy，不同时实现 F3 磁盘配额。
