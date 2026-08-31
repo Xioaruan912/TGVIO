@@ -1230,6 +1230,55 @@ class SQLiteRepository:
             raise RepositoryError(f"job {job_id} missing after publish")
         return TransitionResult(True, current)
 
+    async def checkpoint_published_messages(
+        self,
+        job_id: int,
+        messages: list[tuple[int, int, str]],
+    ) -> int:
+        """Durably record confirmed Telegram side effects without finishing the job."""
+        if not messages:
+            return 0
+        conn = self._require_conn()
+        timestamp = time.time()
+        inserted = 0
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute("SELECT state FROM jobs WHERE id=?", (int(job_id),))
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    raise RepositoryError(f"job {job_id} not found")
+                for peer_id, message_id, role in messages:
+                    cursor = await conn.execute(
+                        """INSERT OR IGNORE INTO published_messages(
+                               job_id,peer_id,message_id,role,created_at
+                           ) VALUES (?,?,?,?,?)""",
+                        (int(job_id), int(peer_id), int(message_id), str(role), timestamp),
+                    )
+                    inserted += max(0, int(cursor.rowcount))
+                    await cursor.close()
+                if inserted:
+                    await conn.execute(
+                        """INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                           VALUES (?,?,?,?,?,?)""",
+                        (
+                            int(job_id),
+                            "publish_checkpoint",
+                            str(row["state"]),
+                            str(row["state"]),
+                            self._encode_versioned_payload(
+                                {"schema_version": 1, "received": len(messages), "inserted": inserted}
+                            ),
+                            timestamp,
+                        ),
+                    )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return inserted
+
     async def list_published_messages(self, job_id: int) -> list[PublishedMessageRecord]:
         conn = self._require_conn()
         cursor = await conn.execute(

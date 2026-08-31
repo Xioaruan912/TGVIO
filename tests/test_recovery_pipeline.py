@@ -158,3 +158,56 @@ class RepositoryBackedPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current.state, "failed")
         self.assertIn(seq, self.pipeline.retryable)
         self.assertNotIn(seq, self.pipeline.active_seqs)
+
+    async def test_publish_checkpoint_survives_partial_failure_without_replay(self) -> None:
+        seq = 2200
+        record = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="queued",
+            source_kind="url",
+            source_url="https://example.invalid/publish-partial",
+            legacy_seq=seq,
+            event_payload={"schema_version": 1},
+        )
+        claim = await self.repo.claim_next_download("prep-partial")
+        self.assertEqual(claim.job.id, record.id)
+        path = self.downloads / f"job-{seq}" / "media.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"ready")
+        await self.repo.record_download_ready(
+            record.id,
+            [str(path)],
+            expected_revision=claim.job.revision,
+        )
+        await self.pipeline.recover_from_repository()
+        attempts = []
+
+        async def publish(job, _payload):
+            attempts.append(job.seq)
+            job._publish_send_attempts = 1
+            job._published_refs = [(-1001, 55, "destination")]
+            for hook in self.pipeline.publisher.checkpoint_hooks:
+                await hook(job, [(-1001, 55, "destination")])
+            raise ConnectionError("response lost after send")
+
+        self.pipeline.publisher.publish = publish
+        worker = asyncio.create_task(self.pipeline._upload_worker())
+        for _ in range(200):
+            current = await self.repo.get_job(record.id)
+            if current is not None and current.state == "failed":
+                break
+            await asyncio.sleep(0.005)
+        await cancel_task(worker)
+
+        current = await self.repo.get_job(record.id)
+        detail = await self.repo.job_detail(record.id, user_id=42)
+        refs = await self.repo.list_published_messages(record.id)
+        self.assertEqual(attempts, [seq])
+        self.assertEqual(current.state, "failed")
+        self.assertEqual(detail["error_code"], "publish_partial")
+        self.assertEqual(
+            [(item.peer_id, item.message_id, item.role) for item in refs],
+            [(-1001, 55, "destination")],
+        )
+        self.assertNotIn(seq, self.pipeline.retryable)

@@ -175,6 +175,7 @@ class FakePublisher:
         self.pre_publish_hooks: list[Any] = []
         self.progress_hooks: list[Any] = []
         self.post_publish_hooks: list[Any] = []
+        self.checkpoint_hooks: list[Any] = []
         self.calls: list[int] = []
         self.jobs: list[object] = []
         self.payloads: list[Any] = []

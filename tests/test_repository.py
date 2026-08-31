@@ -272,6 +272,42 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         events = await self.repo.list_job_events(job.id)
         self.assertEqual([event.event_type for event in events], ["accepted", "published"])
 
+    async def test_publish_checkpoint_is_idempotent_and_does_not_finish_job(self) -> None:
+        job = await self.repo.accept_job(
+            kind="collection", user_id=1, state="publishing", source_kind="telegram",
+            event_payload={"schema_version": 1},
+        )
+        inserted = await self.repo.checkpoint_published_messages(
+            job.id, [(-1001, 11, "cover"), (-1002, 12, "comment")]
+        )
+        repeated = await self.repo.checkpoint_published_messages(
+            job.id, [(-1001, 11, "cover")]
+        )
+        current = await self.repo.get_job(job.id)
+        refs = await self.repo.list_published_messages(job.id)
+        self.assertEqual(inserted, 2)
+        self.assertEqual(repeated, 0)
+        self.assertEqual(current.state, "publishing")
+        self.assertEqual(current.revision, job.revision)
+        self.assertEqual([(item.peer_id, item.message_id) for item in refs], [(-1001, 11), (-1002, 12)])
+        events = await self.repo.list_job_events(job.id)
+        self.assertEqual([event.event_type for event in events], ["accepted", "publish_checkpoint"])
+
+    async def test_publish_checkpoint_distinguishes_same_message_id_across_peers(self) -> None:
+        job = await self.repo.accept_job(
+            kind="collection", user_id=1, state="publishing", source_kind="telegram",
+            event_payload={"schema_version": 1},
+        )
+        inserted = await self.repo.checkpoint_published_messages(
+            job.id, [(-1001, 11, "cover"), (-1002, 11, "comment")]
+        )
+        self.assertEqual(inserted, 2)
+        refs = await self.repo.list_published_messages(job.id)
+        self.assertEqual(
+            [(item.peer_id, item.message_id, item.role) for item in refs],
+            [(-1001, 11, "cover"), (-1002, 11, "comment")],
+        )
+
     async def test_interaction_session_revisioned_crud(self) -> None:
         record = await self.repo.upsert_interaction_session(
             user_id=42,

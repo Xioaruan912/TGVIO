@@ -166,12 +166,28 @@ class ShadowState:
         job_id = self.job_ids.get(seq)
         if not job_id or self.repository is None:
             return None
+        existing = await self.repository.list_published_messages(job_id)
+        known_refs = {
+            (item.peer_id, item.message_id)
+            for item in existing
+            if item.deleted_at is None
+        }
         refs = []
         for value in ids or []:
             if isinstance(value, tuple) and len(value) >= 2:
-                refs.append((int(value[0]), int(value[1]), "published"))
+                message_id = int(value[1])
+                try:
+                    peer_id = int(value[0])
+                except (TypeError, ValueError):
+                    peer_id = 0
+                if (peer_id, message_id) in known_refs:
+                    continue
+                role = str(value[2]) if len(value) >= 3 else "published"
+                refs.append((peer_id, message_id, role))
             else:
-                refs.append((0, int(value), "legacy_destination"))
+                message_id = int(value)
+                if (0, message_id) not in known_refs:
+                    refs.append((0, message_id, "legacy_destination"))
         current = await self.repository.get_job(job_id)
         if current is None:
             return None
@@ -180,6 +196,12 @@ class ShadowState:
             refs,
             expected_revision=current.revision,
         )
+
+    async def checkpoint_publish(self, seq: int, refs: list[tuple[int, int, str]]) -> int:
+        job_id = self.job_ids.get(seq)
+        if not job_id or self.repository is None:
+            return 0
+        return await self.repository.checkpoint_published_messages(job_id, list(refs))
 
     def bind_existing(self, seq: int, job_id: int) -> None:
         self.job_ids[int(seq)] = int(job_id)

@@ -15,7 +15,7 @@ import os
 
 from telethon import TelegramClient, custom, functions, helpers
 from telethon.tl import types
-from telethon.utils import get_input_document, get_input_photo
+from telethon.utils import get_input_document, get_input_photo, get_peer_id
 
 from .downloader import CancelToken, DownloadProgress, download_video
 from .video import guess_mime, is_photo_path, is_video_path, make_cover, make_thumb, probe_video
@@ -32,6 +32,13 @@ class FileTooLargeError(Exception):
         super().__init__(
             f"文件 {size / 1024 / 1024:.1f}MB 超过 {limit // (1024 * 1024)}MB 上限"
         )
+
+
+class PublishPartialError(Exception):
+    """A visible publish request may have succeeded and must not be replayed blindly."""
+
+    def __init__(self):
+        super().__init__("partial publish requires manual review")
 
 
 class MediaDownloader:
@@ -287,6 +294,7 @@ class MediaPublisher:
         self.max_cover_images = max(1, max_cover_images)
         self.pre_publish_hooks = []   # async (job, payload) -> None
         self.post_publish_hooks = []  # async (job, ids) -> None
+        self.checkpoint_hooks = []    # async (job, canonical_refs) -> None
         self.progress_hooks = []      # async (seq, received, total, item, items) -> None
         self._dest_input = None
         self._group_input = None
@@ -314,12 +322,48 @@ class MediaPublisher:
         return self._workdir_fn(seq)
 
     async def publish(self, job, payload) -> list:
+        job._publish_send_attempts = 0
+        if not hasattr(job, "_published_refs"):
+            job._published_refs = []
         for hook in self.pre_publish_hooks:
             await hook(job, payload)
         ids = await self._publish(job, payload)
         for hook in self.post_publish_hooks:
             await hook(job, ids)
         return ids
+
+    @staticmethod
+    def _peer_id(peer) -> int:
+        try:
+            return int(get_peer_id(peer))
+        except Exception:
+            try:
+                return int(peer)
+            except (TypeError, ValueError):
+                return 0
+
+    @staticmethod
+    def _begin_send(job) -> None:
+        job._publish_send_attempts = int(getattr(job, "_publish_send_attempts", 0)) + 1
+
+    async def _checkpoint(self, job, peer, message_ids, role: str) -> None:
+        peer_id = self._peer_id(peer)
+        known = list(getattr(job, "_published_refs", []))
+        fresh = []
+        for message_id in message_ids:
+            ref = (peer_id, int(message_id), str(role))
+            if ref not in known:
+                known.append(ref)
+                fresh.append(ref)
+        job._published_refs = known
+        if fresh:
+            for hook in self.checkpoint_hooks:
+                await hook(job, fresh)
+
+    @staticmethod
+    def _raise_partial_if_started(job, attempts_before: int, exc: BaseException) -> None:
+        if int(getattr(job, "_publish_send_attempts", 0)) > attempts_before:
+            raise PublishPartialError() from exc
 
     async def _publish(self, job, payload):
         if job.kind == "collection":
@@ -338,13 +382,20 @@ class MediaPublisher:
         caption = self._with_footer(caption) or None
         media = await self._upload_media_input(path, job.spoiler, job.seq)
         if self.cover_mode and is_video_path(path):
+            attempts_before = int(getattr(job, "_publish_send_attempts", 0))
             try:
                 return await self._publish_cover_video(job, path, media, caption)
             except Exception as exc:
+                self._raise_partial_if_started(job, attempts_before, exc)
                 logger.warning(
                     "Cover publish failed (%s), fallback direct publish", exc
                 )
+        dest_input = await self._get_dest_input()
+        self._begin_send(job)
         msg = await self.client.send_file(self.dest, media, caption=caption)
+        await self._checkpoint(
+            job, getattr(msg, "peer_id", None) or dest_input, [msg.id], "destination"
+        )
         return [msg.id]
 
     async def _publish_cover_video(self, job, video_path, media, caption) -> list:
@@ -352,9 +403,14 @@ class MediaPublisher:
         os.makedirs(workdir, exist_ok=True)
         cover = await make_cover(video_path, workdir, self.cover_width)
         cover_media = await self._upload_media_input(cover, False, job.seq)
-        cover_msg = await self.client.send_file(self.dest, cover_media, caption=caption)
         dest_input = await self._get_dest_input()
-        group_peer, comment_id = await self._post_comment(media, cover_msg)
+        self._begin_send(job)
+        cover_msg = await self.client.send_file(self.dest, cover_media, caption=caption)
+        await self._checkpoint(
+            job, getattr(cover_msg, "peer_id", None) or dest_input, [cover_msg.id], "cover"
+        )
+        group_peer, comment_id = await self._post_comment(job, media, cover_msg)
+        await self._checkpoint(job, group_peer, [comment_id], "comment")
         return [(dest_input, cover_msg.id), (group_peer, comment_id)]
 
     async def _get_discussion_group(self):
@@ -451,13 +507,14 @@ class MediaPublisher:
         self._thread_root = (cover_id, root)
         return root
 
-    async def _post_comment(self, media, channel_msg):
+    async def _post_comment(self, job, media, channel_msg):
         group = await self._get_discussion_group()
         mid = getattr(channel_msg, "id", channel_msg)
         root = await self._find_thread_root(mid)
         reply_to = None
         if root is not None:
             reply_to = types.InputReplyToMessage(reply_to_msg_id=root)
+        self._begin_send(job)
         result = await self.client(
             functions.messages.SendMediaRequest(
                 peer=group,
@@ -476,10 +533,11 @@ class MediaPublisher:
         if comment_id is None:
             raise RuntimeError("评论消息发送后未取到 id")
         self._note_group_id(comment_id)
+        await self._checkpoint(job, group, [comment_id], "comment")
         return group, comment_id
 
     async def _post_album_comment(
-        self, paths, root_msg, spoiler, seq, caption="", item_offset=0, total_items=None
+        self, job, paths, root_msg, spoiler, seq, caption="", item_offset=0, total_items=None
     ) -> tuple:
         group = await self._get_discussion_group()
         root_id = getattr(root_msg, "id", root_msg)
@@ -509,6 +567,7 @@ class MediaPublisher:
                 raise RuntimeError(f"无法为评论相册媒体 #{(index + 1)} 构建引用")
             msg_text = caption if index == 0 else ""
             single_media.append(types.InputSingleMedia(reference, message=msg_text))
+        self._begin_send(job)
         result = await self.client(
             functions.messages.SendMultiMediaRequest(
                 group, multi_media=single_media, reply_to=reply_to
@@ -524,6 +583,7 @@ class MediaPublisher:
             raise RuntimeError("评论相册发送后未取到 id")
         for cid in ids:
             self._note_group_id(cid)
+        await self._checkpoint(job, group, ids, "comment")
         return group, ids
 
     def _album_captions(self, job, paths) -> list:
@@ -564,7 +624,8 @@ class MediaPublisher:
             photo_paths = [paths[i] for i in photo_idx]
             photo_caps = [captions[i] for i in photo_idx]
             cover_ids = await self._send_album_media(
-                job, photo_paths, dest_input, None, forced_captions=photo_caps
+                job, photo_paths, dest_input, None, forced_captions=photo_caps,
+                role="cover",
             )
             refs.extend((dest_input, mid) for mid in cover_ids)
             root_msg = cover_ids[0]
@@ -574,10 +635,15 @@ class MediaPublisher:
             first = paths[video_idx[0]]
             cover = await make_cover(first, workdir, self.cover_width)
             cover_media = await self._upload_media_input(cover, False, job.seq)
+            self._begin_send(job)
             cover_msg = await self.client.send_file(
                 self.dest,
                 cover_media,
                 caption=self._with_footer(captions[video_idx[0]]) or None,
+            )
+            await self._checkpoint(
+                job, getattr(cover_msg, "peer_id", None) or dest_input,
+                [cover_msg.id], "cover",
             )
             refs.append((dest_input, cover_msg.id))
             root_msg = cover_msg.id
@@ -589,21 +655,25 @@ class MediaPublisher:
             caption = ""
             if first_chunk and len(chunk) > 1:
                 caption = f"合集共 {len(video_paths)} 个视频"
+            attempts_before = int(getattr(job, "_publish_send_attempts", 0))
             try:
                 if len(chunk) == 1:
                     media = await self._upload_media_input(
                         chunk[0], job.spoiler, job.seq,
                         item=start + 1, items=len(video_paths),
                     )
-                    group_peer, comment_id = await self._post_comment(media, root_msg)
+                    group_peer, comment_id = await self._post_comment(job, media, root_msg)
+                    await self._checkpoint(job, group_peer, [comment_id], "comment")
                     refs.append((group_peer, comment_id))
                 else:
                     group_peer, cids = await self._post_album_comment(
-                        chunk, root_msg, job.spoiler, job.seq, caption=caption,
+                        job, chunk, root_msg, job.spoiler, job.seq, caption=caption,
                         item_offset=start, total_items=len(video_paths),
                     )
+                    await self._checkpoint(job, group_peer, cids, "comment")
                     refs.extend((group_peer, cid) for cid in cids)
             except Exception as exc:
+                self._raise_partial_if_started(job, attempts_before, exc)
                 logger.warning(
                     "Album comment publish failed (%s), fallback direct", exc
                 )
@@ -612,7 +682,12 @@ class MediaPublisher:
                         _p, job.spoiler, job.seq,
                         item=start + index + 1, items=len(video_paths),
                     )
+                    self._begin_send(job)
                     msg = await self.client.send_file(self.dest, media)
+                    await self._checkpoint(
+                        job, getattr(msg, "peer_id", None) or dest_input,
+                        [msg.id], "fallback",
+                    )
                     refs.append((dest_input, msg.id))
             first_chunk = False
         return refs
@@ -681,7 +756,8 @@ class MediaPublisher:
             if comment:
                 photo_caps[0] = self._merge_caption(comment, photo_caps[0])
             cover_ids = await self._send_album_media(
-                job, photo_paths, dest_input, None, forced_captions=photo_caps
+                job, photo_paths, dest_input, None, forced_captions=photo_caps,
+                role="cover",
             )
             refs.extend((dest_input, mid) for mid in cover_ids)
             root_msg = cover_ids[0]
@@ -692,10 +768,15 @@ class MediaPublisher:
             cover = await make_cover(first, workdir, self.cover_width)
             cover_media = await self._upload_media_input(cover, False, job.seq)
             cover_caption = self._merge_caption(comment, captions[video_idx[0]])
+            self._begin_send(job)
             cover_msg = await self.client.send_file(
                 self.dest,
                 cover_media,
                 caption=self._with_footer(cover_caption) or None,
+            )
+            await self._checkpoint(
+                job, getattr(cover_msg, "peer_id", None) or dest_input,
+                [cover_msg.id], "cover",
             )
             refs.append((dest_input, cover_msg.id))
             root_msg = cover_msg.id
@@ -708,21 +789,25 @@ class MediaPublisher:
                 caption = ""
                 if first_chunk and len(chunk) > 1:
                     caption = f"合集共 {len(video_paths)} 个视频"
+                attempts_before = int(getattr(job, "_publish_send_attempts", 0))
                 try:
                     if len(chunk) == 1:
                         media = await self._upload_media_input(
                             chunk[0], job.spoiler, job.seq,
                             item=start + 1, items=len(video_paths),
                         )
-                        group_peer, comment_id = await self._post_comment(media, root_msg)
+                        group_peer, comment_id = await self._post_comment(job, media, root_msg)
+                        await self._checkpoint(job, group_peer, [comment_id], "comment")
                         refs.append((group_peer, comment_id))
                     else:
                         group_peer, cids = await self._post_album_comment(
-                            chunk, root_msg, job.spoiler, job.seq, caption=caption,
+                            job, chunk, root_msg, job.spoiler, job.seq, caption=caption,
                             item_offset=start, total_items=len(video_paths),
                         )
+                        await self._checkpoint(job, group_peer, cids, "comment")
                         refs.extend((group_peer, cid) for cid in cids)
                 except Exception as exc:
+                    self._raise_partial_if_started(job, attempts_before, exc)
                     logger.warning(
                         "Collection comment publish failed (%s), fallback direct", exc
                     )
@@ -731,7 +816,12 @@ class MediaPublisher:
                             _p, job.spoiler, job.seq,
                             item=start + index + 1, items=len(video_paths),
                         )
+                        self._begin_send(job)
                         msg = await self.client.send_file(self.dest, media)
+                        await self._checkpoint(
+                            job, getattr(msg, "peer_id", None) or dest_input,
+                            [msg.id], "fallback",
+                        )
                         refs.append((dest_input, msg.id))
                 first_chunk = False
         return refs
@@ -746,8 +836,13 @@ class MediaPublisher:
                 media = await self._upload_media_input(
                     paths[i], job.spoiler, job.seq, item=i + 1, items=total
                 )
+                self._begin_send(job)
                 msg = await self.client.send_file(
                     self.dest, media, caption=self._with_footer(captions[i]) or None
+                )
+                await self._checkpoint(
+                    job, getattr(msg, "peer_id", None) or dest_input,
+                    [msg.id], "destination",
                 )
                 refs.append(msg.id)
                 i += 1
@@ -765,7 +860,15 @@ class MediaPublisher:
                 refs.extend(ids)
         return refs
 
-    async def _send_album_media(self, job, paths, dest_input, spoiler, forced_captions=None) -> list:
+    async def _send_album_media(
+        self,
+        job,
+        paths,
+        dest_input,
+        spoiler,
+        forced_captions=None,
+        role="destination",
+    ) -> list:
         total = len(paths)
         if forced_captions is not None:
             captions = list(forced_captions)
@@ -802,16 +905,22 @@ class MediaPublisher:
                 single_media.append(
                     types.InputSingleMedia(reference, message=self._with_footer(caption))
                 )
+            self._begin_send(job)
             result = await self.client(
                 functions.messages.SendMultiMediaRequest(
                     dest_input, multi_media=single_media
                 )
             )
+            chunk_ids = []
             for update in getattr(result, "updates", []) or []:
                 if isinstance(update, types.UpdateNewChannelMessage):
-                    ids.append(update.message.id)
+                    chunk_ids.append(update.message.id)
                 elif isinstance(update, types.UpdateNewMessage):
-                    ids.append(update.message.id)
+                    chunk_ids.append(update.message.id)
+            if not chunk_ids:
+                raise PublishPartialError()
+            ids.extend(chunk_ids)
+            await self._checkpoint(job, dest_input, chunk_ids, role)
         return ids
 
     async def _upload_media_input(self, path, spoiler, seq, item=1, items=1):

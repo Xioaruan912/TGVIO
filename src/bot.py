@@ -49,7 +49,7 @@ from .config import (
 )
 from .domain import ErrorCode, RetryPolicy, classify_error, safe_traceback
 from . import webdav
-from .media import FileTooLargeError, MediaDownloader, MediaPublisher
+from .media import FileTooLargeError, MediaDownloader, MediaPublisher, PublishPartialError
 from .models import AlbumBuffer, Job, PendingJob, RetryInfo, Session
 from .progress import ProgressTracker, position_token, render_bar
 from .storage import JsonStore
@@ -239,6 +239,7 @@ class _Pipeline:
         self.downloader.post_download_hooks.append(self._on_webdav_upload)
         self.publisher.progress_hooks.append(self._on_upload_progress)
         self.publisher.pre_publish_hooks.append(self._on_pre_publish)
+        self.publisher.checkpoint_hooks.append(self._on_publish_checkpoint)
         self.publisher.post_publish_hooks.append(self._on_published)
 
     def _load_prefs(self) -> None:
@@ -2096,12 +2097,19 @@ class _Pipeline:
         text, buttons = self._job_card(job, "publishing", payload=payload)
         await self._safe_edit(job, text, buttons=buttons)
 
+    async def _on_publish_checkpoint(
+        self, job, refs: list[tuple[int, int, str]]
+    ) -> None:
+        if getattr(self, "repository", None) is not None and getattr(self, "job_queue", None) is not None:
+            await self.job_queue.checkpoint_publish(job.seq, refs)
+
     async def _on_published(self, job, ids: list) -> None:
         self._progress_tracker.begin_phase(job.seq, "succeeded")
         self._remember_published(job.seq, ids)
         if getattr(self, "job_queue", None) is not None:
             if getattr(self, "repository", None) is not None:
-                await self.job_queue.complete_publish(job.seq, ids)
+                durable_refs = list(getattr(job, "_published_refs", []) or [])
+                await self.job_queue.complete_publish(job.seq, durable_refs or ids)
             else:
                 self.job_queue.shadow_published(job.seq, ids)
         text, buttons = self._job_card(job, "succeeded")
@@ -2251,75 +2259,167 @@ class _Pipeline:
                 continue
 
             self._uploading = seq
-            task = asyncio.get_running_loop().create_task(
-                self.publisher.publish(job, path)
-            )
-            self._upload_tasks[seq] = task
+            publish_retries = 0
             try:
-                done, _ = await asyncio.wait({task}, timeout=UPLOAD_TIMEOUT)
-            except asyncio.CancelledError:
-                logger.info("Job #%s upload worker cancelled", seq)
-                if not self._stopping:
-                    self._cancel_marked.discard(seq)
-                    await self._delete_status(job)
-                    self._finish_seq(seq)
-            else:
-                if task in done:
+                while True:
+                    if seq in self._cancel_marked:
+                        self._cancel_marked.discard(seq)
+                        await self._delete_status(job)
+                        self._finish_seq(seq)
+                        break
+                    task = asyncio.get_running_loop().create_task(
+                        self.publisher.publish(job, path)
+                    )
+                    self._upload_tasks[seq] = task
                     try:
-                        await task
+                        done, _ = await asyncio.wait({task}, timeout=UPLOAD_TIMEOUT)
                     except asyncio.CancelledError:
-                        if self._stopping:
-                            logger.info("Job #%s upload interrupted by shutdown", seq)
-                        else:
-                            logger.info("Job #%s upload stopped by user", seq)
+                        logger.info("Job #%s upload worker cancelled", seq)
+                        if not self._stopping:
                             self._cancel_marked.discard(seq)
                             await self._delete_status(job)
                             self._finish_seq(seq)
-                    except FileTooLargeError as exc:
-                        logger.warning("Job #%s %s", seq, exc)
-                        await self._reply_error(
-                            seq,
-                            "上传失败：文件超过当前发布上限",
-                            exc=exc,
-                            phase="publish",
-                        )
-                        self._finish_seq(seq)
-                    except Exception as exc:
-                        error = classify_error(exc, stage="publish")
-                        logger.error(
-                            "Publish failed job=%s phase=publish code=%s exception_type=%s traceback=%s",
-                            seq,
-                            error.code.value,
-                            exc.__class__.__name__,
-                            safe_traceback(exc),
-                        )
-                        await self._reply_error(
-                            seq,
-                            f"上传失败: {exc}",
-                            retry_job=job,
-                            retry_path=path if not isinstance(path, list) else "",
-                            exc=exc,
-                            phase="publish",
-                        )
-                        self._finish_seq(seq, keep_cache=True)
-                    else:
-                        self._finish_seq(seq)
-                else:
+                        break
+
+                    if task in done:
+                        try:
+                            await task
+                        except asyncio.CancelledError:
+                            if self._stopping:
+                                logger.info("Job #%s upload interrupted by shutdown", seq)
+                            else:
+                                logger.info("Job #%s upload stopped by user", seq)
+                                self._cancel_marked.discard(seq)
+                                await self._delete_status(job)
+                                self._finish_seq(seq)
+                            break
+                        except FileTooLargeError as exc:
+                            logger.warning("Job #%s %s", seq, exc)
+                            await self._reply_error(
+                                seq,
+                                "上传失败：文件超过当前发布上限",
+                                exc=exc,
+                                phase="publish",
+                            )
+                            self._finish_seq(seq)
+                            break
+                        except Exception as exc:
+                            has_side_effect_risk = (
+                                int(getattr(job, "_publish_send_attempts", 0)) > 0
+                                or bool(getattr(job, "_published_refs", []))
+                            )
+                            effective_exc = exc
+                            if has_side_effect_risk and not isinstance(exc, PublishPartialError):
+                                effective_exc = PublishPartialError()
+                            error = classify_error(effective_exc, stage="publish")
+                            decision = self._retry_policy.decide(
+                                error,
+                                stage="publish",
+                                attempt=publish_retries + 1,
+                                now=time.time(),
+                            )
+                            if not has_side_effect_risk and decision.should_retry:
+                                publish_retries = decision.attempt
+                                if getattr(self, "repository", None) is not None:
+                                    await self.job_queue.record_retry(
+                                        seq,
+                                        phase="publish",
+                                        error_code=error.code.value,
+                                        error_message=error.summary,
+                                        retry_count=publish_retries,
+                                        next_retry_at=float(decision.next_retry_at),
+                                    )
+                                logger.warning(
+                                    "Job #%s publish failed code=%s, auto-retry %d/%d in %.1fs",
+                                    seq,
+                                    error.code.value,
+                                    publish_retries,
+                                    decision.budget,
+                                    float(decision.delay_seconds),
+                                )
+                                if await self._wait_retry(seq, float(decision.delay_seconds)):
+                                    self._cancel_marked.discard(seq)
+                                    await self._delete_status(job)
+                                    self._finish_seq(seq)
+                                    break
+                                continue
+                            logger.error(
+                                "Publish failed job=%s phase=publish code=%s exception_type=%s traceback=%s",
+                                seq,
+                                error.code.value,
+                                effective_exc.__class__.__name__,
+                                safe_traceback(exc),
+                            )
+                            await self._reply_error(
+                                seq,
+                                f"上传失败: {exc}",
+                                retry_job=job,
+                                retry_path=path if not isinstance(path, list) else "",
+                                exc=effective_exc,
+                                phase="publish",
+                                retry_count=publish_retries,
+                            )
+                            self._finish_seq(seq, keep_cache=True)
+                            break
+                        else:
+                            self._finish_seq(seq)
+                            break
+
                     task.cancel()
+                    await asyncio.gather(task, return_exceptions=True)
+                    has_side_effect_risk = (
+                        int(getattr(job, "_publish_send_attempts", 0)) > 0
+                        or bool(getattr(job, "_published_refs", []))
+                    )
+                    effective_exc = PublishPartialError() if has_side_effect_risk else TimeoutError("publish timeout")
+                    error = classify_error(effective_exc, stage="publish")
+                    decision = self._retry_policy.decide(
+                        error,
+                        stage="publish",
+                        attempt=publish_retries + 1,
+                        now=time.time(),
+                    )
+                    if not has_side_effect_risk and decision.should_retry:
+                        publish_retries = decision.attempt
+                        if getattr(self, "repository", None) is not None:
+                            await self.job_queue.record_retry(
+                                seq,
+                                phase="publish",
+                                error_code=error.code.value,
+                                error_message=error.summary,
+                                retry_count=publish_retries,
+                                next_retry_at=float(decision.next_retry_at),
+                            )
+                        logger.warning(
+                            "Job #%s publish timeout, auto-retry %d/%d in %.1fs",
+                            seq,
+                            publish_retries,
+                            decision.budget,
+                            float(decision.delay_seconds),
+                        )
+                        if await self._wait_retry(seq, float(decision.delay_seconds)):
+                            self._cancel_marked.discard(seq)
+                            await self._delete_status(job)
+                            self._finish_seq(seq)
+                            break
+                        continue
                     logger.error(
-                        "Upload for job #%s timed out after %ss",
+                        "Upload for job #%s timed out after %ss code=%s",
                         seq,
                         UPLOAD_TIMEOUT,
+                        error.code.value,
                     )
                     await self._reply_error(
                         seq,
                         f"上传超时（{UPLOAD_TIMEOUT} 秒）",
                         retry_job=job,
                         retry_path=path if not isinstance(path, list) else "",
-                        exc=TimeoutError("publish timeout"),
+                        exc=effective_exc,
                         phase="publish",
+                        retry_count=publish_retries,
                     )
                     self._finish_seq(seq, keep_cache=True)
+                    break
             finally:
                 self._upload_tasks.pop(seq, None)
                 self._repo_publish_claimed.discard(seq)

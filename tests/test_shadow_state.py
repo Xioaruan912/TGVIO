@@ -135,3 +135,31 @@ class ShadowStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(job.state, "downloading")
         self.assertIsNone(job.resume_state)
 
+    async def test_final_publish_preserves_checkpoint_roles_without_duplicate_refs(self) -> None:
+        self.shadow.accept(
+            800,
+            kind="url",
+            user_id=42,
+            state="publishing",
+            source_kind="url",
+            source_url="https://example.invalid/800",
+            texts=[],
+            spoiler=False,
+        )
+        await self.shadow.drain()
+        job_id = self.shadow.job_ids[800]
+        await self.shadow.checkpoint_publish(
+            800,
+            [(-1001, 11, "cover"), (-1002, 11, "comment")],
+        )
+        await self.shadow.complete_publish(
+            800,
+            [(-1001, 11, "cover"), (-1002, 11, "comment")],
+        )
+        refs = await self.repo.list_published_messages(job_id)
+        self.assertEqual(
+            [(ref.peer_id, ref.message_id, ref.role) for ref in refs],
+            [(-1001, 11, "cover"), (-1002, 11, "comment")],
+        )
+        self.assertEqual((await self.repo.get_job(job_id)).state, "succeeded")
+

@@ -4,7 +4,7 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.media import MediaPublisher
+from src.media import MediaPublisher, PublishPartialError
 from src.models import Job
 from tests.fakes import FakeClient, FakeStatusMessage
 
@@ -66,10 +66,11 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
             send_album.kwargs["forced_captions"],
             ["第一行\n第二行\n第三行\n原图文案"],
         )
+        self.assertEqual(send_album.kwargs["role"], "cover")
         self.publisher._upload_media_input.assert_awaited_once_with(
             video, True, 10, item=1, items=1
         )
-        self.publisher._post_comment.assert_awaited_once_with("video-input", 101)
+        self.publisher._post_comment.assert_awaited_once_with(job, "video-input", 101)
 
     async def test_single_cover_publish_returns_channel_and_comment_references(self) -> None:
         video = self.make_file("single.mp4")
@@ -93,8 +94,60 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(self.client.sent_files[0]["caption"], "caption")
         self.publisher._post_comment.assert_awaited_once_with(
-            "video-input", cover_message
+            job, "video-input", cover_message
         )
+
+    async def test_confirmed_side_effects_are_checkpointed_before_completion(self) -> None:
+        video = self.make_file("checkpoint.mp4")
+        cover = self.make_file("checkpoint-cover.jpg")
+        job = Job(
+            seq=12,
+            kind="media",
+            status=FakeStatusMessage(),
+            message=SimpleNamespace(message=""),
+        )
+        checkpoints = []
+
+        async def capture(_job, refs) -> None:
+            checkpoints.append(list(refs))
+
+        self.publisher.checkpoint_hooks.append(capture)
+        self.publisher._upload_media_input = AsyncMock(return_value="input")
+        self.publisher._get_dest_input = AsyncMock(return_value=1234)
+        self.publisher._post_comment = AsyncMock(return_value=(5678, 303))
+        with patch("src.media.make_cover", new=AsyncMock(return_value=cover)):
+            result = await self.publisher.publish(job, video)
+
+        cover_id = self.client.sent_files[0]["message"].id
+        self.assertEqual(result, [(1234, cover_id), (5678, 303)])
+        self.assertEqual(
+            checkpoints,
+            [[(1234, cover_id, "cover")], [(5678, 303, "comment")]],
+        )
+
+    async def test_send_started_then_failed_is_partial_and_never_falls_back(self) -> None:
+        video = self.make_file("partial.mp4")
+        cover = self.make_file("partial-cover.jpg")
+        job = Job(
+            seq=13,
+            kind="media",
+            status=FakeStatusMessage(),
+            message=SimpleNamespace(message=""),
+        )
+        self.publisher._upload_media_input = AsyncMock(return_value="input")
+        self.publisher._get_dest_input = AsyncMock(return_value=1234)
+
+        async def uncertain_comment(target_job, _media, _root):
+            self.publisher._begin_send(target_job)
+            raise TimeoutError("secret upstream")
+
+        self.publisher._post_comment = uncertain_comment
+        with patch("src.media.make_cover", new=AsyncMock(return_value=cover)):
+            with self.assertRaises(PublishPartialError):
+                await self.publisher.publish(job, video)
+
+        self.assertEqual(len(self.client.sent_files), 1)
+        self.assertEqual(len(job._published_refs), 1)
 
     async def test_thread_root_is_found_by_channel_post_and_then_cached(self) -> None:
         mirrored = SimpleNamespace(

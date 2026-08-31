@@ -539,6 +539,11 @@ class JobQueue:
             return None
         return await self._shadow.complete_publish(seq, ids)
 
+    async def checkpoint_publish(self, seq: int, refs: list[tuple[int, int, str]]) -> int:
+        if self._shadow is None:
+            return 0
+        return await self._shadow.checkpoint_publish(seq, refs)
+
     def bind_recovered(self, seq: int, job_id: int) -> None:
         if self._shadow is not None:
             self._shadow.bind_existing(seq, job_id)

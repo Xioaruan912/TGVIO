@@ -638,6 +638,64 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pipeline.retryable[seq].path, path)
         self.assertIn("上传超时", job.status.text)
 
+    async def test_publish_retries_only_before_any_send_side_effect(self) -> None:
+        seq = 235
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "video.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        job = self.make_job(seq)
+        self.pipeline.jobs[seq] = job
+        self.pipeline.active_seqs.add(seq)
+        self.pipeline._set_result(seq, path)
+        attempts = []
+
+        async def publish(target_job, _payload):
+            attempts.append(target_job.seq)
+            target_job._publish_send_attempts = 0
+            target_job._published_refs = []
+            if len(attempts) == 1:
+                raise ConnectionError("temporary network outage")
+            return [target_job.seq]
+
+        self.pipeline.publisher.publish = publish
+        worker = asyncio.create_task(self.pipeline._upload_worker())
+        await wait_until(lambda: seq not in self.pipeline.results)
+        await cancel_task(worker)
+
+        self.assertEqual(attempts, [seq, seq])
+        self.assertNotIn(seq, self.pipeline.retryable)
+
+    async def test_publish_partial_never_auto_retries(self) -> None:
+        seq = 236
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "video.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        job = self.make_job(seq)
+        self.pipeline.jobs[seq] = job
+        self.pipeline.active_seqs.add(seq)
+        self.pipeline._set_result(seq, path)
+        attempts = []
+
+        async def publish(target_job, _payload):
+            attempts.append(target_job.seq)
+            target_job._publish_send_attempts = 1
+            target_job._published_refs = [(1234, 9001, "destination")]
+            raise ConnectionError("response lost after send")
+
+        self.pipeline.publisher.publish = publish
+        worker = asyncio.create_task(self.pipeline._upload_worker())
+        await wait_until(lambda: seq not in self.pipeline.results)
+        await cancel_task(worker)
+
+        self.assertEqual(attempts, [seq])
+        self.assertNotIn(seq, self.pipeline.retryable)
+        self.assertTrue(os.path.isfile(path))
+        self.assertIn("部分媒体已发布", job.status.text)
+
     async def test_undo_callback_deletes_cover_and_comments_by_peer_once(self) -> None:
         pipeline, client = self.register_callback_pipeline()
         callback = client.handlers["on_callback"]
