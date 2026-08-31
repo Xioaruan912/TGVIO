@@ -6,9 +6,6 @@ from dataclasses import dataclass
 
 from telethon import Button
 
-from ..commands import command_help_text
-
-
 @dataclass(frozen=True)
 class HomeViewState:
     session_active: bool = False
@@ -50,21 +47,26 @@ def home_view(state: HomeViewState) -> tuple[str, list]:
         )
     text = "\n".join(
         [
-            "Telegram 媒体中转站",
-            "发送媒体或链接即可创建任务。",
-            "",
-            "当前状态",
-            f"合集：{session}",
-            f"队列：{state.running} 运行 · {state.waiting} 等待 · {state.failed} 失败{paused}",
-            f"目的地：{state.destination_profile[:48]}",
-            f"WebDAV：{webdav}",
-            f"磁盘：{disk}",
-            "",
-            command_help_text(include_start=False),
+            "🤖 Telegram 媒体中转站",
+            "──────────",
+            f"📥 当前合集：{session}",
+            f"📋 任务队列：{state.running} 运行 · {state.waiting} 等待 · {state.failed} 失败{paused}",
+            f"🎯 目的地：{state.destination_profile[:48]}",
+            f"☁️ WebDAV：{webdav}",
+            f"💾 磁盘：{disk}",
+            "──────────",
+            "请选择一个操作",
         ]
     )
-    return text, []
+    buttons = [
+        [Button.inline("➕ 开始合集", "h:begin"), Button.inline("🛑 结束合集", "h:end")],
+        [Button.inline("📋 任务队列", "h:q"), Button.inline("❌ 失败任务", "h:f")],
+        [Button.inline("☁️ 备份管理", "h:w"), Button.inline("⚙️ 设置", "h:s")],
+        [Button.inline("📊 运行状态", "h:status"), Button.inline("❓ 帮助", "h:help")],
+        [Button.inline("🔄 刷新", "h:r")],
+    ]
+    return text, buttons
 
 
 def home_button() -> list:
-    return [Button.inline("/start", "h:r")]
+    return [Button.inline("🏠 首页", "h:r")]

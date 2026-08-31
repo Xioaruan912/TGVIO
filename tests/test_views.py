@@ -253,9 +253,17 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("Telegram 媒体中转站", text)
         self.assertIn("合集：8 个媒体 · 2 条文字", text)
         self.assertIn("队列：2 运行 · 3 等待 · 1 失败", text)
-        self.assertIn("/profiles — 管理发布频道和发布策略", text)
-        self.assertIn("/diag — 查看不含凭证和内容的诊断摘要", text)
-        self.assertEqual(callback_data(buttons), [])
+        self.assertIn("请选择一个操作", text)
+        self.assertEqual(
+            callback_data(buttons),
+            [
+                b"h:begin", b"h:end",
+                b"h:q", b"h:f",
+                b"h:w", b"h:s",
+                b"h:status", b"h:help",
+                b"h:r",
+            ],
+        )
 
         card, card_buttons = job_card_view(
             JobCardView(

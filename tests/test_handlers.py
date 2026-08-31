@@ -115,10 +115,24 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         await start(event)
         self.assertEqual(len(event.responses), 1)
         self.assertIn("Telegram 媒体中转站", event.responses[0].text)
-        self.assertIn("/queue — 查看运行、等待、失败任务", event.responses[0].text)
-        self.assertIn("/about — 查看完整命令说明", event.responses[0].text)
+        self.assertIn("请选择一个操作", event.responses[0].text)
         sent = self.client.sent_messages[-1]
-        self.assertNotIn("buttons", sent)
+        self.assertIn("buttons", sent)
+        button_data = [
+            button.data
+            for row in sent["buttons"]
+            for button in row
+        ]
+        self.assertEqual(
+            button_data,
+            [
+                b"h:begin", b"h:end",
+                b"h:q", b"h:f",
+                b"h:w", b"h:s",
+                b"h:status", b"h:help",
+                b"h:r",
+            ],
+        )
 
         callback = self.client.handlers["on_callback"]
         refresh = FakeCallbackEvent(self.client, b"h:r")
