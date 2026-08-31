@@ -1,8 +1,5 @@
 FROM python:3.11-slim
 
-ARG APP_COMMIT=unknown
-ENV APP_COMMIT=${APP_COMMIT}
-
 WORKDIR /app
 
 RUN apt-get update \
@@ -11,6 +8,9 @@ RUN apt-get update \
 
 COPY requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
+
+ARG APP_COMMIT=unknown
+ENV APP_COMMIT=${APP_COMMIT}
 
 COPY . .
 

@@ -1,6 +1,9 @@
 services:
   bot:
-    build: .
+    build:
+      context: .
+      args:
+        APP_COMMIT: ${APP_COMMIT:-unknown}
     container_name: telegram-video-forwarder
     restart: unless-stopped
     stop_grace_period: 30s
