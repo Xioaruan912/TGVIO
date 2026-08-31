@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `a053dc9`（第 18.1 节 Settings 配置重构：immutable Settings、strict fail-fast/range validation、安全摘要与动静态配置边界）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 13:27 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7, 8, 9]`、`integrity=ok`、incomplete jobs/claims 为 0，生产容器 **229 tests 全通过**；镜像 `APP_COMMIT=a053dc9`。生产 `source_enabled=0`，Settings strict validation 已使用真实生产 env 通过且启动日志仅输出 safe summary。
+- 当前分支：`main`。当前生产运行代码基线为 `8a2407b`（第 18.2 节性能边界：ffmpeg/ffprobe 有界异步 subprocess、hash 单次扫描复用、stats reconcile 消除 N+1）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 13:40 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7, 8, 9]`、`integrity=ok`、incomplete jobs/claims 为 0，生产容器 **233 tests 全通过**；镜像 `APP_COMMIT=8a2407b`。生产 `source_enabled=0`，health/readiness 均通过，本阶段无 schema 变更。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1338,13 +1338,13 @@ Web Dashboard 的启动条件：队列长期超过 Telegram UI 可管理规模�
 
 ### 18.2 性能边界
 
-- 大文件始终分块读写和 hash，禁止一次性读入内存。
-- SQLite 事务不包网络/ffmpeg；高频 progress 合并写，job event 只记录有意义的阶段/操作，不每个分片一条。
-- ffmpeg/ffprobe 使用独立 semaphore；默认最多 1～2 个重处理进程，不能与 16 路上传无界叠加。
-- 缩略图和 remux subprocess 必须有 timeout/cancel/return code 检查，并消费 stdout/stderr 防 pipe 堵塞。
-- 队列、历史、日志全部 SQL 分页；首页用聚合 query，不遍历所有 Python 对象。
-- hash 结果复用给 dedup/WebDAV/完整性；避免同一 2GB 文件连续做 MD5、SHA-256、多次全盘扫描。若远端命名必须 MD5，可单次遍历同时计算 MD5+SHA-256。
-- 目标压力测试：100 jobs、1000 items 的列表/聚合操作不阻塞事件循环；内存不随历史任务无限增长。
+- [x] 大文件始终分块读写和 hash，禁止一次性读入内存。（2026-08-31，`8a2407b`；审计确认 media/hash 均为分块路径）
+- [x] SQLite 事务不包网络/ffmpeg；高频 progress 合并写，job event 只记录有意义的阶段/操作，不每个分片一条。（2026-08-31，`8a2407b`；既有边界继续由全量回归保护）
+- [x] ffmpeg/ffprobe 使用独立 semaphore；默认最多 1～2 个重处理进程，不能与 16 路上传无界叠加。（2026-08-31，`8a2407b`；每 event loop 独立 semaphore，默认并发 2）
+- [x] 缩略图和 remux subprocess 必须有 timeout/cancel/return code 检查，并消费 stdout/stderr 防 pipe 堵塞。（2026-08-31，`8a2407b`；async subprocess，timeout/cancel 时 kill + communicate/wait）
+- [x] 队列、历史、日志全部 SQL 分页；首页用聚合 query，不遍历所有 Python 对象。（2026-08-31，`8a2407b`；既有 SQL pagination 保持，stats reconcile 改为单次 JOIN/GROUP BY）
+- [x] hash 结果复用给 dedup/WebDAV/完整性；避免同一 2GB 文件连续做 MD5、SHA-256、多次全盘扫描。若远端命名必须 MD5，可单次遍历同时计算 MD5+SHA-256。（2026-08-31，`8a2407b`）
+- [x] 目标压力测试：100 jobs、1000 items 的列表/聚合操作不阻塞事件循环；内存不随历史任务无限增长。（2026-08-31，`8a2407b`；新增 cooperative reconcile 压力测试）
 
 ### 18.3 安全和隐私
 
@@ -1488,7 +1488,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1 节 Settings 配置重构均已完成。产品 roadmap 仅剩 Later 的 O1；当前继续第 **18.2 性能边界** 技术债，不自动推进 Web Dashboard/O1。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1/18.2 节技术债均已完成。产品 roadmap 仅剩 Later 的 O1；当前继续第 **18.3 安全和隐私** 技术债，不自动推进 Web Dashboard/O1。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1503,7 +1503,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理进入第 18.2 节性能边界：先审计 ffmpeg/ffprobe 并发与 subprocess timeout/cancel、100 jobs/1000 items 聚合路径和重复全文件 hash；优先补测试/基准与最小 semaphore，不进入 O1/Web Dashboard。
+下一位代理进入第 18.3 节安全和隐私：先做入口 allowlist/callback ownership、URL/SSRF、日志脱敏、删除目标校验与历史/caption retention 审计；优先补缺口测试与最小安全边界，不进入 O1/Web Dashboard。
 
 ## 21. 执行日志
 
@@ -1927,3 +1927,14 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - 测试：生产容器 **229 项 unittest 全通过**；`scripts/healthcheck.py` 与 `scripts/readiness.py` 均通过；启动日志包含 SQLite ready / Bot commands registered / Bot started，无 traceback/error。
 - 回滚资源沿用部署前已创建资源：DB `/root/telegram-video-forwarder-releases/state-pre-a053dc9-20260831-131247.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-a053dc9`、源码 `/root/telegram-video-forwarder-releases/pre-a053dc9.tar.gz`。本阶段无 schema 变更，因此代码回滚不需要数据库 downgrade，但仍优先使用完整回滚点。
 - 下一步精确入口：第 18.2 节性能边界；先审计 ffmpeg/ffprobe semaphore、subprocess timeout/cancel 和 100 jobs/1000 items 聚合/分页热点，再决定最小改动。
+
+### 2026-08-31 13:40 - 18.2 性能边界完成并部署
+
+- 实现 commit：`8a2407b perf(runtime): bound media tools and reuse hashes`；生产当前 `APP_COMMIT=8a2407b`。
+- ffmpeg/ffprobe：`src/video.py` 改为真正的 asyncio subprocess；每个 running event loop 使用独立 semaphore，默认最多 2 个 media process；ffprobe timeout 30s、ffmpeg timeout 180s；timeout/cancel/异常时 kill child 并 `communicate()` 回收，stdout/stderr 始终消费，避免后台残留或 pipe 堵塞。
+- hash：D1 `sha256_file()` 单次分块遍历同时计算 SHA-256 与 MD5 short；正常新任务 WebDAV 命名直接复用 `ContentHash.md5_short`，远端文件名仍保持原有 MD5 前 8 位 + 扩展名；restart/legacy/manual 无缓存路径仍保留旧 fallback，不改变兼容语义。
+- SQLite：`reconcile_daily_stats()` 去除每成功 job 的重复 `SUM(job_items)` N+1 查询，改为一次 `LEFT JOIN + GROUP BY` 带回 item bytes；新增 100 jobs / 1000 items 压力测试，3s timeout 内完成且并行 event-loop ticker 持续获得调度。
+- 测试：新增真实 child cancellation、三任务只允许两路 media subprocess、WebDAV 不重复 MD5 扫描、100/1000 聚合 cooperative 等门禁；源码与最终标准 Docker 镜像 **233 tests 全通过**，compileall/diff/Compose/静态镜像检查通过，migration 0001～0009 checksum 全未变化。
+- 生产部署前确认 `a053dc9` health=healthy、restart=0、schema1～9/integrity ok、incomplete/claims/backup/source_enabled=0；部署后宿主/容器 `video.py`、`dedup.py`、`sqlite.py`、`bot.py` 哈希一致，health/readiness、启动日志和生产 **233 tests** 全通过。
+- 回滚资源：DB `/root/telegram-video-forwarder-releases/state-pre-8a2407b-20260831-134022.sqlite3`；镜像 `telegram-video-forwarder:rollback-pre-8a2407b`；源码 `/root/telegram-video-forwarder-releases/pre-8a2407b.tar.gz`。本阶段无 schema 变更。
+- 下一步精确入口：第 18.3 节安全和隐私；先审计 allowlist/callback ownership、URL SSRF、日志 redact filter、删除目标解析和历史/caption retention。
