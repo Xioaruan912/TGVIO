@@ -30,7 +30,7 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.close()
 
     async def test_initial_migration_is_idempotent_and_pragmas_are_enforced(self) -> None:
-        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3, 4, 5])
+        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3, 4, 5, 6])
         self.assertEqual(await self.repo.migrate(), [])
         check = await self.repo.self_check()
         self.assertEqual(check["integrity"], "ok")
