@@ -345,3 +345,65 @@ class ShadowState:
                     state="pending",
                 )
         self._schedule(run, f"backup #{seq}")
+
+    async def ensure_backup_file(
+        self,
+        seq: int,
+        remote_dir: str,
+        file: dict[str, Any],
+    ):
+        job_id = self.job_ids.get(int(seq))
+        if not job_id or self.repository is None:
+            return None, None
+        attempt = await self.repository.ensure_backup_attempt(
+            job_id=job_id, remote_dir=str(remote_dir)
+        )
+        record = await self.repository.ensure_backup_file(
+            attempt_id=attempt.id,
+            local_path=str(file["local"]),
+            remote_name=str(file["name"]),
+            size_bytes=int(file.get("size") or 0),
+        )
+        return attempt, record
+
+    async def update_backup_file(
+        self,
+        file_id: int,
+        *,
+        state: str,
+        bytes_done: int | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        if self.repository is None:
+            return
+        await self.repository.update_backup_file_status(
+            int(file_id), state=state, bytes_done=bytes_done,
+            error_code=error_code, error_message=error_message,
+        )
+
+    async def update_backup_attempt(
+        self,
+        attempt_id: int,
+        *,
+        state: str,
+        retry_count: int | None = None,
+        next_retry_at: float | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        finished: bool = False,
+    ) -> None:
+        if self.repository is None:
+            return
+        await self.repository.update_backup_attempt_status(
+            int(attempt_id), state=state, retry_count=retry_count,
+            next_retry_at=next_retry_at, error_code=error_code,
+            error_message=error_message, finished=finished,
+        )
+
+    async def backup_retry_due(self, seq: int, remote_dir: str) -> tuple[bool, float | None]:
+        if self.repository is None:
+            return True, None
+        return await self.repository.backup_retry_due(
+            legacy_seq=int(seq), remote_dir=str(remote_dir)
+        )

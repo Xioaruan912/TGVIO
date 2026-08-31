@@ -1281,16 +1281,6 @@ class _Pipeline:
         # 批次开始即落盘（进行中在 /webdav 记录里可见，重启也能恢复）
         self.webdav_logs[log["key"]] = log
         self._save_webdav_logs()
-        if getattr(self, "backup_manager", None) is not None:
-            shadow_files = []
-            for item in log["files"]:
-                try:
-                    size = os.path.getsize(item["local"])
-                except OSError:
-                    size = 0
-                shadow_files.append({**item, "size": size})
-            self.backup_manager.shadow_attempt_started(seq, remote_dir, shadow_files)
-
         total = len(log["files"])
         status_msg = None
         if job.user_id:
@@ -1371,18 +1361,13 @@ class _Pipeline:
                         f"{f['name']}\n"
                         f"📂 {remote_dir}"
                     )
-                    ok = await asyncio.to_thread(
-                        webdav.upload_file,
-                        cfg.get("url"),
-                        remote_dir,
-                        f["local"],
-                        cfg.get("user"),
-                        cfg.get("pass"),
-                        int(cfg.get("retry", 2)),
-                        remote_name=f["name"],
+                    ok = await self._webdav_transfer_file(
+                        seq=seq,
+                        remote_dir=remote_dir,
+                        file=f,
+                        cfg=cfg,
                         progress_callback=lambda s, sz, _n=f["name"], _c=cur: _progress_cb(s, sz, _n, _c),
                     )
-                    f["status"] = "ok" if ok else "failed"
                     self._save_webdav_logs()
                     logger.info(
                         "Job #%s webdav %s -> %s (%s)",
@@ -1398,6 +1383,7 @@ class _Pipeline:
                         f["status"] = "failed"
                 self._save_webdav_logs()
             finally:
+                await self._webdav_finalize_attempt(seq, remote_dir, log["files"])
                 failed = [f for f in log["files"] if f["status"] == "failed"]
                 if failed:
                     self.webdav_keep_cache.add(seq)
@@ -1424,6 +1410,185 @@ class _Pipeline:
                 logger.error("Job #%s webdav task failed", seq)
 
         task.add_done_callback(_done)
+
+    async def _webdav_transfer_file(
+        self,
+        *,
+        seq: int,
+        remote_dir: str,
+        file: dict,
+        cfg: dict | None = None,
+        progress_callback=None,
+    ) -> bool:
+        """Upload one WebDAV file with centralized backup retry semantics."""
+        cfg = self.webdav_cfg if cfg is None else cfg
+        local = str(file.get("local") or "")
+        name = str(file.get("name") or os.path.basename(local))
+        size = os.path.getsize(local) if local and os.path.isfile(local) else int(file.get("size") or 0)
+        file["size"] = size
+        attempt = durable_file = None
+        if getattr(self, "backup_manager", None) is not None and getattr(self, "repository", None) is not None:
+            attempt, durable_file = await self.backup_manager.ensure_file(
+                seq, remote_dir, {**file, "local": local, "name": name, "size": size}
+            )
+
+        async def persist_file(state: str, *, error=None, bytes_done=None) -> None:
+            if durable_file is None:
+                return
+            await self.backup_manager.update_file(
+                durable_file.id,
+                state=state,
+                bytes_done=bytes_done,
+                error_code=error.code.value if error is not None else None,
+                error_message=error.summary if error is not None else None,
+            )
+
+        if not local or not os.path.isfile(local):
+            file.update(
+                status="failed",
+                error_code=ErrorCode.CACHE_MISSING.value,
+                error_message="备份所需的本地缓存不存在",
+                next_retry_at=None,
+            )
+            if durable_file is not None:
+                await self.backup_manager.update_file(
+                    durable_file.id,
+                    state="failed",
+                    bytes_done=0,
+                    error_code=ErrorCode.CACHE_MISSING.value,
+                    error_message="备份所需的本地缓存不存在",
+                )
+            if attempt is not None:
+                await self.backup_manager.update_attempt(
+                    attempt.id,
+                    state="failed",
+                    retry_count=int(file.get("retry_count") or 0),
+                    next_retry_at=None,
+                    error_code=ErrorCode.CACHE_MISSING.value,
+                    error_message="备份所需的本地缓存不存在",
+                    finished=True,
+                )
+            return False
+
+        async def persist_attempt(
+            state: str,
+            *,
+            retry_count: int | None = None,
+            next_retry_at: float | None = None,
+            error=None,
+            finished: bool = False,
+        ) -> None:
+            if attempt is None:
+                return
+            await self.backup_manager.update_attempt(
+                attempt.id,
+                state=state,
+                retry_count=retry_count,
+                next_retry_at=next_retry_at,
+                error_code=error.code.value if error is not None else None,
+                error_message=error.summary if error is not None else None,
+                finished=finished,
+            )
+
+        remote_size = await asyncio.to_thread(
+            webdav.remote_file_size,
+            cfg.get("url"), remote_dir, name, cfg.get("user"), cfg.get("pass"),
+        )
+        if remote_size is not None and remote_size == size:
+            file.update(status="ok", error_code=None, error_message=None,
+                        retry_count=int(file.get("retry_count") or 0), next_retry_at=None)
+            await persist_file("succeeded", bytes_done=size)
+            return True
+
+        budget = max(0, int(cfg.get("retry", 2) or 0))
+        policy = RetryPolicy(budgets={"backup": budget})
+        retries = max(0, int(file.get("retry_count") or 0))
+        while True:
+            file["status"] = "uploading"
+            file["next_retry_at"] = None
+            await persist_file("uploading", bytes_done=0)
+            await persist_attempt("running", retry_count=retries)
+            try:
+                uploaded = await asyncio.to_thread(
+                    webdav.upload_once,
+                    cfg.get("url"), remote_dir, local,
+                    cfg.get("user"), cfg.get("pass"),
+                    remote_name=name, progress_callback=progress_callback,
+                )
+                if not uploaded:
+                    raise webdav.WebDavUploadError("webdav upload was not confirmed")
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                error = classify_error(exc, stage="backup")
+                decision = policy.decide(
+                    error, stage="backup", attempt=retries + 1, now=time.time()
+                )
+                file.update(
+                    status="failed",
+                    error_code=error.code.value,
+                    error_message=error.summary,
+                )
+                await persist_file("failed", error=error)
+                if decision.should_retry:
+                    retries = decision.attempt
+                    file["retry_count"] = retries
+                    file["next_retry_at"] = float(decision.next_retry_at)
+                    await persist_attempt(
+                        "retry_wait", retry_count=retries,
+                        next_retry_at=float(decision.next_retry_at), error=error,
+                    )
+                    logger.warning(
+                        "Job #%s webdav %s failed code=%s, retry %d/%d in %.1fs",
+                        seq, name, error.code.value, retries, decision.budget,
+                        float(decision.delay_seconds),
+                    )
+                    await self._retry_sleep(float(decision.delay_seconds))
+                    continue
+                file["retry_count"] = retries
+                file["next_retry_at"] = None
+                await persist_attempt("failed", retry_count=retries, error=error)
+                logger.error(
+                    "Job #%s webdav %s terminal failure code=%s exception_type=%s traceback=%s",
+                    seq, name, error.code.value, exc.__class__.__name__, safe_traceback(exc),
+                )
+                return False
+            file.update(
+                status="ok", error_code=None, error_message=None,
+                retry_count=retries, next_retry_at=None,
+            )
+            await persist_file("succeeded", bytes_done=size)
+            return True
+
+    async def _webdav_finalize_attempt(self, seq: int, remote_dir: str, files: list[dict]) -> None:
+        if getattr(self, "backup_manager", None) is None or getattr(self, "repository", None) is None:
+            return
+        seed = next((f for f in files if f.get("local") and f.get("name")), None)
+        if seed is None:
+            return
+        attempt, _ = await self.backup_manager.ensure_file(seq, remote_dir, seed)
+        if attempt is None:
+            return
+        failed = [f for f in files if f.get("status") != "ok"]
+        if failed:
+            first = failed[0]
+            code = first.get("error_code") or ErrorCode.UNKNOWN.value
+            summary = first.get("error_message") or "WebDAV 备份失败"
+            await self.backup_manager.update_attempt(
+                attempt.id, state="failed",
+                retry_count=max((int(f.get("retry_count") or 0) for f in files), default=0),
+                next_retry_at=min(
+                    (float(f["next_retry_at"]) for f in failed if f.get("next_retry_at") is not None),
+                    default=None,
+                ),
+                error_code=code, error_message=summary, finished=True,
+            )
+        else:
+            await self.backup_manager.update_attempt(
+                attempt.id, state="succeeded",
+                retry_count=max((int(f.get("retry_count") or 0) for f in files), default=0),
+                next_retry_at=None, error_code=None, error_message=None, finished=True,
+            )
 
     async def _notify_webdav_result(self, user_id: int, log: dict) -> None:
         """上传批次结束后通知用户结果（成功/失败）。"""
@@ -1626,6 +1791,18 @@ class _Pipeline:
             lines.append(f"{_pos_token(index + 1)} {t_short}  {mark}")
             lines.append(f"   📂 {log.get('remote_dir', '')}")
             lines.append(f"   {render_bar(bar_pct)}  {ok}/{total}")
+            if failed > 0:
+                first_failed = next((f for f in files if f.get("status") == "failed"), None)
+                if first_failed is not None and first_failed.get("error_code"):
+                    lines.append(f"   ⚠️ {first_failed.get('error_code')}")
+                retry_at = min(
+                    (float(f["next_retry_at"]) for f in files if f.get("next_retry_at") is not None),
+                    default=None,
+                )
+                if retry_at is not None:
+                    lines.append(
+                        f"   ⏰ 自动重试：{datetime.fromtimestamp(retry_at).strftime('%m-%d %H:%M:%S')}"
+                    )
             if running:
                 continue
             row = []
@@ -1646,42 +1823,13 @@ class _Pipeline:
         cfg = self.webdav_cfg
         if not cfg.get("url"):
             return "WebDAV 未配置地址（先用 /webdav 配置）"
-        missing = [f["name"] for f in failed if not os.path.isfile(f.get("local", ""))]
-        if missing:
-            return f"❌ 本地缓存已不存在，无法重试: {', '.join(missing[:3])}"
-
         async def _upload() -> None:
             try:
                 for f in failed:
-                    local_size = os.path.getsize(f["local"])
-                    remote_size = await asyncio.to_thread(
-                        webdav.remote_file_size,
-                        cfg.get("url"),
-                        log["remote_dir"],
-                        f["name"],
-                        cfg.get("user"),
-                        cfg.get("pass"),
+                    ok = await self._webdav_transfer_file(
+                        seq=log["seq"], remote_dir=log["remote_dir"],
+                        file=f, cfg=cfg,
                     )
-                    if remote_size is not None and remote_size == local_size:
-                        f["status"] = "ok"
-                        logger.info(
-                            "Job #%s webdav retry skip（远端已完整）%s (%d bytes)",
-                            log["seq"],
-                            f["name"],
-                            local_size,
-                        )
-                        continue
-                    ok = await asyncio.to_thread(
-                        webdav.upload_file,
-                        cfg.get("url"),
-                        log["remote_dir"],
-                        f["local"],
-                        cfg.get("user"),
-                        cfg.get("pass"),
-                        int(cfg.get("retry", 2)),
-                        remote_name=f["name"],
-                    )
-                    f["status"] = "ok" if ok else "failed"
                     logger.info(
                         "Job #%s webdav retry %s (%s)",
                         log["seq"],
@@ -1691,6 +1839,7 @@ class _Pipeline:
             except Exception as exc:
                 logger.error("Job #%s webdav retry error: %s", log["seq"], exc)
             finally:
+                await self._webdav_finalize_attempt(log["seq"], log["remote_dir"], log.get("files", []))
                 if all(f.get("status") == "ok" for f in log.get("files", [])):
                     self.webdav_keep_cache.discard(log["seq"])
                     self._schedule_cleanup(log["seq"], "")
@@ -1822,37 +1971,13 @@ class _Pipeline:
                 f"{f['name']}\n"
                 f"📂 {remote_dir}"
             )
-            # 幂等查重：远端已有同名且大小一致则跳过（防重复上传）
-            local_size = os.path.getsize(f["local"])
-            remote_sz = await asyncio.to_thread(
-                webdav.remote_file_size,
-                cfg.get("url"), remote_dir, f["name"],
-                cfg.get("user"), cfg.get("pass"),
-            )
-            if remote_sz is not None and remote_sz == local_size:
-                f["status"] = "ok"
-                logger.info(
-                    "Job #%s webdav cache skip（远端已存在）%s (%d bytes)",
-                    seq, f["name"], local_size,
-                )
-                try:
-                    os.remove(f["local"])
-                except OSError as exc:
-                    logger.warning("WebDAV 缓存删除失败 %s: %s", f["local"], exc)
-                self._save_webdav_logs()
-                continue
-            ok = await asyncio.to_thread(
-                webdav.upload_file,
-                cfg.get("url"),
-                remote_dir,
-                f["local"],
-                cfg.get("user"),
-                cfg.get("pass"),
-                int(cfg.get("retry", 2)),
-                remote_name=f["name"],
+            ok = await self._webdav_transfer_file(
+                seq=seq,
+                remote_dir=remote_dir,
+                file=f,
+                cfg=cfg,
                 progress_callback=lambda s, sz, _n=f["name"], _c=cur: _progress_cb(s, sz, _n, _c),
             )
-            f["status"] = "ok" if ok else "failed"
             if ok:
                 try:
                     os.remove(f["local"])
@@ -1864,6 +1989,7 @@ class _Pipeline:
                 seq, f["name"], remote_dir, "OK" if ok else "FAILED",
             )
         failed = [f for f in log["files"] if f["status"] == "failed"]
+        await self._webdav_finalize_attempt(seq, remote_dir, log["files"])
         if failed:
             self.webdav_keep_cache.add(seq)
         else:
@@ -1966,45 +2092,25 @@ class _Pipeline:
             pending = [f for f in files if f.get("status") not in ("ok", "deleted")]
             if not pending:
                 continue
+            if getattr(self, "backup_manager", None) is not None and getattr(self, "repository", None) is not None:
+                due, retry_at = await self.backup_manager.retry_due(
+                    int(log.get("seq") or 0), str(log.get("remote_dir") or "")
+                )
+                if not due:
+                    logger.info(
+                        "WebDAV 自动重传等待 durable retry window job=%s retry_at=%s",
+                        log.get("seq"), retry_at,
+                    )
+                    continue
             changed = False
             all_ok = True
             for f in pending:
                 local = f.get("local", "")
-                if not local or not os.path.isfile(local):
-                    logger.info(
-                        "自动重传跳过 %s：本地缓存不存在（%s）", f.get("name", ""), key
-                    )
-                    all_ok = False
-                    continue
                 try:
-                    local_size = os.path.getsize(local)
-                    remote_size = await asyncio.to_thread(
-                        webdav.remote_file_size,
-                        cfg.get("url"),
-                        log["remote_dir"],
-                        f.get("name", ""),
-                        cfg.get("user"),
-                        cfg.get("pass"),
+                    ok = await self._webdav_transfer_file(
+                        seq=log["seq"], remote_dir=log["remote_dir"],
+                        file=f, cfg=cfg,
                     )
-                    if remote_size is not None and remote_size == local_size:
-                        ok = True
-                        logger.info(
-                            "WebDAV 自动重传跳过 PUT（远端已完整）%s -> %s/%s",
-                            f.get("name"),
-                            log["remote_dir"],
-                            f.get("name"),
-                        )
-                    else:
-                        ok = await asyncio.to_thread(
-                            webdav.upload_file,
-                            cfg.get("url"),
-                            log["remote_dir"],
-                            local,
-                            cfg.get("user"),
-                            cfg.get("pass"),
-                            int(cfg.get("retry", 2)),
-                            remote_name=f["name"],
-                        )
                 except Exception as exc:
                     logger.warning("自动重传 %s 异常: %s", f.get("name"), exc)
                     ok = False
@@ -2026,6 +2132,7 @@ class _Pipeline:
                     )
                 changed = True
             if changed:
+                await self._webdav_finalize_attempt(log["seq"], log["remote_dir"], files)
                 if all_ok:
                     self.webdav_keep_cache.discard(log["seq"])
                     self._schedule_cleanup(log["seq"], "")

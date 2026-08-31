@@ -329,6 +329,66 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
             raw.close()
         self.assertTrue(any(row[2] == "job_items" and row[3] == "job_item_id" for row in fks))
 
+    async def test_backup_retry_state_and_due_window_are_durable(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="succeeded",
+            source_kind="url",
+            source_url="https://example.invalid/backup",
+            legacy_seq=701,
+            event_payload={"schema_version": 1},
+        )
+        attempt = await self.repo.ensure_backup_attempt(
+            job_id=job.id,
+            remote_dir="backup/retry",
+        )
+        local = self.download_root / "job-701" / "a.mp4"
+        local.parent.mkdir(parents=True)
+        local.write_bytes(b"abc")
+        file = await self.repo.ensure_backup_file(
+            attempt_id=attempt.id,
+            local_path=str(local),
+            remote_name="hash.mp4",
+            size_bytes=3,
+        )
+        await self.repo.update_backup_file_status(
+            file.id,
+            state="failed",
+            error_code="webdav_server",
+            error_message="safe",
+        )
+        await self.repo.update_backup_attempt_status(
+            attempt.id,
+            state="retry_wait",
+            retry_count=1,
+            next_retry_at=200.0,
+            error_code="webdav_server",
+            error_message="safe",
+            now=100.0,
+        )
+        self.assertEqual(
+            await self.repo.backup_retry_due(
+                legacy_seq=701,
+                remote_dir="backup/retry",
+                now=199.0,
+            ),
+            (False, 200.0),
+        )
+        self.assertEqual(
+            await self.repo.backup_retry_due(
+                legacy_seq=701,
+                remote_dir="backup/retry",
+                now=200.0,
+            ),
+            (True, 200.0),
+        )
+        attempts = await self.repo.list_backup_attempts(job.id)
+        self.assertEqual(
+            (attempts[-1].state, attempts[-1].retry_count, attempts[-1].next_retry_at),
+            ("retry_wait", 1, 200.0),
+        )
+
     async def test_upgrade_from_schema_one_preserves_existing_rows_and_creates_backup(self) -> None:
         await self.repo.close()
         root = Path(self.tempdir.name)

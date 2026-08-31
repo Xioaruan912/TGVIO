@@ -39,6 +39,27 @@ class FakeBackupClient:
             progress_callback(size, size)
         return self.upload_result
 
+    def upload_once(
+        self,
+        base_url: str,
+        remote_dir: str,
+        local_path: str,
+        user: str,
+        passwd: str,
+        remote_name: str = "",
+        progress_callback=None,
+    ) -> bool:
+        return self.upload_file(
+            base_url,
+            remote_dir,
+            local_path,
+            user,
+            passwd,
+            retries=0,
+            remote_name=remote_name,
+            progress_callback=progress_callback,
+        )
+
     def remote_file_size(
         self,
         base_url: str,

@@ -55,3 +55,21 @@ class BackupManager:
         if self._shadow is not None:
             self._shadow.backup_started(seq, remote_dir, files)
 
+    async def ensure_file(self, seq: int, remote_dir: str, file: dict):
+        if self._shadow is None:
+            return None, None
+        return await self._shadow.ensure_backup_file(seq, remote_dir, file)
+
+    async def update_file(self, file_id: int, **kwargs) -> None:
+        if self._shadow is not None:
+            await self._shadow.update_backup_file(file_id, **kwargs)
+
+    async def update_attempt(self, attempt_id: int, **kwargs) -> None:
+        if self._shadow is not None:
+            await self._shadow.update_backup_attempt(attempt_id, **kwargs)
+
+    async def retry_due(self, seq: int, remote_dir: str) -> tuple[bool, float | None]:
+        if self._shadow is None:
+            return True, None
+        return await self._shadow.backup_retry_due(seq, remote_dir)
+

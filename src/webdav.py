@@ -30,6 +30,14 @@ _VERIFY_ATTEMPTS = 36
 _VERIFY_INTERVAL = 10
 
 
+class WebDavUploadError(RuntimeError):
+    """One WebDAV upload attempt failed after remote-size verification."""
+
+    def __init__(self, message: str, *, status: int | None = None) -> None:
+        super().__init__(message)
+        self.status = status
+
+
 def _auth_header(user: str, passwd: str) -> str:
     token = base64.b64encode(f"{user}:{passwd}".encode()).decode()
     return f"Basic {token}"
@@ -110,19 +118,27 @@ def _put_file(
         resp = conn.getresponse()
         resp.read()
         if resp.status in (200, 201, 204):
-            return _verify_remote(parsed, url_path, size, auth)
+            if _verify_remote(parsed, url_path, size, auth):
+                return True
+            raise WebDavUploadError("webdav remote size verification failed")
         # 非成功状态（423 Locked=后台转存中，或其它）也可能最终落盘——先轮询确认
         logger.warning(
             "WebDAV PUT %s -> %s，PROPFIND 轮询确认…", url_path, resp.status
         )
-        return _verify_remote(parsed, url_path, size, auth)
+        if _verify_remote(parsed, url_path, size, auth):
+            return True
+        raise WebDavUploadError("webdav put failed verification", status=resp.status)
+    except WebDavUploadError:
+        raise
     except Exception as exc:
         logger.warning(
             "WebDAV PUT %s 响应等待超时(%s)，PROPFIND 轮询确认…",
             url_path,
             exc.__class__.__name__,
         )
-        return _verify_remote(parsed, url_path, size, auth)
+        if _verify_remote(parsed, url_path, size, auth):
+            return True
+        raise TimeoutError("webdav put response/verification timed out") from exc
 
 
 def _verify_remote(parsed, url_path: str, size: int, auth: str, attempts: int = None, interval: float = None) -> bool:
@@ -237,6 +253,31 @@ def upload_file(
             time.sleep(60)
     logger.error("WebDAV upload failed after %d attempts: %s", retries + 1, local_path)
     return False
+
+
+def upload_once(
+    base_url: str,
+    remote_dir: str,
+    local_path: str,
+    user: str,
+    passwd: str,
+    remote_name: str = "",
+    progress_callback=None,
+) -> bool:
+    """Perform exactly one verified upload attempt.
+
+    Unlike :func:`upload_file`, this method does not sleep or retry. It is used
+    by the async pipeline so retry budget/backoff is governed centrally.
+    """
+    return _upload_once(
+        base_url,
+        remote_dir,
+        local_path,
+        user,
+        passwd,
+        remote_name,
+        progress_callback,
+    )
 
 
 def delete_remote(

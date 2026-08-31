@@ -211,3 +211,100 @@ class RepositoryBackedPipelineTests(unittest.IsolatedAsyncioTestCase):
             [(-1001, 55, "destination")],
         )
         self.assertNotIn(seq, self.pipeline.retryable)
+
+    async def test_webdav_backup_retry_is_durable_and_uses_central_policy(self) -> None:
+        seq = self.pipeline.submit(
+            "url",
+            FakeStatusMessage(),
+            FakeMessage(9),
+            url="https://example.invalid/webdav",
+            user_id=42,
+        )
+        await self.pipeline.job_queue.drain_shadow()
+        path = self.downloads / f"job-{seq}" / "media.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"backup")
+        file = {"local": str(path), "name": "hash.mp4", "status": "pending"}
+        cfg = {
+            "url": "https://dav.example.invalid/dav",
+            "user": "user",
+            "pass": "secret",
+            "retry": 1,
+        }
+        attempts = 0
+
+        def upload_once(*_args, **_kwargs):
+            nonlocal attempts
+            attempts += 1
+            if attempts == 1:
+                raise bot.webdav.WebDavUploadError("hidden", status=503)
+            return True
+
+        with patch.object(bot.webdav, "remote_file_size", return_value=None), patch.object(
+            bot.webdav, "upload_once", side_effect=upload_once
+        ):
+            ok = await self.pipeline._webdav_transfer_file(
+                seq=seq,
+                remote_dir="backup/retry",
+                file=file,
+                cfg=cfg,
+            )
+        await self.pipeline._webdav_finalize_attempt(seq, "backup/retry", [file])
+
+        job_id = self.pipeline.shadow_state.job_ids[seq]
+        durable_attempts = await self.repo.list_backup_attempts(job_id)
+        durable_files = await self.repo.list_backup_files(durable_attempts[-1].id)
+        self.assertTrue(ok)
+        self.assertEqual(attempts, 2)
+        self.assertEqual(file["retry_count"], 1)
+        self.assertEqual(
+            (durable_attempts[-1].state, durable_attempts[-1].retry_count, durable_attempts[-1].next_retry_at),
+            ("succeeded", 1, None),
+        )
+        self.assertEqual(
+            [(item.state, item.bytes_done, item.size_bytes) for item in durable_files],
+            [("succeeded", 6, 6)],
+        )
+
+    async def test_webdav_autoretry_honors_durable_retry_window(self) -> None:
+        seq = self.pipeline.submit(
+            "url",
+            FakeStatusMessage(),
+            FakeMessage(10),
+            url="https://example.invalid/webdav-wait",
+            user_id=42,
+        )
+        await self.pipeline.job_queue.drain_shadow()
+        job_id = self.pipeline.shadow_state.job_ids[seq]
+        path = self.downloads / f"job-{seq}" / "media.mp4"
+        path.parent.mkdir(parents=True)
+        path.write_bytes(b"wait")
+        attempt = await self.repo.ensure_backup_attempt(
+            job_id=job_id, remote_dir="backup/wait"
+        )
+        await self.repo.ensure_backup_file(
+            attempt_id=attempt.id,
+            local_path=str(path),
+            remote_name="wait.mp4",
+            size_bytes=4,
+        )
+        await self.repo.update_backup_attempt_status(
+            attempt.id,
+            state="retry_wait",
+            retry_count=1,
+            next_retry_at=10**12,
+            error_code="webdav_server",
+            error_message="safe",
+        )
+        self.pipeline.webdav_cfg.update(
+            {"enabled": True, "url": "https://dav.example.invalid", "user": "u", "pass": "p", "retry": 1}
+        )
+        self.pipeline.webdav_logs["wait"] = {
+            "key": "wait",
+            "seq": seq,
+            "remote_dir": "backup/wait",
+            "files": [{"local": str(path), "name": "wait.mp4", "status": "failed"}],
+        }
+        with patch.object(bot.webdav, "upload_once") as upload_once:
+            await self.pipeline._webdav_autoretry_once()
+        upload_once.assert_not_called()

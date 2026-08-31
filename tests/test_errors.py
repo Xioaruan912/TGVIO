@@ -3,6 +3,7 @@ import errno
 import unittest
 
 from src.domain import ErrorCode, RetryPolicy, classify_error, safe_traceback
+from src.webdav import WebDavUploadError
 
 
 class NamedError(Exception):
@@ -39,6 +40,17 @@ class ErrorClassifierTests(unittest.TestCase):
         unsupported = classify_error(RuntimeError("Unsupported URL: private"), stage="download")
         self.assertEqual(unsupported.code, ErrorCode.URL_UNSUPPORTED)
         self.assertFalse(unsupported.retryable)
+
+    def test_webdav_upload_error_statuses_have_backup_specific_policy(self) -> None:
+        auth = classify_error(WebDavUploadError("hidden", status=401), stage="backup")
+        locked = classify_error(WebDavUploadError("hidden", status=423), stage="backup")
+        server = classify_error(WebDavUploadError("hidden", status=503), stage="backup")
+        self.assertEqual(auth.code, ErrorCode.WEBDAV_AUTH)
+        self.assertFalse(auth.retryable)
+        self.assertEqual(locked.code, ErrorCode.WEBDAV_LOCKED)
+        self.assertTrue(locked.retryable)
+        self.assertEqual(server.code, ErrorCode.WEBDAV_SERVER)
+        self.assertTrue(server.retryable)
 
     def test_cancelled_is_never_failed_or_retried(self) -> None:
         result = classify_error(asyncio.CancelledError(), stage="download")
@@ -77,3 +89,11 @@ class RetryPolicyTests(unittest.TestCase):
         self.assertEqual(error.code, ErrorCode.TELEGRAM_FLOOD_WAIT)
         self.assertEqual(decision.delay_seconds, 38.0)
         self.assertEqual(decision.next_retry_at, 48.0)
+
+    def test_backup_backoff_uses_separate_longer_budget(self) -> None:
+        error = classify_error(WebDavUploadError("hidden", status=503), stage="backup")
+        policy = RetryPolicy(budgets={"backup": 2}, jitter=lambda: 0.5)
+        first = policy.decide(error, stage="backup", attempt=1, now=100.0)
+        second = policy.decide(error, stage="backup", attempt=2, now=100.0)
+        self.assertEqual(first.delay_seconds, 60.5)
+        self.assertEqual(second.delay_seconds, 120.5)

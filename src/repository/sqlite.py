@@ -101,6 +101,19 @@ class BackupFileRecord:
 
 
 @dataclass(frozen=True)
+class BackupFileStatusRecord:
+    id: int
+    attempt_id: int
+    local_path: str
+    remote_name: str
+    size_bytes: int
+    state: str
+    bytes_done: int
+    error_code: str | None
+    error_message: str | None
+
+
+@dataclass(frozen=True)
 class JobItemRecord:
     id: int
     job_id: int
@@ -1784,6 +1797,137 @@ class SQLiteRepository:
             state=str(row["state"]),
             bytes_done=int(row["bytes_done"]),
         )
+
+    async def ensure_backup_attempt(
+        self,
+        *,
+        job_id: int,
+        remote_dir: str,
+        now: float | None = None,
+    ) -> BackupAttemptRecord:
+        """Return the newest matching attempt or create one for legacy JSON logs."""
+        attempts = await self.list_backup_attempts(int(job_id))
+        for attempt in reversed(attempts):
+            if attempt.remote_dir == str(remote_dir) and attempt.state != "succeeded":
+                return attempt
+        return await self.create_backup_attempt(
+            job_id=int(job_id), state="running", remote_dir=str(remote_dir), now=now
+        )
+
+    async def ensure_backup_file(
+        self,
+        *,
+        attempt_id: int,
+        local_path: str,
+        remote_name: str,
+        size_bytes: int,
+    ) -> BackupFileStatusRecord:
+        local_path = self._validated_local_path(local_path)
+        conn = self._require_conn()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                await conn.execute(
+                    """INSERT OR IGNORE INTO backup_files(
+                           attempt_id,local_path,remote_name,size_bytes,state
+                       ) VALUES (?,?,?,?, 'pending')""",
+                    (int(attempt_id), local_path, str(remote_name), int(size_bytes)),
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        cursor = await conn.execute(
+            """SELECT id,attempt_id,local_path,remote_name,size_bytes,state,bytes_done,
+                      error_code,error_message
+               FROM backup_files WHERE attempt_id=? AND remote_name=?""",
+            (int(attempt_id), str(remote_name)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            raise RepositoryError("backup file could not be ensured")
+        return BackupFileStatusRecord(
+            id=int(row["id"]), attempt_id=int(row["attempt_id"]),
+            local_path=str(row["local_path"]), remote_name=str(row["remote_name"]),
+            size_bytes=int(row["size_bytes"]), state=str(row["state"]),
+            bytes_done=int(row["bytes_done"]), error_code=row["error_code"],
+            error_message=row["error_message"],
+        )
+
+    async def update_backup_file_status(
+        self,
+        file_id: int,
+        *,
+        state: str,
+        bytes_done: int | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+    ) -> None:
+        conn = self._require_conn()
+        safe_message = _sanitize_error_message(error_message) if error_message else None
+        async with self._write_lock:
+            await conn.execute(
+                """UPDATE backup_files
+                   SET state=?,bytes_done=COALESCE(?,bytes_done),error_code=?,error_message=?
+                   WHERE id=?""",
+                (str(state), bytes_done, error_code, safe_message, int(file_id)),
+            )
+            await conn.commit()
+
+    async def update_backup_attempt_status(
+        self,
+        attempt_id: int,
+        *,
+        state: str,
+        retry_count: int | None = None,
+        next_retry_at: float | None = None,
+        error_code: str | None = None,
+        error_message: str | None = None,
+        finished: bool = False,
+        now: float | None = None,
+    ) -> None:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        safe_message = _sanitize_error_message(error_message) if error_message else None
+        async with self._write_lock:
+            await conn.execute(
+                """UPDATE backup_attempts
+                   SET state=?,retry_count=COALESCE(?,retry_count),next_retry_at=?,
+                       error_code=?,error_message=?,updated_at=?,
+                       finished_at=CASE WHEN ? THEN ? ELSE finished_at END
+                   WHERE id=?""",
+                (
+                    str(state), retry_count, next_retry_at, error_code, safe_message,
+                    timestamp, 1 if finished else 0, timestamp, int(attempt_id),
+                ),
+            )
+            await conn.commit()
+
+    async def backup_retry_due(
+        self,
+        *,
+        legacy_seq: int,
+        remote_dir: str,
+        now: float | None = None,
+    ) -> tuple[bool, float | None]:
+        """Return whether the newest durable backup attempt is due for retry."""
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            """SELECT ba.next_retry_at
+               FROM backup_attempts ba
+               JOIN jobs j ON j.id=ba.job_id
+               WHERE j.legacy_seq=? AND ba.remote_dir=?
+               ORDER BY ba.id DESC LIMIT 1""",
+            (int(legacy_seq), str(remote_dir)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None or row["next_retry_at"] is None:
+            return True, None
+        retry_at = float(row["next_retry_at"])
+        current = time.time() if now is None else float(now)
+        return current >= retry_at, retry_at
 
     @staticmethod
     def _encode_versioned_payload(payload: dict[str, Any] | None) -> str | None:

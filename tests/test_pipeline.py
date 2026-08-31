@@ -803,7 +803,7 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             bot.webdav,
             "remote_file_size",
             side_effect=fake.remote_file_size,
-        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+        ), patch.object(bot.webdav, "upload_once", side_effect=fake.upload_once):
             result = await self.pipeline._webdav_retry(key)
             tasks = [
                 task
@@ -860,7 +860,7 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             bot.webdav,
             "remote_file_size",
             side_effect=fake.remote_file_size,
-        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+        ), patch.object(bot.webdav, "upload_once", side_effect=fake.upload_once):
             result = await self.pipeline._webdav_retry(key)
             tasks = [
                 task
@@ -919,7 +919,7 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             bot.webdav,
             "remote_file_size",
             side_effect=fake.remote_file_size,
-        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+        ), patch.object(bot.webdav, "upload_once", side_effect=fake.upload_once):
             await self.pipeline._webdav_autoretry_once()
 
         self.assertEqual(fake.upload_calls[0]["remote_name"], "cafebabe.mp4")
@@ -967,7 +967,7 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             bot.webdav,
             "remote_file_size",
             side_effect=fake.remote_file_size,
-        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+        ), patch.object(bot.webdav, "upload_once", side_effect=fake.upload_once):
             result = await self.pipeline._webdav_upload_cache(seq)
 
         self.assertIn("缓存上传完成", result)
@@ -1014,7 +1014,9 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         )
         fake = FakeBackupClient()
 
-        with patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+        with patch.object(bot.webdav, "upload_once", side_effect=fake.upload_once), patch.object(
+            bot.webdav, "remote_file_size", side_effect=fake.remote_file_size
+        ):
             await self.pipeline._on_webdav_upload(job, path)
             tasks = [
                 task
@@ -1057,7 +1059,9 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         fake = FakeBackupClient()
         fake.upload_result = False
 
-        with patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+        with patch.object(bot.webdav, "upload_once", side_effect=fake.upload_once), patch.object(
+            bot.webdav, "remote_file_size", side_effect=fake.remote_file_size
+        ):
             await self.pipeline._on_webdav_upload(job, path)
             tasks = [
                 task
@@ -1113,7 +1117,7 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             bot.webdav,
             "remote_file_size",
             side_effect=fake.remote_file_size,
-        ), patch.object(bot.webdav, "upload_file", side_effect=fake.upload_file):
+        ), patch.object(bot.webdav, "upload_once", side_effect=fake.upload_once):
             await self.pipeline._webdav_autoretry_once()
 
         self.assertFalse(fake.upload_calls)
