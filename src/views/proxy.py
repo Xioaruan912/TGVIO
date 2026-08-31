@@ -40,7 +40,7 @@ def proxy_view(state: ProxyViewState) -> tuple:
             Button.inline("🔀 管理代理", "proxy:list"),
             Button.inline("🔌 直连", "proxy:direct"),
         ],
-        [Button.inline("🏠 首页", "h:r")],
+        [Button.inline("/start", "h:r")],
     ]
     return "\n".join(lines), buttons
 
@@ -49,7 +49,7 @@ def proxy_list_view(state: ProxyViewState) -> tuple:
     lines = ["🔀 代理列表", ""]
     buttons = [
         [Button.inline("⬅️ 返回", "proxy:back")],
-        [Button.inline("🏠 首页", "h:r")],
+        [Button.inline("/start", "h:r")],
     ]
     if not state.labels:
         lines.append("（暂无代理，点 ➕ 添加）")

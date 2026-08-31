@@ -35,7 +35,7 @@ def source_profiles_view(items: tuple[SourceProfileView, ...]) -> tuple[str, lis
         for item in items
     ]
     buttons.append([Button.inline("➕ 新建来源", "sp:add")])
-    buttons.append([Button.inline("🔄 刷新", "sp:r"), Button.inline("🏠 首页", "h:r")])
+    buttons.append([Button.inline("/sources", "sp:r"), Button.inline("/start", "h:r")])
     return "\n".join(lines), buttons
 
 
@@ -57,6 +57,6 @@ def source_profile_detail_view(item: SourceProfileView) -> tuple[str, list]:
         [Button.inline("⏸ 禁用" if item.enabled else "▶️ 启用", f"sp:tg:{item.profile_id}")],
         [Button.inline("🎯 目的地", f"sp:dst:{item.profile_id}"), Button.inline("🔞 18+", f"sp:spo:{item.profile_id}")],
         [Button.inline("📝 Caption", f"sp:cap:{item.profile_id}"), Button.inline("☁️ 备份", f"sp:bp:{item.profile_id}")],
-        [Button.inline("⬅️ 返回", "sp:r"), Button.inline("🏠 首页", "h:r")],
+        [Button.inline("/sources", "sp:r"), Button.inline("/start", "h:r")],
     ]
     return "\n".join(lines), buttons

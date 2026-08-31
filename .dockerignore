@@ -2,6 +2,8 @@
 .gitignore
 .env
 .venv
+.agents
+skills-lock.json
 session
 downloads
 __pycache__

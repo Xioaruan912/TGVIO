@@ -403,20 +403,16 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         mode = MODE_NAMES[ctx.queue.spoiler_mode(event.sender_id)]
         progress = "开启" if ctx.queue.progress_enabled(event.sender_id) else "关闭"
         text = (
-            "⚙️ 设置\n──────────\n"
-            f"🔞 18+ 模式：{mode}\n"
-            f"📊 任务进度：{progress}\n"
-            f"☁️ WebDAV：{'启用' if ctx.backup.get_config('enabled') else '停用'}\n"
-            "──────────\n静态 .env 配置需重启后生效。"
+            "设置\n"
+            f"当前 18+：{mode} · 进度：{progress} · WebDAV：{'启用' if ctx.backup.get_config('enabled') else '停用'}\n\n"
+            "/mode — 设置 18+ 处理\n"
+            "/profiles — 管理发布目标\n"
+            "/sources — 管理自动来源\n"
+            "/webdav — 配置 WebDAV\n"
+            "/proxy — 管理下载代理\n\n"
+            "静态 .env 配置需重启后生效。"
         )
-        buttons = [
-            [Button.inline("🔞 18+ 模式", "h:mode"), Button.inline("📊 切换进度", "toggle_progress")],
-            [Button.inline("🎯 发布目的地", "h:dp"), Button.inline("📡 自动来源", "h:sp")],
-            [Button.inline("☁️ WebDAV", "h:w")],
-            [Button.inline("🌐 代理", "h:p")],
-            home_button(),
-        ]
-        await ctx.edit(event, text, buttons=buttons)
+        await ctx.edit(event, text, buttons=home_button())
         return
     if action == "mode":
         mode = ctx.queue.spoiler_mode(event.sender_id)
@@ -458,14 +454,7 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         )
         return
     if action == "help":
-        text = "❓ 帮助中心\n──────────\n请选择主题："
-        buttons = [
-            [Button.inline("📥 收集与发布", "h:help:collect"), Button.inline("📋 队列与任务", "h:help:queue")],
-            [Button.inline("☁️ WebDAV 备份", "h:help:webdav"), Button.inline("🌐 URL 与代理", "h:help:proxy")],
-            [Button.inline("⚙️ 设置说明", "h:help:settings"), Button.inline("🛠 故障排查", "h:help:trouble")],
-            home_button(),
-        ]
-        await ctx.edit(event, text, buttons=buttons)
+        await ctx.edit(event, ctx.about_text, buttons=home_button())
         return
     if action.startswith("help:"):
         topic = action.split(":", 1)[1]
@@ -483,7 +472,7 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         await ctx.edit(
             event,
             help_text,
-            buttons=[[Button.inline("⬅️ 帮助首页", "h:help")], home_button()],
+            buttons=[[Button.inline("/about", "h:help")], home_button()],
         )
         return
     await ctx.answer(event, "操作已过期，请刷新")
@@ -511,7 +500,7 @@ async def callback_webdav_config(ctx: HandlerContext, event: Any, data: str) -> 
             await ctx.edit(
                 event,
                 "🧪 WebDAV 连接测试\n────────────────────────\n❌ 请先配置地址和路径",
-                buttons=[[Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")], home_button()],
+                buttons=[[Button.inline("/webdav", "wd_cfg:back")], home_button()],
             )
             return
         result = await ctx.backup.test_connection()

@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `880f3af`（第 18.3 节安全/隐私收尾；业务安全实现 `707fc2f`，`880f3af` 修正 Docker build 的 `APP_COMMIT` 传递）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 22:31 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7, 8, 9]`、`integrity=ok`、incomplete jobs/claims/active backup 为 0，生产容器 **250 tests 全通过**；镜像 `APP_COMMIT=880f3af`。生产 `source_enabled=0`，URL 私网策略为 `warn`，history/event retention 均为 30 天；`.env`/SQLite DB 权限为 `0600`，`session`/`downloads` 为 `0700`，health/readiness 与启动日志脱敏扫描均通过。
+- 当前分支：`main`。**2026-08-31 本轮重新只读核验后，生产真实运行基线仍为 `8a2407b`**；先前文档曾误记 `880f3af` 已部署。GitHub 已包含后续 `6f0de1a` / `707fc2f` / `880f3af` 安全改动与 O1 Demo，但在下一次受控部署完成前，禁止把这些提交当作生产事实。开始工作仍须用容器 `APP_COMMIT`、源码哈希和运行状态确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。本轮最新只读核验：容器 `running`、`restart=0`、Docker health=`healthy`、镜像 `APP_COMMIT=8a2407b`；因此第 18.3 节安全/retention 与后续命令化 UI **尚待统一生产部署验收**。生产运行数据和 `.env` 未在本轮核验中修改。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -432,7 +432,7 @@ docker compose config --quiet
 | M1 | P2 | 视频兼容性检查、faststart remux、缩略图增强 | F3 | [x] `2535264`（2026-08-31；生产默认 analyze） |
 | DP1 | P2 | 多目的地发布配置档案 | R3、U2 | [x] `b8191ff`（2026-08-31；schema 7→8） |
 | S1 | P2 | 指定源频道自动中转（仅新消息） | DP1 | [x] `5d5f2aa`（2026-08-31；schema 8→9） |
-| O1 | Later | 可选 Web Dashboard/外部通知/指标导出 | F4 且用户确认 | [ ] |
+| O1 | Later→Active | Web Dashboard/外部通知/指标导出 | F4 且用户确认 | [ ] 用户已于 2026-08-31 明确授权开始；当前仅完成单 HTML mock Demo，真实 Web 服务/API/认证尚未实现 |
 
 所有阶段共同 Definition of Done：
 
@@ -1305,14 +1305,21 @@ backup_policy
 - 失败发送给管理员的失败中心，不在源频道刷错误。
 - 编辑/删除源消息默认不反向修改已发布内容；如以后增加同步删除，必须单独授权并有审计事件。
 
-### 17.5 以后才评估的 O1
+### 17.5 O1 Web Dashboard（已获用户授权，当前 Demo 阶段）
 
-Web Dashboard 的启动条件：队列长期超过 Telegram UI 可管理规模、出现多个管理员、需要跨日查询/图表或需要浏览大量文件。若满足：
+用户已于 2026-08-31 明确允许开始 O1。当前先用 `demo/o1-dashboard-taste.html` 验证信息架构与视觉方向，**单 HTML 只使用模拟数据，不连接生产、不开放端口、不产生 mutation**。从 Demo 进入真实服务时仍遵守：
 
 - 只读 dashboard 先行，复用同一 repository/service，不直接操作数据库。
 - 单独监听 localhost，通过反向代理、TLS、强认证和 CSRF 防护；不得把管理端口直接暴露公网。
 - 删除/重试等 mutation 仍走 service command 和审计事件。
 - 不在 bot 容器内临时拼一个无认证 Flask 页面。
+
+当前 O1 未完成项：
+
+- 选择 Web 服务边界与只读 API contract，复用 repository/service，不让页面直接执行 SQL。
+- 明确认证和暴露方式；默认 localhost-only，反向代理/TLS/强认证完成前不得公网监听。
+- 将 jobs/stats/storage/routing/health 的 mock 数据替换为脱敏只读 service DTO。
+- mutation（retry/cancel/delete/profile update）后续单独分期，必须复用 owner/revision/confirmation/audit 语义，不能直接从 Web handler 改数据库。
 
 外部通知（Webhook/邮件）同样后置；实现时使用 outbox table + 重试，默认关闭并严格隐藏用户媒体内容。
 
@@ -1361,28 +1368,28 @@ Web Dashboard 的启动条件：队列长期超过 Telegram UI 可管理规模�
 
 ### 19.1 单元测试
 
-- [ ] 状态机每个允许/禁止 transition；revision 乐观锁；重复 command 幂等。
-- [ ] repository CRUD、事务回滚、外键、migration checksum、旧 schema 升级、损坏数据库 fail closed。
-- [ ] queue claim、下载并发、发布 FIFO、paused skip、watchdog reclaim、取消竞态。
-- [ ] recovery 表中每种状态及缓存存在/缺失组合。
-- [ ] Progress EMA、未知总量、ETA、generation 防迟到覆盖、per-job/global throttle。
-- [ ] 所有 view 的空态/大列表/长文件名/长错误/特殊字符；callback bytes ≤64。
-- [ ] confirmation token 的 owner、revision、过期、单次消费。
-- [ ] error classifier 与 retry policy，尤其 FloodWait、permission、disk、source expired、WebDAV 423。
-- [ ] DiskManager reservation、保护路径、保留期、软/硬阈值、symlink/path escape。
-- [ ] dedup hash、目标隔离、失效回退、统计去重。
-- [ ] media metadata、remux 成功/失败/取消/空间不足降级。
+- [x] 状态机每个允许/禁止 transition；revision 乐观锁；重复 command 幂等。（2026-08-31；新增 `ALLOWED_TRANSITIONS` 全 pair table-driven 门禁，既有 repository CAS/callback single-use 保持）
+- [x] repository CRUD、事务回滚、外键、migration checksum、旧 schema 升级、损坏数据库 fail closed。（2026-08-31；新增 corrupt SQLite 原文件不重建门禁；既有 schema1→9/rollback/checksum tests 保持）
+- [x] queue claim、下载并发、发布 FIFO、paused skip、watchdog reclaim、取消竞态。（既有 R3/F1/F2 pipeline/repository tests）
+- [x] recovery 表中每种状态及缓存存在/缺失组合。（既有 queued/downloading/ready/publishing/interrupted + cache/refs/source 分支 recovery tests）
+- [x] Progress EMA、未知总量、ETA、generation 防迟到覆盖、per-job/global throttle。（2026-08-31；补 unknown-total/no-ETA + global token bucket，既有 phase generation/db/ui throttle 保持）
+- [x] 所有 view 的空态/大列表/长文件名/长错误/特殊字符；callback bytes ≤64。（U1/U2/B1/DP1/S1 view tests；100-row pagination、错误脱敏与 callback 长度均有门禁）
+- [x] confirmation token 的 owner、revision、过期、单次消费。（U2 `OperationRegistry` + WebDAV/profile destructive confirmation tests）
+- [x] error classifier 与 retry policy，尤其 FloodWait、permission、disk、source expired、WebDAV 423。（F2 tests）
+- [x] DiskManager reservation、保护路径、保留期、软/硬阈值、symlink/path escape。（F3 tests）
+- [x] dedup hash、目标隔离、失效回退、统计去重。（D1/F4 tests）
+- [x] media metadata、remux 成功/失败/取消/空间不足降级。（M1/18.2 tests）
 
 ### 19.2 集成测试（全部本地 fake）
 
-- [ ] 完整单媒体：接受 → 下载 → WebDAV 并行 → 顺序发布 → 写消息 ID → 清缓存。
-- [ ] 相册/collection：聚合、文字、封面、10 条媒体组拆分、评论区 peer/id、撤销。
-- [ ] URL：progress、合并阶段、取消、重试续传、最终路径。
-- [ ] 上传返回超时但目标消息已产生的幂等协调。
-- [ ] WebDAV fake server：所有重要 HTTP 状态、延迟响应、断流、大小不一致、DELETE 部分失败。
-- [ ] 在每个阶段关闭 repository/service 再启动，验证恢复和用户通知。
-- [ ] 100 个任务并发事件，确认不死锁、不重复发布、UI 更新有界。
-- [ ] 用户重复/乱序/过期 callback，状态和副作用稳定。
+- [x] 完整单媒体：接受 → 下载 → WebDAV 并行 → 顺序发布 → 写消息 ID → 清缓存。（pipeline/media/backup fake 链路组合覆盖）
+- [x] 相册/collection：聚合、文字、封面、10 条媒体组拆分、评论区 peer/id、撤销。（2026-08-31；新增 23 张图片固定拆为 10/10/3 门禁）
+- [x] URL：progress、合并阶段、取消、重试续传、最终路径。（F1 downloader/pipeline tests）
+- [x] 上传返回超时但目标消息已产生的幂等协调。（F2-B side-effect checkpoint / publish_partial tests）
+- [x] WebDAV fake server：所有重要 HTTP 状态、延迟响应、断流、大小不一致、DELETE 部分失败。（B1/F2-C protocol fake tests）
+- [x] 在每个阶段关闭 repository/service 再启动，验证恢复和用户通知。（R3 recovery/shutdown + durable WebDAV retry tests）
+- [x] 100 个任务并发事件，确认不死锁、不重复发布、UI 更新有界。（2026-08-31；新增 100-job/8-download-worker + FIFO publisher stress，既有 100-row UI pagination 保持）
+- [x] 用户重复/乱序/过期 callback，状态和副作用稳定。（U2/handlers single-use、stale revision、unauthorized callback tests）
 
 使用 `unittest.IsolatedAsyncioTestCase` 和 `unittest.mock` 即可；除非测试明显受限，不为风格切换引入 pytest。测试 clock、随机 jitter、ID 生成必须可注入以保证确定性。
 
@@ -1488,7 +1495,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1/18.2/18.3 节技术债均已完成。产品 roadmap 仅剩 Later 的 O1；当前不自动推进 Web Dashboard/O1，下一步先按第 19 节测试矩阵做缺口审计和补强。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1/18.2/18.3 节代码工作均已完成；第 19 节测试矩阵已补强到 **259 tests** 并全绿。用户现已明确授权 O1，因此下一产品阶段切到 O1。当前先完成 Bot 顶层导航“命令优先”与单 HTML mock Demo；真实 Dashboard 服务/API/认证仍未开始。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1503,7 +1510,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理进入第 19 节测试矩阵：先逐项映射现有 250 tests，只有确实缺失的行为才补测试；优先状态机/迁移损坏 fail-closed、queue claim/recovery/callback ≤64 bytes 等门禁，不进入 O1/Web Dashboard。
+下一位代理先以真实生产 `APP_COMMIT=8a2407b` 为部署基线，完成当前已推送安全改动 + 命令化 UI 的统一受控部署；随后进入 O1-A：定义 localhost-only、只读 Web service/API contract，并让 `demo/o1-dashboard-taste.html` 的 mock DTO 与真实 service DTO 对齐。O1-A 不实现 mutation。
 
 ## 21. 执行日志
 

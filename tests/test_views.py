@@ -250,13 +250,12 @@ class ViewRenderingTests(unittest.TestCase):
                 disk_total_gb=50.0,
             )
         )
-        self.assertIn("🤖 Telegram 媒体中转站", text)
-        self.assertIn("📥 当前合集：8 个媒体 · 2 条文字", text)
-        self.assertIn("📋 任务队列：2 运行 · 3 等待 · 1 失败", text)
-        self.assertEqual(
-            callback_data(buttons),
-            [b"h:begin", b"h:end", b"h:q", b"h:f", b"h:dp", b"h:sp", b"h:w", b"h:s", b"h:status", b"h:help", b"h:r"],
-        )
+        self.assertIn("Telegram 媒体中转站", text)
+        self.assertIn("合集：8 个媒体 · 2 条文字", text)
+        self.assertIn("队列：2 运行 · 3 等待 · 1 失败", text)
+        self.assertIn("/profiles — 管理发布频道和发布策略", text)
+        self.assertIn("/diag — 查看不含凭证和内容的诊断摘要", text)
+        self.assertEqual(callback_data(buttons), [])
 
         card, card_buttons = job_card_view(
             JobCardView(

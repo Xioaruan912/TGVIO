@@ -114,21 +114,22 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         event = FakeNewMessageEvent(self.client, "/start")
         await start(event)
         self.assertEqual(len(event.responses), 1)
-        self.assertIn("🤖 Telegram 媒体中转站", event.responses[0].text)
+        self.assertIn("Telegram 媒体中转站", event.responses[0].text)
+        self.assertIn("/queue — 查看运行、等待、失败任务", event.responses[0].text)
+        self.assertIn("/about — 查看完整命令说明", event.responses[0].text)
         sent = self.client.sent_messages[-1]
         callbacks = [button.data for row in sent["buttons"] for button in row]
-        self.assertIn(b"h:r", callbacks)
-        self.assertIn(b"h:q", callbacks)
+        self.assertEqual(callbacks, [])
 
         callback = self.client.handlers["on_callback"]
         refresh = FakeCallbackEvent(self.client, b"h:r")
         await callback(refresh)
-        self.assertIn("🤖 Telegram 媒体中转站", refresh.edits[-1]["text"])
+        self.assertIn("Telegram 媒体中转站", refresh.edits[-1]["text"])
 
         end = FakeCallbackEvent(self.client, b"h:end")
         await callback(end)
         self.assertIn("当前没有进行中的合集", end.answers)
-        self.assertIn("📥 当前合集：未开始", end.edits[-1]["text"])
+        self.assertIn("合集：未开始", end.edits[-1]["text"])
 
     async def test_destination_profile_test_requires_confirmation_and_cleans_message(self) -> None:
         repo = SQLiteRepository(

@@ -313,6 +313,29 @@
     .health-row b { display: block; font-size: 12px; font-weight: 620; }
     .health-row small { display: block; margin-top: 5px; color: var(--muted); font: 9px/1.4 var(--mono); }
 
+    .command-map {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      margin-top: 14px;
+      border: 1px solid var(--line);
+      border-radius: var(--radius);
+      overflow: hidden;
+      background: #fff;
+    }
+    .command-group { padding: 16px; border-right: 1px solid var(--line); }
+    .command-group:last-child { border-right: 0; }
+    .command-group h3 { margin: 0 0 10px; font-size: 11px; font-weight: 680; }
+    .command-line {
+      display: grid;
+      grid-template-columns: 92px minmax(0, 1fr);
+      gap: 10px;
+      padding: 8px 0;
+      border-top: 1px solid var(--line);
+      align-items: baseline;
+    }
+    .command-line code { font: 10px/1.2 var(--mono); color: var(--text); }
+    .command-line span { font-size: 10px; line-height: 1.45; color: var(--muted); }
+
     .tag {
       display: inline-flex;
       align-items: center;
@@ -525,6 +548,9 @@
       .button.secondary-action { display: none; }
       .event { grid-template-columns: 64px 1fr; }
       .event code { display: none; }
+      .command-map { grid-template-columns: 1fr; }
+      .command-group { border-right: 0; border-bottom: 1px solid var(--line); }
+      .command-group:last-child { border-bottom: 0; }
     }
   </style>
 </head>
@@ -582,8 +608,8 @@
       <div class="page">
         <section class="view active" id="view-overview">
           <div class="page-head reveal">
-            <h1>One place to see what the relay is doing.</h1>
-            <p>只读运营台先行：任务、吞吐、磁盘、备份与健康状态统一展示。真实 O1 中所有 mutation 仍必须走 service command、revision 与审计事件。</p>
+            <h1>运行中的中转站，一眼看完。</h1>
+            <p>只读展示任务、吞吐、磁盘、备份与健康状态。真实 O1 的修改操作仍必须经过 service command、revision 与审计事件。</p>
           </div>
 
           <div class="metric-grid reveal">
@@ -612,12 +638,37 @@
             </div>
           </div>
 
+          <div class="section-title reveal"><h2>Telegram 命令映射</h2><span>BOT / WEB SAME MENTAL MODEL</span></div>
+          <div class="command-map reveal">
+            <div class="command-group">
+              <h3>任务</h3>
+              <div class="command-line"><code>/queue</code><span>查看运行、等待和失败任务</span></div>
+              <div class="command-line"><code>/begin</code><span>开始收集多条媒体和文字</span></div>
+              <div class="command-line"><code>/end</code><span>结束当前合集并发布</span></div>
+              <div class="command-line"><code>/mode</code><span>设置 18+ 处理方式</span></div>
+            </div>
+            <div class="command-group">
+              <h3>配置</h3>
+              <div class="command-line"><code>/profiles</code><span>管理发布目标</span></div>
+              <div class="command-line"><code>/sources</code><span>管理自动来源</span></div>
+              <div class="command-line"><code>/webdav</code><span>配置和测试 WebDAV</span></div>
+              <div class="command-line"><code>/proxy</code><span>管理下载代理</span></div>
+            </div>
+            <div class="command-group">
+              <h3>系统</h3>
+              <div class="command-line"><code>/stats</code><span>查看运行统计</span></div>
+              <div class="command-line"><code>/health</code><span>检查本地健康状态</span></div>
+              <div class="command-line"><code>/diag</code><span>导出脱敏诊断</span></div>
+              <div class="command-line"><code>/about</code><span>查看完整命令说明</span></div>
+            </div>
+          </div>
+
           <div class="section-title reveal"><h2>正在执行</h2><span id="activeCount">3 active jobs</span></div>
           <div class="task-list reveal" id="overviewTasks"></div>
         </section>
 
         <section class="view" id="view-queue">
-          <div class="page-head reveal"><h1>Durable jobs, without Telegram UI limits.</h1><p>真实版本按 repository/service 查询，不直接操作数据库。任务详情只显示必要元数据，URL、caption 和凭证默认不进入页面。</p></div>
+          <div class="page-head reveal"><h1>任务状态、进度和归属集中查看。</h1><p>真实版本按 repository/service 查询，不直接操作数据库。任务详情只显示必要元数据，URL、caption 和凭证默认不进入页面。</p></div>
           <div class="toolbar reveal">
             <div class="filters" id="filters">
               <button class="filter active" data-filter="all">全部</button>
@@ -632,13 +683,13 @@
         </section>
 
         <section class="view" id="view-failures">
-          <div class="page-head reveal"><h1>Failures should explain what to do next.</h1><p>失败中心按 error code 聚合。Demo 中 Retry 只改变本地模拟状态；真实 O1 必须经过 owner、revision、confirmation token 和 service command。</p></div>
+          <div class="page-head reveal"><h1>失败原因直接告诉你下一步。</h1><p>失败中心按 error code 聚合。Demo 中 Retry 只改变本地模拟状态；真实 O1 必须经过 owner、revision、confirmation token 和 service command。</p></div>
           <div class="section-title reveal"><h2>Actionable failures</h2><span id="failureCount">2 items</span></div>
           <div class="task-list reveal" id="failureList"></div>
         </section>
 
         <section class="view" id="view-storage">
-          <div class="page-head reveal"><h1>Storage is capacity, protection and evidence.</h1><p>Dashboard 打开时不自动发起 WebDAV PROPFIND，也不触发磁盘 cleanup。这里只展示 DiskManager snapshot 与最近缓存的远端状态。</p></div>
+          <div class="page-head reveal"><h1>本地缓存与远端备份分开看。</h1><p>Dashboard 打开时不自动发起 WebDAV PROPFIND，也不触发磁盘 cleanup。这里只展示 DiskManager snapshot 与最近缓存的远端状态。</p></div>
           <div class="two-col reveal">
             <div class="panel">
               <div class="panel-head"><strong>Local cache</strong><span>DISK_ENFORCE=TRUE</span></div>
@@ -667,7 +718,7 @@
         </section>
 
         <section class="view" id="view-routing">
-          <div class="page-head reveal"><h1>Routing stays explicit and inspectable.</h1><p>DP1 与 S1 配置在同一控制台展示，但保持独立生命周期。真实页面只显示脱敏 peer/profile label，不显示完整凭证或用户内容。</p></div>
+          <div class="page-head reveal"><h1>发布目标与自动来源保持独立。</h1><p>DP1 与 S1 配置在同一控制台展示，但保持独立生命周期。真实页面只显示脱敏 peer/profile label，不显示完整凭证或用户内容。</p></div>
           <div class="two-col reveal">
             <div class="panel">
               <div class="panel-head"><strong>Destination profiles</strong><span>2 VERIFIED</span></div>
@@ -687,7 +738,7 @@
         </section>
 
         <section class="view" id="view-health">
-          <div class="page-head reveal"><h1>Diagnostics should be useful without leaking content.</h1><p>Liveness 只依赖本地 heartbeat、SQLite 与灾难性磁盘阈值。Telegram/WebDAV 网络波动单独展示，不直接把容器判 unhealthy。</p></div>
+          <div class="page-head reveal"><h1>诊断要有用，但不能泄露内容。</h1><p>Liveness 只依赖本地 heartbeat、SQLite 与灾难性磁盘阈值。Telegram/WebDAV 网络波动单独展示，不直接把容器判 unhealthy。</p></div>
           <div class="two-col reveal">
             <div class="panel">
               <div class="panel-head"><strong>Recent events</strong><span>REDACTED MOCK</span></div>

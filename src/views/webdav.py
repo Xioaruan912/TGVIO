@@ -104,7 +104,7 @@ def webdav_cfg_view(state: WebDavConfigViewState) -> tuple:
         [Button.inline("📁 上传记录", "wd_cfg:logs")],
         [Button.inline("🛡 备份策略", "wd_cfg:policy")],
         [Button.inline("⚙️ 修改配置", "wd_cfg:edit")],
-        [Button.inline("🏠 首页", "h:r")],
+        [Button.inline("/start", "h:r")],
     ]
     return "\n".join(lines), buttons
 
@@ -144,8 +144,8 @@ def webdav_probe_view(result) -> tuple[str, list]:
     if result.ok:
         buttons.append([Button.inline("✍️ 写入测试", "wd_cfg:wtest")])
     buttons.extend([
-        [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
-        [Button.inline("🏠 首页", "h:r")],
+        [Button.inline("/webdav", "wd_cfg:back")],
+        [Button.inline("/start", "h:r")],
     ])
     return "\n".join(lines), buttons
 
@@ -160,7 +160,7 @@ def webdav_write_confirm_view(operation_id: int) -> tuple[str, list]:
         [
             [Button.inline("✅ 确认写入测试", f"wd_w:y:{int(operation_id)}")],
             [Button.inline("❌ 取消", f"wd_w:n:{int(operation_id)}")],
-            [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
+            [Button.inline("/webdav", "wd_cfg:back")],
         ],
     )
 
@@ -178,8 +178,8 @@ def webdav_write_result_view(result) -> tuple[str, list]:
     if not result.cleaned:
         lines.append("⚠️ 请检查远端是否残留 .tgvf-check-* 测试文件。")
     return "\n".join(lines), [
-        [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
-        [Button.inline("🏠 首页", "h:r")],
+        [Button.inline("/webdav", "wd_cfg:back")],
+        [Button.inline("/start", "h:r")],
     ]
 
 
@@ -211,7 +211,7 @@ def webdav_cfg_fields_view(state: WebDavConfigViewState) -> tuple:
         ],
         [Button.inline("✏️ 重试", "wd_cfg:retry")],
         [Button.inline("⬅️ 返回", "wd_cfg:back")],
-        [Button.inline("🏠 首页", "h:r")],
+        [Button.inline("/start", "h:r")],
     ]
     return "\n".join(lines), buttons
 
@@ -229,7 +229,7 @@ def webdav_required_policy_confirm_view(operation_id: int) -> tuple[str, list]:
             Button.inline("✅ 确认启用", f"wd_bp:y:{int(operation_id)}"),
             Button.inline("❌ 取消", f"wd_bp:n:{int(operation_id)}"),
         ],
-        [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
+        [Button.inline("/webdav", "wd_cfg:back")],
     ]
 
 
@@ -287,7 +287,7 @@ def backup_attempt_page_view(state: BackupAttemptPageView) -> tuple[str, list]:
     if page + 1 < max(1, state.pages):
         nav.append(Button.inline("➡️", f"wd:p:{page + 1}"))
     buttons.append(nav)
-    buttons.append([Button.inline("⬅️ WebDAV", "wd_cfg:back"), Button.inline("🏠 首页", "h:r")])
+    buttons.append([Button.inline("/webdav", "wd_cfg:back"), Button.inline("/start", "h:r")])
     return "\n".join(lines), buttons
 
 
@@ -327,7 +327,7 @@ def backup_attempt_detail_view(state: BackupAttemptDetailView) -> tuple[str, lis
         nav.append(Button.inline("➡️", f"wd:a:{state.attempt_id}:{page + 1}"))
     if nav:
         buttons.append(nav)
-    buttons.append([Button.inline("⬅️ 上传记录", "wd:p:0"), Button.inline("🏠 首页", "h:r")])
+    buttons.append([Button.inline("/webdavlogs", "wd:p:0"), Button.inline("/start", "h:r")])
     return "\n".join(lines), buttons
 
 

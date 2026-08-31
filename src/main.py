@@ -7,6 +7,7 @@ from telethon import TelegramClient, functions
 from telethon.tl import types
 
 from . import bot, config
+from .commands import command_menu_pairs
 from .repository import SQLiteRepository
 from .security import (
     install_redacting_logging,
@@ -24,22 +25,7 @@ logging.basicConfig(
 install_redacting_logging(fmt=_LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
-_COMMANDS = [
-    types.BotCommand("start", "使用说明"),
-    types.BotCommand("about", "关于/命令说明"),
-    types.BotCommand("stats", "运行状态与健康信息"),
-    types.BotCommand("health", "本地健康检查"),
-    types.BotCommand("diag", "导出脱敏诊断"),
-    types.BotCommand("mode", "设置 18+ 处理方式"),
-    types.BotCommand("profiles", "管理发布目的地"),
-    types.BotCommand("sources", "管理自动来源"),
-    types.BotCommand("webdav", "配置 WebDAV 备份链接"),
-    types.BotCommand("webdavlogs", "查看上传记录 / 本地缓存"),
-    types.BotCommand("proxy", "代理设置（HTTP）"),
-    types.BotCommand("queue", "管理队列"),
-    types.BotCommand("begin", "开始合集会话"),
-    types.BotCommand("end", "结束合集并发布"),
-]
+_COMMANDS = [types.BotCommand(name, description) for name, description in command_menu_pairs()]
 
 
 async def _setup_commands(client: TelegramClient) -> None:
