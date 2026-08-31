@@ -8,6 +8,8 @@ import resource
 import sqlite3
 import subprocess
 import time
+import json
+from pathlib import Path
 from dataclasses import dataclass
 from typing import Any
 
@@ -41,6 +43,7 @@ class RuntimeStatsSnapshot:
     webdav_age_seconds: float | None
     database_ok: bool
     recent_errors: tuple[tuple[str, int], ...]
+    recent_events: tuple[tuple[str, int], ...]
 
 
 class StatsService:
@@ -53,6 +56,19 @@ class StatsService:
         self._started = time.monotonic()
         self._last_wall = self._started
         self._last_cpu = time.process_time()
+
+    @staticmethod
+    def _read_heartbeat() -> tuple[bool, bool, float | None]:
+        path = os.environ.get("HEALTH_HEARTBEAT_FILE", "session/runtime-health.json")
+        try:
+            payload = json.loads(Path(path).read_text(encoding="utf-8"))
+            heartbeat_at = float(payload.get("heartbeat_at") or 0.0)
+            age = max(0.0, time.time() - heartbeat_at) if heartbeat_at > 0 else None
+            max_age = max(10, int(os.environ.get("HEALTH_HEARTBEAT_MAX_AGE", "45")))
+            live = age is not None and age <= max_age
+            return live, bool(payload.get("ready")) and live, age
+        except Exception:
+            return False, False, None
 
     def _cpu_percent(self) -> float | None:
         now_wall = time.monotonic()
@@ -94,10 +110,12 @@ class StatsService:
         try:
             stats = await self._repository.stats_snapshot()
             counts = await self._repository.count_jobs_by_state()
+            events = await self._repository.stats_event_summary()
         except Exception:
             database_ok = False
             stats = {"today": {}, "totals": {}, "recent_errors": []}
             counts = {}
+            events = []
 
         running = sum(int(counts.get(state, 0)) for state in ("downloading", "publishing"))
         waiting = sum(
@@ -172,6 +190,10 @@ class StatsService:
             webdav_age_seconds=webdav_age,
             database_ok=database_ok,
             recent_errors=recent_errors,
+            recent_events=tuple(
+                (str(item.get("event_type") or "unknown"), int(item.get("count") or 0))
+                for item in events
+            ),
         )
 
     @staticmethod
@@ -199,6 +221,7 @@ class StatsService:
         from .. import config
 
         snapshot = await self.snapshot()
+        heartbeat_live, heartbeat_ready, heartbeat_age = self._read_heartbeat()
         try:
             schema = ",".join(str(value) for value in await self._repository.schema_versions())
         except Exception:
@@ -207,6 +230,7 @@ class StatsService:
         proxy_cfg = getattr(self._pipeline, "proxy_cfg", {}) or {}
         proxy_count = len(proxy_cfg.get("proxies") or [])
         error_codes = ", ".join(code for code, _ in snapshot.recent_errors[:5]) or "none"
+        event_types = ", ".join(name for name, _ in snapshot.recent_events[:5]) or "none"
         return "\n".join(
             [
                 "🧾 脱敏诊断",
@@ -230,6 +254,29 @@ class StatsService:
                 f"queue_waiting={snapshot.waiting}",
                 f"queue_failed={snapshot.failed}",
                 f"database_ok={str(snapshot.database_ok).lower()}",
+                f"heartbeat_live={str(heartbeat_live).lower()}",
+                f"heartbeat_ready={str(heartbeat_ready).lower()}",
+                f"heartbeat_age_seconds={int(heartbeat_age) if heartbeat_age is not None else 'unknown'}",
                 f"recent_error_codes={error_codes}",
+                f"recent_event_types={event_types}",
             ]
         )
+
+    async def health_text(self) -> str:
+        """Return a local-only health/self-check summary without remote probes."""
+        snapshot = await self.snapshot()
+        heartbeat_live, heartbeat_ready, heartbeat_age = self._read_heartbeat()
+        age = "未知" if heartbeat_age is None else f"{int(heartbeat_age)} 秒"
+        lines = [
+            "🩺 健康检查",
+            "──────────",
+            f"Liveness：{'正常' if heartbeat_live else '异常'}（heartbeat {age}）",
+            f"Readiness：{'就绪' if heartbeat_ready else '未就绪'}",
+            f"SQLite：{'正常' if snapshot.database_ok else '异常'}",
+            f"磁盘硬门禁：{'正常' if snapshot.disk_healthy else '需关注' if snapshot.disk_healthy is False else '未知'}",
+            f"Telegram：{'已连接' if snapshot.telegram_connected else '未连接'}（仅连接状态）",
+            f"WebDAV：{'未启用' if not snapshot.webdav_enabled else snapshot.webdav_health}（仅缓存状态）",
+            "──────────",
+            "本页不会发送 Telegram 消息、探测 WebDAV、切换代理或执行磁盘清理。",
+        ]
+        return "\n".join(lines)

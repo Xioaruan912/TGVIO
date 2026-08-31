@@ -114,6 +114,21 @@ def register_setting_commands(ctx: HandlerContext) -> None:
             auto_delete=False,
         )
 
+    @ctx.client.on(events.NewMessage(pattern="/health$"))
+    async def on_health(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /health from %s", event.sender_id)
+        if not ctx.authorized(event):
+            return
+        if ctx.stats is None:
+            await ctx.respond(event, "🩺 健康检查暂不可用", auto_delete=False)
+            return
+        await ctx.respond(
+            event,
+            await ctx.stats.health_text(),
+            buttons=home_button(),
+            auto_delete=False,
+        )
+
     @ctx.client.on(events.NewMessage(pattern="/mode$"))
     async def on_mode(event: events.NewMessage.Event) -> None:
         logger.info("CMD /mode from %s", event.sender_id)
@@ -288,6 +303,16 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         await ctx.edit(
             event,
             await ctx.stats.diagnostics_text(),
+            buttons=home_button(),
+        )
+        return
+    if action == "health":
+        if ctx.stats is None:
+            await ctx.edit(event, "🩺 健康检查暂不可用", buttons=home_button())
+            return
+        await ctx.edit(
+            event,
+            await ctx.stats.health_text(),
             buttons=home_button(),
         )
         return

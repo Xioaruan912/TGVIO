@@ -1,7 +1,9 @@
 import os
+import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest.mock import patch
 
 from src.repository import SQLiteRepository
 from src.services.stats import StatsService
@@ -116,6 +118,36 @@ class StatsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         after = await self.repo.stats_snapshot()
         self.assertEqual(after["totals"], before["totals"])
 
+    async def test_same_metric_scope_can_be_counted_on_different_utc_days(self) -> None:
+        conn = self.repo._require_conn()
+        async with self.repo._write_lock:
+            await conn.execute("BEGIN IMMEDIATE")
+            first = await self.repo._apply_stat_metric_tx(
+                conn,
+                scope_key="backup_file:7",
+                metric="backed_up_bytes",
+                value=10,
+                timestamp=0.0,
+            )
+            duplicate = await self.repo._apply_stat_metric_tx(
+                conn,
+                scope_key="backup_file:7",
+                metric="backed_up_bytes",
+                value=10,
+                timestamp=0.0,
+            )
+            second_day = await self.repo._apply_stat_metric_tx(
+                conn,
+                scope_key="backup_file:7",
+                metric="backed_up_bytes",
+                value=10,
+                timestamp=86400.0,
+            )
+            await conn.commit()
+        self.assertTrue(first)
+        self.assertFalse(duplicate)
+        self.assertTrue(second_day)
+
 
 class StatsViewTests(unittest.TestCase):
     def test_stats_view_renders_safe_summary_only(self) -> None:
@@ -147,16 +179,18 @@ class StatsViewTests(unittest.TestCase):
             webdav_age_seconds=180,
             database_ok=True,
             recent_errors=(("network_timeout", 2),),
+            recent_events=(("published", 3),),
         )
         text, buttons = stats_view(state)
         self.assertIn("📊 运行状态", text)
         self.assertIn("累计发布：2.0 GB", text)
         self.assertIn("WebDAV：正常（3 分钟前）", text)
         self.assertIn("network_timeout×2", text)
+        self.assertIn("published×3", text)
         self.assertNotIn("http://", text)
         self.assertNotIn("/app/", text)
         callbacks = [button.data.decode() for row in buttons for button in row]
-        self.assertEqual(callbacks, ["h:status", "h:diag", "h:r"])
+        self.assertEqual(callbacks, ["h:status", "h:health", "h:diag", "h:r"])
 
 
 class _DiagClient:
@@ -194,7 +228,7 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
             await repo.migrate()
             try:
                 service = StatsService(_DiagPipeline(), repo, _DiagBackup())
-                with unittest.mock.patch.dict(
+                with patch.dict(
                     os.environ,
                     {"APP_COMMIT": "deadbeef"},
                     clear=False,
@@ -208,3 +242,58 @@ class DiagnosticsTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("example.invalid", text)
         self.assertNotIn("http://", text)
         self.assertNotIn("https://", text)
+
+    async def test_event_summary_contains_types_only(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloads = root / "downloads"
+            downloads.mkdir()
+            repo = SQLiteRepository(root / "state.sqlite3", download_root=downloads)
+            await repo.open()
+            await repo.migrate()
+            try:
+                job = await repo.accept_job(
+                    kind="url", user_id=1, state="queued", source_kind="url",
+                    source_url="https://secret.invalid/private",
+                    event_payload={"schema_version": 1, "caption": "private text"},
+                )
+                await repo.record_job_event(
+                    job.id, "diagnostic_test",
+                    payload={"schema_version": 1, "secret": "do-not-export"},
+                )
+                events = await repo.stats_event_summary()
+            finally:
+                await repo.close()
+        rendered = repr(events)
+        self.assertIn("diagnostic_test", rendered)
+        self.assertNotIn("private text", rendered)
+        self.assertNotIn("do-not-export", rendered)
+
+    async def test_health_text_is_local_only_and_reports_heartbeat(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            downloads = root / "downloads"
+            downloads.mkdir()
+            heartbeat = root / "runtime-health.json"
+            heartbeat.write_text(
+                json.dumps({"heartbeat_at": __import__("time").time(), "ready": True, "pid": os.getpid()}),
+                encoding="utf-8",
+            )
+            repo = SQLiteRepository(root / "state.sqlite3", download_root=downloads)
+            await repo.open()
+            await repo.migrate()
+            try:
+                service = StatsService(_DiagPipeline(), repo, _DiagBackup())
+                with patch.dict(
+                    os.environ,
+                    {"HEALTH_HEARTBEAT_FILE": str(heartbeat)},
+                    clear=False,
+                ):
+                    text = await service.health_text()
+            finally:
+                await repo.close()
+        self.assertIn("Liveness：正常", text)
+        self.assertIn("Readiness：就绪", text)
+        self.assertIn("仅连接状态", text)
+        self.assertIn("仅缓存状态", text)
+        self.assertNotIn("example.invalid", text)

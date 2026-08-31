@@ -56,6 +56,7 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "on_start",
                 "on_about",
                 "on_stats",
+                "on_health",
                 "on_diag",
                 "on_mode",
                 "on_webdav",

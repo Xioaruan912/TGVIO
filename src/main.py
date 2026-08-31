@@ -20,6 +20,7 @@ _COMMANDS = [
     types.BotCommand("start", "使用说明"),
     types.BotCommand("about", "关于/命令说明"),
     types.BotCommand("stats", "运行状态与健康信息"),
+    types.BotCommand("health", "本地健康检查"),
     types.BotCommand("diag", "导出脱敏诊断"),
     types.BotCommand("mode", "设置 18+ 处理方式"),
     types.BotCommand("webdav", "配置 WebDAV 备份链接"),

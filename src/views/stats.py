@@ -49,6 +49,7 @@ def stats_view(state: RuntimeStatsSnapshot) -> tuple[str, list]:
     disk_state = "安全" if state.disk_healthy else "需关注" if state.disk_healthy is False else "未知"
     webdav = "未启用" if not state.webdav_enabled else f"{state.webdav_health}（{_age(state.webdav_age_seconds)}）"
     errors = "、".join(f"{code}×{count}" for code, count in state.recent_errors[:3]) or "无"
+    events = "、".join(f"{name}×{count}" for name, count in state.recent_events[:3]) or "无"
     text = "\n".join(
         [
             "📊 运行状态",
@@ -67,10 +68,12 @@ def stats_view(state: RuntimeStatsSnapshot) -> tuple[str, list]:
             f"WebDAV：{webdav}",
             f"队列数据库：{'正常' if state.database_ok else '异常'}",
             f"最近错误：{errors}",
+            f"最近事件：{events}",
         ]
     )
     buttons = [
-        [Button.inline("🔄 刷新", "h:status"), Button.inline("🧾 导出诊断", "h:diag")],
+        [Button.inline("🔄 刷新", "h:status"), Button.inline("🩺 健康检查", "h:health")],
+        [Button.inline("🧾 导出诊断", "h:diag")],
         [Button.inline("🏠 首页", "h:r")],
     ]
     return text, buttons

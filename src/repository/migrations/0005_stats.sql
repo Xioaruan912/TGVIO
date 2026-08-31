@@ -17,7 +17,7 @@ CREATE TABLE stat_metric_applied (
   day_utc TEXT NOT NULL,
   value INTEGER NOT NULL,
   created_at REAL NOT NULL,
-  PRIMARY KEY(scope_key, metric)
+  PRIMARY KEY(scope_key, metric, day_utc)
 );
 
 CREATE INDEX idx_stat_metric_day ON stat_metric_applied(day_utc, metric);

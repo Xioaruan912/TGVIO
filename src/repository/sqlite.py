@@ -1711,6 +1711,29 @@ class SQLiteRepository:
         await cursor.close()
         return {"day_utc": today, "today": today_values, "totals": totals, "recent_errors": errors}
 
+    async def stats_event_summary(self, *, limit: int = 8) -> list[dict[str, Any]]:
+        """Return event counts/types only; never expose event payloads or user content."""
+        conn = self._require_conn()
+        limit = max(1, min(int(limit), 20))
+        cursor = await conn.execute(
+            """SELECT event_type,COUNT(*) AS n,MAX(created_at) AS last_at
+               FROM job_events
+               GROUP BY event_type
+               ORDER BY last_at DESC,event_type
+               LIMIT ?""",
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [
+            {
+                "event_type": str(row["event_type"]),
+                "count": int(row["n"]),
+                "last_at": float(row["last_at"]),
+            }
+            for row in rows
+        ]
+
     async def cleanup_inventory(self, *, limit: int = 1000) -> list[dict[str, Any]]:
         """Return durable facts needed to build a safe disk-cleanup dry run.
 
