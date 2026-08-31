@@ -1,0 +1,1321 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>O1 // TG Relay Control — Mock Dashboard</title>
+  <style>
+    :root {
+      --bg: #0a0a0a;
+      --panel: #111111;
+      --panel-2: #151515;
+      --line: #2a2a2a;
+      --line-strong: #4a4a4a;
+      --text: #eaeaea;
+      --muted: #8c8c8c;
+      --accent: #ff2a2a;
+      --ok: #4af626;
+      --warn: #d4d4d4;
+      --sans: Arial, Helvetica, sans-serif;
+      --mono: "SFMono-Regular", Consolas, "Liberation Mono", Menlo, monospace;
+    }
+
+    * { box-sizing: border-box; }
+
+    html { color-scheme: dark; }
+
+    body {
+      margin: 0;
+      min-width: 320px;
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--sans);
+      letter-spacing: -0.01em;
+    }
+
+    body::before {
+      content: "";
+      position: fixed;
+      inset: 0;
+      z-index: 9999;
+      pointer-events: none;
+      opacity: 0.12;
+      background: repeating-linear-gradient(
+        0deg,
+        transparent 0,
+        transparent 2px,
+        rgba(0, 0, 0, 0.55) 2px,
+        rgba(0, 0, 0, 0.55) 4px
+      );
+      mix-blend-mode: multiply;
+    }
+
+    button, input, select { font: inherit; }
+
+    button {
+      color: inherit;
+      border: 0;
+      cursor: pointer;
+    }
+
+    .shell {
+      display: grid;
+      grid-template-columns: 248px minmax(0, 1fr);
+      min-height: 100dvh;
+      border-top: 1px solid var(--line-strong);
+    }
+
+    .rail {
+      position: sticky;
+      top: 0;
+      height: 100dvh;
+      display: grid;
+      grid-template-rows: auto auto 1fr auto;
+      border-right: 1px solid var(--line-strong);
+      background: #0d0d0d;
+    }
+
+    .brand {
+      padding: 22px 18px 20px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .brand-mark {
+      font-family: var(--sans);
+      font-size: 32px;
+      line-height: 0.88;
+      font-weight: 900;
+      letter-spacing: -0.07em;
+      text-transform: uppercase;
+    }
+
+    .brand-meta,
+    .micro,
+    .nav-button,
+    .rail-status,
+    .eyebrow,
+    .metric-label,
+    th,
+    .tag,
+    .control,
+    .status-line,
+    .drawer-label,
+    .command-button {
+      font-family: var(--mono);
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+    }
+
+    .brand-meta {
+      margin-top: 12px;
+      font-size: 10px;
+      line-height: 1.4;
+      color: var(--muted);
+    }
+
+    .rail-status {
+      display: grid;
+      gap: 7px;
+      padding: 14px 18px;
+      border-bottom: 1px solid var(--line);
+      font-size: 10px;
+      color: var(--muted);
+    }
+
+    .rail-status strong {
+      color: var(--ok);
+      font-weight: 600;
+    }
+
+    nav { padding: 12px 0; }
+
+    .nav-button {
+      width: 100%;
+      display: grid;
+      grid-template-columns: 42px 1fr auto;
+      align-items: center;
+      min-height: 44px;
+      padding: 0 16px 0 0;
+      background: transparent;
+      border-left: 3px solid transparent;
+      color: #9f9f9f;
+      text-align: left;
+      font-size: 11px;
+    }
+
+    .nav-button:hover { color: var(--text); background: #131313; }
+
+    .nav-button.active {
+      color: var(--text);
+      border-left-color: var(--accent);
+      background: #161616;
+    }
+
+    .nav-button .code {
+      color: #666;
+      text-align: center;
+      font-size: 10px;
+    }
+
+    .nav-button.active .code { color: var(--accent); }
+
+    .nav-button .count {
+      min-width: 24px;
+      text-align: right;
+      color: #747474;
+    }
+
+    .rail-footer {
+      padding: 14px 18px 18px;
+      border-top: 1px solid var(--line-strong);
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.65;
+      color: #727272;
+    }
+
+    .main { min-width: 0; }
+
+    .topbar {
+      min-height: 68px;
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      align-items: center;
+      gap: 24px;
+      padding: 0 24px;
+      border-bottom: 1px solid var(--line-strong);
+      background: rgba(10,10,10,0.96);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+    }
+
+    .topbar-title {
+      display: flex;
+      align-items: baseline;
+      gap: 14px;
+      min-width: 0;
+    }
+
+    .topbar-title h1 {
+      margin: 0;
+      font-size: 16px;
+      font-weight: 800;
+      letter-spacing: -0.03em;
+      text-transform: uppercase;
+    }
+
+    .topbar-title span {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-family: var(--mono);
+      color: var(--muted);
+      font-size: 10px;
+      letter-spacing: 0.06em;
+    }
+
+    .topbar-actions {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+    }
+
+    .clock {
+      margin-right: 8px;
+      font-family: var(--mono);
+      color: #8a8a8a;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+      white-space: nowrap;
+    }
+
+    .command-button,
+    .control {
+      min-height: 34px;
+      padding: 0 12px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 7px;
+      border: 1px solid var(--line-strong);
+      background: #101010;
+      color: #c8c8c8;
+      font-size: 10px;
+    }
+
+    .command-button:hover,
+    .control:hover { background: #1a1a1a; color: white; }
+    .command-button:active,
+    .control:active { transform: translateY(1px); }
+
+    .command-button.danger { border-color: var(--accent); color: var(--accent); }
+
+    .page {
+      padding: 26px 24px 48px;
+      max-width: 1700px;
+      margin: 0 auto;
+    }
+
+    .view { display: none; }
+    .view.active { display: block; }
+
+    .page-head {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) auto;
+      gap: 24px;
+      align-items: end;
+      margin-bottom: 26px;
+    }
+
+    .eyebrow {
+      color: var(--accent);
+      font-size: 10px;
+      margin-bottom: 10px;
+    }
+
+    .page-head h2 {
+      margin: 0;
+      max-width: 900px;
+      font-size: clamp(38px, 5.4vw, 86px);
+      line-height: 0.86;
+      letter-spacing: -0.065em;
+      font-weight: 900;
+      text-transform: uppercase;
+    }
+
+    .page-head .summary {
+      max-width: 420px;
+      font-family: var(--mono);
+      color: #8c8c8c;
+      font-size: 10px;
+      line-height: 1.7;
+      text-transform: uppercase;
+      letter-spacing: 0.05em;
+    }
+
+    .metric-grid {
+      display: grid;
+      grid-template-columns: repeat(6, minmax(0, 1fr));
+      gap: 1px;
+      background: var(--line-strong);
+      border: 1px solid var(--line-strong);
+    }
+
+    .metric {
+      background: var(--panel);
+      min-height: 138px;
+      padding: 16px;
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+    }
+
+    .metric-label {
+      font-size: 9px;
+      line-height: 1.4;
+      color: #777;
+    }
+
+    .metric-value {
+      margin-top: 20px;
+      font-size: clamp(28px, 3vw, 48px);
+      line-height: 0.9;
+      letter-spacing: -0.06em;
+      font-weight: 900;
+    }
+
+    .metric-value small {
+      margin-left: 5px;
+      font-family: var(--mono);
+      font-size: 9px;
+      color: #6e6e6e;
+      letter-spacing: 0;
+    }
+
+    .metric-delta {
+      margin-top: 12px;
+      font-family: var(--mono);
+      font-size: 9px;
+      color: #7a7a7a;
+      text-transform: uppercase;
+    }
+
+    .metric.alert .metric-value,
+    .metric.alert .metric-delta { color: var(--accent); }
+
+    .dashboard-grid {
+      margin-top: 1px;
+      display: grid;
+      grid-template-columns: minmax(0, 1.45fr) minmax(330px, 0.55fr);
+      gap: 1px;
+      background: var(--line-strong);
+      border: 1px solid var(--line-strong);
+      border-top: 0;
+    }
+
+    .module { background: var(--panel); min-width: 0; }
+
+    .module-head {
+      min-height: 46px;
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      padding: 0 14px;
+      border-bottom: 1px solid var(--line);
+      font-family: var(--mono);
+      font-size: 9px;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      color: #8a8a8a;
+    }
+
+    .module-head strong { color: #d7d7d7; font-weight: 500; }
+
+    .throughput {
+      position: relative;
+      min-height: 310px;
+      padding: 22px 18px 18px;
+    }
+
+    .chart {
+      width: 100%;
+      height: 250px;
+      display: block;
+      border-left: 1px solid #333;
+      border-bottom: 1px solid #333;
+    }
+
+    .chart-caption {
+      display: flex;
+      justify-content: space-between;
+      gap: 14px;
+      margin-top: 10px;
+      font-family: var(--mono);
+      font-size: 9px;
+      color: #6e6e6e;
+      text-transform: uppercase;
+    }
+
+    .system-stack { display: grid; grid-template-rows: repeat(4, auto); }
+
+    .system-row {
+      padding: 16px 14px;
+      border-bottom: 1px solid var(--line);
+    }
+    .system-row:last-child { border-bottom: 0; }
+
+    .system-row-top {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 10px;
+      margin-bottom: 12px;
+      font-family: var(--mono);
+      font-size: 9px;
+      text-transform: uppercase;
+      color: #818181;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      display: inline-block;
+      background: var(--ok);
+      box-shadow: 0 0 12px rgba(74,246,38,0.35);
+      margin-right: 7px;
+    }
+
+    .bar {
+      height: 8px;
+      background: #242424;
+      position: relative;
+      overflow: hidden;
+    }
+
+    .bar > i {
+      display: block;
+      height: 100%;
+      background: #d8d8d8;
+    }
+
+    .bar.alert > i { background: var(--accent); }
+
+    .system-value {
+      margin-top: 9px;
+      display: flex;
+      justify-content: space-between;
+      gap: 10px;
+      font-family: var(--mono);
+      color: #bdbdbd;
+      font-size: 10px;
+    }
+
+    .queue-strip {
+      display: grid;
+      grid-template-columns: 180px minmax(0, 1fr) 104px 104px 104px;
+      align-items: center;
+      min-height: 74px;
+      border-top: 1px solid var(--line-strong);
+      border-left: 1px solid var(--line-strong);
+      border-right: 1px solid var(--line-strong);
+      background: #101010;
+    }
+
+    .queue-strip:last-of-type { border-bottom: 1px solid var(--line-strong); }
+    .queue-strip > div { padding: 13px 14px; min-width: 0; }
+    .queue-strip > div + div { border-left: 1px solid var(--line); }
+
+    .queue-id {
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.6;
+      color: #858585;
+    }
+
+    .queue-id strong { color: var(--text); font-size: 12px; font-weight: 500; }
+
+    .queue-title {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      font-size: 13px;
+      font-weight: 700;
+    }
+
+    .queue-sub {
+      margin-top: 7px;
+      font-family: var(--mono);
+      font-size: 9px;
+      color: #6e6e6e;
+      text-transform: uppercase;
+    }
+
+    .queue-stat {
+      font-family: var(--mono);
+      font-size: 9px;
+      line-height: 1.55;
+      color: #777;
+      text-transform: uppercase;
+    }
+
+    .queue-stat strong { display: block; color: #d3d3d3; font-size: 11px; font-weight: 500; }
+
+    .section-gap { height: 28px; }
+
+    .toolbar {
+      display: flex;
+      gap: 8px;
+      justify-content: space-between;
+      align-items: center;
+      padding: 10px;
+      border: 1px solid var(--line-strong);
+      background: #101010;
+      margin-bottom: -1px;
+    }
+
+    .toolbar-group { display: flex; gap: 7px; flex-wrap: wrap; }
+
+    .control.active { border-color: var(--accent); color: var(--accent); }
+
+    .search {
+      width: min(340px, 40vw);
+      min-height: 34px;
+      padding: 0 11px;
+      border: 1px solid var(--line-strong);
+      outline: none;
+      border-radius: 0;
+      background: #0b0b0b;
+      color: white;
+      font-family: var(--mono);
+      font-size: 10px;
+      text-transform: uppercase;
+    }
+
+    .search:focus { border-color: var(--accent); }
+    .search::placeholder { color: #555; opacity: 1; }
+
+    .table-wrap {
+      border: 1px solid var(--line-strong);
+      overflow-x: auto;
+    }
+
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      min-width: 980px;
+      background: #0f0f0f;
+    }
+
+    th {
+      height: 42px;
+      padding: 0 12px;
+      color: #777;
+      font-size: 9px;
+      font-weight: 500;
+      text-align: left;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line-strong);
+      white-space: nowrap;
+    }
+
+    td {
+      height: 58px;
+      padding: 8px 12px;
+      border-right: 1px solid var(--line);
+      border-bottom: 1px solid var(--line);
+      font-size: 12px;
+      vertical-align: middle;
+    }
+
+    tr:last-child td { border-bottom: 0; }
+    tr:hover td { background: #161616; }
+
+    td.mono { font-family: var(--mono); font-size: 10px; color: #a6a6a6; }
+
+    .tag {
+      display: inline-flex;
+      align-items: center;
+      min-height: 22px;
+      padding: 0 6px;
+      border: 1px solid #444;
+      color: #bcbcbc;
+      font-size: 8px;
+      white-space: nowrap;
+    }
+
+    .tag.alert { border-color: var(--accent); color: var(--accent); }
+    .tag.ok { border-color: #3d6f35; color: var(--ok); }
+
+    .progress-cell { min-width: 170px; }
+    .progress-cell .bar { margin-top: 6px; height: 5px; }
+
+    .row-action {
+      min-height: 28px;
+      padding: 0 9px;
+      background: transparent;
+      border: 1px solid #3c3c3c;
+      font-family: var(--mono);
+      color: #9b9b9b;
+      font-size: 9px;
+      text-transform: uppercase;
+    }
+    .row-action:hover { border-color: var(--accent); color: var(--accent); }
+
+    .empty {
+      padding: 48px 18px;
+      border: 1px solid var(--line-strong);
+      font-family: var(--mono);
+      color: #777;
+      text-align: center;
+      text-transform: uppercase;
+      font-size: 10px;
+      letter-spacing: 0.08em;
+    }
+
+    .split {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr) minmax(320px, 0.62fr);
+      gap: 1px;
+      background: var(--line-strong);
+      border: 1px solid var(--line-strong);
+    }
+
+    .log {
+      max-height: 520px;
+      overflow: auto;
+      padding: 14px;
+      background: #0c0c0c;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.7;
+      color: #9a9a9a;
+    }
+
+    .log-line { display: grid; grid-template-columns: 82px 84px minmax(0, 1fr); gap: 12px; }
+    .log-line + .log-line { border-top: 1px solid #171717; }
+    .log-line span { padding: 7px 0; }
+    .log-line .lvl { color: #d0d0d0; }
+    .log-line .lvl.err { color: var(--accent); }
+
+    .diag-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1px; background: var(--line); }
+    .diag-cell { padding: 16px 14px; background: var(--panel); }
+    .diag-cell dt { font-family: var(--mono); font-size: 9px; color: #747474; text-transform: uppercase; }
+    .diag-cell dd { margin: 10px 0 0; font-size: 16px; font-weight: 700; }
+
+    .drawer-backdrop {
+      position: fixed;
+      inset: 0;
+      z-index: 80;
+      display: none;
+      background: rgba(0,0,0,0.68);
+    }
+    .drawer-backdrop.open { display: block; }
+
+    .drawer {
+      position: absolute;
+      top: 0;
+      right: 0;
+      width: min(620px, 94vw);
+      height: 100%;
+      overflow: auto;
+      background: #0d0d0d;
+      border-left: 1px solid var(--line-strong);
+    }
+
+    .drawer-head {
+      min-height: 72px;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 0 18px;
+      border-bottom: 1px solid var(--line-strong);
+      position: sticky;
+      top: 0;
+      background: #0d0d0d;
+      z-index: 2;
+    }
+
+    .drawer-head h3 { margin: 0; font-size: 20px; text-transform: uppercase; letter-spacing: -0.04em; }
+    .drawer-close { width: 34px; height: 34px; background: transparent; border: 1px solid var(--line-strong); color: #aaa; }
+
+    .drawer-body { padding: 18px; }
+
+    .drawer-hero {
+      padding: 20px 0 24px;
+      border-bottom: 1px solid var(--line-strong);
+    }
+
+    .drawer-id {
+      font-size: clamp(46px, 8vw, 86px);
+      line-height: 0.8;
+      letter-spacing: -0.075em;
+      font-weight: 900;
+    }
+
+    .drawer-label { margin-top: 14px; color: #777; font-size: 9px; }
+
+    .drawer-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 1px; background: var(--line); margin-top: 18px; }
+    .drawer-cell { background: #111; padding: 14px; min-height: 86px; }
+    .drawer-cell .drawer-label { margin: 0; }
+    .drawer-cell strong { display: block; margin-top: 10px; font-family: var(--mono); font-size: 12px; font-weight: 500; }
+
+    .drawer-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+
+    .toast {
+      position: fixed;
+      right: 18px;
+      bottom: 18px;
+      z-index: 120;
+      min-width: 280px;
+      max-width: 440px;
+      padding: 13px 14px;
+      border: 1px solid var(--accent);
+      background: #111;
+      color: #dcdcdc;
+      font-family: var(--mono);
+      font-size: 10px;
+      line-height: 1.5;
+      text-transform: uppercase;
+      transform: translateY(160%);
+      transition: transform 180ms ease;
+    }
+    .toast.show { transform: translateY(0); }
+
+    .mobile-trigger { display: none; }
+
+    @media (max-width: 1180px) {
+      .metric-grid { grid-template-columns: repeat(3, 1fr); }
+      .dashboard-grid, .split { grid-template-columns: 1fr; }
+    }
+
+    @media (max-width: 820px) {
+      .shell { grid-template-columns: 1fr; }
+      .rail {
+        position: fixed;
+        left: 0;
+        top: 0;
+        z-index: 60;
+        width: min(280px, 88vw);
+        transform: translateX(-102%);
+        transition: transform 180ms ease;
+      }
+      .rail.open { transform: translateX(0); }
+      .mobile-trigger { display: inline-flex; }
+      .topbar { padding: 0 12px; gap: 10px; }
+      .topbar-title span, .clock { display: none; }
+      .page { padding: 18px 12px 40px; }
+      .page-head { grid-template-columns: 1fr; }
+      .page-head .summary { max-width: 100%; }
+      .metric-grid { grid-template-columns: repeat(2, 1fr); }
+      .queue-strip { grid-template-columns: 120px minmax(0, 1fr); }
+      .queue-strip .queue-stat { display: none; }
+      .toolbar { align-items: stretch; flex-direction: column; }
+      .search { width: 100%; }
+    }
+
+    @media (max-width: 520px) {
+      .metric-grid { grid-template-columns: 1fr; }
+      .metric { min-height: 112px; }
+      .topbar-actions .command-button:not(.mobile-trigger) { display: none; }
+      .drawer-grid { grid-template-columns: 1fr; }
+      .diag-grid { grid-template-columns: 1fr; }
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      *, *::before, *::after { scroll-behavior: auto !important; transition: none !important; }
+    }
+  </style>
+</head>
+<body>
+  <!-- MOCK DATA ONLY. O1 visual prototype; no production API calls. -->
+  <div class="shell">
+    <aside class="rail" id="rail">
+      <div class="brand">
+        <div class="brand-mark">TG<br>Relay</div>
+        <div class="brand-meta">CONTROL SURFACE / O1<br>BUILD: MOCK-2026.08.31</div>
+      </div>
+
+      <div class="rail-status">
+        <div><strong>[●]</strong> CORE ONLINE</div>
+        <div>NODE / VPS-01</div>
+        <div>REGION / US-CENTRAL</div>
+      </div>
+
+      <nav>
+        <button class="nav-button active" data-view="overview"><span class="code">01</span><span>总览 / Overview</span><span class="count">LIVE</span></button>
+        <button class="nav-button" data-view="queue"><span class="code">02</span><span>任务队列 / Queue</span><span class="count" id="navQueueCount">07</span></button>
+        <button class="nav-button" data-view="failures"><span class="code">03</span><span>失败中心 / Failures</span><span class="count" id="navFailCount">02</span></button>
+        <button class="nav-button" data-view="storage"><span class="code">04</span><span>存储 / WebDAV</span><span class="count">OK</span></button>
+        <button class="nav-button" data-view="routing"><span class="code">05</span><span>路由 / Profiles</span><span class="count">04</span></button>
+        <button class="nav-button" data-view="health"><span class="code">06</span><span>健康 / Diagnostics</span><span class="count">100</span></button>
+      </nav>
+
+      <div></div>
+      <div class="rail-footer">
+        MOCK INTERFACE<br>
+        NO REAL TELEGRAM / WEBDAV CALLS<br>
+        <span style="color:var(--accent)">[ O1 / DESIGN PROBE ]</span>
+      </div>
+    </aside>
+
+    <main class="main">
+      <header class="topbar">
+        <div class="topbar-title">
+          <button class="command-button mobile-trigger" id="menuButton">MENU</button>
+          <h1 id="topTitle">Operational Overview</h1>
+          <span id="topContext">TELEGRAM VIDEO FORWARDER // MOCK TELEMETRY</span>
+        </div>
+        <div class="topbar-actions">
+          <span class="clock" id="clock">--:--:-- CST</span>
+          <button class="command-button" id="refreshButton">REFRESH / R</button>
+          <button class="command-button danger" id="pauseButton">PAUSE QUEUE</button>
+        </div>
+      </header>
+
+      <div class="page">
+        <section class="view active" id="view-overview">
+          <div class="page-head">
+            <div>
+              <div class="eyebrow">[ 01 / LIVE OPERATIONS ]</div>
+              <h2>Forwarding<br>Control</h2>
+            </div>
+            <div class="summary">
+              单 VPS / 单进程任务编排状态。下载可并发，Telegram 发布保持顺序；WebDAV 与发布解耦。以下全部为模拟数据。
+            </div>
+          </div>
+
+          <div class="metric-grid">
+            <div class="metric">
+              <div class="metric-label">TODAY / ACCEPTED</div>
+              <div><div class="metric-value">128</div><div class="metric-delta">+14 FROM PREV WINDOW</div></div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">TODAY / SUCCEEDED</div>
+              <div><div class="metric-value">119</div><div class="metric-delta">92.9% COMPLETION</div></div>
+            </div>
+            <div class="metric alert">
+              <div class="metric-label">FAILED / ACTIONABLE</div>
+              <div><div class="metric-value">02</div><div class="metric-delta">REVIEW REQUIRED</div></div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">PUBLISHED</div>
+              <div><div class="metric-value">38.4<small>GB</small></div><div class="metric-delta">TELEGRAM OUTPUT</div></div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">BACKED UP</div>
+              <div><div class="metric-value">34.1<small>GB</small></div><div class="metric-delta">WEBDAV CONFIRMED</div></div>
+            </div>
+            <div class="metric">
+              <div class="metric-label">DEDUP SAVED</div>
+              <div><div class="metric-value">7.8<small>GB</small></div><div class="metric-delta">REUSED MEDIA</div></div>
+            </div>
+          </div>
+
+          <div class="dashboard-grid">
+            <div class="module">
+              <div class="module-head"><strong>24H THROUGHPUT</strong><span>5 MIN ROLLUP / MOCK</span></div>
+              <div class="throughput">
+                <canvas class="chart" id="throughputChart"></canvas>
+                <div class="chart-caption"><span>00:00</span><span>06:00</span><span>12:00</span><span>18:00</span><span>NOW</span></div>
+              </div>
+            </div>
+            <div class="module system-stack">
+              <div class="system-row">
+                <div class="system-row-top"><span><i class="status-dot"></i>CONTAINER</span><span>HEALTHY</span></div>
+                <div class="bar"><i style="width:18%"></i></div>
+                <div class="system-value"><span>CPU 18%</span><span>UP 09H 42M</span></div>
+              </div>
+              <div class="system-row">
+                <div class="system-row-top"><span>MEMORY / RSS</span><span>412 MB</span></div>
+                <div class="bar"><i style="width:36%"></i></div>
+                <div class="system-value"><span>36% OF LIMIT</span><span>STABLE</span></div>
+              </div>
+              <div class="system-row">
+                <div class="system-row-top"><span>DISK / DOWNLOADS</span><span>48.5% FREE</span></div>
+                <div class="bar"><i style="width:51.5%"></i></div>
+                <div class="system-value"><span>50.4 GB USED</span><span>47.5 GB FREE</span></div>
+              </div>
+              <div class="system-row">
+                <div class="system-row-top"><span>SQLITE / SCHEMA</span><span>09</span></div>
+                <div class="bar"><i style="width:100%"></i></div>
+                <div class="system-value"><span>INTEGRITY OK</span><span>CLAIMS 00</span></div>
+              </div>
+            </div>
+          </div>
+
+          <div class="section-gap"></div>
+          <div class="module-head" style="border:1px solid var(--line-strong);"><strong>ACTIVE EXECUTION</strong><span id="activeCount">03 TASKS</span></div>
+          <div id="overviewActive"></div>
+        </section>
+
+        <section class="view" id="view-queue">
+          <div class="page-head">
+            <div>
+              <div class="eyebrow">[ 02 / DURABLE QUEUE ]</div>
+              <h2>Task<br>Matrix</h2>
+            </div>
+            <div class="summary">按 durable job id 展示，队列位置只作视觉顺序。点击 DETAILS 查看 mock revision、备份状态和安全操作。</div>
+          </div>
+
+          <div class="toolbar">
+            <div class="toolbar-group" id="queueFilters">
+              <button class="control active" data-filter="all">ALL</button>
+              <button class="control" data-filter="running">RUNNING</button>
+              <button class="control" data-filter="queued">QUEUED</button>
+              <button class="control" data-filter="failed">FAILED</button>
+              <button class="control" data-filter="succeeded">DONE</button>
+            </div>
+            <input class="search" id="queueSearch" placeholder="SEARCH JOB / TITLE / STAGE" autocomplete="off">
+          </div>
+          <div class="table-wrap">
+            <table>
+              <thead><tr><th>JOB</th><th>STATE</th><th>TITLE / SOURCE</th><th>PROGRESS</th><th>SIZE</th><th>BACKUP</th><th>UPDATED</th><th>ACTION</th></tr></thead>
+              <tbody id="queueBody"></tbody>
+            </table>
+          </div>
+          <div class="empty" id="queueEmpty" hidden>NO MATCHING TASKS // FILTER WINDOW EMPTY</div>
+        </section>
+
+        <section class="view" id="view-failures">
+          <div class="page-head">
+            <div>
+              <div class="eyebrow">[ 03 / FAILURE CENTER ]</div>
+              <h2>Fault<br>Review</h2>
+            </div>
+            <div class="summary">失败按 error code 聚合，不展示 URL、caption 或凭证。Retry 是单次 mock 操作，仅改变本页模拟状态。</div>
+          </div>
+          <div class="table-wrap">
+            <table style="min-width:820px">
+              <thead><tr><th>JOB</th><th>ERROR CODE</th><th>STAGE</th><th>ACTIONABLE SUMMARY</th><th>RETRY</th></tr></thead>
+              <tbody id="failureBody"></tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="view-storage">
+          <div class="page-head">
+            <div>
+              <div class="eyebrow">[ 04 / STORAGE LAYER ]</div>
+              <h2>Cache &<br>WebDAV</h2>
+            </div>
+            <div class="summary">WebDAV 页面只使用缓存健康状态；不会因打开 Dashboard 自动执行远端 probe。危险动作都应在真实 O1 中二次确认。</div>
+          </div>
+          <div class="split">
+            <div class="module">
+              <div class="module-head"><strong>DISK WATERLINE</strong><span>ENFORCE = TRUE</span></div>
+              <div style="padding:22px">
+                <div style="font-size:clamp(54px,9vw,118px);font-weight:900;line-height:.78;letter-spacing:-.08em">47.5<small style="font:10px var(--mono);color:#777;letter-spacing:.05em"> GB FREE</small></div>
+                <div style="height:24px"></div>
+                <div class="system-row-top"><span>USED 50.4 GB</span><span>TOTAL 97.9 GB</span></div>
+                <div class="bar"><i style="width:51.5%"></i></div>
+                <div class="diag-grid" style="margin-top:18px">
+                  <dl class="diag-cell"><dt>Reserved</dt><dd>2.0 GB</dd></dl>
+                  <dl class="diag-cell"><dt>Protected</dt><dd>8.6 GB</dd></dl>
+                  <dl class="diag-cell"><dt>Reclaimable</dt><dd>5.2 GB</dd></dl>
+                  <dl class="diag-cell"><dt>Hard Floor</dt><dd>5 GB / 10%</dd></dl>
+                </div>
+              </div>
+            </div>
+            <div class="module">
+              <div class="module-head"><strong>WEBDAV STATUS</strong><span>LAST CACHED RESULT</span></div>
+              <div class="system-stack">
+                <div class="system-row"><div class="system-row-top"><span><i class="status-dot"></i>PROFILE</span><span>READY</span></div><div class="system-value"><span>PRIMARY ARCHIVE</span><span>BEST EFFORT</span></div></div>
+                <div class="system-row"><div class="system-row-top"><span>LAST VERIFIED</span><span>00:03:18 AGO</span></div><div class="system-value"><span>REMOTE SIZE MATCH</span><span>HTTP 204</span></div></div>
+                <div class="system-row"><div class="system-row-top"><span>PENDING RETRY</span><span>01 FILE</span></div><div class="bar alert"><i style="width:14%"></i></div><div class="system-value"><span>WEBdav_server</span><span>RETRY IN 09M</span></div></div>
+                <div class="system-row"><button class="command-button" data-mock-action="webdav-probe">RUN EXPLICIT PROBE</button></div>
+              </div>
+            </div>
+          </div>
+        </section>
+
+        <section class="view" id="view-routing">
+          <div class="page-head">
+            <div>
+              <div class="eyebrow">[ 05 / ROUTING PROFILES ]</div>
+              <h2>Route<br>Registry</h2>
+            </div>
+            <div class="summary">模拟 DP1/S1：目的地配置档案与来源频道保持独立。真实页面不应显示完整 peer、URL credential 或私密 caption。</div>
+          </div>
+          <div class="table-wrap">
+            <table style="min-width:780px">
+              <thead><tr><th>PROFILE</th><th>TYPE</th><th>STATUS</th><th>POLICY</th><th>COVER</th><th>CAPTION</th><th>LAST VERIFY</th></tr></thead>
+              <tbody>
+                <tr><td class="mono">DP-001 / DEFAULT</td><td>TELEGRAM DEST</td><td><span class="tag ok">VERIFIED</span></td><td class="mono">BEST_EFFORT</td><td class="mono">ON</td><td class="mono">PRESERVE</td><td class="mono">13:52:10</td></tr>
+                <tr><td class="mono">DP-002 / ARCHIVE</td><td>TELEGRAM DEST</td><td><span class="tag ok">VERIFIED</span></td><td class="mono">REQUIRED</td><td class="mono">OFF</td><td class="mono">STRIP</td><td class="mono">12:40:01</td></tr>
+                <tr><td class="mono">SRC-001 / NEWS</td><td>SOURCE CHANNEL</td><td><span class="tag">DISABLED</span></td><td class="mono">NEW_ONLY</td><td class="mono">—</td><td class="mono">PRESERVE</td><td class="mono">11:08:43</td></tr>
+                <tr><td class="mono">SRC-002 / MEDIA</td><td>SOURCE CHANNEL</td><td><span class="tag">DISABLED</span></td><td class="mono">NEW_ONLY</td><td class="mono">—</td><td class="mono">STRIP</td><td class="mono">10:27:55</td></tr>
+              </tbody>
+            </table>
+          </div>
+        </section>
+
+        <section class="view" id="view-health">
+          <div class="page-head">
+            <div>
+              <div class="eyebrow">[ 06 / LOCAL DIAGNOSTICS ]</div>
+              <h2>Health<br>Trace</h2>
+            </div>
+            <div class="summary">Liveness 只看进程、heartbeat、SQLite 与硬磁盘阈值；Telegram/WebDAV 网络抖动不直接把容器判 unhealthy。</div>
+          </div>
+          <div class="split">
+            <div class="module">
+              <div class="module-head"><strong>RECENT EVENTS</strong><span>REDACTED / MOCK</span></div>
+              <div class="log" id="eventLog"></div>
+            </div>
+            <div class="module">
+              <div class="module-head"><strong>DIAGNOSTIC SNAPSHOT</strong><span>NO USER CONTENT</span></div>
+              <div class="diag-grid">
+                <dl class="diag-cell"><dt>APP COMMIT</dt><dd>6f0de1a</dd></dl>
+                <dl class="diag-cell"><dt>SCHEMA</dt><dd>1—9</dd></dl>
+                <dl class="diag-cell"><dt>HEARTBEAT</dt><dd>2.1 SEC</dd></dl>
+                <dl class="diag-cell"><dt>RESTARTS</dt><dd>0</dd></dl>
+                <dl class="diag-cell"><dt>TELEGRAM</dt><dd>CONNECTED</dd></dl>
+                <dl class="diag-cell"><dt>WEBDAV</dt><dd>CACHED OK</dd></dl>
+                <dl class="diag-cell"><dt>DISK ENFORCE</dt><dd>TRUE</dd></dl>
+                <dl class="diag-cell"><dt>PRIVATE URL POLICY</dt><dd>WARN</dd></dl>
+              </div>
+              <div style="padding:18px"><button class="command-button" data-mock-action="copy-diag">COPY REDACTED DIAG</button></div>
+            </div>
+          </div>
+        </section>
+      </div>
+    </main>
+  </div>
+
+  <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true">
+    <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerTitle">
+      <div class="drawer-head">
+        <h3 id="drawerTitle">Task Detail</h3>
+        <button class="drawer-close" id="drawerClose" aria-label="关闭">X</button>
+      </div>
+      <div class="drawer-body" id="drawerBody"></div>
+    </aside>
+  </div>
+
+  <div class="toast" id="toast">MOCK ACTION</div>
+
+  <script>
+    const MOCK = true;
+
+    const tasks = [
+      { id: 4812, state: 'running', stage: 'download', title: '2026-08-31 / source-media-4812.mp4', source: 'telegram', progress: 68, size: '1.42 GB', backup: 'waiting', updated: '14:18:42', speed: '11.8 MB/s', eta: '00:42', revision: 7 },
+      { id: 4811, state: 'running', stage: 'publish', title: 'collection / 8 media items', source: 'collection', progress: 87, size: '2.08 GB', backup: 'succeeded', updated: '14:18:36', speed: '7.2 MB/s', eta: '00:19', revision: 11 },
+      { id: 4810, state: 'running', stage: 'backup', title: 'yt-dlp / public-video-example', source: 'url', progress: 52, size: '840 MB', backup: 'running', updated: '14:18:22', speed: '6.4 MB/s', eta: '01:03', revision: 9 },
+      { id: 4809, state: 'queued', stage: 'queued', title: 'album / 6 media items', source: 'album', progress: 0, size: '—', backup: 'pending', updated: '14:17:56', speed: '—', eta: '—', revision: 2 },
+      { id: 4808, state: 'failed', stage: 'download', title: 'url / extractor request', source: 'url', progress: 31, size: '390 MB', backup: 'disabled', updated: '14:15:07', speed: '0', eta: '—', revision: 6, error: 'network_timeout', summary: '远端读取超时；有限重试已用尽。' },
+      { id: 4807, state: 'failed', stage: 'backup', title: 'telegram / archive candidate', source: 'telegram', progress: 100, size: '1.10 GB', backup: 'failed', updated: '14:12:33', speed: '—', eta: '—', revision: 13, error: 'webdav_server', summary: '远端服务暂不可用；本地缓存仍受保护。' },
+      { id: 4806, state: 'succeeded', stage: 'done', title: 'media / completed transfer', source: 'telegram', progress: 100, size: '612 MB', backup: 'succeeded', updated: '14:08:18', speed: '—', eta: '—', revision: 15 }
+    ];
+
+    const events = [
+      ['14:18:44', 'INFO', 'JOB #4812 download progress checkpoint persisted'],
+      ['14:18:42', 'INFO', 'JOB #4811 publish checkpoint peer=redacted message=committed'],
+      ['14:18:39', 'INFO', 'WEBDAV remote size verified for durable backup file'],
+      ['14:18:33', 'WARN', 'JOB #4808 retry budget exhausted code=network_timeout'],
+      ['14:17:58', 'INFO', 'DISK capacity gate healthy reserved=2.0GB'],
+      ['14:17:50', 'INFO', 'SQLITE integrity=ok schema=[1..9]'],
+      ['14:16:40', 'ERR', 'JOB #4807 backup failed code=webdav_server traceback=<redacted>'],
+      ['14:16:01', 'INFO', 'DEDUP media reuse hit destination_profile=2'],
+      ['14:15:44', 'INFO', 'HEALTH heartbeat ready=true age=2.1s']
+    ];
+
+    let queueFilter = 'all';
+    let queuePaused = false;
+
+    const titles = {
+      overview: ['Operational Overview', 'TELEGRAM VIDEO FORWARDER // MOCK TELEMETRY'],
+      queue: ['Durable Task Matrix', 'SQLITE JOBS // OWNER-SCOPED CONTROLS'],
+      failures: ['Failure Center', 'ERROR CODES // ACTIONABLE RETRY POLICY'],
+      storage: ['Storage & WebDAV', 'DISK WATERLINE // BACKUP LIFECYCLE'],
+      routing: ['Route Registry', 'DESTINATION PROFILES // SOURCE CHANNELS'],
+      health: ['Health & Diagnostics', 'LOCAL HEARTBEAT // REDACTED EVENT TRACE']
+    };
+
+    function stageLabel(task) {
+      const labels = { download: 'DOWNLOADING', publish: 'PUBLISHING', backup: 'BACKUP', queued: 'QUEUED', done: 'DONE' };
+      return labels[task.stage] || task.stage.toUpperCase();
+    }
+
+    function taskTag(task) {
+      if (task.state === 'failed') return '<span class="tag alert">FAILED</span>';
+      if (task.state === 'succeeded') return '<span class="tag ok">DONE</span>';
+      return `<span class="tag">${task.state.toUpperCase()}</span>`;
+    }
+
+    function backupTag(value) {
+      if (value === 'succeeded') return '<span class="tag ok">VERIFIED</span>';
+      if (value === 'failed') return '<span class="tag alert">FAILED</span>';
+      return `<span class="tag">${String(value).toUpperCase()}</span>`;
+    }
+
+    function renderOverviewActive() {
+      const active = tasks.filter(t => t.state === 'running');
+      document.getElementById('activeCount').textContent = `${String(active.length).padStart(2, '0')} TASKS`;
+      document.getElementById('overviewActive').innerHTML = active.map(task => `
+        <div class="queue-strip" data-task-id="${task.id}">
+          <div class="queue-id"><strong>#${task.id}</strong><br>${stageLabel(task)}</div>
+          <div><div class="queue-title">${task.title}</div><div class="queue-sub">${task.source} / REV ${task.revision} / ${task.progress}%</div><div class="bar" style="margin-top:10px;height:5px"><i style="width:${task.progress}%"></i></div></div>
+          <div class="queue-stat"><strong>${task.speed}</strong>RATE</div>
+          <div class="queue-stat"><strong>${task.eta}</strong>ETA</div>
+          <div><button class="row-action" onclick="openTask(${task.id})">DETAILS</button></div>
+        </div>
+      `).join('');
+    }
+
+    function renderQueue() {
+      const search = document.getElementById('queueSearch').value.trim().toLowerCase();
+      const filtered = tasks.filter(task => {
+        const matchesFilter = queueFilter === 'all' || task.state === queueFilter;
+        const haystack = `${task.id} ${task.title} ${task.stage} ${task.source}`.toLowerCase();
+        return matchesFilter && (!search || haystack.includes(search));
+      });
+
+      document.getElementById('queueBody').innerHTML = filtered.map(task => `
+        <tr>
+          <td class="mono">#${task.id}<br>REV ${task.revision}</td>
+          <td>${taskTag(task)}<div class="queue-sub">${stageLabel(task)}</div></td>
+          <td><strong>${task.title}</strong><div class="queue-sub">SOURCE / ${task.source}</div></td>
+          <td class="mono progress-cell">${task.progress}%<div class="bar ${task.state === 'failed' ? 'alert' : ''}"><i style="width:${task.progress}%"></i></div></td>
+          <td class="mono">${task.size}</td>
+          <td>${backupTag(task.backup)}</td>
+          <td class="mono">${task.updated}</td>
+          <td><button class="row-action" onclick="openTask(${task.id})">DETAILS</button></td>
+        </tr>
+      `).join('');
+      document.getElementById('queueEmpty').hidden = filtered.length !== 0;
+      document.getElementById('navQueueCount').textContent = String(tasks.filter(t => t.state !== 'succeeded').length).padStart(2, '0');
+    }
+
+    function renderFailures() {
+      const failed = tasks.filter(t => t.state === 'failed');
+      document.getElementById('navFailCount').textContent = String(failed.length).padStart(2, '0');
+      document.getElementById('failureBody').innerHTML = failed.map(task => `
+        <tr>
+          <td class="mono">#${task.id}</td>
+          <td><span class="tag alert">${task.error}</span></td>
+          <td class="mono">${task.stage.toUpperCase()}</td>
+          <td>${task.summary}</td>
+          <td><button class="row-action" onclick="mockRetry(${task.id})">RETRY</button></td>
+        </tr>
+      `).join('');
+    }
+
+    function renderEvents() {
+      document.getElementById('eventLog').innerHTML = events.map(([time, level, text]) => `
+        <div class="log-line"><span>${time}</span><span class="lvl ${level === 'ERR' ? 'err' : ''}">${level}</span><span>${text}</span></div>
+      `).join('');
+    }
+
+    function openTask(id) {
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+      document.getElementById('drawerTitle').textContent = `Task #${task.id}`;
+      document.getElementById('drawerBody').innerHTML = `
+        <div class="drawer-hero">
+          <div class="drawer-id">${String(task.id).slice(-4)}</div>
+          <div class="drawer-label">DURABLE JOB ID / MOCK</div>
+          <div style="margin-top:16px">${taskTag(task)} ${backupTag(task.backup)}</div>
+        </div>
+        <div class="drawer-grid">
+          <div class="drawer-cell"><div class="drawer-label">STAGE</div><strong>${stageLabel(task)}</strong></div>
+          <div class="drawer-cell"><div class="drawer-label">REVISION</div><strong>${task.revision}</strong></div>
+          <div class="drawer-cell"><div class="drawer-label">PROGRESS</div><strong>${task.progress}%</strong></div>
+          <div class="drawer-cell"><div class="drawer-label">SIZE</div><strong>${task.size}</strong></div>
+          <div class="drawer-cell"><div class="drawer-label">RATE</div><strong>${task.speed}</strong></div>
+          <div class="drawer-cell"><div class="drawer-label">ETA</div><strong>${task.eta}</strong></div>
+        </div>
+        <div style="padding:18px 0;border-bottom:1px solid var(--line-strong)">
+          <div class="drawer-label">TITLE / DISPLAY-SAFE MOCK</div>
+          <div style="margin-top:9px;font-size:14px;font-weight:700">${task.title}</div>
+          ${task.error ? `<div class="drawer-label" style="margin-top:18px">ERROR CODE</div><div style="margin-top:9px;color:var(--accent);font-family:var(--mono);font-size:11px">${task.error}</div>` : ''}
+        </div>
+        <div class="drawer-actions">
+          <button class="command-button" onclick="mockAction('pause-task', ${task.id})">PAUSE</button>
+          <button class="command-button" onclick="mockAction('retry-task', ${task.id})">RETRY</button>
+          <button class="command-button" onclick="mockAction('delete-cache', ${task.id})">DELETE CACHE</button>
+          <button class="command-button danger" onclick="mockAction('cancel-task', ${task.id})">CANCEL</button>
+        </div>
+        <div class="drawer-label" style="margin-top:20px;line-height:1.6">REAL O1 SHOULD REQUIRE OWNER + REVISION + CONFIRMATION TOKEN FOR DESTRUCTIVE ACTIONS.</div>
+      `;
+      const backdrop = document.getElementById('drawerBackdrop');
+      backdrop.classList.add('open');
+      backdrop.setAttribute('aria-hidden', 'false');
+    }
+
+    function closeDrawer() {
+      const backdrop = document.getElementById('drawerBackdrop');
+      backdrop.classList.remove('open');
+      backdrop.setAttribute('aria-hidden', 'true');
+    }
+
+    function showToast(message) {
+      const toast = document.getElementById('toast');
+      toast.textContent = `[ MOCK ] ${message}`;
+      toast.classList.add('show');
+      clearTimeout(showToast._timer);
+      showToast._timer = setTimeout(() => toast.classList.remove('show'), 2200);
+    }
+
+    function mockAction(action, id = '') {
+      showToast(`${action}${id ? ` / JOB #${id}` : ''} — no production side effect`);
+    }
+
+    function mockRetry(id) {
+      const task = tasks.find(t => t.id === id);
+      if (!task) return;
+      task.state = 'queued';
+      task.stage = 'queued';
+      task.progress = 0;
+      task.backup = task.backup === 'failed' ? 'pending' : task.backup;
+      task.updated = new Date().toLocaleTimeString('zh-CN', { hour12: false });
+      renderQueue();
+      renderFailures();
+      renderOverviewActive();
+      showToast(`retry ticket created for JOB #${id}`);
+    }
+
+    function switchView(view) {
+      document.querySelectorAll('.view').forEach(el => el.classList.toggle('active', el.id === `view-${view}`));
+      document.querySelectorAll('.nav-button').forEach(el => el.classList.toggle('active', el.dataset.view === view));
+      const meta = titles[view] || titles.overview;
+      document.getElementById('topTitle').textContent = meta[0];
+      document.getElementById('topContext').textContent = meta[1];
+      document.getElementById('rail').classList.remove('open');
+      window.scrollTo({ top: 0, behavior: 'smooth' });
+    }
+
+    function drawChart() {
+      const canvas = document.getElementById('throughputChart');
+      const rect = canvas.getBoundingClientRect();
+      const dpr = Math.max(1, Math.min(2, window.devicePixelRatio || 1));
+      canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+      canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+      const ctx = canvas.getContext('2d');
+      ctx.scale(dpr, dpr);
+      const w = rect.width;
+      const h = rect.height;
+      ctx.clearRect(0, 0, w, h);
+
+      ctx.strokeStyle = '#242424';
+      ctx.lineWidth = 1;
+      for (let i = 1; i < 5; i++) {
+        const y = (h / 5) * i;
+        ctx.beginPath();
+        ctx.moveTo(0, y + 0.5);
+        ctx.lineTo(w, y + 0.5);
+        ctx.stroke();
+      }
+
+      const data = [22, 34, 29, 41, 48, 44, 52, 63, 59, 68, 71, 66, 78, 82, 77, 91, 84, 88, 94, 86, 90, 96, 89, 93, 99, 92, 104, 97, 110, 102, 108, 118, 111, 116, 123, 119, 127, 121, 129, 136, 128, 134, 141, 138, 145, 151, 147, 154];
+      const max = 170;
+      const step = w / (data.length - 1);
+      ctx.strokeStyle = '#e1e1e1';
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      data.forEach((value, index) => {
+        const x = index * step;
+        const y = h - (value / max) * (h - 14) - 7;
+        if (index === 0) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      });
+      ctx.stroke();
+
+      ctx.strokeStyle = '#ff2a2a';
+      ctx.lineWidth = 2;
+      const lastStart = data.length - 7;
+      ctx.beginPath();
+      for (let index = lastStart; index < data.length; index++) {
+        const x = index * step;
+        const y = h - (data[index] / max) * (h - 14) - 7;
+        if (index === lastStart) ctx.moveTo(x, y); else ctx.lineTo(x, y);
+      }
+      ctx.stroke();
+    }
+
+    function updateClock() {
+      const now = new Date();
+      const value = new Intl.DateTimeFormat('zh-CN', {
+        timeZone: 'Asia/Shanghai',
+        hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false
+      }).format(now);
+      document.getElementById('clock').textContent = `${value} CST`;
+    }
+
+    document.querySelectorAll('.nav-button').forEach(button => button.addEventListener('click', () => switchView(button.dataset.view)));
+    document.getElementById('queueSearch').addEventListener('input', renderQueue);
+    document.getElementById('queueFilters').addEventListener('click', event => {
+      const button = event.target.closest('[data-filter]');
+      if (!button) return;
+      queueFilter = button.dataset.filter;
+      document.querySelectorAll('#queueFilters .control').forEach(el => el.classList.toggle('active', el === button));
+      renderQueue();
+    });
+    document.getElementById('drawerClose').addEventListener('click', closeDrawer);
+    document.getElementById('drawerBackdrop').addEventListener('click', event => { if (event.target.id === 'drawerBackdrop') closeDrawer(); });
+    document.getElementById('menuButton').addEventListener('click', () => document.getElementById('rail').classList.toggle('open'));
+    document.getElementById('refreshButton').addEventListener('click', () => { renderQueue(); renderOverviewActive(); renderFailures(); drawChart(); showToast('telemetry snapshot refreshed'); });
+    document.getElementById('pauseButton').addEventListener('click', event => {
+      queuePaused = !queuePaused;
+      event.currentTarget.textContent = queuePaused ? 'RESUME QUEUE' : 'PAUSE QUEUE';
+      event.currentTarget.classList.toggle('danger', !queuePaused);
+      showToast(queuePaused ? 'queue paused' : 'queue resumed');
+    });
+    document.querySelectorAll('[data-mock-action]').forEach(button => button.addEventListener('click', () => mockAction(button.dataset.mockAction)));
+    document.addEventListener('keydown', event => {
+      if (event.key === 'Escape') closeDrawer();
+      if (event.key.toLowerCase() === 'r' && !['INPUT', 'TEXTAREA'].includes(document.activeElement.tagName)) document.getElementById('refreshButton').click();
+    });
+    window.addEventListener('resize', drawChart);
+
+    renderOverviewActive();
+    renderQueue();
+    renderFailures();
+    renderEvents();
+    updateClock();
+    drawChart();
+    setInterval(updateClock, 1000);
+  </script>
+</body>
+</html>
