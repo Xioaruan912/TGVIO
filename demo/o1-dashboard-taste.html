@@ -3,7 +3,7 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>O1 Dashboard Taste Demo</title>
+  <title>O1 网页控制台演示</title>
   <style>
     :root {
       --bg: #f7f6f3;
@@ -611,51 +611,51 @@
   <div class="app">
     <aside class="sidebar">
       <div class="brand">
-        <div class="brand-name"><span class="brand-mark">TG</span><span>Relay Console</span></div>
-        <div class="brand-sub">O1 read-only dashboard<br>single-node mock workspace</div>
+        <div class="brand-name"><span class="brand-mark">TG</span><span>媒体中转控制台</span></div>
+        <div class="brand-sub">O1 只读控制台<br>单节点模拟工作区</div>
       </div>
 
       <div class="workspace">
-        <div class="workspace-label">Current runtime</div>
-        <div class="workspace-box"><span>Production / VPS-01</span><span class="live-dot" aria-label="healthy"></span></div>
+        <div class="workspace-label">当前运行环境</div>
+        <div class="workspace-box"><span>生产环境 / VPS-01</span><span class="live-dot" aria-label="健康"></span></div>
       </div>
 
       <nav>
-        <button class="nav-item active" data-view="overview"><span class="nav-code">01</span><span>总览</span><span class="nav-count">LIVE</span></button>
+        <button class="nav-item active" data-view="overview"><span class="nav-code">01</span><span>总览</span><span class="nav-count">实时</span></button>
         <button class="nav-item" data-view="queue"><span class="nav-code">02</span><span>任务</span><span class="nav-count" id="navQueue">07</span></button>
         <button class="nav-item" data-view="failures"><span class="nav-code">03</span><span>失败中心</span><span class="nav-count" id="navFail">02</span></button>
-        <button class="nav-item" data-view="storage"><span class="nav-code">04</span><span>存储与备份</span><span class="nav-count">OK</span></button>
+        <button class="nav-item" data-view="storage"><span class="nav-code">04</span><span>存储与备份</span><span class="nav-count">正常</span></button>
         <button class="nav-item" data-view="routing"><span class="nav-code">05</span><span>路由配置</span><span class="nav-count">04</span></button>
         <button class="nav-item" data-view="health"><span class="nav-code">06</span><span>诊断</span><span class="nav-count">100</span></button>
       </nav>
 
       <div class="sidebar-foot">
-        <strong>Mock interface only</strong><br>
-        no Telegram / WebDAV writes<br>
-        repository + service boundary first
+        <strong>仅模拟界面</strong><br>
+        不执行 Telegram / WebDAV 写操作<br>
+        优先遵守仓储层与服务层边界
       </div>
     </aside>
 
     <main class="main">
       <header class="topbar">
         <div class="top-title">
-          <strong id="topTitle">Operational overview</strong>
-          <span id="topMeta">READ ONLY / MOCK TELEMETRY / REFRESH 5S</span>
+          <strong id="topTitle">运行总览</strong>
+          <span id="topMeta">只读 / 模拟遥测 / 每 5 秒刷新</span>
         </div>
         <div class="top-actions">
           <span class="clock" id="clock">--:--:--</span>
           <select class="scenario-select" id="scenarioSelect">
-            <option value="live">Live</option>
-            <option value="loading">Loading</option>
-            <option value="empty">Empty</option>
-            <option value="degraded">Degraded</option>
+            <option value="live">实时</option>
+            <option value="loading">加载中</option>
+            <option value="empty">空数据</option>
+            <option value="degraded">降级</option>
           </select>
-          <button class="button secondary-action" id="freezeButton">Freeze mock</button>
-          <button class="button primary" id="refreshButton">Refresh</button>
+          <button class="button secondary-action" id="freezeButton">暂停模拟</button>
+          <button class="button primary" id="refreshButton">刷新</button>
         </div>
       </header>
 
-      <div class="mobile-tabs" aria-label="Dashboard views">
+      <div class="mobile-tabs" aria-label="控制台页面">
         <button class="mobile-tab active" data-view="overview">总览</button>
         <button class="mobile-tab" data-view="queue">任务</button>
         <button class="mobile-tab" data-view="failures">失败</button>
@@ -669,36 +669,36 @@
         <section class="view active" id="view-overview">
           <div class="page-head reveal">
             <h1>运行中的中转站，一眼看完。</h1>
-            <p>只读展示任务、吞吐、磁盘、备份与健康状态。真实 O1 的修改操作仍必须经过 service command、revision 与审计事件。</p>
+            <p>只读展示任务、吞吐、磁盘、备份与健康状态。真实 O1 的修改操作仍必须经过服务命令、版本校验与审计事件。</p>
           </div>
 
           <div class="metric-grid reveal">
-            <div class="metric"><div class="metric-label">今日接受</div><div><div class="metric-value">128</div><div class="metric-foot">UTC DAILY SCOPE</div></div></div>
-            <div class="metric"><div class="metric-label">今日成功</div><div><div class="metric-value">119</div><div class="metric-foot">92.9% COMPLETION</div></div></div>
-            <div class="metric"><div class="metric-label">需要处理</div><div><div class="metric-value">02</div><div class="metric-foot">ACTIONABLE FAILURES</div></div></div>
-            <div class="metric"><div class="metric-label">Telegram 发布</div><div><div class="metric-value">38.4<small>GB</small></div><div class="metric-foot">PUBLISHED BYTES</div></div></div>
-            <div class="metric"><div class="metric-label">WebDAV 已确认</div><div><div class="metric-value">34.1<small>GB</small></div><div class="metric-foot">REMOTE SIZE VERIFIED</div></div></div>
-            <div class="metric"><div class="metric-label">去重节省</div><div><div class="metric-value">7.8<small>GB</small></div><div class="metric-foot">MEDIA REUSE</div></div></div>
+            <div class="metric"><div class="metric-label">今日接受</div><div><div class="metric-value">128</div><div class="metric-foot">按 UTC 日期统计</div></div></div>
+            <div class="metric"><div class="metric-label">今日成功</div><div><div class="metric-value">119</div><div class="metric-foot">完成率 92.9%</div></div></div>
+            <div class="metric"><div class="metric-label">需要处理</div><div><div class="metric-value">02</div><div class="metric-foot">待处理失败</div></div></div>
+            <div class="metric"><div class="metric-label">Telegram 发布</div><div><div class="metric-value">38.4<small>GB</small></div><div class="metric-foot">已发布字节</div></div></div>
+            <div class="metric"><div class="metric-label">WebDAV 已确认</div><div><div class="metric-value">34.1<small>GB</small></div><div class="metric-foot">远端大小已校验</div></div></div>
+            <div class="metric"><div class="metric-label">去重节省</div><div><div class="metric-value">7.8<small>GB</small></div><div class="metric-foot">媒体复用节省</div></div></div>
           </div>
 
           <div class="overview-grid reveal">
             <div class="panel">
-              <div class="panel-head"><strong>过去 24 小时吞吐</strong><span>5 MIN ROLLUP / MOCK</span></div>
+              <div class="panel-head"><strong>过去 24 小时吞吐</strong><span>5 分钟聚合 / 模拟</span></div>
               <div class="chart-wrap"><canvas id="throughputChart"></canvas></div>
             </div>
             <div class="panel">
-              <div class="panel-head"><strong>Runtime health</strong><span>LOCAL SNAPSHOT</span></div>
+              <div class="panel-head"><strong>运行健康</strong><span>本地快照</span></div>
               <div class="health-list">
-                <div class="health-row"><div><b>Container</b><small>restart=0 / heartbeat 2.1s</small></div><span class="tag ok" id="containerHealth">Healthy</span></div>
-                <div class="health-row"><div><b>SQLite</b><small>schema 1-9 / integrity ok</small></div><span class="tag ok">Ready</span></div>
-                <div class="health-row"><div><b>Telegram</b><small>local client connection state</small></div><span class="tag info" id="telegramHealth">Connected</span></div>
-                <div class="health-row"><div><b>WebDAV</b><small>last cached verification result</small></div><span class="tag ok" id="webdavHealth">Cached ok</span></div>
-                <div class="health-row"><div><b>Disk gate</b><small>47.5 GB free / enforce true</small></div><span class="tag ok">Allowed</span></div>
+                <div class="health-row"><div><b>容器</b><small>重启 0 次 / 心跳 2.1 秒</small></div><span class="tag ok" id="containerHealth">健康</span></div>
+                <div class="health-row"><div><b>SQLite</b><small>架构版本 1-9 / 完整性正常</small></div><span class="tag ok">就绪</span></div>
+                <div class="health-row"><div><b>Telegram</b><small>本地客户端连接状态</small></div><span class="tag info" id="telegramHealth">已连接</span></div>
+                <div class="health-row"><div><b>WebDAV</b><small>最近缓存的验证结果</small></div><span class="tag ok" id="webdavHealth">缓存正常</span></div>
+                <div class="health-row"><div><b>磁盘门禁</b><small>可用 47.5 GB / 强制模式开启</small></div><span class="tag ok">允许</span></div>
               </div>
             </div>
           </div>
 
-          <div class="section-title reveal"><h2>Telegram 命令映射</h2><span>BOT / WEB SAME MENTAL MODEL</span></div>
+          <div class="section-title reveal"><h2>Telegram 命令映射</h2><span>机器人与网页保持一致操作逻辑</span></div>
           <div class="command-map reveal">
             <div class="command-group">
               <h3>任务</h3>
@@ -723,12 +723,12 @@
             </div>
           </div>
 
-          <div class="section-title reveal"><h2>正在执行</h2><span id="activeCount">3 active jobs</span></div>
+          <div class="section-title reveal"><h2>正在执行</h2><span id="activeCount">3 个运行任务</span></div>
           <div class="task-list reveal" id="overviewTasks"></div>
         </section>
 
         <section class="view" id="view-queue">
-          <div class="page-head reveal"><h1>任务状态、进度和归属集中查看。</h1><p>真实版本按 repository/service 查询，不直接操作数据库。任务详情只显示必要元数据，URL、caption 和凭证默认不进入页面。</p></div>
+          <div class="page-head reveal"><h1>任务状态、进度和归属集中查看。</h1><p>真实版本通过仓储层与服务层查询，不直接操作数据库。任务详情只显示必要元数据，URL、说明文字和凭证默认不进入页面。</p></div>
           <div class="toolbar reveal">
             <div class="filters" id="filters">
               <button class="filter active" data-filter="all">全部</button>
@@ -737,85 +737,85 @@
               <button class="filter" data-filter="failed">失败</button>
               <button class="filter" data-filter="succeeded">完成</button>
             </div>
-            <input class="search" id="queueSearch" placeholder="搜索 job / title / stage" autocomplete="off">
+            <input class="search" id="queueSearch" placeholder="搜索任务编号 / 标题 / 阶段" autocomplete="off">
           </div>
           <div class="task-list reveal" id="queueList"></div>
         </section>
 
         <section class="view" id="view-failures">
-          <div class="page-head reveal"><h1>失败原因直接告诉你下一步。</h1><p>失败中心按 error code 聚合。Demo 中 Retry 只改变本地模拟状态；真实 O1 必须经过 owner、revision、confirmation token 和 service command。</p></div>
-          <div class="section-title reveal"><h2>Actionable failures</h2><span id="failureCount">2 items</span></div>
+          <div class="page-head reveal"><h1>失败原因直接告诉你下一步。</h1><p>失败中心按错误码聚合。演示中的“模拟重试”只改变本地模拟状态；真实 O1 必须校验所有者、版本号、确认令牌，并通过服务命令执行。</p></div>
+          <div class="section-title reveal"><h2>待处理失败</h2><span id="failureCount">2 项</span></div>
           <div class="task-list reveal" id="failureList"></div>
         </section>
 
         <section class="view" id="view-storage">
-          <div class="page-head reveal"><h1>本地缓存与远端备份分开看。</h1><p>Dashboard 打开时不自动发起 WebDAV PROPFIND，也不触发磁盘 cleanup。这里只展示 DiskManager snapshot 与最近缓存的远端状态。</p></div>
+          <div class="page-head reveal"><h1>本地缓存与远端备份分开看。</h1><p>控制台打开时不自动发起 WebDAV PROPFIND，也不触发磁盘清理。这里只展示磁盘管理器快照与最近缓存的远端状态。</p></div>
           <div class="two-col reveal">
             <div class="panel">
-              <div class="panel-head"><strong>Local cache</strong><span>DISK_ENFORCE=TRUE</span></div>
+              <div class="panel-head"><strong>本地缓存</strong><span>磁盘强制门禁：开启</span></div>
               <div class="panel-body">
-                <div class="storage-number">47.5<small> GB FREE</small></div>
+                <div class="storage-number">47.5<small> GB 可用</small></div>
                 <div class="storage-bar"><i></i></div>
-                <div class="mono">50.4 GB used of 97.9 GB</div>
+                <div class="mono">已使用 50.4 GB / 总计 97.9 GB</div>
                 <div class="mini-grid">
-                  <dl class="mini-cell"><dt>Reserved</dt><dd>2.0 GB</dd></dl>
-                  <dl class="mini-cell"><dt>Protected</dt><dd>8.6 GB</dd></dl>
-                  <dl class="mini-cell"><dt>Reclaimable</dt><dd>5.2 GB</dd></dl>
-                  <dl class="mini-cell"><dt>Hard floor</dt><dd>5 GB / 10%</dd></dl>
+                  <dl class="mini-cell"><dt>已预留</dt><dd>2.0 GB</dd></dl>
+                  <dl class="mini-cell"><dt>已保护</dt><dd>8.6 GB</dd></dl>
+                  <dl class="mini-cell"><dt>可回收</dt><dd>5.2 GB</dd></dl>
+                  <dl class="mini-cell"><dt>硬下限</dt><dd>5 GB / 10%</dd></dl>
                 </div>
               </div>
             </div>
             <div class="panel">
-              <div class="panel-head"><strong>WebDAV archive</strong><span>CACHED STATE ONLY</span></div>
+              <div class="panel-head"><strong>WebDAV 归档</strong><span>仅缓存状态</span></div>
               <div class="health-list">
-                <div class="health-row"><div><b>Primary archive</b><small>credential-free endpoint label</small></div><span class="tag ok">Ready</span></div>
-                <div class="health-row"><div><b>Last verified</b><small>remote file size matched</small></div><span class="tag info">3m ago</span></div>
-                <div class="health-row"><div><b>Pending retry</b><small>webdav_server / protected cache</small></div><span class="tag warn">1 file</span></div>
-                <div class="health-row"><div><b>Write probe</b><small>never automatic from page load</small></div><button class="button" data-mock="probe">Run mock probe</button></div>
+                <div class="health-row"><div><b>主归档</b><small>不含凭证的地址标签</small></div><span class="tag ok">就绪</span></div>
+                <div class="health-row"><div><b>最近验证</b><small>远端文件大小一致</small></div><span class="tag info">3 分钟前</span></div>
+                <div class="health-row"><div><b>待重试</b><small>远端服务错误 / 缓存受保护</small></div><span class="tag warn">1 个文件</span></div>
+                <div class="health-row"><div><b>写入探针</b><small>页面加载时绝不自动执行</small></div><button class="button" data-mock="probe">运行模拟探针</button></div>
               </div>
             </div>
           </div>
         </section>
 
         <section class="view" id="view-routing">
-          <div class="page-head reveal"><h1>发布目标与自动来源保持独立。</h1><p>DP1 与 S1 配置在同一控制台展示，但保持独立生命周期。真实页面只显示脱敏 peer/profile label，不显示完整凭证或用户内容。</p></div>
+          <div class="page-head reveal"><h1>发布目标与自动来源保持独立。</h1><p>DP1 与 S1 配置在同一控制台展示，但保持独立生命周期。真实页面只显示脱敏后的目标与配置标签，不显示完整凭证或用户内容。</p></div>
           <div class="two-col reveal">
             <div class="panel">
-              <div class="panel-head"><strong>Destination profiles</strong><span>2 VERIFIED</span></div>
+              <div class="panel-head"><strong>发布目标配置</strong><span>已验证 2 个</span></div>
               <div class="health-list">
-                <div class="health-row"><div><b>Default publish</b><small>cover on / caption preserve</small></div><span class="tag ok">Verified</span></div>
-                <div class="health-row"><div><b>Archive publish</b><small>backup required / cover off</small></div><span class="tag ok">Verified</span></div>
+                <div class="health-row"><div><b>默认发布</b><small>封面开启 / 保留说明文字</small></div><span class="tag ok">已验证</span></div>
+                <div class="health-row"><div><b>归档发布</b><small>必须备份 / 关闭封面</small></div><span class="tag ok">已验证</span></div>
               </div>
             </div>
             <div class="panel">
-              <div class="panel-head"><strong>Source profiles</strong><span>NEW MESSAGES ONLY</span></div>
+              <div class="panel-head"><strong>来源配置</strong><span>仅处理新消息</span></div>
               <div class="health-list">
-                <div class="health-row"><div><b>News source</b><small>caption preserve / normal spoiler</small></div><span class="tag neutral">Disabled</span></div>
-                <div class="health-row"><div><b>Media source</b><small>caption strip / normal spoiler</small></div><span class="tag neutral">Disabled</span></div>
+                <div class="health-row"><div><b>新闻来源</b><small>保留说明文字 / 普通剧透模式</small></div><span class="tag neutral">已停用</span></div>
+                <div class="health-row"><div><b>媒体来源</b><small>去除说明文字 / 普通剧透模式</small></div><span class="tag neutral">已停用</span></div>
               </div>
             </div>
           </div>
         </section>
 
         <section class="view" id="view-health">
-          <div class="page-head reveal"><h1>诊断要有用，但不能泄露内容。</h1><p>Liveness 只依赖本地 heartbeat、SQLite 与灾难性磁盘阈值。Telegram/WebDAV 网络波动单独展示，不直接把容器判 unhealthy。</p></div>
+          <div class="page-head reveal"><h1>诊断要有用，但不能泄露内容。</h1><p>存活检查只依赖本地心跳、SQLite 与灾难性磁盘阈值。Telegram / WebDAV 网络波动单独展示，不直接把容器判为不健康。</p></div>
           <div class="two-col reveal">
             <div class="panel">
-              <div class="panel-head"><strong>Recent events</strong><span>REDACTED MOCK</span></div>
+              <div class="panel-head"><strong>最近事件</strong><span>已脱敏模拟</span></div>
               <div class="panel-body event-list" id="eventList"></div>
             </div>
             <div class="panel">
-              <div class="panel-head"><strong>Diagnostic snapshot</strong><span>NO USER CONTENT</span></div>
+              <div class="panel-head"><strong>诊断快照</strong><span>不含用户内容</span></div>
               <div class="panel-body">
                 <div class="mini-grid" style="margin-top:0">
-                  <dl class="mini-cell"><dt>App commit</dt><dd>6f0de1a</dd></dl>
-                  <dl class="mini-cell"><dt>Schema</dt><dd>1-9</dd></dl>
-                  <dl class="mini-cell"><dt>Heartbeat</dt><dd>2.1 sec</dd></dl>
-                  <dl class="mini-cell"><dt>Restarts</dt><dd>0</dd></dl>
-                  <dl class="mini-cell"><dt>Private URL</dt><dd>WARN</dd></dl>
-                  <dl class="mini-cell"><dt>Disk enforce</dt><dd>TRUE</dd></dl>
+                  <dl class="mini-cell"><dt>应用提交</dt><dd>9cf433f</dd></dl>
+                  <dl class="mini-cell"><dt>数据库架构</dt><dd>1-9</dd></dl>
+                  <dl class="mini-cell"><dt>心跳</dt><dd>2.1 秒</dd></dl>
+                  <dl class="mini-cell"><dt>重启次数</dt><dd>0</dd></dl>
+                  <dl class="mini-cell"><dt>私网 URL 策略</dt><dd>警告</dd></dl>
+                  <dl class="mini-cell"><dt>磁盘强制门禁</dt><dd>开启</dd></dl>
                 </div>
-                <button class="button primary" style="margin-top:16px" data-mock="diag">Copy mock diagnostic</button>
+                <button class="button primary" style="margin-top:16px" data-mock="diag">复制模拟诊断</button>
               </div>
             </div>
           </div>
@@ -826,40 +826,40 @@
 
   <div class="drawer-backdrop" id="drawerBackdrop" aria-hidden="true">
     <aside class="drawer" role="dialog" aria-modal="true" aria-labelledby="drawerHeading">
-      <div class="drawer-head"><strong id="drawerHeading">Task detail</strong><button class="drawer-close" id="drawerClose" aria-label="关闭">X</button></div>
+      <div class="drawer-head"><strong id="drawerHeading">任务详情</strong><button class="drawer-close" id="drawerClose" aria-label="关闭">×</button></div>
       <div class="drawer-body" id="drawerBody"></div>
     </aside>
   </div>
 
-  <div class="toast" id="toast">Mock action</div>
+  <div class="toast" id="toast">模拟操作</div>
 
   <script>
     const tasks = [
-      { id: 4812, state: 'running', stage: 'download', title: 'source-media-4812.mp4', source: 'telegram', progress: 68, size: '1.42 GB', backup: 'waiting', updated: '14:18:42', speed: '11.8 MB/s', eta: '00:42', revision: 7 },
-      { id: 4811, state: 'running', stage: 'publish', title: 'collection / 8 media items', source: 'collection', progress: 87, size: '2.08 GB', backup: 'succeeded', updated: '14:18:36', speed: '7.2 MB/s', eta: '00:19', revision: 11 },
-      { id: 4810, state: 'running', stage: 'backup', title: 'public-video-example', source: 'url', progress: 52, size: '840 MB', backup: 'running', updated: '14:18:22', speed: '6.4 MB/s', eta: '01:03', revision: 9 },
-      { id: 4809, state: 'queued', stage: 'queued', title: 'album / 6 media items', source: 'album', progress: 0, size: '--', backup: 'pending', updated: '14:17:56', speed: '--', eta: '--', revision: 2 },
-      { id: 4808, state: 'failed', stage: 'download', title: 'extractor request', source: 'url', progress: 31, size: '390 MB', backup: 'disabled', updated: '14:15:07', speed: '0', eta: '--', revision: 6, error: 'network_timeout', summary: '远端读取超时；有限重试已用尽。' },
-      { id: 4807, state: 'failed', stage: 'backup', title: 'archive candidate', source: 'telegram', progress: 100, size: '1.10 GB', backup: 'failed', updated: '14:12:33', speed: '--', eta: '--', revision: 13, error: 'webdav_server', summary: '远端服务暂不可用；本地缓存仍受保护。' },
-      { id: 4806, state: 'succeeded', stage: 'done', title: 'completed transfer', source: 'telegram', progress: 100, size: '612 MB', backup: 'succeeded', updated: '14:08:18', speed: '--', eta: '--', revision: 15 }
+      { id: 4812, state: 'running', stage: 'download', title: '来源媒体-4812.mp4', source: 'telegram', progress: 68, size: '1.42 GB', backup: 'waiting', updated: '14:18:42', speed: '11.8 MB/s', eta: '00:42', revision: 7 },
+      { id: 4811, state: 'running', stage: 'publish', title: '合集 / 8 个媒体', source: 'collection', progress: 87, size: '2.08 GB', backup: 'succeeded', updated: '14:18:36', speed: '7.2 MB/s', eta: '00:19', revision: 11 },
+      { id: 4810, state: 'running', stage: 'backup', title: '公开示例视频', source: 'url', progress: 52, size: '840 MB', backup: 'running', updated: '14:18:22', speed: '6.4 MB/s', eta: '01:03', revision: 9 },
+      { id: 4809, state: 'queued', stage: 'queued', title: '相册 / 6 个媒体', source: 'album', progress: 0, size: '--', backup: 'pending', updated: '14:17:56', speed: '--', eta: '--', revision: 2 },
+      { id: 4808, state: 'failed', stage: 'download', title: '链接解析请求', source: 'url', progress: 31, size: '390 MB', backup: 'disabled', updated: '14:15:07', speed: '0', eta: '--', revision: 6, error: 'network_timeout', summary: '远端读取超时；有限重试已用尽。' },
+      { id: 4807, state: 'failed', stage: 'backup', title: '归档候选', source: 'telegram', progress: 100, size: '1.10 GB', backup: 'failed', updated: '14:12:33', speed: '--', eta: '--', revision: 13, error: 'webdav_server', summary: '远端服务暂不可用；本地缓存仍受保护。' },
+      { id: 4806, state: 'succeeded', stage: 'done', title: '已完成中转', source: 'telegram', progress: 100, size: '612 MB', backup: 'succeeded', updated: '14:08:18', speed: '--', eta: '--', revision: 15 }
     ];
 
     const events = [
-      ['14:18:44', 'job.progress', 'Job #4812 progress checkpoint persisted'],
-      ['14:18:42', 'publish.commit', 'Job #4811 publish checkpoint committed'],
-      ['14:18:39', 'backup.verify', 'Remote size verified for durable backup file'],
-      ['14:18:33', 'retry.exhausted', 'Job #4808 retry budget exhausted / network_timeout'],
-      ['14:17:58', 'disk.capacity', 'Capacity gate healthy / reservation accounted'],
-      ['14:17:50', 'db.health', 'SQLite integrity ok / schema 1-9']
+      ['14:18:44', 'job.progress', '任务 #4812 的进度检查点已持久化'],
+      ['14:18:42', 'publish.commit', '任务 #4811 的发布检查点已提交'],
+      ['14:18:39', 'backup.verify', '持久备份文件的远端大小已验证'],
+      ['14:18:33', 'retry.exhausted', '任务 #4808 的重试预算已用尽 / network_timeout'],
+      ['14:17:58', 'disk.capacity', '容量门禁健康 / 预留空间已计入'],
+      ['14:17:50', 'db.health', 'SQLite 完整性正常 / 架构版本 1-9']
     ];
 
     const viewTitles = {
-      overview: ['Operational overview', 'READ ONLY / MOCK TELEMETRY / REFRESH 5S'],
-      queue: ['Durable jobs', 'REPOSITORY-BACKED QUERY / MOCK'],
-      failures: ['Failure center', 'ERROR CODE / ACTIONABLE SUMMARY'],
-      storage: ['Storage and backup', 'DISK SNAPSHOT / CACHED WEBDAV'],
-      routing: ['Routing profiles', 'DP1 + S1 / REDACTED LABELS'],
-      health: ['Diagnostics', 'LOCAL HEALTH / REDACTED EVENTS']
+      overview: ['运行总览', '只读 / 模拟遥测 / 每 5 秒刷新'],
+      queue: ['持久任务', '仓储层查询 / 模拟数据'],
+      failures: ['失败中心', '错误码 / 可执行处理建议'],
+      storage: ['存储与备份', '磁盘快照 / WebDAV 缓存状态'],
+      routing: ['路由配置', 'DP1 + S1 / 脱敏标签'],
+      health: ['诊断', '本地健康 / 脱敏事件']
     };
 
     let activeFilter = 'all';
@@ -874,16 +874,16 @@
     function loadingRows(includeHeader = true) {
       const header = includeHeader ? `
         <div class="task-row header">
-          <div>Job</div><div>Task</div><div>State</div><div>Progress</div><div>Backup</div><div>Action</div>
+          <div>任务号</div><div>任务</div><div>状态</div><div>进度</div><div>备份</div><div>操作</div>
         </div>` : '';
       const rows = Array.from({ length: 4 }, (_, index) => `
         <div class="task-row">
           <div class="skeleton" style="height:12px;width:44px">#0000</div>
-          <div><div class="skeleton" style="height:12px;width:${58 + index * 7}%">loading</div><div class="skeleton" style="height:9px;width:42%;margin-top:7px">meta</div></div>
-          <div class="skeleton" style="height:22px;width:64px">state</div>
-          <div><div class="skeleton" style="height:5px;width:100%">progress</div><div class="skeleton" style="height:9px;width:48%;margin-top:7px">size</div></div>
-          <div class="skeleton" style="height:22px;width:66px">backup</div>
-          <div class="skeleton" style="height:11px;width:48px">action</div>
+          <div><div class="skeleton" style="height:12px;width:${58 + index * 7}%">加载中</div><div class="skeleton" style="height:9px;width:42%;margin-top:7px">元数据</div></div>
+          <div class="skeleton" style="height:22px;width:64px">状态</div>
+          <div><div class="skeleton" style="height:5px;width:100%">进度</div><div class="skeleton" style="height:9px;width:48%;margin-top:7px">大小</div></div>
+          <div class="skeleton" style="height:22px;width:66px">备份</div>
+          <div class="skeleton" style="height:11px;width:48px">操作</div>
         </div>`).join('');
       return header + rows;
     }
@@ -892,43 +892,81 @@
       return `<div class="empty-state"><strong>${title}</strong><span>${text}</span></div>`;
     }
 
+    function sourceLabel(value) {
+      return ({
+        telegram: 'Telegram',
+        collection: '合集',
+        url: '链接',
+        album: '相册'
+      })[value] || '未知来源';
+    }
+
+    function stageLabel(value) {
+      return ({
+        download: '下载',
+        publish: '发布',
+        backup: '备份',
+        queued: '等待',
+        done: '完成'
+      })[value] || '未知阶段';
+    }
+
+    function backupText(value) {
+      return ({
+        succeeded: '已验证',
+        failed: '失败',
+        running: '运行中',
+        waiting: '等待',
+        pending: '等待',
+        disabled: '关闭'
+      })[value] || '未知';
+    }
+
+    function scenarioLabel(value) {
+      return ({ live: '实时', loading: '加载中', empty: '空数据', degraded: '降级' })[value] || '未知';
+    }
+
+    function mockActionLabel(value) {
+      return ({ probe: 'WebDAV 写入探针', diag: '诊断导出' })[value] || '演示动作';
+    }
+
     function stateTag(task) {
-      if (task.state === 'failed') return '<span class="tag fail">Failed</span>';
-      if (task.state === 'running') return '<span class="tag info">Running</span>';
-      if (task.state === 'queued') return '<span class="tag neutral">Queued</span>';
-      return '<span class="tag ok">Done</span>';
+      if (task.state === 'failed') return '<span class="tag fail">失败</span>';
+      if (task.state === 'running') return '<span class="tag info">运行中</span>';
+      if (task.state === 'queued') return '<span class="tag neutral">等待</span>';
+      return '<span class="tag ok">完成</span>';
     }
 
     function backupTag(value) {
-      if (value === 'succeeded') return '<span class="tag ok">Verified</span>';
-      if (value === 'failed') return '<span class="tag fail">Failed</span>';
-      if (value === 'running') return '<span class="tag info">Running</span>';
-      if (value === 'waiting' || value === 'pending') return '<span class="tag warn">Waiting</span>';
-      return '<span class="tag neutral">Off</span>';
+      if (value === 'succeeded') return '<span class="tag ok">已验证</span>';
+      if (value === 'failed') return '<span class="tag fail">失败</span>';
+      if (value === 'running') return '<span class="tag info">运行中</span>';
+      if (value === 'waiting' || value === 'pending') return '<span class="tag warn">等待</span>';
+      return '<span class="tag neutral">关闭</span>';
     }
 
     function taskRows(list, includeHeader = true) {
       if (scenario === 'loading') return loadingRows(includeHeader);
       const header = includeHeader ? `
         <div class="task-row header">
-          <div>Job</div><div>Task</div><div>State</div><div>Progress</div><div>Backup</div><div>Action</div>
+          <div>任务号</div><div>任务</div><div>状态</div><div>进度</div><div>备份</div><div>操作</div>
         </div>` : '';
       const body = list.map(task => `
         <div class="task-row">
           <div class="task-id">#${task.id}</div>
-          <div class="task-title"><strong>${task.title}</strong><small>${task.source} / ${task.stage} / rev ${task.revision}</small></div>
+          <div class="task-title"><strong>${task.title}</strong><small>${sourceLabel(task.source)} / ${stageLabel(task.stage)} / 版本 ${task.revision}</small></div>
           <div>${stateTag(task)}</div>
           <div class="progress"><div class="progress-track"><i style="width:${task.progress}%"></i></div><small>${task.progress}% / ${task.size}</small></div>
           <div>${backupTag(task.backup)}</div>
-          <div><button class="text-button" onclick="openTask(${task.id})">Details</button></div>
+          <div><button class="text-button" onclick="openTask(${task.id})">详情</button></div>
         </div>`).join('');
-      return header + (body || emptyRows('没有匹配任务', '切换筛选条件或回到 Live 场景查看模拟队列。'));
+      return header + (body || emptyRows('没有匹配任务', '切换筛选条件或回到“实时”场景查看模拟队列。'));
     }
 
     function renderOverview() {
       const active = scenarioTasks().filter(task => task.state === 'running');
       document.getElementById('overviewTasks').innerHTML = taskRows(active);
-      document.getElementById('activeCount').textContent = `${active.length} active jobs`;
+      document.getElementById('activeCount').textContent = `${active.length} 个运行任务`;
     }
 
     function renderQueue() {
@@ -945,19 +983,19 @@
 
     function renderFailures() {
       const list = scenarioTasks().filter(task => task.state === 'failed');
-      document.getElementById('failureCount').textContent = `${list.length} items`;
+      document.getElementById('failureCount').textContent = `${list.length} 项`;
       document.getElementById('navFail').textContent = String(list.length).padStart(2, '0');
       document.getElementById('failureList').innerHTML = scenario === 'loading' ? loadingRows() : list.length ? `
-        <div class="task-row header"><div>Job</div><div>Failure</div><div>Stage</div><div>Code</div><div>Cache</div><div>Action</div></div>
+        <div class="task-row header"><div>任务号</div><div>失败原因</div><div>阶段</div><div>错误码</div><div>缓存</div><div>操作</div></div>
         ${list.map(task => `
           <div class="task-row">
             <div class="task-id">#${task.id}</div>
             <div class="task-title"><strong>${task.summary}</strong><small>${task.title}</small></div>
-            <div><span class="tag fail">${task.stage}</span></div>
+            <div><span class="tag fail">${stageLabel(task.stage)}</span></div>
             <div class="mono">${task.error}</div>
-            <div>${task.backup === 'failed' ? '<span class="tag warn">Protected</span>' : '<span class="tag neutral">N/A</span>'}</div>
-            <div><button class="text-button" onclick="mockRetry(${task.id})">Retry mock</button></div>
-          </div>`).join('')}` : emptyRows('没有需要处理的失败', '当前场景下没有 actionable failure。');
+            <div>${task.backup === 'failed' ? '<span class="tag warn">已保护</span>' : '<span class="tag neutral">无</span>'}</div>
+            <div><button class="text-button" onclick="mockRetry(${task.id})">模拟重试</button></div>
+          </div>`).join('')}` : emptyRows('没有需要处理的失败', '当前场景下没有待处理失败。');
     }
 
     function applyScenario(next) {
@@ -970,32 +1008,32 @@
       banner.classList.remove('show');
       banner.textContent = '';
       container.className = 'tag ok';
-      container.textContent = 'Healthy';
+      container.textContent = '健康';
       telegram.className = 'tag info';
-      telegram.textContent = 'Connected';
+      telegram.textContent = '已连接';
       webdav.className = 'tag ok';
-      webdav.textContent = 'Cached ok';
+      webdav.textContent = '缓存正常';
 
       if (scenario === 'loading') {
-        banner.textContent = 'Loading mock: 模拟只读 API 首次加载，表格使用与最终内容同形状的 skeleton。';
+        banner.textContent = '加载中场景：模拟只读接口首次加载，表格使用与最终内容同形状的骨架占位。';
         banner.classList.add('show');
       } else if (scenario === 'empty') {
-        banner.textContent = 'Empty mock: 模拟新实例或清空筛选后的空态，不使用无意义 spinner。';
+        banner.textContent = '空数据场景：模拟新实例或清空筛选后的空态，不使用无意义的旋转加载图标。';
         banner.classList.add('show');
       } else if (scenario === 'degraded') {
-        banner.textContent = 'Degraded mock: Telegram 连接异常、WebDAV 缓存状态过期；本地 liveness 仍保持 healthy。';
+        banner.textContent = '降级场景：Telegram 连接异常、WebDAV 缓存状态过期；本地存活检查仍保持健康。';
         banner.classList.add('show');
         telegram.className = 'tag fail';
-        telegram.textContent = 'Disconnected';
+        telegram.textContent = '未连接';
         webdav.className = 'tag warn';
-        webdav.textContent = 'Stale';
+        webdav.textContent = '已过期';
       }
 
       renderOverview();
       renderQueue();
       renderFailures();
       drawChart();
-      showToast(`Mock scenario: ${scenario}`);
+      showToast(`模拟场景：${scenarioLabel(scenario)}`);
     }
 
     function renderEvents() {
@@ -1006,23 +1044,23 @@
     function openTask(id) {
       const task = tasks.find(item => item.id === id);
       if (!task) return;
-      document.getElementById('drawerHeading').textContent = `Job #${task.id}`;
+      document.getElementById('drawerHeading').textContent = `任务 #${task.id}`;
       document.getElementById('drawerBody').innerHTML = `
-        <div class="drawer-kicker">Durable task / mock record</div>
+        <div class="drawer-kicker">持久任务 / 模拟记录</div>
         <div class="drawer-title">${task.title}</div>
         <div style="margin-top:12px">${stateTag(task)}</div>
         <div class="drawer-grid">
-          <div class="drawer-cell"><span>Stage</span><strong>${task.stage}</strong></div>
-          <div class="drawer-cell"><span>Revision</span><strong>${task.revision}</strong></div>
-          <div class="drawer-cell"><span>Progress</span><strong>${task.progress}%</strong></div>
-          <div class="drawer-cell"><span>Size</span><strong>${task.size}</strong></div>
-          <div class="drawer-cell"><span>Rate</span><strong>${task.speed}</strong></div>
-          <div class="drawer-cell"><span>ETA</span><strong>${task.eta}</strong></div>
-          <div class="drawer-cell"><span>Backup</span><strong>${task.backup}</strong></div>
-          <div class="drawer-cell"><span>Updated</span><strong>${task.updated}</strong></div>
+          <div class="drawer-cell"><span>阶段</span><strong>${stageLabel(task.stage)}</strong></div>
+          <div class="drawer-cell"><span>版本</span><strong>${task.revision}</strong></div>
+          <div class="drawer-cell"><span>进度</span><strong>${task.progress}%</strong></div>
+          <div class="drawer-cell"><span>大小</span><strong>${task.size}</strong></div>
+          <div class="drawer-cell"><span>速率</span><strong>${task.speed}</strong></div>
+          <div class="drawer-cell"><span>预计剩余</span><strong>${task.eta}</strong></div>
+          <div class="drawer-cell"><span>备份</span><strong>${backupText(task.backup)}</strong></div>
+          <div class="drawer-cell"><span>更新时间</span><strong>${task.updated}</strong></div>
         </div>
         ${task.error ? `<div class="drawer-note"><strong style="display:block;color:var(--red-text);margin-bottom:6px">${task.error}</strong>${task.summary}</div>` : ''}
-        <div class="drawer-note">真实 O1 的删除、重试、取消等 mutation 不应直接写数据库；需要 owner、revision、confirmation token，并通过现有 service command 写审计事件。</div>`;
+        <div class="drawer-note">真实 O1 的删除、重试、取消等写操作不应直接写数据库；需要校验所有者、版本号和确认令牌，并通过现有服务命令写入审计事件。</div>`;
       const backdrop = document.getElementById('drawerBackdrop');
       backdrop.classList.add('open');
       backdrop.setAttribute('aria-hidden', 'false');
@@ -1050,11 +1088,11 @@
       task.progress = 0;
       task.error = '';
       task.summary = '';
-      task.updated = 'now';
+      task.updated = '现在';
       renderQueue();
       renderFailures();
       renderOverview();
-      showToast(`Job #${id} moved to mock queue`);
+      showToast(`任务 #${id} 已移入模拟队列`);
     }
 
     function switchView(name) {
@@ -1116,7 +1154,7 @@
       const running = tasks.filter(task => task.state === 'running');
       running.forEach(task => {
         task.progress = Math.min(99, task.progress + Math.floor(Math.random() * 3));
-        task.updated = 'now';
+        task.updated = '现在';
       });
       renderOverview();
       renderQueue();
@@ -1135,9 +1173,9 @@
     document.getElementById('scenarioSelect').addEventListener('change', event => applyScenario(event.currentTarget.value));
     document.getElementById('drawerClose').addEventListener('click', closeDrawer);
     document.getElementById('drawerBackdrop').addEventListener('click', event => { if (event.target.id === 'drawerBackdrop') closeDrawer(); });
-    document.getElementById('refreshButton').addEventListener('click', () => { renderOverview(); renderQueue(); renderFailures(); drawChart(); showToast('Mock telemetry refreshed'); });
-    document.getElementById('freezeButton').addEventListener('click', event => { frozen = !frozen; event.currentTarget.textContent = frozen ? 'Resume mock' : 'Freeze mock'; showToast(frozen ? 'Mock updates frozen' : 'Mock updates resumed'); });
-    document.querySelectorAll('[data-mock]').forEach(button => button.addEventListener('click', () => showToast(`Mock only: ${button.dataset.mock}`)));
+    document.getElementById('refreshButton').addEventListener('click', () => { renderOverview(); renderQueue(); renderFailures(); drawChart(); showToast('模拟遥测已刷新'); });
+    document.getElementById('freezeButton').addEventListener('click', event => { frozen = !frozen; event.currentTarget.textContent = frozen ? '继续模拟' : '暂停模拟'; showToast(frozen ? '模拟更新已暂停' : '模拟更新已继续'); });
+    document.querySelectorAll('[data-mock]').forEach(button => button.addEventListener('click', () => showToast(`仅模拟操作：${mockActionLabel(button.dataset.mock)}`)));
 
     const observer = new IntersectionObserver(entries => entries.forEach(entry => { if (entry.isIntersecting) entry.target.classList.add('visible'); }), { threshold: .08 });
     document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
