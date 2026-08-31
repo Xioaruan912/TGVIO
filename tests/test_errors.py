@@ -68,6 +68,19 @@ class ErrorClassifierTests(unittest.TestCase):
 
 
 class RetryPolicyTests(unittest.TestCase):
+    def test_stage_budgets_are_isolated(self) -> None:
+        policy = RetryPolicy(
+            budgets={"download": 1, "publish": 2, "backup": 4},
+            jitter=lambda: 0.0,
+        )
+        error = classify_error(ConnectionError(), stage="download")
+        self.assertTrue(policy.decide(error, stage="download", attempt=1, now=0).should_retry)
+        self.assertFalse(policy.decide(error, stage="download", attempt=2, now=0).should_retry)
+        self.assertTrue(policy.decide(error, stage="publish", attempt=2, now=0).should_retry)
+        self.assertFalse(policy.decide(error, stage="publish", attempt=3, now=0).should_retry)
+        self.assertTrue(policy.decide(error, stage="backup", attempt=4, now=0).should_retry)
+        self.assertFalse(policy.decide(error, stage="backup", attempt=5, now=0).should_retry)
+
     def test_exponential_backoff_jitter_and_budget(self) -> None:
         policy = RetryPolicy(budgets={"download": 2}, jitter=lambda: 0.25)
         error = classify_error(TimeoutError(), stage="download")

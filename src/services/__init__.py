@@ -7,6 +7,7 @@ from .proxy_manager import ProxyManager
 from .shadow_state import ShadowState
 from .recovery import RecoveryAction, recover_jobs
 from .operations import OperationStore, PendingOperation
+from .network import NetworkCoordinator, NetworkSwitchResult
 
 __all__ = [
     "BackupManager",
@@ -21,4 +22,6 @@ __all__ = [
     "RetryTicket",
     "OperationStore",
     "PendingOperation",
+    "NetworkCoordinator",
+    "NetworkSwitchResult",
 ]

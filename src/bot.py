@@ -58,6 +58,7 @@ from .services import (
     BackupManager,
     InteractionSessions,
     JobQueue,
+    NetworkCoordinator,
     OperationStore,
     ProxyManager,
     ShadowState,
@@ -211,6 +212,12 @@ class _Pipeline:
         self.webdav_count: dict = self._load_webdav_count()
         self._webdav_count_lock = asyncio.Lock()
         self.proxy_cfg: dict = self._load_proxy_cfg()
+        self.network = NetworkCoordinator(
+            proxies=lambda: self.proxy_cfg.get("proxies", []),
+            current=lambda: int(self.proxy_cfg.get("current", -1)),
+            auto_enabled=lambda: bool(self.proxy_cfg.get("auto")),
+            apply_proxy=self._apply_proxy_uncoordinated,
+        )
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -372,8 +379,9 @@ class _Pipeline:
             current_label=self._proxy_label(self.proxy_cfg.get("current", -1)),
         )
 
-    async def _apply_proxy(self, idx: int) -> bool:
+    async def _apply_proxy_uncoordinated(self, idx: int) -> bool:
         """应用代理（idx=-1 直连）：改 client._proxy + 重建连接，session 保留免重登。"""
+        previous_proxy = getattr(self.client, "_proxy", None)
         try:
             proxy = None
             if idx >= 0:
@@ -384,19 +392,32 @@ class _Pipeline:
                 if proxy is None:
                     logger.warning("Proxy #%s URL 无效，无法应用", idx)
                     return False
-            self.proxy_cfg["current"] = idx
-            self._save_proxy_cfg()
             self.client._proxy = proxy
             try:
                 await self.client.disconnect()
             except Exception:
                 pass
             await self.client.connect()
+            self.proxy_cfg["current"] = idx
+            self._save_proxy_cfg()
             logger.info("Applied proxy #%s (%s)", idx, self._proxy_label(idx))
             return True
         except Exception as exc:
+            self.client._proxy = previous_proxy
+            try:
+                checker = getattr(self.client, "is_connected", None)
+                connected = bool(checker()) if callable(checker) else False
+                if not connected:
+                    await self.client.connect()
+            except Exception:
+                pass
             logger.warning("Proxy switch to #%s failed: %s", idx, exc)
             return False
+
+    async def _apply_proxy(self, idx: int) -> bool:
+        """Serialized public proxy apply path."""
+        result = await self.network.apply(idx)
+        return result.switched
 
     async def apply_proxy_on_start(self) -> None:
         """启动时恢复上次的代理（若配置了 current >= 0）。"""
@@ -413,24 +434,15 @@ class _Pipeline:
             self._save_proxy_cfg()
 
     async def _try_switch_proxy(self, seq: int) -> bool:
-        """下载网络失败时自动切换代理：直连失败→依次试各代理；代理失败→下一个；全败恢复直连。"""
-        proxies = self.proxy_cfg.get("proxies", [])
-        if not proxies:
-            return False
-        if not self.proxy_cfg.get("auto"):
-            return False
-        current = self.proxy_cfg.get("current", -1)
-        order = list(range(len(proxies)))
-        if current >= 0:
-            # 从下一个开始，绕过当前失败的
-            order = [i for i in order if i != current]
-        for idx in order:
-            if await self._apply_proxy(idx):
-                logger.info("Job #%s 网络失败，已自动切换代理 #%s", seq, idx)
-                return True
-        logger.info("Job #%s 所有代理均失败，恢复直连", seq)
-        await self._apply_proxy(-1)
-        return False
+        """Compatibility wrapper; new workers pass the observed generation."""
+        result = await self.network.auto_switch(
+            observed_generation=self.network.generation,
+        )
+        if result.switched:
+            logger.info("Job #%s 网络失败，已自动切换代理 #%s", seq, result.index)
+        elif result.reevaluate:
+            logger.info("Job #%s 网络配置已由其它任务更新，直接在新连接重试", seq)
+        return result.switched
 
     @staticmethod
     def _test_http_proxy(url: str) -> bool:
@@ -996,6 +1008,7 @@ class _Pipeline:
                             self.job_queue.shadow_transition(job.seq, "cancelled", "cancelled")
                             self._finish_seq(job.seq)
                         break
+                    network_generation = self.network.generation
                     task = asyncio.get_running_loop().create_task(
                         self.downloader.run(job)
                     )
@@ -1027,8 +1040,24 @@ class _Pipeline:
                             )
                             if decision.should_retry:
                                 switched = False
+                                reevaluate = False
                                 if error.code in {ErrorCode.NETWORK_TIMEOUT, ErrorCode.NETWORK_UNREACHABLE}:
-                                    switched = await self._try_switch_proxy(job.seq)
+                                    switch = await self.network.auto_switch(
+                                        observed_generation=network_generation,
+                                    )
+                                    switched = switch.switched
+                                    reevaluate = switch.reevaluate
+                                    if switched:
+                                        logger.info(
+                                            "Job #%s 网络失败，已自动切换代理 #%s",
+                                            job.seq,
+                                            switch.index,
+                                        )
+                                    elif reevaluate:
+                                        logger.info(
+                                            "Job #%s 检测到网络代际更新，直接在新连接重试",
+                                            job.seq,
+                                        )
                                 retries = decision.attempt
                                 if getattr(self, "repository", None) is not None:
                                     await self.job_queue.record_retry(
@@ -1046,7 +1075,9 @@ class _Pipeline:
                                     retries,
                                     decision.budget,
                                     float(decision.delay_seconds),
-                                    "（已切换代理）" if switched else "",
+                                    "（已切换代理）"
+                                    if switched
+                                    else ("（网络已更新）" if reevaluate else ""),
                                 )
                                 await self._wait_retry(job.seq, float(decision.delay_seconds))
                                 continue
@@ -1090,6 +1121,11 @@ class _Pipeline:
                         now=time.time(),
                     )
                     if decision.should_retry:
+                        switch = None
+                        if timeout_stage != "postprocessing":
+                            switch = await self.network.auto_switch(
+                                observed_generation=network_generation,
+                            )
                         retries = decision.attempt
                         if getattr(self, "repository", None) is not None:
                             await self.job_queue.record_retry(
@@ -1101,12 +1137,19 @@ class _Pipeline:
                                 next_retry_at=float(decision.next_retry_at),
                             )
                         logger.warning(
-                            "Job #%s %s timeout, auto-retry %d/%d in %.1fs",
+                            "Job #%s %s timeout, auto-retry %d/%d in %.1fs%s",
                             job.seq,
                             timeout_label,
                             retries,
                             decision.budget,
                             float(decision.delay_seconds),
+                            "（已切换代理）"
+                            if switch is not None and switch.switched
+                            else (
+                                "（网络已更新）"
+                                if switch is not None and switch.reevaluate
+                                else ""
+                            ),
                         )
                         await self._wait_retry(job.seq, float(decision.delay_seconds))
                         continue

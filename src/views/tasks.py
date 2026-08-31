@@ -88,7 +88,7 @@ ERROR_ACTIONS = {
     "disk_low": "清理缓存或扩容",
     "cache_missing": "重新下载源文件",
     "media_invalid": "检查媒体或执行兼容性处理",
-    "publish_partial": "检查已发布消息后继续或撤销",
+    "publish_partial": "检查已发布消息；需要时先撤销再重新处理",
     "webdav_auth": "检查 WebDAV 账号密码",
     "webdav_not_found": "检查 WebDAV 远端路径",
     "webdav_locked": "等待文件解锁后重试",

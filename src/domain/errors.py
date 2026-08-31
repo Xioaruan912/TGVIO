@@ -98,7 +98,7 @@ def classify_error(exc: BaseException, *, stage: str = "unknown") -> ErrorInfo:
     if stage == "download" and any(token in lowered for token in ("unsupported url", "no suitable extractor", "unsupported site")):
         return ErrorInfo(ErrorCode.URL_UNSUPPORTED, "暂不支持此链接", False, "更新 yt-dlp 或更换来源")
     if name == "PublishPartialError" or stage == "publish" and "partial" in lowered:
-        return ErrorInfo(ErrorCode.PUBLISH_PARTIAL, "部分媒体已发布", False, "检查已发布消息后继续或撤销")
+        return ErrorInfo(ErrorCode.PUBLISH_PARTIAL, "部分媒体已发布", False, "检查已发布消息；需要时先撤销再重新处理")
     if stage in {"download", "publish"} and any(token in lowered for token in ("invalid media", "failed to parse", "ffmpeg")):
         return ErrorInfo(ErrorCode.MEDIA_INVALID, "媒体文件无效或不兼容", False, "检查文件或执行兼容性处理")
     return ErrorInfo(ErrorCode.UNKNOWN, "处理时发生未知错误", True, "有限重试；持续失败请导出诊断")

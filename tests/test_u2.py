@@ -197,6 +197,33 @@ class U2ViewTests(unittest.TestCase):
         all_data = callbacks(queue_buttons) + callbacks(detail_buttons) + callbacks(failure_buttons) + callbacks(batch_buttons) + callbacks(confirm_buttons)
         self.assertTrue(all(len(data) <= 64 for data in all_data))
 
+    def test_publish_partial_only_offers_safe_destructive_action(self) -> None:
+        detail_text, detail_buttons = job_detail_view(
+            JobDetailViewState(
+                job_id=77,
+                legacy_seq=177,
+                revision=9,
+                kind="album",
+                state="failed",
+                source_kind="telegram",
+                item_count=8,
+                item_bytes=4096,
+                bytes_done=4096,
+                bytes_total=4096,
+                retry_count=0,
+                cache_exists=True,
+                published_count=3,
+                backup_state="",
+                error_message="部分媒体已发布",
+                can_retry=False,
+                error_code="publish_partial",
+            )
+        )
+        data = callbacks(detail_buttons)
+        self.assertIn("检查已发布消息", detail_text)
+        self.assertFalse(any(item.startswith(b"j:r:") for item in data))
+        self.assertIn(b"j:u:77:9", data)
+
 
 class U2HandlerIntegrationTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
