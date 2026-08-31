@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `5ae529c`（F4：只读 stats/health/diagnostics、runtime heartbeat、Docker liveness/readiness、幂等 daily stats 与跨 UTC 日 metric scope）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 10:32 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **172 tests 全通过**；`scripts/healthcheck.py` 与 `scripts/readiness.py` 均通过，镜像 `APP_COMMIT=5ae529c`，生产 `DISK_ENFORCE=true` 保持不变。F4 migration 5 新增统计/去重表；migration 6 将统计去重键扩展为 `(scope_key, metric, day_utc)`，不改变现有 job/backup schema 语义。
+- 当前分支：`main`。当前生产运行代码基线为 `7a147eb`（B1-A/B：显式只读 WebDAV PROPFIND/quota probe + 二次确认 write/verify/delete probe；F4 stats/health 保持纯本地只读）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 11:04 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **177 tests 全通过**；镜像 `APP_COMMIT=7a147eb`，生产 `DISK_ENFORCE=true` 保持不变。B1-A/B 无 schema migration。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1490,6 +1490,11 @@ fix(webdav): preserve cache across interrupted verify
 
 R0、R1、R2、R3、U1、U2、F1、F2、F3、F4 已完成。当前下一阶段是 **B1：WebDAV 生命周期抽取、连接/容量/策略 UI 与 attempt 管理增强**；不要同时夹带 D1/M1/多目的地/Web Dashboard。
 
+- [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
+- [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
+- [ ] B1-C：attempt/file SQL 分页详情、单文件重试/失败文件全部重试/本地缓存补传统一收进 `BackupManager`；不再从 UI 直接依赖 legacy WebDAV log dict 作为状态真相。
+- [ ] B1-D：`best_effort|required` backup policy、required 风险确认与主任务最终态协调；远端逐文件删除二次确认与 startup autoretry/recovery 总验收。
+
 - [x] F2-A：集中 domain error taxonomy、安全摘要/脱敏 traceback frame、download retry budget、指数退避+jitter、FloodWait 精确等待、可立即取消的 backoff、`error_code/error_message/retry_count/next_retry_at` 持久化、失败中心错误码/动作提示。（2026-08-31，`31a8335`）
 - [x] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试；已有 refs 不提供普通重试并可进入撤销人工流程。（2026-08-31，`d1025cc`）
 - [x] F2-C：WebDAV 初传/自动补传/手动重试/缓存补传统一接入 classifier + 独立 backup budget，持久化 attempt/file 错误与 attempt retry/next time，并保留远端大小幂等确认。（2026-08-31，`f16b663`；生产 143 tests、schema4/integrity、restart=0、源码哈希均已补验通过）
@@ -1498,7 +1503,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4 已完成。当前下一阶段�
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理进入 B1：按第 16.5 节先把连接测试、容量读取、备份策略与 attempt/detail UI 统一收进 `BackupManager`；必须保留现有 verified PUT、PROPFIND 远端大小确认、423/延迟落盘、响应超时但远端完整即成功等可靠性语义，不重写协议层。
+下一位代理继续 B1-C：从 repository `backup_attempts/backup_files` 做 SQL attempt/detail page model，先让 UI 读 durable state，再把单文件重试/失败文件全部重试/本地缓存补传统一收进 `BackupManager`；必须保留现有 verified PUT、PROPFIND 远端大小确认、423/延迟落盘、响应超时但远端完整即成功等可靠性语义，不重写协议层。
 
 ## 21. 执行日志
 
@@ -1808,3 +1813,13 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4 已完成。当前下一阶段�
 - VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-5ae529c-20260831-103307.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-5ae529c`，源码 `/root/telegram-video-forwarder-releases/pre-5ae529c.tar.gz`。部署后镜像 `sha256:dbcaeea10bb48213664dfe8a37a518cf62d516af38b7054212d4091c2f75484b`，容器 `running`、`restart=0`、health=`healthy`，schema `[1,2,3,4,5,6]`、`integrity=ok`、incomplete/claims=0，生产 172 tests、healthcheck/readiness 均通过，`APP_COMMIT=5ae529c`。
 - 回滚：由于 schema 6 改变 stats 去重表结构，若回滚到不认识 schema6 的旧代码，应先停容器并恢复上述 pre-5ae529c DB backup，再启动 rollback image；不要自动 destructive downgrade。
 - 下一步精确入口：B1，先把连接测试/容量读取/attempt detail 生命周期收进 BackupManager；F4 不再扩展 Web Dashboard 或远程主动探测。
+
+### 2026-08-31 11:04 - B1-A/B WebDAV 显式连接/quota 与确认写入测试
+
+- 状态：B1-A/B 已完成、推送并部署生产；B1 主项仍未完成，下一步为 B1-C attempt/detail 与统一重试入口。
+- commits：`77863b4`（只读 PROPFIND/quota probe）、`7a147eb`（二次确认 write/verify/delete probe）。
+- 只读 probe：仅 `wd_cfg:test` 显式 callback 调用 `BackupManager.test_connection()`；首页、`/stats`、`/health` 不调用。PROPFIND Depth:0 请求 `resourcetype/quota-used-bytes/quota-available-bytes`，401/403/404/405/其它状态给明确安全摘要；quota 缺失显示服务器未提供，不伪造本地容量。
+- 写入 probe：`wd_cfg:wtest` 先创建短期单次 operation token，只有 `wd_w:y:<id>` 确认后才执行。协议层随机 `.tgvf-check-<uuid>` 32-byte PUT，沿用现有 `_put_file()` 的远端大小确认，然后仅 DELETE 该随机文件；异常时 best-effort 精确清理并显式提示清理失败风险。没有 MKCOL/递归 DELETE。
+- 测试：B1-A 最终 175 tests；B1-B 最终标准 Docker 镜像和生产均 **177 tests 全通过**，compileall/diff/compose/静态镜像检查通过。schema 仍 `[1,2,3,4,5,6]`，无新 migration。
+- VPS：B1-A 部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-77863b4-20260831-110026.sqlite3`；B1-B 部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-7a147eb-20260831-110506.sqlite3`，并保留对应 rollback image/source archive。最终容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=7a147eb`，schema6/`integrity=ok`、incomplete=0。部署/验收过程没有主动对生产真实 WebDAV 执行 read/write probe，远端副作用仍只由用户显式按钮触发。
+- 下一步精确入口：B1-C，优先在 `SQLiteRepository` 增加 backup attempt/page/detail DAO 与 view model，逐步替换 `_webdav_logs_view()` 对 JSON log dict 的读取；随后统一单文件/批量失败/缓存补传 service 命令。
