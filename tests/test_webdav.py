@@ -19,6 +19,7 @@ class _DavState:
         self.put_status = 201
         self.put_delay = 0.0
         self.store_put = True
+        self.drop_put_response = False
         self.probe_status = 207
         self.quota_used: int | None = None
         self.quota_available: int | None = None
@@ -59,6 +60,9 @@ class _DavHandler(BaseHTTPRequestHandler):
         self.state.put_calls += 1
         if self.state.store_put:
             self.state.files[self._path()] = payload
+        if self.state.drop_put_response:
+            self.close_connection = True
+            return
         if self.state.put_delay:
             time.sleep(self.state.put_delay)
         self._respond(self.state.put_status)
@@ -193,6 +197,17 @@ class WebDavProtocolTests(unittest.TestCase):
         self.assertEqual(self.state.put_calls, 1)
         self.assertGreaterEqual(self.state.propfind_calls, 1)
 
+    def test_put_204_is_verified_success(self) -> None:
+        self.state.put_status = 204
+        path = self.make_file(b"no-content-success")
+        with patch.object(webdav, "_VERIFY_ATTEMPTS", 2), patch.object(webdav, "_VERIFY_INTERVAL", 0):
+            uploaded = webdav.upload_file(
+                self.base_url, "backup/204", path, "user", "pass", retries=0,
+                remote_name="ok204.mp4",
+            )
+        self.assertTrue(uploaded)
+        self.assertEqual(self.state.put_calls, 1)
+
     def test_put_response_timeout_falls_back_to_propfind_without_reupload(self) -> None:
         self.state.put_delay = 0.08
         path = self.make_file(b"slow-response")
@@ -233,6 +248,28 @@ class WebDavProtocolTests(unittest.TestCase):
         self.assertFalse(uploaded)
         self.assertEqual(self.state.put_calls, 1)
 
+    def test_success_response_with_remote_size_mismatch_is_not_success(self) -> None:
+        self.state.store_put = False
+        self.state.files["/dav/backup/mismatch/file.mp4"] = b"wrong"
+        path = self.make_file(b"correct-and-longer")
+        with patch.object(webdav, "_VERIFY_ATTEMPTS", 1), patch.object(webdav, "_VERIFY_INTERVAL", 0):
+            uploaded = webdav.upload_file(
+                self.base_url, "backup/mismatch", path, "user", "pass", retries=0,
+                remote_name="file.mp4",
+            )
+        self.assertFalse(uploaded)
+
+    def test_connection_drop_without_remote_file_is_not_success(self) -> None:
+        self.state.store_put = False
+        self.state.drop_put_response = True
+        path = self.make_file(b"drop-response")
+        with patch.object(webdav, "_VERIFY_ATTEMPTS", 1), patch.object(webdav, "_VERIFY_INTERVAL", 0):
+            uploaded = webdav.upload_file(
+                self.base_url, "backup/drop", path, "user", "pass", retries=0,
+                remote_name="drop.mp4",
+            )
+        self.assertFalse(uploaded)
+
     def test_explicit_probe_reads_quota_without_writing(self) -> None:
         self.state.quota_used = 3 * 1024
         self.state.quota_available = 7 * 1024
@@ -260,6 +297,16 @@ class WebDavProtocolTests(unittest.TestCase):
         self.assertFalse(denied.ok)
         self.assertEqual(denied.status, 401)
         self.assertIn("认证失败", denied.message)
+
+    def test_explicit_probe_distinguishes_403_404_405(self) -> None:
+        for status in (403, 404, 405):
+            with self.subTest(status=status):
+                self.state.probe_status = status
+                result = webdav.probe_connection(
+                    self.base_url, "/backup", "user", "pass"
+                )
+                self.assertFalse(result.ok)
+                self.assertEqual(result.status, status)
 
     def test_explicit_write_probe_puts_verifies_and_deletes_random_file(self) -> None:
         with patch.object(webdav, "_VERIFY_ATTEMPTS", 2), patch.object(

@@ -28,6 +28,8 @@ from src.views import (
     webdav_probe_view,
     webdav_write_confirm_view,
     webdav_write_result_view,
+    webdav_required_policy_confirm_view,
+    webdav_delete_confirm_view,
     webdav_cfg_view,
 )
 from src.webdav import WebDavProbeResult, WebDavWriteProbeResult
@@ -136,7 +138,7 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("🔄 重试    5 次", fields_text)
         self.assertEqual(
             callback_data(main_buttons),
-            [b"wd_cfg:off", b"wd_cfg:test", b"wd_cfg:logs", b"wd_cfg:edit", b"h:r"],
+            [b"wd_cfg:off", b"wd_cfg:test", b"wd_cfg:logs", b"wd_cfg:policy", b"wd_cfg:edit", b"h:r"],
         )
         self.assertEqual(
             callback_data(fields_buttons),
@@ -187,6 +189,23 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("Attempt #12", detail)
         self.assertIn(b"wd:fr:44", callback_data(detail_buttons))
         self.assertIn(b"wd:ar:12", callback_data(detail_buttons))
+        self.assertIn(b"wd:del:12", callback_data(detail_buttons))
+
+        policy_text, policy_buttons = webdav_required_policy_confirm_view(123456789)
+        self.assertIn("already published", policy_text.lower().replace("已经发布", "already published"))
+        self.assertEqual(
+            callback_data(policy_buttons),
+            [b"wd_bp:y:123456789", b"wd_bp:n:123456789", b"wd_cfg:back"],
+        )
+
+        delete_text, delete_buttons = webdav_delete_confirm_view(
+            987654321, remote_dir="archive/77", file_count=2, total_bytes=8
+        )
+        self.assertIn("逐个删除数据库记录的具体文件", delete_text)
+        self.assertEqual(
+            callback_data(delete_buttons),
+            [b"wd_dr:y:987654321", b"wd_dr:n:987654321", b"wd:p:0"],
+        )
         probe_text, probe_buttons = webdav_probe_view(
             WebDavProbeResult(
                 True,

@@ -304,6 +304,7 @@ class _Pipeline:
             "pass": WEBDAV_PASS,
             "path": WEBDAV_PATH,
             "retry": WEBDAV_RETRY,
+            "backup_policy": "best_effort",
         }
         data = JsonStore(WEBDAV_CFG_FILE, {}).load()
         if isinstance(data, dict):
@@ -1797,6 +1798,7 @@ class _Pipeline:
             has_password=bool(cfg.get("pass")),
             path=cfg.get("path") or "",
             retry=cfg.get("retry"),
+            backup_policy=str(cfg.get("backup_policy") or "best_effort"),
         )
 
     def _webdav_cfg_view(self) -> tuple:
@@ -2234,6 +2236,11 @@ class _Pipeline:
         cfg = self.webdav_cfg
         if not cfg.get("enabled") or not cfg.get("url"):
             return
+        if getattr(self, "backup_manager", None) is not None and getattr(self, "repository", None) is not None:
+            retried = await self.backup_manager.autoretry_durable_once()
+            if retried:
+                logger.info("WebDAV durable 自动重传完成：本次成功 %d 个文件", retried)
+            return
         if not self.webdav_logs:
             return
         retried = 0
@@ -2361,8 +2368,22 @@ class _Pipeline:
             await self.job_queue.checkpoint_publish(job.seq, refs)
 
     async def _on_published(self, job, ids: list) -> None:
-        self._progress_tracker.begin_phase(job.seq, "succeeded")
         self._remember_published(job.seq, ids)
+        if (
+            bool(self.webdav_cfg.get("enabled"))
+            and str(self.webdav_cfg.get("backup_policy") or "best_effort") == "required"
+            and getattr(self, "repository", None) is not None
+        ):
+            job._required_backup_pending = True
+            try:
+                await self._safe_edit(
+                    job,
+                    f"☁️ 任务 #{job.seq} · Telegram 已发布\n──────────\n正在等待 required WebDAV 备份完成…",
+                )
+            except Exception:
+                pass
+            return
+        self._progress_tracker.begin_phase(job.seq, "succeeded")
         if getattr(self, "job_queue", None) is not None:
             if getattr(self, "repository", None) is not None:
                 durable_refs = list(getattr(job, "_published_refs", []) or [])
@@ -2375,6 +2396,46 @@ class _Pipeline:
             asyncio.get_running_loop().create_task(
                 _delete_after(job.status, AUTO_DELETE_SECONDS)
             )
+
+    async def _finish_required_backup(self, job) -> bool:
+        """Finalize a published job only after required WebDAV backup settles."""
+        seq = int(job.seq)
+        await self._wait_webdav(seq)
+        outcome = None
+        if getattr(self, "backup_manager", None) is not None:
+            outcome = await self.backup_manager.required_outcome(seq)
+        if outcome is not None and str(outcome.get("state")) == "succeeded":
+            self._progress_tracker.begin_phase(seq, "succeeded")
+            if getattr(self, "job_queue", None) is not None:
+                durable_refs = list(getattr(job, "_published_refs", []) or [])
+                await self.job_queue.complete_publish(seq, durable_refs or self.published.get(seq, []))
+            text, buttons = self._job_card(job, "succeeded")
+            await self._safe_edit(job, text, buttons=buttons)
+            if AUTO_DELETE_SECONDS > 0:
+                asyncio.get_running_loop().create_task(
+                    _delete_after(job.status, AUTO_DELETE_SECONDS)
+                )
+            return True
+
+        code = str((outcome or {}).get("error_code") or "webdav_server")
+        summary = str((outcome or {}).get("error_message") or "required WebDAV 备份未成功")
+        self._progress_tracker.begin_phase(seq, "failed")
+        if getattr(self, "job_queue", None) is not None:
+            await self.job_queue.transition_now(
+                seq,
+                "required_backup_failed",
+                "failed",
+                error_code=code,
+                error_message=summary,
+                phase="backup",
+            )
+        text, buttons = self._job_card(
+            job,
+            "failed",
+            error=f"WebDAV required 备份失败：{summary}",
+        )
+        await self._safe_edit(job, text, buttons=buttons)
+        return False
 
     async def _update_progress_status(self, seq: int) -> None:
         job = self.jobs.get(seq)
@@ -2619,7 +2680,11 @@ class _Pipeline:
                             self._finish_seq(seq, keep_cache=True)
                             break
                         else:
-                            self._finish_seq(seq)
+                            if bool(getattr(job, "_required_backup_pending", False)):
+                                backup_ok = await self._finish_required_backup(job)
+                                self._finish_seq(seq, keep_cache=not backup_ok)
+                            else:
+                                self._finish_seq(seq)
                             break
 
                     task.cancel()

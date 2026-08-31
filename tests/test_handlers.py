@@ -140,6 +140,22 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(self.pipeline.interactions.get(42))
         self.assertIn("已更新 WebDAV path", event.responses[0].text)
 
+    async def test_required_backup_policy_requires_explicit_confirmation(self) -> None:
+        callback = self.client.handlers["on_callback"]
+        prompt = FakeCallbackEvent(self.client, b"wd_cfg:policy")
+        await callback(prompt)
+        callbacks = [button.data for row in prompt.edits[-1]["buttons"] for button in row]
+        confirm = next(data for data in callbacks if data.startswith(b"wd_bp:y:"))
+        self.assertEqual(self.pipeline.webdav_cfg.get("backup_policy"), "best_effort")
+
+        confirm_event = FakeCallbackEvent(self.client, confirm)
+        await callback(confirm_event)
+        self.assertEqual(self.pipeline.webdav_cfg.get("backup_policy"), "required")
+
+        disable = FakeCallbackEvent(self.client, b"wd_cfg:policy")
+        await callback(disable)
+        self.assertEqual(self.pipeline.webdav_cfg.get("backup_policy"), "best_effort")
+
     async def test_webdav_remote_probe_runs_only_on_explicit_test_callback(self) -> None:
         callback = self.client.handlers["on_callback"]
         self.pipeline.webdav_cfg.update(

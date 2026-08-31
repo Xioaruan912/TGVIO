@@ -4,8 +4,11 @@ import sqlite3
 import tempfile
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
+from unittest.mock import patch
 
 from src.repository import MigrationChecksumError, MigrationError, SQLiteRepository
+from src.services import BackupManager
 from src.state_machine import InvalidTransition
 
 
@@ -76,6 +79,65 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(detail["remote_dir"], "backup/77")
         self.assertEqual([item["id"] for item in files], [first.id, second.id])
         self.assertEqual(retry_ids, [second.id])
+
+    async def test_durable_backup_autoretry_excludes_cache_missing(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url", user_id=1, state="queued", source_kind="url",
+            source_url="https://example.invalid/retry", legacy_seq=88,
+            event_payload={"schema_version": 1},
+        )
+        attempt = await self.repo.create_backup_attempt(job_id=job.id, state="failed", remote_dir="backup/88")
+        job_dir = self.download_root / "job-88"; job_dir.mkdir()
+        a = job_dir / "a.mp4"; a.write_bytes(b"a")
+        b = job_dir / "b.mp4"; b.write_bytes(b"b")
+        first = await self.repo.create_backup_file(
+            attempt_id=attempt.id, local_path=str(a), remote_name="a.mp4", size_bytes=1, state="failed"
+        )
+        second = await self.repo.create_backup_file(
+            attempt_id=attempt.id, local_path=str(b), remote_name="b.mp4", size_bytes=1, state="failed"
+        )
+        await self.repo.update_backup_file_status(first.id, state="failed", error_code="webdav_server")
+        await self.repo.update_backup_file_status(second.id, state="failed", error_code="cache_missing")
+        due = await self.repo.due_backup_retry_file_ids(now=9999999999)
+        self.assertIn(first.id, due)
+        self.assertNotIn(second.id, due)
+
+    async def test_backup_manager_remote_delete_uses_only_durable_file_records(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url", user_id=1, state="queued", source_kind="url",
+            source_url="https://example.invalid/delete", legacy_seq=89,
+            event_payload={"schema_version": 1},
+        )
+        attempt = await self.repo.create_backup_attempt(job_id=job.id, state="succeeded", remote_dir="backup/89")
+        job_dir = self.download_root / "job-89"; job_dir.mkdir()
+        one = job_dir / "one.mp4"; one.write_bytes(b"a")
+        two = job_dir / "two.mp4"; two.write_bytes(b"b")
+        first = await self.repo.create_backup_file(
+            attempt_id=attempt.id, local_path=str(one), remote_name="hash-one.mp4", size_bytes=1, state="succeeded"
+        )
+        second = await self.repo.create_backup_file(
+            attempt_id=attempt.id, local_path=str(two), remote_name="hash-two.mp4", size_bytes=1, state="succeeded"
+        )
+        pipeline = SimpleNamespace(
+            repository=self.repo,
+            webdav_cfg={"url": "https://dav.invalid", "user": "u", "pass": "p"},
+        )
+        manager = BackupManager(pipeline)
+        calls = []
+
+        def fake_delete(base_url, remote_dir, filename, user, passwd, retries=2):
+            calls.append((remote_dir, filename, retries))
+            return True
+
+        with patch("src.services.backup_manager.webdav.delete_remote", side_effect=fake_delete):
+            result = await manager.delete_attempt(attempt.id)
+
+        self.assertIn("已删除远端文件 2 个", result)
+        self.assertEqual(calls, [("backup/89", "hash-one.mp4", 0), ("backup/89", "hash-two.mp4", 0)])
+        files = await self.repo.list_backup_file_page(attempt.id, limit=5, offset=0)
+        self.assertEqual({item["state"] for item in files}, {"deleted"})
+        detail = await self.repo.backup_attempt_detail(attempt.id)
+        self.assertEqual(detail["state"], "deleted")
 
     async def test_cleanup_inventory_exposes_only_durable_cleanup_facts(self) -> None:
         job_dir = self.download_root / "job-77"

@@ -1391,6 +1391,45 @@ class SQLiteRepository:
         await cursor.close()
         return dict(row) if row is not None else {"total": 0, "failed": 0}
 
+    async def latest_backup_attempt_for_legacy_seq(self, legacy_seq: int) -> dict[str, Any] | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            """
+            SELECT a.id,a.job_id,a.state,a.remote_dir,a.retry_count,a.next_retry_at,
+                   a.error_code,a.error_message,a.created_at,a.updated_at,a.finished_at
+            FROM backup_attempts a
+            JOIN jobs j ON j.id=a.job_id
+            WHERE j.legacy_seq=?
+            ORDER BY a.id DESC LIMIT 1
+            """,
+            (int(legacy_seq),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row is not None else None
+
+    async def due_backup_retry_file_ids(self, *, now: float | None = None, limit: int = 20) -> list[int]:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        limit = max(1, min(int(limit), 100))
+        cursor = await conn.execute(
+            """
+            SELECT f.id
+            FROM backup_files f
+            JOIN backup_attempts a ON a.id=f.attempt_id
+            WHERE f.state NOT IN ('succeeded','deleted')
+              AND COALESCE(f.error_code,'') <> 'cache_missing'
+              AND a.state IN ('failed','retry_wait','interrupted')
+              AND (a.next_retry_at IS NULL OR a.next_retry_at<=?)
+            ORDER BY a.id,f.id
+            LIMIT ?
+            """,
+            (timestamp, limit),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [int(row[0]) for row in rows]
+
     async def list_job_texts(self, job_id: int) -> list[str]:
         conn = self._require_conn()
         cursor = await conn.execute("SELECT text FROM job_texts WHERE job_id=? ORDER BY ordinal", (job_id,))

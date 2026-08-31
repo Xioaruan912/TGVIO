@@ -47,7 +47,22 @@ class BackupManager:
         return await self._pipeline._webdav_upload_cache(seq, user_id)
 
     async def autoretry_once(self) -> None:
+        if self.repository is not None:
+            await self.autoretry_durable_once()
+            return
         await self._pipeline._webdav_autoretry_once()
+
+    async def autoretry_durable_once(self) -> int:
+        repo = self.repository
+        if repo is None:
+            return 0
+        file_ids = await repo.due_backup_retry_file_ids(limit=20)
+        succeeded = 0
+        for file_id in file_ids:
+            result = await self.retry_file(file_id)
+            if result.startswith("✅"):
+                succeeded += 1
+        return succeeded
 
     async def test_connection(self) -> webdav.WebDavProbeResult:
         """Run the explicit read-only WebDAV connectivity/quota probe."""
@@ -188,4 +203,74 @@ class BackupManager:
         if self._shadow is None:
             return True, None
         return await self._shadow.backup_retry_due(seq, remote_dir)
+
+    async def required_outcome(self, seq: int) -> dict[str, Any] | None:
+        repo = self.repository
+        if repo is None:
+            return None
+        return await repo.latest_backup_attempt_for_legacy_seq(int(seq))
+
+    async def delete_preview(self, attempt_id: int) -> dict[str, Any] | None:
+        repo = self.repository
+        if repo is None:
+            return None
+        attempt = await repo.backup_attempt_detail(int(attempt_id))
+        if attempt is None:
+            return None
+        total = await repo.count_backup_files(int(attempt_id))
+        files: list[dict[str, Any]] = []
+        for offset in range(0, total, 20):
+            files.extend(await repo.list_backup_file_page(int(attempt_id), limit=20, offset=offset))
+        return {
+            "attempt_id": int(attempt_id),
+            "remote_dir": str(attempt.get("remote_dir") or ""),
+            "file_count": sum(1 for item in files if str(item.get("state")) != "deleted"),
+            "total_bytes": sum(int(item.get("size_bytes") or 0) for item in files if str(item.get("state")) != "deleted"),
+        }
+
+    async def delete_attempt(self, attempt_id: int) -> str:
+        repo = self.repository
+        if repo is None:
+            return "持久化备份状态不可用"
+        attempt = await repo.backup_attempt_detail(int(attempt_id))
+        if attempt is None:
+            return "上传记录不存在或已过期"
+        total = await repo.count_backup_files(int(attempt_id))
+        files: list[dict[str, Any]] = []
+        for offset in range(0, total, 20):
+            files.extend(await repo.list_backup_file_page(int(attempt_id), limit=20, offset=offset))
+        cfg = self.config_snapshot()
+        deleted = 0
+        failed = 0
+        for item in files:
+            if str(item.get("state")) == "deleted":
+                deleted += 1
+                continue
+            ok = await asyncio.to_thread(
+                webdav.delete_remote,
+                str(cfg.get("url") or ""),
+                str(attempt.get("remote_dir") or ""),
+                str(item.get("remote_name") or ""),
+                str(cfg.get("user") or ""),
+                str(cfg.get("pass") or ""),
+                0,
+            )
+            if ok:
+                await repo.update_backup_file_status(
+                    int(item["id"]), state="deleted", bytes_done=int(item.get("size_bytes") or 0),
+                    error_code=None, error_message=None,
+                )
+                deleted += 1
+            else:
+                failed += 1
+        if failed == 0:
+            await repo.update_backup_attempt_status(
+                int(attempt_id), state="deleted", error_code=None, error_message=None, finished=True,
+            )
+            return f"🗑 已删除远端文件 {deleted} 个"
+        await repo.update_backup_attempt_status(
+            int(attempt_id), state="failed", error_code="webdav_server",
+            error_message=f"远端删除失败 {failed} 个文件", finished=True,
+        )
+        return f"⚠️ 删除完成：成功 {deleted}，失败 {failed}"
 

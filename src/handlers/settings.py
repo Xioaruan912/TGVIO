@@ -16,6 +16,7 @@ from ..views import (
     HomeViewState,
     backup_attempt_detail_view,
     backup_attempt_page_view,
+    webdav_delete_confirm_view,
     MODE_NAMES,
     WebDavConfigViewState,
     home_button,
@@ -27,6 +28,7 @@ from ..views import (
     webdav_probe_view,
     webdav_write_confirm_view,
     webdav_write_result_view,
+    webdav_required_policy_confirm_view,
     webdav_cfg_view,
 )
 from .common import HandlerContext
@@ -44,6 +46,7 @@ def _webdav_state(ctx: HandlerContext) -> WebDavConfigViewState:
         has_password=bool(cfg.get("pass")),
         path=cfg.get("path") or "",
         retry=cfg.get("retry"),
+        backup_policy=str(cfg.get("backup_policy") or "best_effort"),
     )
 
 
@@ -457,6 +460,23 @@ async def callback_webdav_config(ctx: HandlerContext, event: Any, data: str) -> 
         text, buttons = webdav_write_confirm_view(operation.operation_id)
         await ctx.edit(event, text, buttons=buttons)
         return
+    if field == "policy":
+        current = str(ctx.backup.get_config("backup_policy", "best_effort") or "best_effort")
+        if current == "required":
+            ctx.backup.set_config("backup_policy", "best_effort")
+            await ctx.answer(event, "已切换为 best_effort")
+            text, buttons = webdav_cfg_view(_webdav_state(ctx))
+            await ctx.edit(event, text, buttons=buttons)
+            return
+        operation = ctx.operations.create(
+            user_id=event.sender_id,
+            action="webdav_required_policy",
+            job_id=0,
+            expected_revision=0,
+        )
+        text, buttons = webdav_required_policy_confirm_view(operation.operation_id)
+        await ctx.edit(event, text, buttons=buttons)
+        return
     if field == "back":
         text, buttons = webdav_cfg_view(_webdav_state(ctx))
         await ctx.edit(event, text, buttons=buttons)
@@ -512,6 +532,30 @@ async def callback_webdav_write_test(ctx: HandlerContext, event: Any, data: str)
     await ctx.edit(event, text, buttons=buttons)
 
 
+async def callback_webdav_backup_policy(ctx: HandlerContext, event: Any, data: str) -> None:
+    parts = data.split(":")
+    if len(parts) != 3 or parts[1] not in {"y", "n"} or not parts[2].isdigit():
+        await ctx.answer(event, "无效操作")
+        return
+    operation_id = int(parts[2])
+    if parts[1] == "n":
+        if ctx.operations.discard(operation_id, user_id=event.sender_id):
+            await ctx.answer(event, "已取消")
+        else:
+            await ctx.answer(event, "操作已过期，请刷新")
+        text, buttons = webdav_cfg_view(_webdav_state(ctx))
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    operation = ctx.operations.consume(operation_id, user_id=event.sender_id)
+    if operation is None or operation.action != "webdav_required_policy":
+        await ctx.answer(event, "操作已过期，请刷新")
+        return
+    ctx.backup.set_config("backup_policy", "required")
+    await ctx.answer(event, "已启用 required")
+    text, buttons = webdav_cfg_view(_webdav_state(ctx))
+    await ctx.edit(event, text, buttons=buttons)
+
+
 async def callback_webdav_retry(ctx: HandlerContext, event: Any, data: str) -> None:
     key = data.split(":", 1)[1]
     await ctx.answer(event, await ctx.backup.retry(key))
@@ -555,7 +599,53 @@ async def callback_webdav_durable(ctx: HandlerContext, event: Any, data: str) ->
         if rendered is not None:
             await ctx.edit(event, rendered[0], buttons=rendered[1])
         return
+    if action == "del" and parts[2].isdigit():
+        attempt_id = int(parts[2])
+        preview = await ctx.backup.delete_preview(attempt_id)
+        if preview is None:
+            await ctx.answer(event, "记录不存在或已过期")
+            return
+        operation = ctx.operations.create(
+            user_id=event.sender_id,
+            action="webdav_delete_attempt",
+            job_id=attempt_id,
+            expected_revision=0,
+        )
+        text, buttons = webdav_delete_confirm_view(
+            operation.operation_id,
+            remote_dir=str(preview["remote_dir"]),
+            file_count=int(preview["file_count"]),
+            total_bytes=int(preview["total_bytes"]),
+        )
+        await ctx.edit(event, text, buttons=buttons)
+        return
     await ctx.answer(event, "无效操作")
+
+
+async def callback_webdav_delete_confirm(ctx: HandlerContext, event: Any, data: str) -> None:
+    parts = data.split(":")
+    if len(parts) != 3 or parts[1] not in {"y", "n"} or not parts[2].isdigit():
+        await ctx.answer(event, "无效操作")
+        return
+    operation_id = int(parts[2])
+    if parts[1] == "n":
+        if ctx.operations.discard(operation_id, user_id=event.sender_id):
+            await ctx.answer(event, "已取消删除")
+        else:
+            await ctx.answer(event, "操作已过期，请刷新")
+        text, buttons = await _webdav_attempt_page(ctx, 0)
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    operation = ctx.operations.consume(operation_id, user_id=event.sender_id)
+    if operation is None or operation.action != "webdav_delete_attempt":
+        await ctx.answer(event, "操作已过期，请刷新")
+        return
+    await ctx.answer(event, "正在逐文件删除…")
+    result = await ctx.backup.delete_attempt(operation.job_id)
+    await ctx.answer(event, result)
+    rendered = await _webdav_attempt_detail(ctx, operation.job_id, 0)
+    if rendered is not None:
+        await ctx.edit(event, rendered[0], buttons=rendered[1])
 
 
 async def callback_webdav_delete(ctx: HandlerContext, event: Any, data: str) -> None:
@@ -644,6 +734,8 @@ def register_setting_callbacks(router: Any) -> None:
     router.prefix("wd_del:", callback_webdav_delete)
     router.prefix("wd_cache_up:", callback_webdav_cache)
     router.prefix("wd_w:", callback_webdav_write_test)
+    router.prefix("wd_bp:", callback_webdav_backup_policy)
+    router.prefix("wd_dr:", callback_webdav_delete_confirm)
     router.prefix("wd:", callback_webdav_durable)
     router.prefix("mode:", callback_mode)
 

@@ -14,6 +14,7 @@ class WebDavConfigViewState:
     has_password: bool = False
     path: str = ""
     retry: int | str | None = 0
+    backup_policy: str = "best_effort"
 
 
 @dataclass(frozen=True)
@@ -70,6 +71,7 @@ def webdav_cfg_lines(state: WebDavConfigViewState) -> list:
         "pass": "***" if state.has_password else "（未设置）",
         "path": state.path or "（未设置）",
         "retry": f"{state.retry} 次",
+        "policy": "required（备份成功才最终完成）" if state.backup_policy == "required" else "best_effort（备份失败不挡发布）",
     }
     return [
         f"🔗 地址    {val['url']}",
@@ -77,6 +79,7 @@ def webdav_cfg_lines(state: WebDavConfigViewState) -> list:
         f"🔑 密码    {val['pass']}",
         f"📂 路径    {val['path']}",
         f"🔄 重试    {val['retry']}",
+        f"🛡 策略    {val['policy']}",
     ]
 
 
@@ -99,6 +102,7 @@ def webdav_cfg_view(state: WebDavConfigViewState) -> tuple:
         [toggle],
         [Button.inline("🧪 测试连接", "wd_cfg:test")],
         [Button.inline("📁 上传记录", "wd_cfg:logs")],
+        [Button.inline("🛡 备份策略", "wd_cfg:policy")],
         [Button.inline("⚙️ 修改配置", "wd_cfg:edit")],
         [Button.inline("🏠 首页", "h:r")],
     ]
@@ -212,6 +216,23 @@ def webdav_cfg_fields_view(state: WebDavConfigViewState) -> tuple:
     return "\n".join(lines), buttons
 
 
+def webdav_required_policy_confirm_view(operation_id: int) -> tuple[str, list]:
+    text = (
+        "⚠️ 启用 required 备份策略\n"
+        "────────────────────────\n"
+        "Telegram 发布成功后，任务仍会等待 WebDAV 备份。\n"
+        "如果备份最终失败，任务会标记失败并保留本地缓存；已经发布的 Telegram 消息不会自动撤回。\n\n"
+        "这可能让任务长时间处于未完成状态。确认启用吗？"
+    )
+    return text, [
+        [
+            Button.inline("✅ 确认启用", f"wd_bp:y:{int(operation_id)}"),
+            Button.inline("❌ 取消", f"wd_bp:n:{int(operation_id)}"),
+        ],
+        [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
+    ]
+
+
 def _human_size(value: int) -> str:
     size = max(0, int(value))
     if size >= 1024 ** 3:
@@ -296,6 +317,8 @@ def backup_attempt_detail_view(state: BackupAttemptDetailView) -> tuple[str, lis
             buttons.append([Button.inline(f"🔄 重试文件 {index}", f"wd:fr:{item.file_id}")])
     if any(item.state not in {"succeeded", "deleted"} for item in state.files):
         buttons.append([Button.inline("🔄 重试本 attempt 失败文件", f"wd:ar:{state.attempt_id}")])
+    if state.total > 0 and state.state != "deleted":
+        buttons.append([Button.inline("🗑 删除本 attempt 远端文件", f"wd:del:{state.attempt_id}")])
     page = min(max(0, state.page), max(1, state.pages) - 1)
     nav = []
     if page > 0:
@@ -306,3 +329,21 @@ def backup_attempt_detail_view(state: BackupAttemptDetailView) -> tuple[str, lis
         buttons.append(nav)
     buttons.append([Button.inline("⬅️ 上传记录", "wd:p:0"), Button.inline("🏠 首页", "h:r")])
     return "\n".join(lines), buttons
+
+
+def webdav_delete_confirm_view(operation_id: int, *, remote_dir: str, file_count: int, total_bytes: int) -> tuple[str, list]:
+    text = (
+        "⚠️ 确认删除 WebDAV 远端文件\n"
+        "────────────────────────\n"
+        f"目录：{_short(remote_dir, 96)}\n"
+        f"文件：{int(file_count)} 个\n"
+        f"总大小：{_human_size(total_bytes)}\n\n"
+        "只会逐个删除数据库记录的具体文件，不会递归删除目录。"
+    )
+    return text, [
+        [
+            Button.inline("🗑 确认删除", f"wd_dr:y:{int(operation_id)}"),
+            Button.inline("❌ 取消", f"wd_dr:n:{int(operation_id)}"),
+        ],
+        [Button.inline("⬅️ 返回记录", "wd:p:0")],
+    ]

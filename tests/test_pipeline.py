@@ -4,7 +4,7 @@ import os
 import tempfile
 import unittest
 from contextlib import suppress
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from src import bot
 from src.models import Job, RetryInfo
@@ -82,6 +82,57 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             user_id=42,
             cached_path=path,
         )
+
+    async def test_required_backup_defers_succeeded_until_backup_finishes(self) -> None:
+        job = self.make_job(901)
+        job._published_refs = [(123, 456, "destination")]
+        self.pipeline.jobs[job.seq] = job
+        self.pipeline.repository = object()
+        self.pipeline.webdav_cfg.update(enabled=True, backup_policy="required")
+        queue = type("Queue", (), {})()
+        queue.complete_publish = AsyncMock()
+        queue.transition_now = AsyncMock()
+        self.pipeline.job_queue = queue
+        backup = type("Backup", (), {})()
+        backup.required_outcome = AsyncMock(return_value={"state": "succeeded"})
+        self.pipeline.backup_manager = backup
+        self.pipeline._wait_webdav = AsyncMock()
+
+        await self.pipeline._on_published(job, [456])
+        self.assertTrue(job._required_backup_pending)
+        queue.complete_publish.assert_not_awaited()
+
+        ok = await self.pipeline._finish_required_backup(job)
+        self.assertTrue(ok)
+        queue.complete_publish.assert_awaited_once()
+        queue.transition_now.assert_not_awaited()
+
+    async def test_required_backup_failure_keeps_published_refs_and_marks_job_failed(self) -> None:
+        job = self.make_job(902)
+        job._published_refs = [(123, 456, "destination")]
+        self.pipeline.jobs[job.seq] = job
+        self.pipeline.repository = object()
+        self.pipeline.webdav_cfg.update(enabled=True, backup_policy="required")
+        queue = type("Queue", (), {})()
+        queue.complete_publish = AsyncMock()
+        queue.transition_now = AsyncMock()
+        self.pipeline.job_queue = queue
+        backup = type("Backup", (), {})()
+        backup.required_outcome = AsyncMock(
+            return_value={"state": "failed", "error_code": "webdav_server", "error_message": "服务异常"}
+        )
+        self.pipeline.backup_manager = backup
+        self.pipeline._wait_webdav = AsyncMock()
+
+        await self.pipeline._on_published(job, [456])
+        ok = await self.pipeline._finish_required_backup(job)
+
+        self.assertFalse(ok)
+        self.assertEqual(job._published_refs, [(123, 456, "destination")])
+        queue.complete_publish.assert_not_awaited()
+        queue.transition_now.assert_awaited_once()
+        args = queue.transition_now.await_args.args
+        self.assertEqual(args[2], "failed")
 
     async def test_enforced_disk_gate_fails_closed_when_capacity_remains_low(self) -> None:
         job = self.make_job(177)
