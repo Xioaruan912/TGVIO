@@ -59,7 +59,7 @@ class MediaDownloader:
         self.part_size_kb = part_size_kb
         self.shard_retries = SHARD_RETRIES
         self.pre_download_hooks = []   # async (job) -> None
-        self.post_download_hooks = []  # async (job, paths) -> None
+        self.post_download_hooks = []  # async (job, paths) -> optional replacement paths
         self.progress_hooks = []       # async (seq, received, total, item, items) -> None
         self.status_hooks = []         # async (job, status) -> None
 
@@ -71,7 +71,9 @@ class MediaDownloader:
             await hook(job)
         paths = await self._download(job)
         for hook in self.post_download_hooks:
-            await hook(job, paths)
+            replacement = await hook(job, paths)
+            if replacement is not None:
+                paths = replacement
         return paths
 
     async def _download(self, job):
@@ -280,6 +282,7 @@ class MediaPublisher:
         group_counter_file: str = "",
         channel_at: str = "",
         group_at: str = "",
+        thumbnail_position: str = "auto",
     ):
         self.client = client
         self.dest = dest
@@ -292,6 +295,7 @@ class MediaPublisher:
         self.cover_mode = cover_mode
         self.cover_width = cover_width
         self.max_cover_images = max(1, max_cover_images)
+        self.thumbnail_position = thumbnail_position or "auto"
         self.pre_publish_hooks = []   # async (job, payload) -> None
         self.post_publish_hooks = []  # async (job, ids) -> None
         self.checkpoint_hooks = []    # async (job, canonical_refs) -> None
@@ -1002,7 +1006,9 @@ class MediaPublisher:
             except Exception as exc:
                 logger.warning("Video probe failed for job #%s: %s", seq, exc)
             try:
-                thumb = await make_thumb(path, self._workdir(seq))
+                thumb = await make_thumb(
+                    path, self._workdir(seq), position=self.thumbnail_position
+                )
                 if thumb:
                     thumb_input = await self.client.upload_file(thumb)
             except Exception as exc:

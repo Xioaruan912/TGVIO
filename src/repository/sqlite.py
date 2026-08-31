@@ -1263,6 +1263,53 @@ class SQLiteRepository:
                 raise
         return changed
 
+    async def set_job_item_media_metadata(
+        self,
+        legacy_seq: int,
+        values: list[dict[str, Any] | None],
+    ) -> int:
+        """Merge normalized M1 metadata into job_items.metadata_json by ordinal."""
+        conn = self._require_conn()
+        async with self._write_lock:
+            cursor = await conn.execute("SELECT id FROM jobs WHERE legacy_seq=?", (int(legacy_seq),))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                return 0
+            job_id = int(row["id"])
+            cursor = await conn.execute(
+                "SELECT id,metadata_json FROM job_items WHERE job_id=? ORDER BY ordinal",
+                (job_id,),
+            )
+            items = await cursor.fetchall()
+            await cursor.close()
+            changed = 0
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                for index, item in enumerate(items):
+                    if index >= len(values) or values[index] is None:
+                        continue
+                    payload: dict[str, Any] = {"schema_version": 1}
+                    raw = item["metadata_json"]
+                    if raw:
+                        try:
+                            decoded = json.loads(raw)
+                            if isinstance(decoded, dict):
+                                payload.update(decoded)
+                        except Exception:
+                            pass
+                    payload["media_compat"] = dict(values[index] or {})
+                    await conn.execute(
+                        "UPDATE job_items SET metadata_json=? WHERE id=?",
+                        (self._encode_versioned_payload(payload), int(item["id"])),
+                    )
+                    changed += 1
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return changed
+
     async def lookup_dedup_entry(
         self, *, sha256: str, size_bytes: int, media_kind: str, destination_key: str
     ) -> DedupEntryRecord | None:
@@ -2382,7 +2429,7 @@ class SQLiteRepository:
         detail["item_count"] = int(item_row["n"] if item_row else 0)
         detail["item_bytes"] = int(item_row["bytes"] if item_row else 0)
         cursor = await conn.execute(
-            "SELECT local_path,size_bytes FROM job_items WHERE job_id=? ORDER BY ordinal",
+            "SELECT local_path,size_bytes,metadata_json FROM job_items WHERE job_id=? ORDER BY ordinal",
             (int(job_id),),
         )
         detail["items"] = [dict(item) for item in await cursor.fetchall()]

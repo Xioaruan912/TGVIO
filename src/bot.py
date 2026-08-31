@@ -39,6 +39,7 @@ from .config import (
     MAX_COVER_IMAGES,
     MAX_FILE_SIZE,
     MAX_CACHE_BYTES,
+    MEDIA_COMPAT_MODE,
     MIN_FREE_BYTES,
     MIN_FREE_PERCENT,
     PART_SIZE_KB,
@@ -48,6 +49,9 @@ from .config import (
     UPLOAD_TIMEOUT,
     UPLOAD_WORKERS,
     UNKNOWN_JOB_RESERVE_BYTES,
+    FASTSTART_MAX_BYTES,
+    TRANSCODE_ENABLED,
+    THUMBNAIL_POSITION,
     WEBDAV_ENABLED,
     WEBDAV_PASS,
     WEBDAV_PATH,
@@ -72,6 +76,7 @@ from .services import (
     ProxyManager,
     ShadowState,
     DedupManager,
+    MediaCompatibilityManager,
     StatsService,
     recover_jobs,
 )
@@ -239,6 +244,12 @@ class _Pipeline:
             auto_enabled=lambda: bool(self.proxy_cfg.get("auto")),
             apply_proxy=self._apply_proxy_uncoordinated,
         )
+        self.media_compat = MediaCompatibilityManager(
+            mode=MEDIA_COMPAT_MODE,
+            faststart_max_bytes=FASTSTART_MAX_BYTES,
+            transcode_enabled=TRANSCODE_ENABLED,
+            disk=self.disk,
+        )
         self._load_prefs()
 
         self.downloader = MediaDownloader(
@@ -259,10 +270,12 @@ class _Pipeline:
             group_counter_file=os.path.join("session", "group_counter.txt"),
             channel_at=CHANNEL_AT,
             group_at=GROUP_AT,
+            thumbnail_position=THUMBNAIL_POSITION,
         )
         self.downloader.pre_download_hooks.append(self._on_pre_download)
         self.downloader.progress_hooks.append(self._on_download_progress)
         self.downloader.status_hooks.append(self._on_download_status)
+        self.downloader.post_download_hooks.append(self._on_media_compat)
         self.downloader.post_download_hooks.append(self._on_download_done)
         self.downloader.post_download_hooks.append(self._on_dedup_hash)
         self.downloader.post_download_hooks.append(self._on_webdav_upload)
@@ -1389,6 +1402,39 @@ class _Pipeline:
         text, buttons = self._job_card(job, "ready", payload=paths)
         await self._safe_edit(job, text, buttons=buttons)
 
+    async def _on_media_compat(self, job, paths):
+        result = await self.media_compat.process(job, paths)
+        if result is None:
+            return None
+        if getattr(self, "repository", None) is not None:
+            values = result if isinstance(result, list) else [result]
+            metadata = getattr(job, "_media_metadata", {})
+            payloads = []
+            for path in values:
+                info = metadata.get(os.path.realpath(path))
+                payloads.append(
+                    None
+                    if info is None
+                    else {
+                        "container": info.container,
+                        "video_codec": info.video_codec,
+                        "audio_codec": info.audio_codec,
+                        "duration_seconds": info.duration_seconds,
+                        "width": info.width,
+                        "height": info.height,
+                        "rotation": info.rotation,
+                        "bitrate": info.bitrate,
+                        "stream_count": info.stream_count,
+                        "faststart": info.faststart,
+                        "streaming_ready": info.telegram_streaming_ready,
+                    }
+                )
+            try:
+                await self.repository.set_job_item_media_metadata(job.seq, payloads)
+            except Exception as exc:
+                logger.warning("Job #%s M1 metadata persistence skipped: %s", job.seq, exc.__class__.__name__)
+        return result
+
     async def _on_dedup_hash(self, job, paths) -> None:
         manager = getattr(self, "dedup_manager", None)
         if manager is None or getattr(self, "repository", None) is None:
@@ -2491,6 +2537,7 @@ class _Pipeline:
             show_progress=self._show_progress(job.user_id),
             error=error,
             cache_retained=bool(getattr(job, "cached_path", "")),
+            compat_note=" · ".join(getattr(job, "_media_compat_notes", [])[:2]),
         )
         return render_job_card_view(view)
 

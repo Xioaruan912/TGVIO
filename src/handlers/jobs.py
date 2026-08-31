@@ -78,6 +78,7 @@ async def _detail(ctx: HandlerContext, user_id: int, job_id: int):
         next_retry_at=detail.get("next_retry_at"),
         accepted_at=float(detail.get("accepted_at") or 0),
         can_retry=bool(detail.get("can_retry")),
+        media_compat_summary=str(detail.get("media_compat_summary") or ""),
     )
     return job_detail_view(state)
 

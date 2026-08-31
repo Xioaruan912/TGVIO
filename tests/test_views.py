@@ -276,6 +276,16 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("预计剩余 18 秒", card)
         self.assertTrue(all(len(data) <= 64 for data in callback_data(card_buttons)))
 
+        ready, _ = job_card_view(
+            JobCardView(
+                seq=28,
+                phase="ready",
+                media_count=1,
+                compat_note="🧩 已完成 faststart（无损 remux）",
+            )
+        )
+        self.assertIn("已完成 faststart", ready)
+
         unknown, _ = job_card_view(
             JobCardView(
                 seq=29,

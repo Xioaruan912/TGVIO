@@ -65,6 +65,7 @@ class JobDetailViewState:
     next_retry_at: float | None = None
     accepted_at: float = 0.0
     can_retry: bool = False
+    media_compat_summary: str = ""
 
 
 @dataclass(frozen=True)
@@ -186,6 +187,8 @@ def job_detail_view(state: JobDetailViewState) -> tuple[str, list]:
         f"📢 已发布消息：{state.published_count}",
         f"☁️ 备份：{state.backup_state or 'disabled'}{(' · ' + state.backup_summary) if state.backup_summary else ''}",
     ]
+    if state.media_compat_summary:
+        lines.append(f"🎞 兼容性：{state.media_compat_summary}")
     if state.bytes_total > 0 and state.state in {"downloading", "publishing"}:
         pct = max(0, min(100, int(state.bytes_done * 100 / state.bytes_total)))
         lines.append(f"{render_bar(pct)} {pct}%")

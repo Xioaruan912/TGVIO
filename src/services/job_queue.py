@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import asyncio
+import json
 import os
 import time
 from typing import Any
@@ -245,6 +246,7 @@ class JobQueue:
         if detail is None:
             return None
         cache_exists = False
+        compat_labels: list[str] = []
         for item in detail.pop("items", []):
             path = item.get("local_path")
             size = int(item.get("size_bytes") or 0)
@@ -254,7 +256,24 @@ class JobQueue:
                         cache_exists = True
                 except OSError:
                     pass
+            raw_metadata = item.get("metadata_json")
+            if raw_metadata:
+                try:
+                    metadata = json.loads(raw_metadata)
+                except Exception:
+                    metadata = {}
+                compat = metadata.get("media_compat") if isinstance(metadata, dict) else None
+                if isinstance(compat, dict):
+                    video = compat.get("video_codec")
+                    audio = compat.get("audio_codec")
+                    if compat.get("streaming_ready"):
+                        compat_labels.append("✅ 可流式播放")
+                    elif video not in (None, "h264") or audio not in (None, "aac"):
+                        compat_labels.append("⚠️ 非 H.264/AAC")
+                    elif compat.get("faststart") is False:
+                        compat_labels.append("🧩 建议 faststart")
         detail["cache_exists"] = cache_exists
+        detail["media_compat_summary"] = " · ".join(dict.fromkeys(compat_labels))[:300]
         seq = detail.get("legacy_seq")
         detail["can_retry"] = bool(seq is not None and int(seq) in self._pipeline.retryable)
         backup = detail.get("backup")

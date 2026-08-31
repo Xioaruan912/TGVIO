@@ -47,6 +47,7 @@ class JobCardView:
     show_progress: bool = True
     error: str | None = None
     cache_retained: bool = False
+    compat_note: str = ""
 
 
 _PHASE = {
@@ -82,6 +83,8 @@ def job_card_view(state: JobCardView) -> tuple[str, list]:
             lines.append(f"📍 当前：第 {state.item}/{state.items} 个媒体")
         lines.append("➡️ 下一步：Telegram 发布" if state.phase == "downloading" else "➡️ 下一步：WebDAV 备份（如已启用）")
     elif state.phase == "ready":
+        if state.compat_note:
+            lines.append(state.compat_note[:300])
         lines.append("➡️ 下一步：Telegram 发布")
     elif state.phase == "succeeded":
         lines.extend(["📢 Telegram：完成", "☁️ WebDAV：后台处理（如已启用）"])

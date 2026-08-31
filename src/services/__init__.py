@@ -12,6 +12,7 @@ from .disk import DiskDecision, DiskManager, DiskSnapshot
 from .stats import RuntimeStatsSnapshot, StatsService
 from .health import RuntimeHeartbeat
 from .dedup import ContentHash, DedupManager, sha256_file
+from .media_compat import MediaCompatibilityManager
 
 __all__ = [
     "BackupManager",
@@ -37,4 +38,5 @@ __all__ = [
     "ContentHash",
     "DedupManager",
     "sha256_file",
+    "MediaCompatibilityManager",
 ]

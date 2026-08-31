@@ -79,3 +79,10 @@ UNKNOWN_JOB_RESERVE_BYTES = _env_int("UNKNOWN_JOB_RESERVE_BYTES", 2 * 1024 * 102
 
 HEALTH_HEARTBEAT_MAX_AGE = _env_int("HEALTH_HEARTBEAT_MAX_AGE", 45)
 HEALTH_MIN_FREE_BYTES = _env_int("HEALTH_MIN_FREE_BYTES", 256 * 1024 * 1024)
+
+MEDIA_COMPAT_MODE = os.environ.get("MEDIA_COMPAT_MODE", "analyze").strip().lower()
+if MEDIA_COMPAT_MODE not in {"off", "analyze", "remux"}:
+    MEDIA_COMPAT_MODE = "analyze"
+FASTSTART_MAX_BYTES = _env_int("FASTSTART_MAX_BYTES", 0)
+TRANSCODE_ENABLED = _env_bool("TRANSCODE_ENABLED", False)
+THUMBNAIL_POSITION = os.environ.get("THUMBNAIL_POSITION", "auto").strip().lower() or "auto"

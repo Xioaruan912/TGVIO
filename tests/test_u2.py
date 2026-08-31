@@ -156,6 +156,34 @@ class U2RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("bearer-secret", message)
         self.assertNotIn("token=abc", message)
 
+    async def test_durable_detail_keeps_media_compatibility_summary(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="ready",
+            source_kind="url",
+            legacy_seq=91,
+            source_url="https://example.invalid/media",
+            items=[{"metadata": {"schema_version": 1}}],
+            event_payload={"schema_version": 1},
+        )
+        await self.repo.set_job_item_media_metadata(
+            91,
+            [
+                {
+                    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+                    "video_codec": "h264",
+                    "audio_codec": "aac",
+                    "faststart": True,
+                    "streaming_ready": True,
+                }
+            ],
+        )
+        pipeline = SimpleNamespace(repository=self.repo, download_dir=str(self.download_root), retryable={})
+        queue = JobQueue(pipeline)
+        detail = await queue.durable_job_detail(42, job.id)
+        self.assertIn("可流式播放", detail["media_compat_summary"])
+
 
 class U2ViewTests(unittest.TestCase):
     def test_queue_detail_failure_batch_and_confirmation_callbacks_fit(self) -> None:
@@ -178,10 +206,12 @@ class U2ViewTests(unittest.TestCase):
                 bytes_total=0, retry_count=1, cache_exists=True, published_count=2,
                 backup_state="failed", error_message="network timeout", can_retry=True,
                 error_code="network_timeout",
+                media_compat_summary="✅ 可流式播放",
             )
         )
         self.assertIn("network timeout", detail_text)
         self.assertIn("检查网络或代理后重试", detail_text)
+        self.assertIn("可流式播放", detail_text)
         self.assertIn(b"j:d:9:4", callbacks(detail_buttons))
         failure_text, failure_buttons = failure_center_view(
             (FailureItemView(9, 109, 4, True, "network timeout", True, "network_timeout"),), page=0, pages=1

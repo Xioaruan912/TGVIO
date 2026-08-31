@@ -42,6 +42,35 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(check["synchronous"], 2)
         self.assertTrue(SQLiteRepository.REQUIRED_TABLES.issubset(check["tables"]))
 
+    async def test_media_compat_metadata_merges_without_losing_existing_item_metadata(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="queued",
+            source_kind="url",
+            legacy_seq=88,
+            source_url="https://example.invalid/media",
+            items=[{"metadata": {"schema_version": 1, "existing": "keep"}}],
+            event_payload={"schema_version": 1},
+        )
+        changed = await self.repo.set_job_item_media_metadata(
+            88,
+            [
+                {
+                    "container": "mov,mp4,m4a,3gp,3g2,mj2",
+                    "video_codec": "h264",
+                    "audio_codec": "aac",
+                    "faststart": True,
+                    "streaming_ready": True,
+                }
+            ],
+        )
+        self.assertEqual(changed, 1)
+        items = await self.repo.list_job_items(job.id)
+        payload = __import__("json").loads(items[0].metadata_json)
+        self.assertEqual(payload["existing"], "keep")
+        self.assertTrue(payload["media_compat"]["streaming_ready"])
+
     async def test_backup_attempt_pages_are_sql_backed_and_include_file_aggregates(self) -> None:
         job = await self.repo.accept_job(
             kind="url", user_id=1, state="queued", source_kind="url",
