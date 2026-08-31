@@ -4,7 +4,9 @@ import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
-from src.media import MediaPublisher, PublishPartialError
+from telethon.tl import types
+
+from src.media import MediaDownloader, MediaPublisher, PublishPartialError
 from src.models import Job
 from src.services.dedup import ContentHash
 from tests.fakes import FakeClient, FakeStatusMessage
@@ -26,6 +28,22 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
             channel_at="@channel",
             group_at="@group",
         )
+
+    def test_telegram_document_filename_cannot_escape_job_directory(self) -> None:
+        downloader = MediaDownloader(
+            self.client,
+            lambda _seq: self.tempdir.name,
+            download_timeout=30,
+        )
+        media = SimpleNamespace(
+            document=SimpleNamespace(
+                attributes=[
+                    types.DocumentAttributeFilename(file_name="../../.env")
+                ],
+                mime_type="video/mp4",
+            )
+        )
+        self.assertEqual(downloader._media_filename(media), "env")
 
     def make_file(self, name: str, content: bytes = b"media") -> str:
         path = os.path.join(self.tempdir.name, name)

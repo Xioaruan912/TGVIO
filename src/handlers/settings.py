@@ -3,11 +3,11 @@
 from __future__ import annotations
 
 import logging
-import re
 from typing import Any
 
 from telethon import Button, events, functions
 
+from ..security import normalize_remote_path, safe_url_label, validate_webdav_url
 from ..views import (
     BackupAttemptDetailView,
     BackupAttemptListItemView,
@@ -45,7 +45,7 @@ def _webdav_state(ctx: HandlerContext) -> WebDavConfigViewState:
     cfg = ctx.backup.config_snapshot()
     return WebDavConfigViewState(
         enabled=bool(cfg.get("enabled")),
-        url=cfg.get("url") or "",
+        url=safe_url_label(cfg.get("url")) if cfg.get("url") else "",
         user=cfg.get("user") or "",
         has_password=bool(cfg.get("pass")),
         path=cfg.get("path") or "",
@@ -296,9 +296,20 @@ def register_setting_commands(ctx: HandlerContext) -> None:
                 auto_delete=False,
             )
             return
-        if field == "path" and value and not value.startswith("/"):
-            value = "/" + value
+        try:
+            if field == "url":
+                value = validate_webdav_url(value)
+            elif field == "path":
+                value = normalize_remote_path(value)
+        except ValueError as exc:
+            await ctx.respond(event, f"❌ WebDAV 配置无效：{exc}", auto_delete=False)
+            return
         ctx.backup.set_config(field, value)
+        if field == "pass":
+            try:
+                await event.delete()
+            except Exception:
+                pass
         status = "✅ 已启用" if ctx.backup.get_config("enabled") else "⛔ 已停用"
         await ctx.respond(
             event,
@@ -557,6 +568,8 @@ async def callback_webdav_config(ctx: HandlerContext, event: Any, data: str) -> 
         current = ctx.backup.get_config(field)
         if field == "pass":
             current = "***" if current else "（空）"
+        elif field == "url" and current:
+            current = safe_url_label(current)
         await ctx.answer(event, "请直接回复新值")
         await ctx.edit(
             event,
@@ -762,21 +775,26 @@ async def handle_webdav_input(ctx: HandlerContext, event: Any, session: Any) -> 
                 auto_delete=False,
             )
             return True
-    elif field == "url":
-        if not re.match(r"^https?://", value, re.IGNORECASE):
-            await ctx.respond(
-                event,
-                "❌ 地址需以 http:// 或 https:// 开头，请重新输入",
-                auto_delete=False,
+    elif field in {"url", "path"}:
+        try:
+            value = (
+                validate_webdav_url(value)
+                if field == "url"
+                else normalize_remote_path(value)
             )
+        except ValueError as exc:
+            await ctx.respond(event, f"❌ WebDAV 配置无效：{exc}", auto_delete=False)
             return True
-    elif field == "path" and value and not value.startswith("/"):
-        value = "/" + value
     if field in ("url", "user", "pass", "path") and not value:
         await ctx.respond(event, "❌ 内容不能为空，请重新输入", auto_delete=False)
         return True
     ctx.backup.set_config(field, value)
     ctx.interactions.finish(event.sender_id, session.revision)
+    if field == "pass":
+        try:
+            await event.delete()
+        except Exception:
+            pass
     shown = "***" if field == "pass" else value
     await ctx.respond(
         event,
@@ -1043,4 +1061,3 @@ def register_setting_callbacks(router: Any) -> None:
     router.prefix("wd:", callback_webdav_durable)
     router.prefix("mode:", callback_mode)
     router.prefix("dp:", callback_destination_profile)
-

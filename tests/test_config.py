@@ -58,6 +58,20 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(SettingsError):
             Settings.from_env(env, strict=True)
 
+    def test_history_and_event_retention_are_bounded(self) -> None:
+        env = base_env()
+        env.update(HISTORY_RETENTION_DAYS="45", EVENT_RETENTION_DAYS="90")
+        settings = Settings.from_env(env, strict=True)
+        self.assertEqual(settings.history_retention_days, 45)
+        self.assertEqual(settings.event_retention_days, 90)
+        self.assertEqual(settings.safe_summary()["history_retention_days"], 45)
+
+        for key, value in (("HISTORY_RETENTION_DAYS", "0"), ("EVENT_RETENTION_DAYS", "91")):
+            invalid = base_env()
+            invalid[key] = value
+            with self.subTest(key=key), self.assertRaises(SettingsError):
+                Settings.from_env(invalid, strict=True)
+
 
 if __name__ == "__main__":
     unittest.main()

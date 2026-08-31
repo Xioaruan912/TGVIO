@@ -7,6 +7,7 @@ from typing import Any
 
 from telethon import events
 
+from ..domain import safe_traceback
 from ..views import reply_keyboard
 from .common import HandlerContext
 
@@ -61,7 +62,10 @@ async def handle_end(ctx: HandlerContext, event: Any) -> None:
         if not count:
             await ctx.respond(event, "合集为空，未发布任何内容")
     except Exception as exc:
-        logger.exception("Session end failed: %s", exc)
+        logger.error(
+            "Session end failed type=%s traceback=%s",
+            exc.__class__.__name__, safe_traceback(exc),
+        )
         await ctx.respond(event, f"结束合集失败: {exc}")
 
 
@@ -91,10 +95,12 @@ async def callback_session_end(ctx: HandlerContext, event: Any, data: str) -> No
     try:
         await ctx.queue.finalize_session(target, event.chat_id)
     except Exception as exc:
-        logger.exception("Session end callback failed: %s", exc)
+        logger.error(
+            "Session end callback failed type=%s traceback=%s",
+            exc.__class__.__name__, safe_traceback(exc),
+        )
         await ctx.answer(event, f"结束失败: {exc}")
 
 
 def register_collection_callbacks(router: Any) -> None:
     router.prefix("session_end:", callback_session_end)
-

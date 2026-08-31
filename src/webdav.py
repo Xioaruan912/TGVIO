@@ -18,6 +18,12 @@ import urllib.parse
 import uuid
 import xml.etree.ElementTree as ET
 
+from .security import (
+    normalize_remote_path,
+    validate_remote_name,
+    validate_webdav_url,
+)
+
 logger = logging.getLogger(__name__)
 
 _CHUNK = 1024 * 1024
@@ -71,9 +77,18 @@ def _auth_header(user: str, passwd: str) -> str:
 
 
 def _split(url: str):
-    parsed = urllib.parse.urlsplit(url)
-    path = urllib.parse.unquote(parsed.path) or "/"
+    parsed = urllib.parse.urlsplit(validate_webdav_url(url))
+    path = normalize_remote_path(parsed.path or "/")
     return parsed, path
+
+
+def _joined_path(root_path: str, remote_dir: str, filename: str | None = None) -> str:
+    root = normalize_remote_path(root_path).strip("/")
+    remote = normalize_remote_path(remote_dir).strip("/")
+    parts = [part for part in (root, remote) if part]
+    if filename is not None:
+        parts.append(validate_remote_name(filename))
+    return "/" + "/".join(parts) if parts else "/"
 
 
 def _connect(parsed) -> http.client.HTTPConnection:
@@ -224,7 +239,7 @@ def remote_file_size(
     try:
         auth = _auth_header(user, passwd)
         parsed, root_path = _split(base_url)
-        url_path = f"{root_path.rstrip('/')}/{remote_dir.strip('/')}/{filename}"
+        url_path = _joined_path(root_path, remote_dir, filename)
         return _remote_size(parsed, url_path, auth)
     except Exception as exc:
         logger.warning("WebDAV remote_file_size %s/%s failed: %s", remote_dir, filename, exc)
@@ -246,7 +261,7 @@ def probe_connection(
     try:
         auth = _auth_header(user, passwd)
         parsed, root_path = _split(base_url)
-        url_path = f"{root_path.rstrip('/')}/{remote_dir.strip('/')}".rstrip("/") or "/"
+        url_path = _joined_path(root_path, remote_dir)
         target = urllib.parse.urlunsplit(
             (parsed.scheme, parsed.netloc, urllib.parse.quote(url_path, safe="/"), "", "")
         )
@@ -337,7 +352,7 @@ def probe_write(
             temp_path = tmp.name
         auth = _auth_header(user, passwd)
         parsed, root_path = _split(base_url)
-        url_path = f"{root_path.rstrip('/')}/{remote_dir.strip('/')}/{name}"
+        url_path = _joined_path(root_path, remote_dir, name)
         conn = _connect(parsed)
         try:
             uploaded = bool(_put_file(conn, parsed, url_path, temp_path, auth))
@@ -395,12 +410,12 @@ def _upload_once(
     """单次上传（不重试）。remote_dir 为相对 dav 根的目录路径（自动创建日期文件夹）。"""
     auth = _auth_header(user, passwd)
     parsed, root_path = _split(base_url)
-    name = remote_name or os.path.basename(local_path)
-    rel_dir = f"{remote_dir.strip('/')}/{name}"
-    url_path = f"{root_path.rstrip('/')}/{rel_dir}"
+    name = validate_remote_name(remote_name or os.path.basename(local_path))
+    directory_path = _joined_path(root_path, remote_dir)
+    url_path = _joined_path(root_path, remote_dir, name)
     conn = _connect(parsed)
     try:
-        _mkcol(conn, parsed, f"{root_path.rstrip('/')}/{remote_dir.strip('/')}", auth)
+        _mkcol(conn, parsed, directory_path, auth)
         return _put_file(conn, parsed, url_path, local_path, auth, progress_callback)
     finally:
         conn.close()
@@ -473,12 +488,12 @@ def delete_remote(
     """
     auth = _auth_header(user, passwd)
     parsed, root_path = _split(base_url)
-    rel = f"{remote_dir.strip('/')}/{filename}"
+    url_path = _joined_path(root_path, remote_dir, filename)
     target = urllib.parse.urlunsplit(
         (
             parsed.scheme,
             parsed.netloc,
-            urllib.parse.quote(f"{root_path.rstrip('/')}/{rel}", safe="/"),
+            urllib.parse.quote(url_path, safe="/"),
             "",
             "",
         )
@@ -508,7 +523,7 @@ def ensure_dir(base_url: str, remote_dir: str, user: str, passwd: str) -> None:
         parsed, root_path = _split(base_url)
         conn = _connect(parsed)
         try:
-            _mkcol(conn, parsed, f"{root_path.rstrip('/')}/{remote_dir.strip('/')}", auth)
+            _mkcol(conn, parsed, _joined_path(root_path, remote_dir), auth)
         finally:
             conn.close()
     except Exception as exc:

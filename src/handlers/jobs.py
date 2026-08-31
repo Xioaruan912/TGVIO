@@ -7,6 +7,7 @@ from typing import Any
 
 from telethon import Button, events
 
+from ..domain import safe_traceback
 from ..views import (
     DurableQueueItemView,
     DurableQueuePageView,
@@ -166,7 +167,7 @@ async def callback_job_action(ctx: HandlerContext, event: Any, data: str) -> Non
     except (ValueError, IndexError):
         await ctx.answer(event, "无效操作")
         return
-    if action not in {"c", "r", "d", "u"} or job_id <= 0 or revision <= 0:
+    if action not in {"c", "r", "d", "u", "h"} or job_id <= 0 or revision <= 0:
         await ctx.answer(event, "无效操作")
         return
     record = await ctx.queue.durable_record(event.sender_id, job_id)
@@ -195,7 +196,12 @@ async def callback_job_action(ctx: HandlerContext, event: Any, data: str) -> Non
         text, buttons = await _durable_queue(ctx, event.sender_id, "all", 0)
         await ctx.edit(event, text, buttons=buttons)
         return
-    operation_action = {"c": "cancel", "d": "delete_cache", "u": "undo"}[action]
+    operation_action = {
+        "c": "cancel",
+        "d": "delete_cache",
+        "u": "undo",
+        "h": "delete_history",
+    }[action]
     operation = ctx.operations.create(
         user_id=event.sender_id,
         action=operation_action,
@@ -283,6 +289,24 @@ async def callback_confirm_operation(ctx: HandlerContext, event: Any, data: str)
                     deleted,
                 )
             await ctx.answer(event, f"撤销完成：{len(deleted)} 成功 · {failed} 失败")
+    elif operation.action == "delete_history":
+        result = await ctx.queue.delete_history_by_id(
+            event.sender_id,
+            operation.job_id,
+            operation.expected_revision,
+        )
+        if result == "ok":
+            await ctx.answer(event, "任务历史与关联文字已删除")
+            text, buttons = await _durable_queue(ctx, event.sender_id, "all", 0)
+            await ctx.edit(event, text, buttons=buttons)
+            return
+        message = {
+            "cache_exists": "请先删除本地缓存",
+            "busy": "任务仍有备份/清理操作进行中",
+            "active": "任务尚未结束",
+            "stale": "任务状态已变化，请刷新",
+        }.get(result, "任务不存在或已删除")
+        await ctx.answer(event, message)
     rendered = await _detail(ctx, event.sender_id, operation.job_id)
     if rendered:
         await ctx.edit(event, rendered[0], buttons=rendered[1])
@@ -344,7 +368,7 @@ async def callback_cancel_pending(ctx: HandlerContext, event: Any, data: str) ->
     except (ValueError, IndexError):
         await ctx.answer(event, "无效操作")
         return
-    ok = await ctx.queue.cancel_pending(seq)
+    ok = await ctx.queue.cancel_pending(seq, user_id=event.sender_id)
     await ctx.answer(event, "已取消" if ok else "该确认已失效")
 
 
@@ -373,7 +397,7 @@ async def callback_cancel_job(ctx: HandlerContext, event: Any, data: str) -> Non
         )
         await ctx.edit(event, text, buttons=buttons)
         return
-    ok = await ctx.queue.cancel(seq)
+    ok = await ctx.queue.cancel(seq, user_id=event.sender_id)
     await ctx.answer(event, "已取消" if ok else "无法取消")
 
 
@@ -412,7 +436,7 @@ async def callback_stop(ctx: HandlerContext, event: Any, data: str) -> None:
         )
         await ctx.edit(event, text, buttons=buttons)
         return
-    if ctx.queue.stop_running(seq):
+    if ctx.queue.stop_running(seq, user_id=event.sender_id):
         await ctx.answer(event, "正在停止...")
     else:
         await ctx.answer(event, "该任务不在下载/上传中")
@@ -443,7 +467,7 @@ async def callback_undo(ctx: HandlerContext, event: Any, data: str) -> None:
         )
         await ctx.edit(event, text, buttons=buttons)
         return
-    ids = ctx.queue.pop_published(seq)
+    ids = ctx.queue.pop_published(seq, user_id=event.sender_id)
     if not ids:
         await ctx.answer(event, "该发布已无法撤销")
         return
@@ -470,7 +494,7 @@ async def callback_hold(ctx: HandlerContext, event: Any, data: str) -> None:
     except (ValueError, IndexError):
         await ctx.answer(event, "无效操作")
         return
-    job = ctx.queue.hold(seq)
+    job = ctx.queue.hold(seq, user_id=event.sender_id)
     if job is not None:
         try:
             await job.status.edit(
@@ -491,7 +515,7 @@ async def callback_resume(ctx: HandlerContext, event: Any, data: str) -> None:
     except (ValueError, IndexError):
         await ctx.answer(event, "无效操作")
         return
-    job = ctx.queue.resume(seq)
+    job = ctx.queue.resume(seq, user_id=event.sender_id)
     if job is not None:
         try:
             await job.status.edit(
@@ -513,7 +537,7 @@ async def callback_retry(ctx: HandlerContext, event: Any, data: str) -> None:
     except (ValueError, IndexError):
         await ctx.answer(event, "无效操作")
         return
-    ticket = ctx.queue.claim_retry(seq)
+    ticket = ctx.queue.claim_retry(seq, user_id=event.sender_id)
     if ticket is None:
         await ctx.answer(event, "该任务已失效（可能已重试）")
         return
@@ -553,7 +577,7 @@ async def callback_confirm(ctx: HandlerContext, event: Any, data: str) -> None:
     except (ValueError, IndexError):
         await ctx.answer(event, "无效操作")
         return
-    ticket = ctx.queue.claim_confirmation(seq)
+    ticket = ctx.queue.claim_confirmation(seq, user_id=event.sender_id)
     if ticket is None:
         await ctx.answer(event, "该确认已失效")
         return
@@ -573,8 +597,13 @@ async def callback_confirm(ctx: HandlerContext, event: Any, data: str) -> None:
     try:
         ctx.queue.commit_confirmation(ticket, new_status, spoiler)
         await ctx.queue.set_status_reference(seq, new_status, chat_id=event.chat_id)
-    except Exception:
-        logger.exception("Enqueue failed for job #%s", seq)
+    except Exception as exc:
+        logger.error(
+            "Enqueue failed for job #%s type=%s traceback=%s",
+            seq,
+            exc.__class__.__name__,
+            safe_traceback(exc),
+        )
         ctx.queue.settle_failed_confirmation(seq)
     else:
         logger.info("Job #%s confirmed spoiler=%s", seq, spoiler)
@@ -666,6 +695,7 @@ def register_job_callbacks(router: Any) -> None:
     router.prefix("j:r:", callback_job_action)
     router.prefix("j:d:", callback_job_action)
     router.prefix("j:u:", callback_job_action)
+    router.prefix("j:h:", callback_job_action)
     router.prefix("x:y:", callback_confirm_operation)
     router.prefix("x:n:", callback_confirm_operation)
     router.exact("q:b", callback_batch_menu)

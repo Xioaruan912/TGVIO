@@ -74,6 +74,32 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         self.pipeline._retry_sleep = skip_retry_delay
 
+    async def test_periodic_maintenance_never_forces_healthy_disk_cleanup(self) -> None:
+        queue = AsyncMock()
+        queue.cleanup_to_waterline.return_value = {
+            "cleaned": 0,
+            "failed": 0,
+            "freed_bytes": 0,
+        }
+        repository = AsyncMock()
+        repository.prune_retained_history.return_value = {
+            "jobs": 0,
+            "events": 0,
+            "source_events": 0,
+            "interactions": 0,
+        }
+        self.pipeline.job_queue = queue
+        self.pipeline.repository = repository
+
+        report = await self.pipeline._maintenance_once()
+
+        queue.cleanup_to_waterline.assert_awaited_once_with(force=False)
+        repository.prune_retained_history.assert_awaited_once_with(
+            history_retention_days=self.pipeline._history_retention_days,
+            event_retention_days=self.pipeline._event_retention_days,
+        )
+        self.assertEqual(report["cleaned"], 0)
+
     def make_job(self, seq: int, path: str = "") -> Job:
         return Job(
             seq=seq,
@@ -779,6 +805,7 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_undo_callback_deletes_cover_and_comments_by_peer_once(self) -> None:
         pipeline, client = self.register_callback_pipeline()
+        pipeline._remember_seq_owner(240, 42)
         callback = client.handlers["on_callback"]
         pipeline.published[240] = [
             ("channel-input", 101),

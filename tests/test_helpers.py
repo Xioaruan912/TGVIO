@@ -3,6 +3,7 @@ import os
 import tempfile
 import unittest
 from pathlib import Path
+import stat
 
 from src.progress import position_token, render_bar
 from src.storage import JsonStore
@@ -20,6 +21,7 @@ class HelperTests(unittest.TestCase):
             store = JsonStore(path, {})
             store.save({"ok": True})
             self.assertEqual(store.load(), {"ok": True})
+            self.assertEqual(stat.S_IMODE(os.stat(path).st_mode), 0o600)
             with open(path, encoding="utf-8") as f:
                 self.assertEqual(json.load(f), {"ok": True})
 

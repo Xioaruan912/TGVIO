@@ -61,6 +61,23 @@ class JobQueue:
     def progress_enabled(self, user_id: int) -> bool:
         return self._pipeline._show_progress(user_id)
 
+    def _owns_runtime_job(self, seq: int, user_id: int) -> bool:
+        seq = int(seq)
+        owner = getattr(self._pipeline, "_seq_owners", {}).get(seq)
+        if owner is None:
+            pending = getattr(self._pipeline, "pending", {}).get(seq)
+            job = (
+                getattr(self._pipeline, "jobs", {}).get(seq)
+                or getattr(self._pipeline, "_runtime_jobs", {}).get(seq)
+            )
+            retry = getattr(self._pipeline, "retryable", {}).get(seq)
+            candidate = pending or job or getattr(retry, "job", None)
+            owner = getattr(candidate, "user_id", None)
+        try:
+            return int(owner) == int(user_id)
+        except (TypeError, ValueError):
+            return False
+
     async def home_snapshot(self, user_id: int) -> dict[str, Any]:
         repository = getattr(self._pipeline, "repository", None)
         if repository is not None:
@@ -317,7 +334,9 @@ class JobQueue:
         if record.state in {"succeeded", "cancelled", "failed"}:
             return "terminal"
         repository = getattr(self._pipeline, "repository", None)
-        if record.legacy_seq is not None and await self.cancel(int(record.legacy_seq)):
+        if record.legacy_seq is not None and await self.cancel(
+            int(record.legacy_seq), user_id=user_id
+        ):
             return "ok"
         if repository is None:
             return "unavailable"
@@ -341,7 +360,7 @@ class JobQueue:
             return "stale", None
         if record.state != "failed" or record.legacy_seq is None:
             return "terminal", None
-        ticket = self.claim_retry(int(record.legacy_seq))
+        ticket = self.claim_retry(int(record.legacy_seq), user_id=user_id)
         return ("ok", ticket) if ticket is not None else ("unavailable", None)
 
     async def delete_failed_cache_by_id(self, user_id: int, job_id: int, expected_revision: int) -> str:
@@ -377,6 +396,21 @@ class JobQueue:
             except OSError:
                 pass
         return "ok"
+
+    async def delete_history_by_id(
+        self,
+        user_id: int,
+        job_id: int,
+        expected_revision: int,
+    ) -> str:
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return "unavailable"
+        return await repository.delete_job_history(
+            int(job_id),
+            user_id=int(user_id),
+            expected_revision=int(expected_revision),
+        )
 
     async def published_refs_by_id(self, user_id: int, job_id: int, expected_revision: int):
         repository = getattr(self._pipeline, "repository", None)
@@ -503,7 +537,9 @@ class JobQueue:
             user_id=user_id,
         )
 
-    async def cancel_pending(self, seq: int) -> bool:
+    async def cancel_pending(self, seq: int, *, user_id: int) -> bool:
+        if not self._owns_runtime_job(seq, user_id):
+            return False
         ok = await self._pipeline._cancel_pending(seq)
         if ok and self._shadow is not None:
             if getattr(self._pipeline, "repository", None) is not None:
@@ -512,7 +548,9 @@ class JobQueue:
                 self._shadow.transition(seq, "cancelled", "cancelled")
         return ok
 
-    async def cancel(self, seq: int) -> bool:
+    async def cancel(self, seq: int, *, user_id: int) -> bool:
+        if not self._owns_runtime_job(seq, user_id):
+            return False
         ok = await self._pipeline._cancel_seq(seq)
         if ok and self._shadow is not None:
             if getattr(self._pipeline, "repository", None) is not None:
@@ -533,7 +571,9 @@ class JobQueue:
     def resume_all(self) -> None:
         self._pipeline._paused = False
 
-    def stop_running(self, seq: int) -> bool:
+    def stop_running(self, seq: int, *, user_id: int) -> bool:
+        if not self._owns_runtime_job(seq, user_id):
+            return False
         task = self._pipeline._download_tasks.get(seq)
         if task is None or task.done():
             task = self._pipeline._upload_tasks.get(seq)
@@ -542,24 +582,32 @@ class JobQueue:
         task.cancel()
         return True
 
-    def pop_published(self, seq: int):
+    def pop_published(self, seq: int, *, user_id: int):
+        if not self._owns_runtime_job(seq, user_id):
+            return None
         return self._pipeline.published.pop(seq, None)
 
-    def hold(self, seq: int) -> Job | None:
+    def hold(self, seq: int, *, user_id: int) -> Job | None:
+        if not self._owns_runtime_job(seq, user_id):
+            return None
         self._pipeline._paused_files.add(seq)
         job = self._pipeline.jobs.get(seq)
         if job is not None and self._shadow is not None:
             self._shadow.transition(seq, "paused", "paused")
         return job
 
-    def resume(self, seq: int) -> Job | None:
+    def resume(self, seq: int, *, user_id: int) -> Job | None:
+        if not self._owns_runtime_job(seq, user_id):
+            return None
         self._pipeline._paused_files.discard(seq)
         job = self._pipeline.jobs.get(seq)
         if job is not None and self._shadow is not None:
             self._shadow.resume(seq)
         return job
 
-    def claim_retry(self, seq: int) -> RetryTicket | None:
+    def claim_retry(self, seq: int, *, user_id: int) -> RetryTicket | None:
+        if not self._owns_runtime_job(seq, user_id):
+            return None
         info = self._pipeline.retryable.pop(seq, None)
         if info is None:
             return None
@@ -613,7 +661,9 @@ class JobQueue:
             )
         return new_job
 
-    def claim_confirmation(self, seq: int) -> ConfirmationTicket | None:
+    def claim_confirmation(self, seq: int, *, user_id: int) -> ConfirmationTicket | None:
+        if not self._owns_runtime_job(seq, user_id):
+            return None
         pending = self._pipeline.pending.pop(seq, None)
         if pending is None:
             return None

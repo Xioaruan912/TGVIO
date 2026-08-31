@@ -12,12 +12,14 @@ import asyncio
 import hashlib
 import logging
 import os
+from pathlib import Path
 
 from telethon import TelegramClient, custom, functions, helpers
 from telethon.tl import types
 from telethon.utils import get_input_document, get_input_photo, get_peer_id
 
 from .downloader import CancelToken, DownloadProgress, download_video
+from .security import sanitize_filename
 from .video import guess_mime, is_photo_path, is_video_path, make_cover, make_thumb, probe_video
 
 logger = logging.getLogger(__name__)
@@ -81,8 +83,16 @@ class MediaDownloader:
     async def _download(self, job):
         cached = getattr(job, "cached_path", "") or ""
         if cached:
-            logger.info("Job #%s using cached file %s", job.seq, cached)
-            return cached
+            root = Path(self._workdir(job.seq)).resolve().parent
+            candidate = Path(cached).resolve()
+            try:
+                contained = os.path.commonpath((str(root), str(candidate))) == str(root)
+            except ValueError:
+                contained = False
+            if not contained or candidate.parent.parent != root or not candidate.is_file():
+                raise ValueError("cached media path is outside a managed job directory")
+            logger.info("Job #%s using validated cached file", job.seq)
+            return str(candidate)
         workdir = self._workdir(job.seq)
         os.makedirs(workdir, exist_ok=True)
         if job.kind == "album":
@@ -178,10 +188,17 @@ class MediaDownloader:
         if doc:
             for attr in doc.attributes:
                 if isinstance(attr, types.DocumentAttributeFilename):
-                    return attr.file_name
+                    return sanitize_filename(
+                        attr.file_name,
+                        fallback=f"media_{item}.bin",
+                    )
             ext = "bin"
             if doc.mime_type:
-                ext = doc.mime_type.split("/")[-1]
+                ext = sanitize_filename(
+                    doc.mime_type.split("/")[-1],
+                    fallback="bin",
+                    limit=24,
+                )
             return f"media.{ext}"
         return f"photo_{item}.jpg"
 

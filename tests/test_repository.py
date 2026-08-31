@@ -42,6 +42,118 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(check["synchronous"], 2)
         self.assertTrue(SQLiteRepository.REQUIRED_TABLES.issubset(check["tables"]))
 
+    async def test_delete_job_history_requires_owner_revision_and_no_cache(self) -> None:
+        job_dir = self.download_root / "job-700"
+        job_dir.mkdir()
+        media = job_dir / "private.mp4"
+        media.write_bytes(b"private")
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="queued",
+            source_kind="url",
+            source_url="https://example.invalid/private",
+            legacy_seq=700,
+            items=[{
+                "local_path": str(media),
+                "metadata": {"schema_version": 1, "caption": "private caption"},
+            }],
+            texts=["private comment"],
+            event_payload={"schema_version": 1},
+            now=100.0,
+        )
+        conn = self.repo._require_conn()
+        await conn.execute(
+            "UPDATE jobs SET state='failed', local_dir=?, finished_at=?, updated_at=? WHERE id=?",
+            (str(job_dir), 200.0, 200.0, job.id),
+        )
+        await conn.commit()
+
+        self.assertEqual(
+            await self.repo.delete_job_history(
+                job.id, user_id=7, expected_revision=job.revision
+            ),
+            "missing",
+        )
+        self.assertEqual(
+            await self.repo.delete_job_history(
+                job.id, user_id=42, expected_revision=job.revision + 1
+            ),
+            "stale",
+        )
+        self.assertEqual(
+            await self.repo.delete_job_history(
+                job.id, user_id=42, expected_revision=job.revision
+            ),
+            "cache_exists",
+        )
+
+        await conn.execute("UPDATE jobs SET local_dir=NULL WHERE id=?", (job.id,))
+        await conn.execute("UPDATE job_items SET local_path=NULL WHERE job_id=?", (job.id,))
+        await conn.commit()
+        self.assertEqual(
+            await self.repo.delete_job_history(
+                job.id, user_id=42, expected_revision=job.revision
+            ),
+            "ok",
+        )
+        self.assertIsNone(await self.repo.get_job(job.id))
+        cursor = await conn.execute(
+            "SELECT COUNT(*) FROM stat_metric_applied WHERE scope_key=?",
+            (f"job:{job.id}",),
+        )
+        self.assertEqual((await cursor.fetchone())[0], 0)
+        await cursor.close()
+        cursor = await conn.execute("SELECT SUM(accepted_jobs) FROM daily_stats")
+        self.assertEqual((await cursor.fetchone())[0], 1)
+        await cursor.close()
+
+    async def test_retention_prunes_only_safe_terminal_history(self) -> None:
+        old = 10.0
+        now = 100 * 86400.0
+        terminal = await self.repo.accept_job(
+            kind="url", user_id=42, state="queued", source_kind="url",
+            source_url="https://example.invalid/old", legacy_seq=701,
+            texts=["old private caption"], event_payload={"schema_version": 1}, now=old,
+        )
+        active = await self.repo.accept_job(
+            kind="url", user_id=42, state="queued", source_kind="url",
+            source_url="https://example.invalid/active", legacy_seq=702,
+            texts=["active text"], event_payload={"schema_version": 1}, now=old,
+        )
+        protected_dir = self.download_root / "job-703"
+        protected_dir.mkdir()
+        protected_file = protected_dir / "keep.mp4"
+        protected_file.write_bytes(b"keep")
+        protected = await self.repo.accept_job(
+            kind="url", user_id=42, state="queued", source_kind="url",
+            source_url="https://example.invalid/keep", legacy_seq=703,
+            items=[{"local_path": str(protected_file)}],
+            texts=["keep text"], event_payload={"schema_version": 1}, now=old,
+        )
+        conn = self.repo._require_conn()
+        await conn.execute(
+            "UPDATE jobs SET state='failed', finished_at=?, updated_at=? WHERE id=?",
+            (old, old, terminal.id),
+        )
+        await conn.execute(
+            "UPDATE jobs SET state='failed', local_dir=?, finished_at=?, updated_at=? WHERE id=?",
+            (str(protected_dir), old, old, protected.id),
+        )
+        await conn.commit()
+
+        report = await self.repo.prune_retained_history(
+            history_retention_days=30,
+            event_retention_days=30,
+            now=now,
+        )
+        self.assertEqual(report["jobs"], 1)
+        self.assertIsNone(await self.repo.get_job(terminal.id))
+        self.assertIsNotNone(await self.repo.get_job(active.id))
+        self.assertIsNotNone(await self.repo.get_job(protected.id))
+        self.assertEqual(await self.repo.list_job_texts(active.id), ["active text"])
+        self.assertEqual(await self.repo.list_job_texts(protected.id), ["keep text"])
+
     async def test_media_compat_metadata_merges_without_losing_existing_item_metadata(self) -> None:
         job = await self.repo.accept_job(
             kind="url",

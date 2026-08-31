@@ -7,6 +7,7 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Awaitable, Callable, Pattern
 
+from ..domain import safe_traceback
 from ..services import (
     BackupManager,
     DestinationProfileManager,
@@ -62,7 +63,11 @@ class HandlerContext:
                 )
             return message
         except Exception as exc:
-            logger.warning("Respond failed: %s", exc)
+            logger.warning(
+                "Respond failed type=%s traceback=%s",
+                exc.__class__.__name__,
+                safe_traceback(exc),
+            )
             return None
 
     @staticmethod
@@ -82,4 +87,3 @@ class HandlerContext:
     @staticmethod
     def spawn(coro: Awaitable[Any]) -> asyncio.Task:
         return asyncio.get_running_loop().create_task(coro)
-

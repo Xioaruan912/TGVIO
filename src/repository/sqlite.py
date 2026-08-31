@@ -23,6 +23,7 @@ from typing import Any, Iterable
 
 import aiosqlite
 
+from ..security import secure_private_directory, secure_private_file
 from ..state_machine import InvalidTransition, plan_transition
 
 logger = logging.getLogger(__name__)
@@ -357,7 +358,7 @@ class SQLiteRepository:
     async def open(self) -> None:
         if self._conn is not None:
             return
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        secure_private_directory(self.path.parent)
         self._preexisting = self.path.exists() and self.path.stat().st_size > 0
         try:
             conn = await aiosqlite.connect(self.path)
@@ -366,6 +367,7 @@ class SQLiteRepository:
             await conn.execute("PRAGMA busy_timeout=5000")
             await conn.execute("PRAGMA synchronous=FULL")
             self._conn = conn
+            secure_private_file(self.path)
         except Exception:
             logger.exception("Failed to open SQLite repository at %s", self.path)
             raise
@@ -473,7 +475,7 @@ class SQLiteRepository:
     async def _backup_before_migration(self) -> Path | None:
         if not self._preexisting:
             return None
-        self.backup_dir.mkdir(parents=True, exist_ok=True)
+        secure_private_directory(self.backup_dir)
         stamp = time.strftime("%Y%m%d-%H%M%S", time.localtime())
         target_path = self.backup_dir / f"state-pre-migrate-{stamp}.sqlite3"
         suffix = 1
@@ -485,6 +487,7 @@ class SQLiteRepository:
             await self._require_conn().backup(target)
         finally:
             target.close()
+        secure_private_file(target_path)
         self.last_backup_path = target_path
         logger.info("SQLite pre-migration backup created: %s", target_path)
         return target_path
@@ -1974,6 +1977,171 @@ class SQLiteRepository:
             except Exception:
                 await conn.rollback()
                 raise
+
+    async def delete_job_history(
+        self,
+        job_id: int,
+        *,
+        user_id: int,
+        expected_revision: int,
+    ) -> str:
+        """Delete one owner-scoped terminal history record after cache cleanup.
+
+        Foreign-key cascades remove captions, events, published references and
+        backup details. Aggregate daily statistics remain, while per-object
+        idempotency scope keys are removed so retained statistics are anonymous.
+        """
+        conn = self._require_conn()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    """SELECT user_id,state,revision,local_dir,claim_owner,claim_kind
+                       FROM jobs WHERE id=?""",
+                    (int(job_id),),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None or int(row["user_id"]) != int(user_id):
+                    await conn.rollback()
+                    return "missing"
+                if int(row["revision"]) != int(expected_revision):
+                    await conn.rollback()
+                    return "stale"
+                if str(row["state"]) not in {"succeeded", "failed", "cancelled"}:
+                    await conn.rollback()
+                    return "active"
+                if row["claim_owner"] is not None or row["claim_kind"] is not None:
+                    await conn.rollback()
+                    return "busy"
+                cursor = await conn.execute(
+                    "SELECT 1 FROM job_items WHERE job_id=? AND local_path IS NOT NULL LIMIT 1",
+                    (int(job_id),),
+                )
+                has_local_item = await cursor.fetchone() is not None
+                await cursor.close()
+                if row["local_dir"] is not None or has_local_item:
+                    await conn.rollback()
+                    return "cache_exists"
+                cursor = await conn.execute(
+                    """SELECT 1 FROM backup_attempts
+                       WHERE job_id=? AND state IN ('pending','running','retry_wait','interrupted')
+                       LIMIT 1""",
+                    (int(job_id),),
+                )
+                backup_active = await cursor.fetchone() is not None
+                await cursor.close()
+                if backup_active:
+                    await conn.rollback()
+                    return "busy"
+                await self._delete_stat_scopes_for_job_tx(conn, int(job_id))
+                cursor = await conn.execute(
+                    "DELETE FROM jobs WHERE id=? AND user_id=? AND revision=?",
+                    (int(job_id), int(user_id), int(expected_revision)),
+                )
+                changed = int(cursor.rowcount or 0) == 1
+                await cursor.close()
+                if not changed:
+                    await conn.rollback()
+                    return "stale"
+                await conn.commit()
+                return "ok"
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def prune_retained_history(
+        self,
+        *,
+        history_retention_days: int = 30,
+        event_retention_days: int = 30,
+        now: float | None = None,
+        limit: int = 500,
+    ) -> dict[str, int]:
+        """Bounded retention pass for private task metadata and captions."""
+        timestamp = time.time() if now is None else float(now)
+        history_cutoff = timestamp - max(0, int(history_retention_days)) * 86400
+        event_cutoff = timestamp - max(0, int(event_retention_days)) * 86400
+        limit = max(1, min(int(limit), 5000))
+        result = {"jobs": 0, "events": 0, "source_events": 0, "interactions": 0}
+        conn = self._require_conn()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "DELETE FROM interaction_sessions WHERE expires_at<=?",
+                    (timestamp,),
+                )
+                result["interactions"] = max(0, int(cursor.rowcount or 0))
+                await cursor.close()
+                cursor = await conn.execute(
+                    "DELETE FROM job_events WHERE created_at<?",
+                    (event_cutoff,),
+                )
+                result["events"] = max(0, int(cursor.rowcount or 0))
+                await cursor.close()
+                cursor = await conn.execute(
+                    """DELETE FROM source_events
+                       WHERE state IN ('enqueued','failed','interrupted') AND updated_at<?""",
+                    (history_cutoff,),
+                )
+                result["source_events"] = max(0, int(cursor.rowcount or 0))
+                await cursor.close()
+                cursor = await conn.execute(
+                    """SELECT j.id
+                       FROM jobs j
+                       WHERE j.state IN ('succeeded','failed','cancelled')
+                         AND COALESCE(j.finished_at,j.updated_at)<?
+                         AND j.local_dir IS NULL
+                         AND j.claim_owner IS NULL AND j.claim_kind IS NULL
+                         AND NOT EXISTS (
+                           SELECT 1 FROM job_items i
+                           WHERE i.job_id=j.id AND i.local_path IS NOT NULL
+                         )
+                         AND NOT EXISTS (
+                           SELECT 1 FROM backup_attempts a
+                           WHERE a.job_id=j.id
+                             AND a.state IN ('pending','running','retry_wait','interrupted')
+                         )
+                       ORDER BY COALESCE(j.finished_at,j.updated_at),j.id
+                       LIMIT ?""",
+                    (history_cutoff, limit),
+                )
+                job_ids = [int(row[0]) for row in await cursor.fetchall()]
+                await cursor.close()
+                for job_id in job_ids:
+                    await self._delete_stat_scopes_for_job_tx(conn, job_id)
+                    cursor = await conn.execute("DELETE FROM jobs WHERE id=?", (job_id,))
+                    result["jobs"] += max(0, int(cursor.rowcount or 0))
+                    await cursor.close()
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return result
+
+    async def _delete_stat_scopes_for_job_tx(
+        self,
+        conn: aiosqlite.Connection,
+        job_id: int,
+    ) -> None:
+        cursor = await conn.execute(
+            """SELECT f.id FROM backup_files f
+               JOIN backup_attempts a ON a.id=f.attempt_id
+               WHERE a.job_id=?""",
+            (int(job_id),),
+        )
+        backup_file_ids = [int(row[0]) for row in await cursor.fetchall()]
+        await cursor.close()
+        await conn.execute(
+            "DELETE FROM stat_metric_applied WHERE scope_key=?",
+            (f"job:{int(job_id)}",),
+        )
+        for file_id in backup_file_ids:
+            await conn.execute(
+                "DELETE FROM stat_metric_applied WHERE scope_key=?",
+                (f"backup_file:{file_id}",),
+            )
 
     async def upsert_interaction_session(self, *, user_id: int, kind: str, field: str | None, payload: dict[str, Any] | None, revision: int, expires_at: float) -> InteractionSessionRecord:
         conn = self._require_conn()

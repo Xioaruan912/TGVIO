@@ -7,6 +7,7 @@ import logging
 from telethon import events
 from telethon.tl.types import MessageEntityBotCommand
 
+from ..domain import safe_traceback
 from ..views import SESSION_BTN_BEGIN, SESSION_BTN_END
 from .collection import handle_begin, handle_end
 from .common import HandlerContext
@@ -68,7 +69,10 @@ def register_private_handler(ctx: HandlerContext) -> None:
                         event.chat_id,
                     )
                 except Exception as exc:
-                    logger.exception("Add single media to session failed: %s", exc)
+                    logger.error(
+                        "Add single media to session failed type=%s traceback=%s",
+                        exc.__class__.__name__, safe_traceback(exc),
+                    )
                     await ctx.respond(event, f"加入合集失败: {exc}")
                 return
             if ctx.queue.spoiler_mode(event.sender_id) != "ask":
@@ -80,7 +84,10 @@ def register_private_handler(ctx: HandlerContext) -> None:
                         event.sender_id,
                     )
                 except Exception as exc:
-                    logger.exception("Auto-enqueue failed: %s", exc)
+                    logger.error(
+                        "Auto-enqueue failed type=%s traceback=%s",
+                        exc.__class__.__name__, safe_traceback(exc),
+                    )
                     await ctx.respond(event, f"自动处理失败: {exc}")
                 return
             seq = ctx.queue.reserve_seq()
@@ -94,7 +101,10 @@ def register_private_handler(ctx: HandlerContext) -> None:
                     event.chat_id,
                 )
             except Exception as exc:
-                logger.exception("18+ question FAILED for #%s: %s", seq, exc)
+                logger.error(
+                    "18+ question failed for #%s type=%s traceback=%s",
+                    seq, exc.__class__.__name__, safe_traceback(exc),
+                )
                 await ctx.respond(event, f"发送确认失败: {exc}")
             return
 
@@ -125,9 +135,11 @@ def register_private_handler(ctx: HandlerContext) -> None:
                     event.chat_id,
                 )
             except Exception as exc:
-                logger.exception("Add text comment to session failed: %s", exc)
+                logger.error(
+                    "Add text comment to session failed type=%s traceback=%s",
+                    exc.__class__.__name__, safe_traceback(exc),
+                )
                 await ctx.respond(event, f"添加评论失败: {exc}")
             return
 
         await ctx.respond(event, "请发送视频或链接，或使用 /start 查看使用说明。")
-

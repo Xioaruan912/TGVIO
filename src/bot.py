@@ -10,6 +10,7 @@ import time
 from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
+from urllib.parse import unquote, urlsplit
 
 from telethon import Button, TelegramClient
 from telethon.errors import FloodWaitError
@@ -29,6 +30,7 @@ from .config import (
     CONFIRM_TIMEOUT,
     COVER_MODE,
     COVER_WIDTH,
+    DISK_CHECK_INTERVAL,
     DISK_ENFORCE,
     DEST_CHANNEL,
     DOWNLOAD_AUTO_RETRY,
@@ -38,6 +40,8 @@ from .config import (
     DOWNLOAD_WORKERS,
     FORWARD_CAPTION,
     FAILED_CACHE_RETENTION_HOURS,
+    HISTORY_RETENTION_DAYS,
+    EVENT_RETENTION_DAYS,
     GROUP_AT,
     MAX_COVER_IMAGES,
     MAX_FILE_SIZE,
@@ -67,6 +71,7 @@ from . import webdav
 from .media import FileTooLargeError, MediaDownloader, MediaPublisher, PublishPartialError
 from .models import AlbumBuffer, Job, PendingJob, RetryInfo, Session
 from .progress import ProgressTracker, position_token, render_bar
+from .security import safe_url_label
 from .storage import JsonStore
 from .handlers import HandlerContext, install_handlers
 from .services import (
@@ -224,6 +229,9 @@ def _legacy_static_settings() -> Settings:
         max_cache_bytes=MAX_CACHE_BYTES,
         cache_retention_hours=CACHE_RETENTION_HOURS,
         failed_cache_retention_hours=FAILED_CACHE_RETENTION_HOURS,
+        history_retention_days=HISTORY_RETENTION_DAYS,
+        event_retention_days=EVENT_RETENTION_DAYS,
+        disk_check_interval=DISK_CHECK_INTERVAL,
         unknown_job_reserve_bytes=UNKNOWN_JOB_RESERVE_BYTES,
         media_compat_mode=MEDIA_COMPAT_MODE,
         faststart_max_bytes=FASTSTART_MAX_BYTES,
@@ -263,6 +271,7 @@ class _Pipeline:
         self._shutdown_complete = False
         self.prefs: dict[int, dict] = {}
         self.published: dict[int, list] = {}
+        self._seq_owners: dict[int, int] = {}
         self.retryable: dict[int, _Job] = {}
         self._paused = False
         self._progress_tracker = ProgressTracker(ui_interval=static.progress_min_interval)
@@ -291,6 +300,9 @@ class _Pipeline:
         )
         self._disk_cache_retention_hours = static.cache_retention_hours
         self._disk_failed_retention_hours = static.failed_cache_retention_hours
+        self._disk_check_interval = static.disk_check_interval
+        self._history_retention_days = static.history_retention_days
+        self._event_retention_days = static.event_retention_days
         self.network = NetworkCoordinator(
             proxies=lambda: self.proxy_cfg.get("proxies", []),
             current=lambda: int(self.proxy_cfg.get("current", -1)),
@@ -438,18 +450,28 @@ class _Pipeline:
     @staticmethod
     def _parse_proxy_url(url: str):
         """解析 http 代理 URL → Telethon proxy 元组 ("http", host, port, user, pwd, rdns)。无效返回 None。"""
-        m = re.match(r"^http://([^@/]+@)?([^:/]+):(\d+)$", (url or "").strip())
-        if not m:
+        raw = str(url or "").strip()
+        if not raw or any(character.isspace() for character in raw):
             return None
-        userinfo = (m.group(1) or "").rstrip("@")
-        host = m.group(2)
-        port = int(m.group(3))
-        username = password = None
-        if userinfo:
-            if ":" in userinfo:
-                username, password = userinfo.split(":", 1)
-            else:
-                username = userinfo
+        try:
+            parsed = urlsplit(raw)
+            port = parsed.port
+        except ValueError:
+            return None
+        if (
+            parsed.scheme.lower() != "http"
+            or not parsed.hostname
+            or port is None
+            or parsed.path not in {"", "/"}
+            or parsed.query
+            or parsed.fragment
+        ):
+            return None
+        username = unquote(parsed.username) if parsed.username is not None else None
+        password = unquote(parsed.password) if parsed.password is not None else None
+        if username == "" or (password is not None and username is None):
+            return None
+        host = parsed.hostname
         return ("http", host, port, username, password, True)
 
     def _proxy_label(self, idx: int) -> str:
@@ -461,6 +483,8 @@ class _Pipeline:
         if parsed is None:
             return f"代理 #{idx + 1}（地址无效）"
         _, host, port, username, _password, _rdns = parsed
+        if ":" in host and not host.startswith("["):
+            host = f"[{host}]"
         auth = "***@" if username else ""
         return f"http://{auth}{host}:{port}"
 
@@ -592,6 +616,44 @@ class _Pipeline:
             self._track_worker(loop.create_task(self._download_worker()))
         self._track_worker(loop.create_task(self._upload_worker()))
         self._track_worker(loop.create_task(self._webdav_autoretry_loop()))
+        self._track_worker(loop.create_task(self._maintenance_loop()))
+
+    async def _maintenance_once(self) -> dict[str, int]:
+        report = {
+            "cleaned": 0,
+            "failed": 0,
+            "freed_bytes": 0,
+            "jobs": 0,
+            "events": 0,
+            "source_events": 0,
+            "interactions": 0,
+        }
+        if getattr(self, "job_queue", None) is not None:
+            report.update(await self.job_queue.cleanup_to_waterline(force=False))
+        repository = getattr(self, "repository", None)
+        if repository is not None:
+            retained = await repository.prune_retained_history(
+                history_retention_days=self._history_retention_days,
+                event_retention_days=self._event_retention_days,
+            )
+            report.update(retained)
+        return report
+
+    async def _maintenance_loop(self) -> None:
+        while True:
+            await asyncio.sleep(max(1.0, float(self._disk_check_interval)))
+            try:
+                report = await self._maintenance_once()
+                if any(int(value or 0) for value in report.values()):
+                    logger.info("Retention maintenance completed: %s", report)
+            except asyncio.CancelledError:
+                raise
+            except Exception as exc:
+                logger.error(
+                    "Retention maintenance failed type=%s traceback=%s",
+                    exc.__class__.__name__,
+                    safe_traceback(exc),
+                )
 
     def _track_worker(self, task: asyncio.Task) -> None:
         self._worker_tasks.add(task)
@@ -757,8 +819,25 @@ class _Pipeline:
             raise RuntimeError("pipeline is shutting down")
         self._reserve_disk_for_job(job)
         self._runtime_jobs[job.seq] = job
+        self._remember_seq_owner(job.seq, job.user_id)
         self.input_q.put_nowait(job)
         self.active_seqs.add(job.seq)
+
+    def _remember_seq_owner(self, seq: int, user_id: int) -> None:
+        self._seq_owners[int(seq)] = int(user_id)
+        if len(self._seq_owners) <= 2000:
+            return
+        protected = (
+            set(self.active_seqs)
+            | set(self.pending)
+            | set(self.published)
+            | set(self.retryable)
+        )
+        for old_seq in sorted(self._seq_owners):
+            if len(self._seq_owners) <= 1000:
+                break
+            if old_seq not in protected:
+                self._seq_owners.pop(old_seq, None)
 
     @staticmethod
     def _message_size_bytes(message: object) -> int:
@@ -926,6 +1005,13 @@ class _Pipeline:
         active = []
         for seq in sorted(self.active_seqs):
             info = self.active.get(seq) or {}
+            owner = self._seq_owners.get(int(seq))
+            if owner is None:
+                owner = info.get("user_id")
+            if owner is None:
+                owner = getattr(self.jobs.get(seq), "user_id", None)
+            if owner is None or int(owner) != int(user_id):
+                continue
             if seq in self._download_tasks:
                 state = "download"
             elif seq == self._uploading:
@@ -946,21 +1032,27 @@ class _Pipeline:
                     items=info.get("items", 1),
                 )
             )
+        pending_seqs = [
+            seq
+            for seq in sorted(self.pending)
+            if int(self.pending[seq].user_id or 0) == int(user_id)
+        ]
         pending = tuple(
             PendingQueueItemView(
                 seq=seq,
                 position=index,
                 kind=self.pending[seq].kind,
             )
-            for index, seq in enumerate(sorted(self.pending), start=1)
+            for index, seq in enumerate(pending_seqs, start=1)
         )
+        session = self.sessions.get(int(user_id))
         return QueueViewState(
             show_progress=self._show_progress(user_id),
             active=tuple(active),
             pending=pending,
-            has_sessions=bool(self.sessions),
-            session_media=sum(s.media_count for s in self.sessions.values()),
-            session_texts=sum(s.text_count for s in self.sessions.values()),
+            has_sessions=session is not None,
+            session_media=session.media_count if session is not None else 0,
+            session_texts=session.text_count if session is not None else 0,
         )
 
     def register_pending(
@@ -981,6 +1073,7 @@ class _Pipeline:
             destination_profile_name=(profile.name if profile is not None else ""),
             destination_profile_snapshot=(profiles.current_snapshot() if profiles is not None else None),
         )
+        self._remember_seq_owner(seq, user_id)
         self.pending[seq].timeout_task = asyncio.get_running_loop().create_task(
             self._confirm_timeout(seq)
         )
@@ -1940,7 +2033,7 @@ class _Pipeline:
         cfg = self.webdav_cfg if cfg is None else cfg
         return WebDavConfigViewState(
             enabled=bool(cfg.get("enabled")),
-            url=cfg.get("url") or "",
+            url=safe_url_label(cfg.get("url")) if cfg.get("url") else "",
             user=cfg.get("user") or "",
             has_password=bool(cfg.get("pass")),
             path=cfg.get("path") or "",
@@ -2279,9 +2372,16 @@ class _Pipeline:
             )
             if ok:
                 try:
-                    os.remove(f["local"])
+                    local = self._managed_cache_file(seq, f["local"])
+                    os.remove(local)
                 except OSError as exc:
-                    logger.warning("WebDAV 缓存删除失败 %s: %s", f["local"], exc)
+                    logger.warning(
+                        "Job #%s WebDAV cache cleanup failed: %s",
+                        seq,
+                        exc.__class__.__name__,
+                    )
+                except ValueError:
+                    logger.error("Job #%s refused unsafe WebDAV cache cleanup target", seq)
             self._save_webdav_logs()
             logger.info(
                 "Job #%s webdav cache upload %s -> %s (%s)",
@@ -2975,9 +3075,16 @@ class _Pipeline:
             return
 
         def _do_cleanup() -> None:
-            shutil.rmtree(self._workdir(seq), ignore_errors=True)
+            targets = [self._workdir(seq)]
             if cleanup:
-                shutil.rmtree(cleanup, ignore_errors=True)
+                targets.append(cleanup)
+            for raw in dict.fromkeys(targets):
+                try:
+                    target = self.disk.validate_job_dir(raw)
+                except ValueError:
+                    logger.error("Job #%s refused unsafe cache directory cleanup", seq)
+                    continue
+                shutil.rmtree(target, ignore_errors=True)
 
         pending = [t for t, s in self._webdav_tasks.items() if s == seq]
         if not pending:
@@ -3006,7 +3113,17 @@ class _Pipeline:
                 self.published.pop(old_seq, None)
 
     def _workdir(self, seq: int) -> str:
-        return os.path.join(DOWNLOAD_DIR, f"job-{seq}")
+        return os.path.join(self.download_dir, f"job-{int(seq)}")
+
+    def _managed_cache_file(self, seq: int, path: str) -> str:
+        candidate = os.path.realpath(str(path))
+        job_dir = os.path.realpath(self._workdir(seq))
+        try:
+            if os.path.commonpath((job_dir, candidate)) != job_dir:
+                raise ValueError("cache path is outside job directory")
+        except ValueError as exc:
+            raise ValueError("cache path is outside job directory") from exc
+        return candidate
 
     def _set_result(self, seq: int, value: str) -> None:
         fut = self.results.get(seq)

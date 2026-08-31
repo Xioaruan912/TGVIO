@@ -8,7 +8,11 @@ from telethon.tl import types
 
 from . import bot, config
 from .repository import SQLiteRepository
-from .security import install_redacting_logging
+from .security import (
+    install_redacting_logging,
+    secure_private_directory,
+    secure_private_file,
+)
 from .services import RuntimeHeartbeat
 from .storage import JsonStore
 
@@ -78,8 +82,11 @@ def _install_sigterm_handler(client: TelegramClient) -> None:
 async def main() -> None:
     settings = config.Settings.from_env(strict=True)
     logger.info("Static settings loaded: %s", settings.safe_summary())
-    os.makedirs("session", exist_ok=True)
-    os.makedirs(settings.download_dir, exist_ok=True)
+    secure_private_file(".env")
+    if not secure_private_directory("session"):
+        raise RuntimeError("session runtime directory is unavailable or unsafe")
+    if not secure_private_directory(settings.download_dir):
+        raise RuntimeError("download runtime directory is unavailable or unsafe")
 
     repository = SQLiteRepository(
         "session/state.sqlite3",

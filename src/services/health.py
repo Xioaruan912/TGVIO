@@ -8,6 +8,8 @@ import os
 import time
 from pathlib import Path
 
+from ..security import secure_private_directory, secure_private_file
+
 
 class RuntimeHeartbeat:
     def __init__(self, path: str | os.PathLike[str], *, interval: float = 10.0) -> None:
@@ -17,7 +19,7 @@ class RuntimeHeartbeat:
         self._task: asyncio.Task | None = None
 
     def _write(self) -> None:
-        self.path.parent.mkdir(parents=True, exist_ok=True)
+        secure_private_directory(self.path.parent)
         payload = {
             "schema_version": 1,
             "pid": os.getpid(),
@@ -26,7 +28,9 @@ class RuntimeHeartbeat:
         }
         tmp = self.path.with_suffix(self.path.suffix + ".tmp")
         tmp.write_text(json.dumps(payload, separators=(",", ":")), encoding="utf-8")
+        secure_private_file(tmp)
         os.replace(tmp, self.path)
+        secure_private_file(self.path)
 
     async def _run(self) -> None:
         try:

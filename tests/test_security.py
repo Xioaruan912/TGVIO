@@ -1,5 +1,9 @@
 import io
 import logging
+import os
+from pathlib import Path
+import stat
+import tempfile
 import unittest
 
 from src.domain import ErrorCode, classify_error
@@ -7,7 +11,14 @@ from src.security import (
     RedactingFormatter,
     enforce_url_policy,
     inspect_http_url,
+    normalize_remote_path,
     redact_text,
+    safe_url_label,
+    sanitize_filename,
+    secure_private_directory,
+    secure_private_file,
+    validate_remote_name,
+    validate_webdav_url,
 )
 
 
@@ -120,6 +131,53 @@ class LoggingSecurityTests(unittest.TestCase):
         self.assertNotIn("secret-query", output)
         self.assertNotIn("u:p", output)
         self.assertIn("example.test", output)
+
+
+class RuntimeBoundarySecurityTests(unittest.TestCase):
+    def test_webdav_url_labels_and_paths_never_expose_credentials_or_traverse(self) -> None:
+        raw = "https://alice:secret@DAV.Example.test:8443/root?token=private#fragment"
+        label = safe_url_label(raw)
+        self.assertEqual(label, "https://dav.example.test:8443/root")
+        self.assertNotIn("alice", label)
+        self.assertNotIn("secret", label)
+        self.assertNotIn("token", label)
+
+        self.assertEqual(
+            validate_webdav_url("https://DAV.Example.test:8443/root"),
+            "https://dav.example.test:8443/root",
+        )
+        for invalid in (
+            raw,
+            "https://dav.example.test/root?token=x",
+            "file:///tmp/dav",
+            "https://dav.example.test/%2e%2e/private",
+        ):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_webdav_url(invalid)
+
+        self.assertEqual(normalize_remote_path("/archive/2026"), "/archive/2026")
+        for invalid in ("../private", "/safe/%2e%2e/private", r"safe\private"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                normalize_remote_path(invalid)
+        for invalid in ("../video.mp4", "folder/video.mp4", "%2e%2e", "a%2fb.mp4"):
+            with self.subTest(invalid=invalid), self.assertRaises(ValueError):
+                validate_remote_name(invalid)
+
+    def test_untrusted_local_filename_is_reduced_to_one_segment(self) -> None:
+        self.assertEqual(sanitize_filename("../../.env"), "env")
+        self.assertEqual(sanitize_filename(r"..\..\secret.mp4"), "secret.mp4")
+        self.assertEqual(sanitize_filename("\x00\x01"), "media.bin")
+
+    def test_private_runtime_permissions_are_owner_only(self) -> None:
+        with tempfile.TemporaryDirectory() as directory:
+            private_dir = Path(directory) / "session"
+            self.assertTrue(secure_private_directory(private_dir))
+            secret = private_dir / "secret.json"
+            secret.write_text("{}", encoding="utf-8")
+            os.chmod(secret, 0o666)
+            self.assertTrue(secure_private_file(secret))
+            self.assertEqual(stat.S_IMODE(private_dir.stat().st_mode), 0o700)
+            self.assertEqual(stat.S_IMODE(secret.stat().st_mode), 0o600)
 
 
 if __name__ == "__main__":

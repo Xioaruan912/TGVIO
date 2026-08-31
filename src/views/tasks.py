@@ -214,6 +214,8 @@ def job_detail_view(state: JobDetailViewState) -> tuple[str, list]:
         buttons.append([Button.inline("🗑 删除缓存", f"j:d:{state.job_id}:{state.revision}")])
     if state.published_count:
         buttons.append([Button.inline("↩️ 撤销发布", f"j:u:{state.job_id}:{state.revision}")])
+    if state.state in {"succeeded", "cancelled", "failed"} and not state.cache_exists:
+        buttons.append([Button.inline("🧹 删除历史与文字", f"j:h:{state.job_id}:{state.revision}")])
     buttons.append([Button.inline("📋 返回队列", "q:p:all:0"), home_button()[0]])
     return "\n".join(lines), buttons
 
@@ -249,6 +251,7 @@ def confirmation_view(*, operation_id: int, action: str, label: str) -> tuple[st
         "undo": "撤销已发布消息",
         "batch_cancel": "取消全部等待任务",
         "batch_delete_cache": "清理全部失败缓存",
+        "delete_history": "删除任务历史与关联文字",
     }.get(action, "执行操作")
     text = "\n".join(
         [
@@ -259,6 +262,8 @@ def confirmation_view(*, operation_id: int, action: str, label: str) -> tuple[st
             "此确认将在 5 分钟后失效。",
         ]
     )
+    if action == "delete_history":
+        text += "\n删除后任务详情、caption、事件和发布引用不可恢复；匿名聚合统计会保留。"
     buttons = [
         [Button.inline("✅ 确认", f"x:y:{operation_id}"), Button.inline("❌ 取消", f"x:n:{operation_id}")],
         home_button(),

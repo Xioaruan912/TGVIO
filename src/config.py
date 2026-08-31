@@ -103,6 +103,8 @@ class Settings:
     max_cache_bytes: int
     cache_retention_hours: float
     failed_cache_retention_hours: float
+    history_retention_days: int
+    event_retention_days: int
     disk_check_interval: float
     unknown_job_reserve_bytes: int
     health_heartbeat_max_age: int
@@ -202,6 +204,8 @@ class Settings:
             max_cache_bytes=_int(env, "MAX_CACHE_BYTES", 0, strict=strict),
             cache_retention_hours=_float(env, "CACHE_RETENTION_HOURS", 72.0, strict=strict),
             failed_cache_retention_hours=_float(env, "FAILED_CACHE_RETENTION_HOURS", 168.0, strict=strict),
+            history_retention_days=_int(env, "HISTORY_RETENTION_DAYS", 30, strict=strict),
+            event_retention_days=_int(env, "EVENT_RETENTION_DAYS", 30, strict=strict),
             disk_check_interval=_float(env, "DISK_CHECK_INTERVAL", 60.0, strict=strict),
             unknown_job_reserve_bytes=_int(env, "UNKNOWN_JOB_RESERVE_BYTES", 2 * 1024**3, strict=strict),
             health_heartbeat_max_age=_int(env, "HEALTH_HEARTBEAT_MAX_AGE", 45, strict=strict),
@@ -238,6 +242,8 @@ class Settings:
         _bounded("MAX_CACHE_BYTES", self.max_cache_bytes, 0, 1024**5)
         _bounded("CACHE_RETENTION_HOURS", self.cache_retention_hours, 0.0, 24 * 365.0)
         _bounded("FAILED_CACHE_RETENTION_HOURS", self.failed_cache_retention_hours, 0.0, 24 * 365.0)
+        _bounded("HISTORY_RETENTION_DAYS", self.history_retention_days, 1, 3650)
+        _bounded("EVENT_RETENTION_DAYS", self.event_retention_days, 30, 90)
         _bounded("DISK_CHECK_INTERVAL", self.disk_check_interval, 1.0, 3600.0)
         _bounded("UNKNOWN_JOB_RESERVE_BYTES", self.unknown_job_reserve_bytes, 0, 1024**5)
         _bounded("HEALTH_HEARTBEAT_MAX_AGE", self.health_heartbeat_max_age, 5, 3600)
@@ -259,6 +265,8 @@ class Settings:
             "forward_caption": self.forward_caption,
             "session_collect": self.session_collect,
             "disk_enforce": self.disk_enforce,
+            "history_retention_days": self.history_retention_days,
+            "event_retention_days": self.event_retention_days,
             "media_compat_mode": self.media_compat_mode,
             "transcode_enabled": self.transcode_enabled,
             "url_private_network_policy": self.url_private_network_policy,
@@ -324,6 +332,8 @@ MIN_FREE_PERCENT = SETTINGS.min_free_percent
 MAX_CACHE_BYTES = SETTINGS.max_cache_bytes
 CACHE_RETENTION_HOURS = SETTINGS.cache_retention_hours
 FAILED_CACHE_RETENTION_HOURS = SETTINGS.failed_cache_retention_hours
+HISTORY_RETENTION_DAYS = SETTINGS.history_retention_days
+EVENT_RETENTION_DAYS = SETTINGS.event_retention_days
 DISK_CHECK_INTERVAL = SETTINGS.disk_check_interval
 UNKNOWN_JOB_RESERVE_BYTES = SETTINGS.unknown_job_reserve_bytes
 HEALTH_HEARTBEAT_MAX_AGE = SETTINGS.health_heartbeat_max_age

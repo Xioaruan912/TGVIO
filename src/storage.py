@@ -10,6 +10,8 @@ import os
 from copy import deepcopy
 from typing import Any
 
+from .security import secure_private_file
+
 
 class JsonStore:
     """A synchronous, best-effort JSON file store for small state documents."""
@@ -20,6 +22,7 @@ class JsonStore:
 
     def load(self) -> Any:
         try:
+            secure_private_file(self.path)
             with open(self.path, encoding="utf-8") as f:
                 return json.load(f)
         except (OSError, TypeError, ValueError, json.JSONDecodeError):
@@ -33,7 +36,9 @@ class JsonStore:
             tmp = f"{self.path}.tmp"
             with open(tmp, "w", encoding="utf-8") as f:
                 json.dump(value, f, ensure_ascii=False, indent=2)
+            secure_private_file(tmp)
             os.replace(tmp, self.path)
+            secure_private_file(self.path)
         except OSError:
             # Persistence must not stop media processing.
             pass
