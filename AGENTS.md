@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。**2026-08-31 本轮重新只读核验后，生产真实运行基线仍为 `8a2407b`**；先前文档曾误记 `880f3af` 已部署。GitHub 已包含后续 `6f0de1a` / `707fc2f` / `880f3af` 安全改动与 O1 Demo，但在下一次受控部署完成前，禁止把这些提交当作生产事实。开始工作仍须用容器 `APP_COMMIT`、源码哈希和运行状态确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。本轮最新只读核验：容器 `running`、`restart=0`、Docker health=`healthy`、镜像 `APP_COMMIT=8a2407b`；因此第 18.3 节安全/retention 与后续命令化 UI **尚待统一生产部署验收**。生产运行数据和 `.env` 未在本轮核验中修改。
+- 当前分支：`main`。2026-08-31 23:40 CST 已执行最新统一部署，容器切换瞬间确认 `APP_COMMIT=7fde66b`、`running`、`restart=0`；切换前生产真实基线已重新确认是 `880f3af`（更早一次检查曾看到 `8a2407b`，随后其他 AI 的 18.3 部署才真正生效）。**切换后的完整 health/readiness/schema/hash/production-tests 后验尚未完成**，因为 VPS SSH 随后连续两次在握手阶段主动关闭；下一位代理必须先只读验收，禁止再次 recreate。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。`7fde66b` 部署前门禁：旧 `880f3af` 容器 `healthy`/`restart=0`，schema `[1..9]`、`integrity=ok`、incomplete/claims/active backup/source open event 均为 0；有 1 个 enabled source profile。DB/image/source 三重回滚点已建立。本轮未修改 `.env`、`session/`、`downloads/` 内容。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1510,7 +1510,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理先以真实生产 `APP_COMMIT=8a2407b` 为部署基线，完成当前已推送安全改动 + 命令化 UI 的统一受控部署；随后进入 O1-A：定义 localhost-only、只读 Web service/API contract，并让 `demo/o1-dashboard-taste.html` 的 mock DTO 与真实 service DTO 对齐。O1-A 不实现 mutation。
+下一位代理**不要再次部署**：先只读确认当前容器仍为 `APP_COMMIT=7fde66b`，并补齐 health/readiness、schema9/integrity、宿主/容器源码 hash、259 production tests 与启动日志后验。全部通过后再进入 O1-A：定义 localhost-only、只读 Web service/API contract，并让 `demo/o1-dashboard-taste.html` 的 mock DTO 与真实 service DTO 对齐。O1-A 不实现 mutation。
 
 ## 21. 执行日志
 
@@ -1957,3 +1957,14 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - 生产：最终 `APP_COMMIT=880f3af`，镜像 `sha256:07db6777375e1a369d799e6e06f8719f1ed5876c88e1a0a8d946092d81c53af8`，容器 `running`、`restart=0`、health=`healthy`，readiness 通过，schema9/`integrity=ok`，incomplete/claims/active-backup/source_enabled 均为 0；宿主/容器关键源码哈希与本地一致，启动日志仅输出 safe settings summary。
 - 回滚：`707fc2f` 备份为 DB `/root/telegram-video-forwarder-releases/state-pre-707fc2f-20260831-222801.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-707fc2f`、源码 `/root/telegram-video-forwarder-releases/pre-707fc2f.tar.gz`；最终发布修复另有 DB `/root/telegram-video-forwarder-releases/state-pre-880f3af-20260831-223158.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-880f3af`、源码 `/root/telegram-video-forwarder-releases/pre-880f3af.tar.gz`。
 - 下一步精确入口：第 19 节测试矩阵；先映射现有 250 tests 与 19.1/19.2/19.3 条目，仅补真实缺口，不进入 O1/Web Dashboard。
+
+### 2026-08-31 23:40 - 测试矩阵收口、Bot 命令化与 O1 Demo
+
+- 测试矩阵：`f2a96a4 test(runtime): close acceptance matrix gaps`，补状态机全 pair、损坏 SQLite fail-closed、100-job 并发/FIFO、Progress unknown-total/global bucket、23 图 media-group 分组及 retention/maintenance 安全门禁；完整 source-mounted 与最终镜像均 **259 tests 全通过**。
+- Bot UI：`7fde66b feat(ui): make bot navigation command first`。新增 `src/commands.py` 作为 BotFather 菜单、`/start`、`/about` 的单一命令文案来源；顶层导航统一显示 `/queue`、`/profiles`、`/sources`、`/webdav`、`/proxy`、`/stats`、`/health`、`/diag` 等命令 + 一句话作用。删除/撤销/重试/测试连接等上下文副作用仍保留确认按钮，旧 callback 继续兼容。
+- O1 Demo：用户已明确授权开始 O1；`demo/o1-dashboard-taste.html` 为单 HTML、纯 mock 数据、无生产连接版本，按 minimalist/taste 方向收敛，并增加 Telegram 命令映射。O1 仍未标完成，真实 Web 服务/API/auth 尚未实现。
+- 开发辅助：用户指定的 `taste-skill` 保留在本地 `.agents/`；`.agents/` 与 `skills-lock.json` 已加入 Git/Docker ignore，不进入业务提交或生产镜像。
+- 最终本地门禁：标准 Docker build 通过；镜像 `APP_COMMIT=7fde66b`；259/259 tests；静态镜像确认不含 `.env`、`session`、`.agents`、`skills-lock.json`；migration 0001～0009 checksum 未变化。
+- 生产发布前确认旧容器真实为 `APP_COMMIT=880f3af`，宿主关键源码哈希与该 commit 完全一致；schema9/integrity ok，incomplete/claims/active-backup/source-received 均为 0，有 1 个 enabled source profile。回滚资源时间戳 `20260831-233921`：DB `state-pre-7fde66b-20260831-233921.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-7fde66b`、源码 `source-pre-7fde66b-20260831-233921.tar.gz`。
+- 部署：发布包 SHA-256 `cde415db622f4640ceb0efd1faf32041b1539c1e187934c6f051cff67e631247`；生产标准 build 成功，切换前再次确认 0 incomplete/claim/active-backup/source-open；随后 `--no-build` 单次 recreate，切换瞬间确认 `running`、`restart=0`、`APP_COMMIT=7fde66b`。
+- 未完成后验：recreate 后第一次与唯一一次 SSH 重试均在 key-exchange/握手阶段被 VPS 主动关闭，因此尚不能声称 health/readiness/schema/hash/259 production tests 已通过。**下一步只做这些只读后验，不得重复 build/recreate。**
