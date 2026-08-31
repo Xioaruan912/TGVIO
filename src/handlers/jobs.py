@@ -79,6 +79,7 @@ async def _detail(ctx: HandlerContext, user_id: int, job_id: int):
         accepted_at=float(detail.get("accepted_at") or 0),
         can_retry=bool(detail.get("can_retry")),
         media_compat_summary=str(detail.get("media_compat_summary") or ""),
+        destination_profile=str(detail.get("destination_profile") or ""),
     )
     return job_detail_view(state)
 
@@ -580,6 +581,82 @@ async def callback_confirm(ctx: HandlerContext, event: Any, data: str) -> None:
     await ctx.answer(event, "已确认")
 
 
+def _pending_confirm_text(pending) -> str:
+    if pending.kind == "collection":
+        return f"⚠️ 该合集（{len(pending.album or [])} 个媒体）是否为 18+？"
+    if pending.kind == "album":
+        return f"⚠️ 该相册（{len(pending.album or [])} 张）是否为 18+？"
+    return "⚠️ 该内容是否为 18+？"
+
+
+def _pending_confirm_buttons(pending) -> list:
+    profile_name = pending.destination_profile_name or "默认频道"
+    return [
+        [
+            Button.inline("🔞 是（雪花遮挡）", f"confirm:{pending.seq}:1"),
+            Button.inline("✅ 否", f"confirm:{pending.seq}:0"),
+        ],
+        [Button.inline(f"🎯 {profile_name[:30]}", f"cp:{pending.seq}")],
+        [Button.inline("❌ 取消", f"cancel:{pending.seq}")],
+    ]
+
+
+async def callback_confirm_profile(ctx: HandlerContext, event: Any, data: str) -> None:
+    parts = data.split(":")
+    if len(parts) < 2 or not parts[1].isdigit():
+        await ctx.answer(event, "无效操作")
+        return
+    seq = int(parts[1])
+    pending = ctx.queue.pending_confirmation(seq, user_id=event.sender_id)
+    if pending is None:
+        await ctx.answer(event, "该确认已失效")
+        return
+    if ctx.destinations is None:
+        await ctx.answer(event, "目的地功能不可用")
+        return
+    if len(parts) == 2:
+        profiles = await ctx.destinations.list_profiles(enabled_only=True)
+        buttons = [
+            [
+                Button.inline(
+                    ("✅ " if item.id == pending.destination_profile_id else "") + item.name[:28],
+                    f"cp:{seq}:{item.id}",
+                )
+            ]
+            for item in profiles
+        ]
+        buttons.append([Button.inline("⬅️ 返回确认", f"cp:{seq}:back")])
+        await ctx.edit(
+            event,
+            "🎯 选择本任务发布目的地\n──────────\n选择会写入该任务 snapshot；之后切换默认不会影响它。",
+            buttons=buttons,
+        )
+        return
+    if parts[2] == "back":
+        await ctx.edit(
+            event,
+            _pending_confirm_text(pending),
+            buttons=_pending_confirm_buttons(pending),
+        )
+        return
+    if not parts[2].isdigit():
+        await ctx.answer(event, "无效 profile")
+        return
+    result = await ctx.queue.select_pending_destination(
+        seq, int(parts[2]), user_id=event.sender_id
+    )
+    if result != "ok":
+        await ctx.answer(event, f"切换失败：{result}")
+        return
+    pending = ctx.queue.pending_confirmation(seq, user_id=event.sender_id)
+    await ctx.answer(event, "已切换本任务目的地")
+    await ctx.edit(
+        event,
+        _pending_confirm_text(pending),
+        buttons=_pending_confirm_buttons(pending),
+    )
+
+
 def register_job_callbacks(router: Any) -> None:
     router.exact("queue:refresh", callback_queue_refresh)
     router.prefix("q:p:", callback_queue_page)
@@ -597,6 +674,7 @@ def register_job_callbacks(router: Any) -> None:
     router.exact("q_pause", callback_pause_all)
     router.exact("q_resume", callback_resume_all)
     router.exact("toggle_progress", callback_toggle_progress)
+    router.prefix("cp:", callback_confirm_profile)
     router.prefix("q_cancel:", callback_cancel_job)
     router.prefix("cancel:", callback_cancel_pending)
     router.prefix("stop:", callback_stop)

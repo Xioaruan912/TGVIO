@@ -63,11 +63,19 @@ class DedupManager:
             return "photo"
         return "document"
 
-    async def reuse_input_media(self, client: Any, content: ContentHash, *, spoiler: bool = False):
+    async def reuse_input_media(
+        self,
+        client: Any,
+        content: ContentHash,
+        *,
+        spoiler: bool = False,
+        destination_key: str | None = None,
+    ):
         entry = await self.lookup(
             sha256=content.sha256,
             size_bytes=content.size_bytes,
             media_kind=self.media_kind(content.path),
+            destination_key=destination_key,
         )
         if entry is None:
             return None, None
@@ -87,7 +95,13 @@ class DedupManager:
         await self.repository.delete_dedup_entry(entry.id)
         return None, None
 
-    async def record_sent_message(self, content: ContentHash, message: Any) -> None:
+    async def record_sent_message(
+        self,
+        content: ContentHash,
+        message: Any,
+        *,
+        destination_key: str | None = None,
+    ) -> None:
         media = getattr(message, "media", None)
         peer_id = 0
         try:
@@ -116,7 +130,7 @@ class DedupManager:
             sha256=content.sha256,
             size_bytes=content.size_bytes,
             media_kind=kind,
-            destination_key=self.destination_key,
+            destination_key=str(destination_key or self.destination_key),
             source_peer_id=peer_id,
             source_message_id=int(message.id),
             media_id=media_id,
@@ -128,10 +142,17 @@ class DedupManager:
     async def mark_hit(self, entry: Any, content: ContentHash) -> None:
         await self.repository.mark_dedup_hit(entry.id, saved_bytes=content.size_bytes)
 
-    async def lookup(self, *, sha256: str, size_bytes: int, media_kind: str):
+    async def lookup(
+        self,
+        *,
+        sha256: str,
+        size_bytes: int,
+        media_kind: str,
+        destination_key: str | None = None,
+    ):
         return await self.repository.lookup_dedup_entry(
             sha256=str(sha256),
             size_bytes=int(size_bytes),
             media_kind=str(media_kind),
-            destination_key=self.destination_key,
+            destination_key=str(destination_key or self.destination_key),
         )

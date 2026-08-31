@@ -66,6 +66,7 @@ class JobDetailViewState:
     accepted_at: float = 0.0
     can_retry: bool = False
     media_compat_summary: str = ""
+    destination_profile: str = ""
 
 
 @dataclass(frozen=True)
@@ -187,6 +188,8 @@ def job_detail_view(state: JobDetailViewState) -> tuple[str, list]:
         f"📢 已发布消息：{state.published_count}",
         f"☁️ 备份：{state.backup_state or 'disabled'}{(' · ' + state.backup_summary) if state.backup_summary else ''}",
     ]
+    if state.destination_profile:
+        lines.insert(4, f"🎯 目的地：{state.destination_profile[:80]}")
     if state.media_compat_summary:
         lines.append(f"🎞 兼容性：{state.media_compat_summary}")
     if state.bytes_total > 0 and state.state in {"downloading", "publishing"}:

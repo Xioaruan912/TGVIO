@@ -6,7 +6,7 @@ import logging
 import re
 from typing import Any
 
-from telethon import Button, events
+from telethon import Button, events, functions
 
 from ..views import (
     BackupAttemptDetailView,
@@ -21,6 +21,10 @@ from ..views import (
     WebDavConfigViewState,
     home_button,
     home_view,
+    DestinationProfileView,
+    destination_profile_detail_view,
+    destination_profile_test_confirm_view,
+    destination_profiles_view,
     mode_buttons,
     reply_keyboard,
     stats_view,
@@ -75,8 +79,44 @@ async def _home(ctx: HandlerContext, user_id: int) -> tuple[str, list]:
     snapshot.update(
         webdav_enabled=bool(ctx.backup.get_config("enabled")),
         webdav_health=_webdav_health(ctx),
+        destination_profile=(
+            ctx.destinations.current_profile.name
+            if ctx.destinations is not None
+            else ctx.dest_channel
+        ),
     )
     return home_view(HomeViewState(**snapshot))
+
+
+def _destination_profile_view(profile: Any) -> DestinationProfileView:
+    return DestinationProfileView(
+        profile_id=int(profile.id),
+        name=str(profile.name),
+        destination_peer=str(profile.destination_peer),
+        enabled=bool(profile.enabled),
+        is_default=bool(profile.is_default),
+        read_only=bool(profile.read_only),
+        cover_mode=bool(profile.cover_mode),
+        forward_caption=bool(profile.forward_caption),
+        backup_policy=str(profile.backup_policy),
+        verified=profile.verified_at is not None,
+    )
+
+
+async def _destination_profiles(ctx: HandlerContext) -> tuple[str, list]:
+    if ctx.destinations is None:
+        return "🎯 发布目的地暂不可用", [home_button()]
+    items = await ctx.destinations.list_profiles(enabled_only=False)
+    return destination_profiles_view(tuple(_destination_profile_view(item) for item in items))
+
+
+async def _destination_profile_detail(ctx: HandlerContext, profile_id: int) -> tuple[str, list] | None:
+    if ctx.destinations is None:
+        return None
+    item = await ctx.destinations.repository.get_destination_profile(int(profile_id))
+    if item is None:
+        return None
+    return destination_profile_detail_view(_destination_profile_view(item))
 
 
 async def _webdav_attempt_page(ctx: HandlerContext, page: int) -> tuple[str, list]:
@@ -208,6 +248,15 @@ def register_setting_commands(ctx: HandlerContext) -> None:
             auto_delete=False,
         )
 
+    @ctx.client.on(events.NewMessage(pattern="/profiles$"))
+    async def on_profiles(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /profiles from %s", event.sender_id)
+        if not ctx.authorized(event):
+            return
+        ctx.interactions.cancel(event.sender_id, "destination_profile")
+        text, buttons = await _destination_profiles(ctx)
+        await ctx.respond(event, text, buttons=buttons, auto_delete=False)
+
     @ctx.client.on(events.NewMessage(pattern=r"/webdav(\s|$)"))
     async def on_webdav(event: events.NewMessage.Event) -> None:
         logger.info("CMD /webdav from %s", event.sender_id)
@@ -329,6 +378,10 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         text, buttons = webdav_cfg_view(_webdav_state(ctx))
         await ctx.edit(event, text, buttons=buttons)
         return
+    if action == "dp":
+        text, buttons = await _destination_profiles(ctx)
+        await ctx.edit(event, text, buttons=buttons)
+        return
     if action == "s":
         mode = MODE_NAMES[ctx.queue.spoiler_mode(event.sender_id)]
         progress = "开启" if ctx.queue.progress_enabled(event.sender_id) else "关闭"
@@ -341,7 +394,8 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         )
         buttons = [
             [Button.inline("🔞 18+ 模式", "h:mode"), Button.inline("📊 切换进度", "toggle_progress")],
-            [Button.inline("☁️ WebDAV", "h:w"), Button.inline("🌐 代理", "h:p")],
+            [Button.inline("🎯 发布目的地", "h:dp"), Button.inline("☁️ WebDAV", "h:w")],
+            [Button.inline("🌐 代理", "h:p")],
             home_button(),
         ]
         await ctx.edit(event, text, buttons=buttons)
@@ -727,6 +781,249 @@ async def handle_webdav_input(ctx: HandlerContext, event: Any, session: Any) -> 
     return True
 
 
+async def handle_destination_profile_input(ctx: HandlerContext, event: Any, session: Any) -> bool:
+    if ctx.destinations is None:
+        return False
+    text = (event.raw_text or "").strip()
+    if text in ("/取消", "/cancel"):
+        ctx.interactions.finish(event.sender_id, session.revision)
+        await ctx.respond(event, "❌ 已取消修改", auto_delete=False)
+        return True
+    try:
+        if session.field == "add":
+            if "|" not in text:
+                await ctx.respond(event, "格式：名称 | 目标频道", auto_delete=False)
+                return True
+            name, peer = (part.strip() for part in text.split("|", 1))
+            if not name or not peer:
+                await ctx.respond(event, "名称和目标都不能为空", auto_delete=False)
+                return True
+            await ctx.client.get_input_entity(peer)
+            profile = await ctx.destinations.create_profile(
+                name=name,
+                destination_peer=peer,
+                default_spoiler_mode="ask",
+                backup_policy="best_effort",
+            )
+            ctx.interactions.finish(event.sender_id, session.revision)
+            await ctx.respond(
+                event,
+                f"✅ 已创建目的地 {profile.name}\n尚未执行测试发送；请在详情页手动测试。",
+                auto_delete=False,
+            )
+            view = await _destination_profile_detail(ctx, profile.id)
+            if view:
+                await ctx.respond(event, view[0], buttons=view[1], auto_delete=False)
+            return True
+        if session.field.startswith("edit:"):
+            _, profile_s, field = session.field.split(":", 2)
+            if not profile_s.isdigit() or field not in {
+                "name", "destination_peer", "discussion_group_peer", "footer_template"
+            }:
+                return False
+            profile_id = int(profile_s)
+            if field in {"destination_peer", "discussion_group_peer"} and text:
+                await ctx.client.get_input_entity(text)
+            result = await ctx.destinations.update_profile(profile_id, **{field: text})
+            if result != "ok":
+                await ctx.respond(event, f"❌ 更新失败：{result}", auto_delete=False)
+                return True
+            ctx.interactions.finish(event.sender_id, session.revision)
+            await ctx.respond(event, "✅ 已更新；只影响之后接受的新任务。", auto_delete=False)
+            view = await _destination_profile_detail(ctx, profile_id)
+            if view:
+                await ctx.respond(event, view[0], buttons=view[1], auto_delete=False)
+            return True
+    except Exception as exc:
+        logger.warning("Destination profile input failed: %s", exc.__class__.__name__)
+        await ctx.respond(event, f"❌ 操作失败：{exc.__class__.__name__}", auto_delete=False)
+        return True
+    return False
+
+
+async def callback_destination_profile(ctx: HandlerContext, event: Any, data: str) -> None:
+    await ctx.answer(event)
+    if ctx.destinations is None:
+        await ctx.edit(event, "🎯 发布目的地暂不可用", buttons=home_button())
+        return
+    parts = data.split(":")
+    action = parts[1] if len(parts) > 1 else "r"
+    if action == "r":
+        text, buttons = await _destination_profiles(ctx)
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "add":
+        ctx.interactions.start(event.sender_id, "destination_profile", "add", ttl=300)
+        await ctx.edit(
+            event,
+            "➕ 新建目的地\n──────────\n请发送：名称 | 目标频道\n例如：归档频道 | @archive\n\n这里只解析 entity，不会发送测试消息。",
+            buttons=[home_button()],
+        )
+        return
+    if action == "tc":
+        if len(parts) < 3 or not parts[2].isdigit():
+            return
+        op = ctx.operations.consume(int(parts[2]), user_id=event.sender_id)
+        if op is None or op.action != "destination_profile_test":
+            await ctx.answer(event, "确认已失效")
+            return
+        profile = await ctx.destinations.repository.get_destination_profile(op.job_id)
+        if profile is None or not profile.enabled:
+            await ctx.answer(event, "profile 不可用")
+            return
+        cleanup_ok = False
+        try:
+            entity = await ctx.client.get_input_entity(profile.destination_peer)
+            if profile.discussion_group_peer:
+                await ctx.client.get_input_entity(profile.discussion_group_peer)
+            elif profile.cover_mode:
+                full = await ctx.client(functions.channels.GetFullChannelRequest(channel=entity))
+                if not getattr(full.full_chat, "linked_chat_id", None):
+                    raise RuntimeError("discussion_group_missing")
+            sent = await ctx.client.send_message(entity, "🧪 TG Upload Bot 目的地测试消息（将立即删除）")
+            try:
+                await sent.delete()
+                cleanup_ok = True
+            except Exception:
+                await ctx.client.delete_messages(entity, [sent.id])
+                cleanup_ok = True
+            if cleanup_ok:
+                await ctx.destinations.mark_verified(profile.id)
+            await ctx.answer(event, "测试成功" if cleanup_ok else "测试消息清理失败")
+        except Exception as exc:
+            logger.warning("Destination profile test failed: %s", exc.__class__.__name__)
+            await ctx.answer(event, f"测试失败：{exc.__class__.__name__}")
+        view = await _destination_profile_detail(ctx, profile.id)
+        if view:
+            await ctx.edit(event, view[0], buttons=view[1])
+        return
+    if action == "bpc":
+        if len(parts) < 3 or not parts[2].isdigit():
+            await ctx.answer(event, "确认已失效")
+            return
+        op = ctx.operations.consume(int(parts[2]), user_id=event.sender_id)
+        if op is None or op.action != "destination_profile_required":
+            await ctx.answer(event, "确认已失效")
+            return
+        profile = await ctx.destinations.repository.get_destination_profile(op.job_id)
+        if profile is None or profile.read_only or not profile.enabled:
+            await ctx.answer(event, "profile 不可修改")
+            return
+        result = await ctx.destinations.update_profile(profile.id, backup_policy="required")
+        await ctx.answer(event, "已启用 required" if result == "ok" else f"更新失败：{result}")
+        view = await _destination_profile_detail(ctx, profile.id)
+        if view:
+            await ctx.edit(event, view[0], buttons=view[1])
+        return
+    if len(parts) < 3 or not parts[2].isdigit():
+        await ctx.answer(event, "无效 profile")
+        return
+    profile_id = int(parts[2])
+    profile = await ctx.destinations.repository.get_destination_profile(profile_id)
+    if profile is None:
+        await ctx.answer(event, "profile 不存在")
+        return
+    if action == "v":
+        view = await _destination_profile_detail(ctx, profile_id)
+        if view:
+            await ctx.edit(event, view[0], buttons=view[1])
+        return
+    if action == "d":
+        ok = await ctx.destinations.set_default(profile_id)
+        await ctx.answer(event, "默认目的地已切换" if ok else "切换失败")
+        text, buttons = await _destination_profiles(ctx)
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "x":
+        result = await ctx.destinations.disable(profile_id)
+        await ctx.answer(event, {"ok":"已禁用","read_only":"只读 profile","default":"请先切换默认","in_use":"仍有未完成任务引用"}.get(result, result))
+        text, buttons = await _destination_profiles(ctx)
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "t":
+        op = ctx.operations.create(
+            user_id=event.sender_id,
+            action="destination_profile_test",
+            job_id=profile_id,
+            expected_revision=0,
+        )
+        text, buttons = destination_profile_test_confirm_view(
+            _destination_profile_view(profile), op.operation_id
+        )
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "e":
+        if profile.read_only:
+            await ctx.answer(event, "只读 profile")
+            return
+        buttons = [
+            [Button.inline("名称", f"dp:ef:{profile_id}:name"), Button.inline("目标", f"dp:ef:{profile_id}:destination_peer")],
+            [Button.inline("讨论组", f"dp:ef:{profile_id}:discussion_group_peer"), Button.inline("Footer", f"dp:ef:{profile_id}:footer_template")],
+            [Button.inline("封面 开/关", f"dp:tg:{profile_id}:cover_mode"), Button.inline("Caption 开/关", f"dp:tg:{profile_id}:forward_caption")],
+            [Button.inline("备份策略", f"dp:bp:{profile_id}"), Button.inline("18+ 默认", f"dp:sp:{profile_id}")],
+            [Button.inline("⬅️ 返回", f"dp:v:{profile_id}")],
+        ]
+        await ctx.edit(event, f"✏️ 编辑 {profile.name}\n修改只影响之后接受的新任务。", buttons=buttons)
+        return
+    if action == "ef" and len(parts) >= 4:
+        field = parts[3]
+        if field not in {"name", "destination_peer", "discussion_group_peer", "footer_template"}:
+            return
+        ctx.interactions.start(event.sender_id, "destination_profile", f"edit:{profile_id}:{field}", ttl=300)
+        await ctx.edit(event, f"请发送新的 {field}（5 分钟内有效）", buttons=[Button.inline("⬅️ 返回", f"dp:v:{profile_id}")])
+        return
+    if action == "tg" and len(parts) >= 4:
+        field = parts[3]
+        if field not in {"cover_mode", "forward_caption"} or profile.read_only:
+            return
+        if field == "cover_mode" and not profile.cover_mode:
+            try:
+                entity = await ctx.client.get_input_entity(profile.destination_peer)
+                if profile.discussion_group_peer:
+                    await ctx.client.get_input_entity(profile.discussion_group_peer)
+                else:
+                    full = await ctx.client(
+                        functions.channels.GetFullChannelRequest(channel=entity)
+                    )
+                    if not getattr(full.full_chat, "linked_chat_id", None):
+                        raise RuntimeError("discussion_group_missing")
+            except Exception as exc:
+                await ctx.answer(event, f"无法开启封面模式：{exc.__class__.__name__}")
+                return
+        result = await ctx.destinations.update_profile(profile_id, **{field: not bool(getattr(profile, field))})
+        await ctx.answer(event, "已更新" if result == "ok" else result)
+    elif action == "bp" and not profile.read_only:
+        if profile.backup_policy == "best_effort":
+            op = ctx.operations.create(
+                user_id=event.sender_id,
+                action="destination_profile_required",
+                job_id=profile_id,
+                expected_revision=0,
+            )
+            await ctx.edit(
+                event,
+                "⚠️ 启用 required 备份策略\n──────────\nTelegram 发布后任务会等待 WebDAV 成功才进入 succeeded；备份失败会保留已发布消息和本地缓存。\n确认只对该 profile 的新任务生效。",
+                buttons=[
+                    [Button.inline("✅ 确认 required", f"dp:bpc:{op.operation_id}")],
+                    [Button.inline("取消", f"dp:v:{profile_id}")],
+                ],
+            )
+            return
+        result = await ctx.destinations.update_profile(profile_id, backup_policy="best_effort")
+        await ctx.answer(event, "备份策略：best_effort" if result == "ok" else result)
+    elif action == "sp" and not profile.read_only:
+        modes = ["ask", "always_normal", "always_spoiler"]
+        try:
+            value = modes[(modes.index(profile.default_spoiler_mode) + 1) % len(modes)]
+        except ValueError:
+            value = "ask"
+        result = await ctx.destinations.update_profile(profile_id, default_spoiler_mode=value)
+        await ctx.answer(event, f"18+ 默认：{value}" if result == "ok" else result)
+    view = await _destination_profile_detail(ctx, profile_id)
+    if view:
+        await ctx.edit(event, view[0], buttons=view[1])
+
+
 def register_setting_callbacks(router: Any) -> None:
     router.prefix("h:", callback_home)
     router.prefix("wd_cfg:", callback_webdav_config)
@@ -738,4 +1035,5 @@ def register_setting_callbacks(router: Any) -> None:
     router.prefix("wd_dr:", callback_webdav_delete_confirm)
     router.prefix("wd:", callback_webdav_durable)
     router.prefix("mode:", callback_mode)
+    router.prefix("dp:", callback_destination_profile)
 

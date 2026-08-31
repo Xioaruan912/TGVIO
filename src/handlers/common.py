@@ -7,7 +7,15 @@ from dataclasses import dataclass
 import logging
 from typing import Any, Awaitable, Callable, Pattern
 
-from ..services import BackupManager, InteractionSessions, JobQueue, OperationStore, ProxyManager, StatsService
+from ..services import (
+    BackupManager,
+    DestinationProfileManager,
+    InteractionSessions,
+    JobQueue,
+    OperationStore,
+    ProxyManager,
+    StatsService,
+)
 
 
 logger = logging.getLogger(__name__)
@@ -32,6 +40,7 @@ class HandlerContext:
     start_text: str
     about_text: str
     delete_after: Callable[[object, float], Awaitable[None]]
+    destinations: DestinationProfileManager | None = None
 
     def authorized(self, event: Any) -> bool:
         return event.sender_id in self.allowed_users

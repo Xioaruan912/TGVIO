@@ -33,7 +33,7 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.close()
 
     async def test_initial_migration_is_idempotent_and_pragmas_are_enforced(self) -> None:
-        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3, 4, 5, 6, 7])
+        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3, 4, 5, 6, 7, 8])
         self.assertEqual(await self.repo.migrate(), [])
         check = await self.repo.self_check()
         self.assertEqual(check["integrity"], "ok")
@@ -70,6 +70,58 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         payload = __import__("json").loads(items[0].metadata_json)
         self.assertEqual(payload["existing"], "keep")
         self.assertTrue(payload["media_compat"]["streaming_ready"])
+
+    async def test_env_destination_profile_is_read_only_default_and_job_snapshots_it(self) -> None:
+        profile = await self.repo.ensure_env_destination_profile(
+            destination_peer="@dest",
+            channel_at="@dest",
+            group_at="@group",
+            cover_mode=True,
+            forward_caption=True,
+        )
+        self.assertTrue(profile.read_only)
+        self.assertTrue(profile.is_default)
+        snapshot = self.repo.destination_profile_snapshot(profile)
+        job = await self.repo.accept_job(
+            kind="url", user_id=42, state="queued", source_kind="url",
+            source_url="https://example.invalid/a", legacy_seq=901,
+            destination_profile_id=profile.id,
+            destination_profile_snapshot=snapshot,
+            event_payload={"schema_version": 1},
+        )
+        self.assertEqual(job.destination_profile_id, profile.id)
+        stored = __import__("json").loads(job.destination_profile_snapshot_json)
+        self.assertEqual(stored["destination_peer"], "@dest")
+        self.assertEqual(await self.repo.disable_destination_profile(profile.id), "read_only")
+
+    async def test_user_destination_profile_default_switch_and_disable_guard(self) -> None:
+        env = await self.repo.ensure_env_destination_profile(destination_peer="@env")
+        custom = await self.repo.create_destination_profile(
+            name="归档频道", destination_peer="-100123", backup_policy="required"
+        )
+        self.assertFalse(await self.repo.set_default_destination_profile(custom.id))
+        self.assertTrue(await self.repo.mark_destination_profile_verified(custom.id, now=150.0))
+        self.assertTrue(await self.repo.set_default_destination_profile(custom.id))
+        selected = await self.repo.get_default_destination_profile()
+        self.assertEqual(selected.id, custom.id)
+        job = await self.repo.accept_job(
+            kind="url", user_id=1, state="queued", source_kind="url",
+            legacy_seq=902,
+            destination_profile_id=custom.id,
+            destination_profile_snapshot=self.repo.destination_profile_snapshot(custom),
+            event_payload={"schema_version": 1},
+        )
+        self.assertEqual(await self.repo.disable_destination_profile(custom.id), "default")
+        self.assertTrue(await self.repo.set_default_destination_profile(env.id))
+        self.assertEqual(await self.repo.disable_destination_profile(custom.id), "in_use")
+        claimed = await self.repo.claim_next_download("dp1-test")
+        self.assertEqual(claimed.job.id, job.id)
+        current = await self.repo.get_job(job.id)
+        await self.repo.transition_job(
+            job.id, expected_revision=current.revision, to_state="failed",
+            event_type="test_failed", payload={"schema_version": 1},
+        )
+        self.assertEqual(await self.repo.disable_destination_profile(custom.id), "ok")
 
     async def test_backup_attempt_pages_are_sql_backed_and_include_file_aggregates(self) -> None:
         job = await self.repo.accept_job(

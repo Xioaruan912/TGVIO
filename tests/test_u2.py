@@ -179,6 +179,12 @@ class U2RepositoryTests(unittest.IsolatedAsyncioTestCase):
                 }
             ],
         )
+        stored_items = await self.repo.list_job_items(job.id)
+        stored_payload = __import__("json").loads(stored_items[0].metadata_json)
+        self.assertTrue(stored_payload["media_compat"]["streaming_ready"])
+        raw_detail = await self.repo.job_detail(job.id, user_id=42)
+        raw_payload = __import__("json").loads(raw_detail["items"][0]["metadata_json"])
+        self.assertTrue(raw_payload["media_compat"]["streaming_ready"])
         pipeline = SimpleNamespace(repository=self.repo, download_dir=str(self.download_root), retryable={})
         queue = JobQueue(pipeline)
         detail = await queue.durable_job_detail(42, job.id)

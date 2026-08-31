@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 from src import bot
 from src.webdav import WebDavProbeResult, WebDavWriteProbeResult
 from src.handlers.callbacks import build_callback_router
+from src.repository import SQLiteRepository
 from src.services import BackupManager, InteractionSessions, JobQueue, ProxyManager
 from tests.fakes import (
     FakeCallbackEvent,
@@ -60,6 +61,7 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "on_health",
                 "on_diag",
                 "on_mode",
+                "on_profiles",
                 "on_webdav",
                 "on_webdavlogs",
                 "on_proxy",
@@ -122,6 +124,53 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         await callback(end)
         self.assertIn("当前没有进行中的合集", end.answers)
         self.assertIn("📥 当前合集：未开始", end.edits[-1]["text"])
+
+    async def test_destination_profile_test_requires_confirmation_and_cleans_message(self) -> None:
+        repo = SQLiteRepository(
+            os.path.join(self.tempdir.name, "profiles.sqlite3"),
+            download_root=os.path.join(self.tempdir.name, "downloads"),
+        )
+        await repo.open()
+        await repo.migrate()
+        self.addAsyncCleanup(repo.close)
+        default = await repo.ensure_env_destination_profile(
+            destination_peer="@default",
+            channel_at="@default",
+        )
+        client = FakeClient()
+        with patch.object(bot._Pipeline, "start", autospec=True):
+            pipeline = bot.register_handlers(
+                client,
+                repository=repo,
+                default_destination_profile=default,
+            )
+        callback = client.handlers["on_callback"]
+        profile = await pipeline.destination_profiles.create_profile(
+            name="测试目的地",
+            destination_peer="@archive",
+        )
+
+        before = len(client.sent_messages)
+        prompt = FakeCallbackEvent(client, f"dp:t:{profile.id}".encode())
+        await callback(prompt)
+        self.assertEqual(len(client.sent_messages), before)
+        confirm_buttons = [
+            button.data
+            for row in prompt.edits[-1]["buttons"]
+            for button in row
+            if button.data.startswith(b"dp:tc:")
+        ]
+        self.assertEqual(len(confirm_buttons), 1)
+
+        sent = type("_Sent", (), {"id": 9001, "delete": AsyncMock()})()
+        client.get_input_entity = AsyncMock(return_value="archive-input")
+        client.send_message = AsyncMock(return_value=sent)
+        confirmed = FakeCallbackEvent(client, confirm_buttons[0])
+        await callback(confirmed)
+
+        client.get_input_entity.assert_awaited_once_with("@archive")
+        client.send_message.assert_awaited_once()
+        sent.delete.assert_awaited_once()
 
     async def test_webdav_input_uses_explicit_interaction_session(self) -> None:
         callback = self.client.handlers["on_callback"]

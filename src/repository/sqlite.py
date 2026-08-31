@@ -64,6 +64,8 @@ class JobRecord:
     resume_state: str | None = None
     legacy_seq: int | None = None
     spoiler: bool = False
+    destination_profile_id: int | None = None
+    destination_profile_snapshot_json: str | None = None
 
 
 @dataclass(frozen=True)
@@ -147,6 +149,28 @@ class DedupEntryRecord:
 
 
 @dataclass(frozen=True)
+class DestinationProfileRecord:
+    id: int
+    name: str
+    destination_peer: str
+    discussion_group_peer: str | None
+    channel_at: str
+    group_at: str
+    cover_mode: bool
+    forward_caption: bool
+    default_spoiler_mode: str
+    backup_policy: str
+    footer_template: str
+    enabled: bool
+    is_default: bool
+    read_only: bool
+    source_kind: str
+    verified_at: float | None
+    created_at: float
+    updated_at: float
+
+
+@dataclass(frozen=True)
 class PublishedMessageRecord:
     id: int
     job_id: int
@@ -207,6 +231,7 @@ class SQLiteRepository:
             "daily_stats",
             "stat_metric_applied",
             "dedup_entries",
+            "destination_profiles",
         }
     )
 
@@ -612,6 +637,8 @@ class SQLiteRepository:
         source_url: str | None = None,
         legacy_seq: int | None = None,
         spoiler: bool = False,
+        destination_profile_id: int | None = None,
+        destination_profile_snapshot: dict[str, Any] | None = None,
         event_type: str = "accepted",
         event_payload: dict[str, Any] | None = None,
         now: float | None = None,
@@ -619,6 +646,7 @@ class SQLiteRepository:
         conn = self._require_conn()
         timestamp = time.time() if now is None else float(now)
         payload_json = self._encode_versioned_payload(event_payload)
+        profile_snapshot_json = self._encode_versioned_payload(destination_profile_snapshot)
         prepared = []
         for ordinal, item in enumerate(items or [], start=1):
             metadata_json = self._encode_versioned_payload(item.get("metadata"))
@@ -627,10 +655,24 @@ class SQLiteRepository:
                 local_path = self._validated_local_path(str(local_path))
             prepared.append((ordinal, item, local_path, metadata_json))
         has_legacy_seq = await self._table_has_column("jobs", "legacy_seq")
+        has_destination_profile = await self._table_has_column("jobs", "destination_profile_id")
         async with self._write_lock:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
-                if has_legacy_seq:
+                if has_legacy_seq and has_destination_profile:
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO jobs(
+                          kind, user_id, state, spoiler, source_kind, source_chat_id,
+                          source_url, legacy_seq, total_items, destination_profile_id,
+                          destination_profile_snapshot_json, accepted_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (kind, user_id, state, int(spoiler), source_kind, source_chat_id,
+                         source_url, legacy_seq, len(prepared), destination_profile_id,
+                         profile_snapshot_json, timestamp, timestamp),
+                    )
+                elif has_legacy_seq:
                     cursor = await conn.execute(
                         """
                         INSERT INTO jobs(
@@ -640,6 +682,19 @@ class SQLiteRepository:
                         """,
                         (kind, user_id, state, int(spoiler), source_kind, source_chat_id,
                          source_url, legacy_seq, len(prepared), timestamp, timestamp),
+                    )
+                elif has_destination_profile:
+                    cursor = await conn.execute(
+                        """
+                        INSERT INTO jobs(
+                          kind, user_id, state, spoiler, source_kind, source_chat_id,
+                          source_url, total_items, destination_profile_id,
+                          destination_profile_snapshot_json, accepted_at, updated_at
+                        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """,
+                        (kind, user_id, state, int(spoiler), source_kind, source_chat_id,
+                         source_url, len(prepared), destination_profile_id,
+                        profile_snapshot_json, timestamp, timestamp),
                     )
                 else:
                     cursor = await conn.execute(
@@ -1917,11 +1972,21 @@ class SQLiteRepository:
     async def get_job(self, job_id: int) -> JobRecord | None:
         conn = self._require_conn()
         legacy_expr = "legacy_seq" if await self._table_has_column("jobs", "legacy_seq") else "NULL AS legacy_seq"
+        profile_id_expr = (
+            "destination_profile_id"
+            if await self._table_has_column("jobs", "destination_profile_id")
+            else "NULL AS destination_profile_id"
+        )
+        profile_snapshot_expr = (
+            "destination_profile_snapshot_json"
+            if await self._table_has_column("jobs", "destination_profile_snapshot_json")
+            else "NULL AS destination_profile_snapshot_json"
+        )
         cursor = await conn.execute(
             f"""
             SELECT id, kind, user_id, state, source_kind, revision, accepted_at, updated_at,
                    resume_state, source_chat_id, source_url, status_chat_id, status_message_id,
-                   {legacy_expr}, spoiler
+                   {legacy_expr}, spoiler, {profile_id_expr}, {profile_snapshot_expr}
             FROM jobs WHERE id = ?
             """,
             (job_id,),
@@ -1934,9 +1999,20 @@ class SQLiteRepository:
         conn = self._require_conn()
         limit = max(1, min(int(limit), 500))
         legacy_expr = "legacy_seq" if await self._table_has_column("jobs", "legacy_seq") else "NULL AS legacy_seq"
+        profile_id_expr = (
+            "destination_profile_id"
+            if await self._table_has_column("jobs", "destination_profile_id")
+            else "NULL AS destination_profile_id"
+        )
+        profile_snapshot_expr = (
+            "destination_profile_snapshot_json"
+            if await self._table_has_column("jobs", "destination_profile_snapshot_json")
+            else "NULL AS destination_profile_snapshot_json"
+        )
         sql = (
             "SELECT id, kind, user_id, state, source_kind, revision, accepted_at, updated_at, resume_state, "
-            f"source_chat_id, source_url, status_chat_id, status_message_id, {legacy_expr}, spoiler FROM jobs"
+            f"source_chat_id, source_url, status_chat_id, status_message_id, {legacy_expr}, spoiler, "
+            f"{profile_id_expr}, {profile_snapshot_expr} FROM jobs"
         )
         params: tuple[Any, ...]
         if user_id is None:
@@ -2410,7 +2486,7 @@ class SQLiteRepository:
             SELECT id,legacy_seq,kind,user_id,state,resume_state,download_state,publish_state,
                    backup_state,source_kind,bytes_done,bytes_total,current_item,total_items,
                    retry_count,next_retry_at,error_code,error_message,revision,accepted_at,started_at,
-                   updated_at,finished_at
+                   updated_at,finished_at,destination_profile_id,destination_profile_snapshot_json
             FROM jobs WHERE id=? AND user_id=?
             """,
             (int(job_id), int(user_id)),
@@ -2519,8 +2595,409 @@ class SQLiteRepository:
             )
             await conn.commit()
 
+    async def set_job_destination_profile(
+        self,
+        job_id: int,
+        *,
+        expected_revision: int,
+        profile_id: int,
+        snapshot: dict[str, Any],
+    ) -> bool:
+        """CAS-update an awaiting/queued job's immutable destination snapshot."""
+        conn = self._require_conn()
+        encoded = self._encode_versioned_payload(snapshot)
+        timestamp = time.time()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    """UPDATE jobs
+                       SET destination_profile_id=?,destination_profile_snapshot_json=?,
+                           revision=revision+1,updated_at=?
+                       WHERE id=? AND revision=? AND state IN ('awaiting_confirmation','queued')""",
+                    (
+                        int(profile_id), encoded, timestamp,
+                        int(job_id), int(expected_revision),
+                    ),
+                )
+                changed = cursor.rowcount == 1
+                await cursor.close()
+                if not changed:
+                    await conn.rollback()
+                    return False
+                await conn.execute(
+                    """INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                       SELECT id,'destination_profile_selected',state,state,?,? FROM jobs WHERE id=?""",
+                    (
+                        self._encode_versioned_payload(
+                            {"schema_version": 1, "destination_profile_id": int(profile_id)}
+                        ),
+                        timestamp,
+                        int(job_id),
+                    ),
+                )
+                await conn.commit()
+                return True
+            except Exception:
+                await conn.rollback()
+                raise
+
+    @staticmethod
+    def _destination_profile_from_row(row: aiosqlite.Row) -> DestinationProfileRecord:
+        return DestinationProfileRecord(
+            id=int(row["id"]),
+            name=str(row["name"]),
+            destination_peer=str(row["destination_peer"]),
+            discussion_group_peer=(
+                str(row["discussion_group_peer"])
+                if row["discussion_group_peer"] is not None
+                else None
+            ),
+            channel_at=str(row["channel_at"] or ""),
+            group_at=str(row["group_at"] or ""),
+            cover_mode=bool(row["cover_mode"]),
+            forward_caption=bool(row["forward_caption"]),
+            default_spoiler_mode=str(row["default_spoiler_mode"] or "ask"),
+            backup_policy=str(row["backup_policy"] or "best_effort"),
+            footer_template=str(row["footer_template"] or ""),
+            enabled=bool(row["enabled"]),
+            is_default=bool(row["is_default"]),
+            read_only=bool(row["read_only"]),
+            source_kind=str(row["source_kind"] or "user"),
+            verified_at=(float(row["verified_at"]) if row["verified_at"] is not None else None),
+            created_at=float(row["created_at"]),
+            updated_at=float(row["updated_at"]),
+        )
+
+    @staticmethod
+    def destination_profile_snapshot(profile: DestinationProfileRecord) -> dict[str, Any]:
+        return {
+            "schema_version": 1,
+            "profile_id": int(profile.id),
+            "name": profile.name,
+            "destination_peer": profile.destination_peer,
+            "discussion_group_peer": profile.discussion_group_peer,
+            "channel_at": profile.channel_at,
+            "group_at": profile.group_at,
+            "cover_mode": bool(profile.cover_mode),
+            "forward_caption": bool(profile.forward_caption),
+            "default_spoiler_mode": profile.default_spoiler_mode,
+            "backup_policy": profile.backup_policy,
+            "footer_template": profile.footer_template,
+        }
+
+    async def ensure_env_destination_profile(
+        self,
+        *,
+        destination_peer: str,
+        channel_at: str = "",
+        group_at: str = "",
+        cover_mode: bool = False,
+        forward_caption: bool = False,
+        default_spoiler_mode: str = "ask",
+        backup_policy: str = "best_effort",
+        now: float | None = None,
+    ) -> DestinationProfileRecord:
+        """Register the legacy env destination as the immutable compatibility profile."""
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        peer = str(destination_peer).strip()
+        if not peer:
+            raise RepositoryError("destination profile requires destination peer")
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT id FROM destination_profiles WHERE source_kind='env' ORDER BY id LIMIT 1"
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    cursor = await conn.execute(
+                        "SELECT COUNT(*) AS n FROM destination_profiles WHERE is_default=1"
+                    )
+                    default_row = await cursor.fetchone()
+                    await cursor.close()
+                    is_default = 1 if int(default_row["n"] if default_row else 0) == 0 else 0
+                    cursor = await conn.execute(
+                        """INSERT INTO destination_profiles(
+                               name,destination_peer,discussion_group_peer,channel_at,group_at,
+                               cover_mode,forward_caption,default_spoiler_mode,backup_policy,
+                               footer_template,enabled,is_default,read_only,source_kind,verified_at,created_at,updated_at
+                           ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                        (
+                            "默认频道", peer, None, str(channel_at or ""), str(group_at or ""),
+                            int(bool(cover_mode)), int(bool(forward_caption)), str(default_spoiler_mode or "ask"),
+                            str(backup_policy or "best_effort"), "", 1, is_default, 1, "env", timestamp, timestamp, timestamp,
+                        ),
+                    )
+                    profile_id = int(cursor.lastrowid)
+                    await cursor.close()
+                else:
+                    profile_id = int(row["id"])
+                    await conn.execute(
+                        """UPDATE destination_profiles
+                           SET destination_peer=?,channel_at=?,group_at=?,cover_mode=?,forward_caption=?,
+                               default_spoiler_mode=?,backup_policy=?,enabled=1,read_only=1,updated_at=?
+                           WHERE id=?""",
+                        (
+                            peer, str(channel_at or ""), str(group_at or ""), int(bool(cover_mode)),
+                            int(bool(forward_caption)), str(default_spoiler_mode or "ask"),
+                            str(backup_policy or "best_effort"), timestamp, profile_id,
+                        ),
+                    )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        profile = await self.get_destination_profile(profile_id)
+        if profile is None:
+            raise RepositoryError("env destination profile could not be read back")
+        return profile
+
+    async def get_destination_profile(self, profile_id: int) -> DestinationProfileRecord | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT * FROM destination_profiles WHERE id=?", (int(profile_id),)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self._destination_profile_from_row(row) if row is not None else None
+
+    async def get_default_destination_profile(self) -> DestinationProfileRecord | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT * FROM destination_profiles WHERE enabled=1 AND is_default=1 ORDER BY id LIMIT 1"
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self._destination_profile_from_row(row) if row is not None else None
+
+    async def list_destination_profiles(self, *, enabled_only: bool = False) -> list[DestinationProfileRecord]:
+        conn = self._require_conn()
+        sql = "SELECT * FROM destination_profiles"
+        if enabled_only:
+            sql += " WHERE enabled=1"
+        sql += " ORDER BY is_default DESC, enabled DESC, id"
+        cursor = await conn.execute(sql)
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [self._destination_profile_from_row(row) for row in rows]
+
+    async def create_destination_profile(
+        self,
+        *,
+        name: str,
+        destination_peer: str,
+        discussion_group_peer: str | None = None,
+        channel_at: str = "",
+        group_at: str = "",
+        cover_mode: bool = False,
+        forward_caption: bool = False,
+        default_spoiler_mode: str = "ask",
+        backup_policy: str = "best_effort",
+        footer_template: str = "",
+        now: float | None = None,
+    ) -> DestinationProfileRecord:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        clean_name = str(name).strip()[:80]
+        peer = str(destination_peer).strip()
+        if not clean_name or not peer:
+            raise RepositoryError("destination profile name and peer are required")
+        if str(default_spoiler_mode) not in {"ask", "always_normal", "always_spoiler"}:
+            raise RepositoryError("invalid default spoiler mode")
+        if str(backup_policy) not in {"best_effort", "required"}:
+            raise RepositoryError("invalid backup policy")
+        footer = str(footer_template or "")
+        if len(footer) > 512:
+            raise RepositoryError("footer template is too long")
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """INSERT INTO destination_profiles(
+                       name,destination_peer,discussion_group_peer,channel_at,group_at,
+                       cover_mode,forward_caption,default_spoiler_mode,backup_policy,
+                       footer_template,enabled,is_default,read_only,source_kind,verified_at,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    clean_name, peer,
+                    str(discussion_group_peer).strip() if discussion_group_peer else None,
+                    str(channel_at or ""), str(group_at or ""), int(bool(cover_mode)),
+                    int(bool(forward_caption)), str(default_spoiler_mode), str(backup_policy), footer,
+                    1, 0, 0, "user", None, timestamp, timestamp,
+                ),
+            )
+            profile_id = int(cursor.lastrowid)
+            await cursor.close()
+            await conn.commit()
+        profile = await self.get_destination_profile(profile_id)
+        if profile is None:
+            raise RepositoryError("created destination profile could not be read back")
+        return profile
+
+    async def set_default_destination_profile(self, profile_id: int) -> bool:
+        conn = self._require_conn()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT enabled,verified_at FROM destination_profiles WHERE id=?", (int(profile_id),)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None or not bool(row["enabled"]) or row["verified_at"] is None:
+                    await conn.rollback()
+                    return False
+                await conn.execute("UPDATE destination_profiles SET is_default=0 WHERE is_default=1")
+                await conn.execute(
+                    "UPDATE destination_profiles SET is_default=1,updated_at=? WHERE id=?",
+                    (time.time(), int(profile_id)),
+                )
+                await conn.commit()
+                return True
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def update_destination_profile(self, profile_id: int, **changes: Any) -> str:
+        allowed = {
+            "name",
+            "destination_peer",
+            "discussion_group_peer",
+            "channel_at",
+            "group_at",
+            "cover_mode",
+            "forward_caption",
+            "default_spoiler_mode",
+            "backup_policy",
+            "footer_template",
+        }
+        unknown = set(changes) - allowed
+        if unknown:
+            raise RepositoryError("unsupported destination profile field")
+        if not changes:
+            return "noop"
+        normalized: dict[str, Any] = {}
+        for key, value in changes.items():
+            if key in {"cover_mode", "forward_caption"}:
+                normalized[key] = int(bool(value))
+            elif key == "discussion_group_peer":
+                normalized[key] = str(value).strip() if value else None
+            else:
+                normalized[key] = str(value or "").strip()
+        if "name" in normalized:
+            normalized["name"] = normalized["name"][:80]
+            if not normalized["name"]:
+                raise RepositoryError("destination profile name is required")
+        if "destination_peer" in normalized and not normalized["destination_peer"]:
+            raise RepositoryError("destination peer is required")
+        if "default_spoiler_mode" in normalized and normalized["default_spoiler_mode"] not in {
+            "ask", "always_normal", "always_spoiler"
+        }:
+            raise RepositoryError("invalid default spoiler mode")
+        if "backup_policy" in normalized and normalized["backup_policy"] not in {
+            "best_effort", "required"
+        }:
+            raise RepositoryError("invalid backup policy")
+        if "footer_template" in normalized and len(normalized["footer_template"]) > 512:
+            raise RepositoryError("footer template is too long")
+        conn = self._require_conn()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT read_only,is_default FROM destination_profiles WHERE id=?", (int(profile_id),)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    await conn.rollback()
+                    return "missing"
+                if bool(row["read_only"]):
+                    await conn.rollback()
+                    return "read_only"
+                routing_fields = {"destination_peer", "discussion_group_peer", "cover_mode"}
+                if bool(row["is_default"]) and routing_fields & set(normalized):
+                    await conn.rollback()
+                    return "default_requires_switch"
+                invalidate_verification = bool(
+                    routing_fields & set(normalized)
+                )
+                assignments = ",".join(f"{key}=?" for key in normalized)
+                if invalidate_verification:
+                    assignments += ",verified_at=NULL"
+                params = [normalized[key] for key in normalized]
+                params.extend([time.time(), int(profile_id)])
+                await conn.execute(
+                    f"UPDATE destination_profiles SET {assignments},updated_at=? WHERE id=?",
+                    tuple(params),
+                )
+                await conn.commit()
+                return "ok"
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def mark_destination_profile_verified(
+        self, profile_id: int, *, now: float | None = None
+    ) -> bool:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """UPDATE destination_profiles
+                   SET verified_at=?,updated_at=?
+                   WHERE id=? AND enabled=1""",
+                (timestamp, timestamp, int(profile_id)),
+            )
+            changed = cursor.rowcount == 1
+            await cursor.close()
+            await conn.commit()
+        return changed
+
+    async def disable_destination_profile(self, profile_id: int) -> str:
+        conn = self._require_conn()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT enabled,is_default,read_only FROM destination_profiles WHERE id=?",
+                    (int(profile_id),),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    await conn.rollback()
+                    return "missing"
+                if bool(row["read_only"]):
+                    await conn.rollback()
+                    return "read_only"
+                if bool(row["is_default"]):
+                    await conn.rollback()
+                    return "default"
+                cursor = await conn.execute(
+                    """SELECT COUNT(*) AS n FROM jobs
+                       WHERE destination_profile_id=? AND state NOT IN ('succeeded','failed','cancelled')""",
+                    (int(profile_id),),
+                )
+                active = await cursor.fetchone()
+                await cursor.close()
+                if int(active["n"] if active else 0) > 0:
+                    await conn.rollback()
+                    return "in_use"
+                await conn.execute(
+                    "UPDATE destination_profiles SET enabled=0,updated_at=? WHERE id=?",
+                    (time.time(), int(profile_id)),
+                )
+                await conn.commit()
+                return "ok"
+            except Exception:
+                await conn.rollback()
+                raise
+
     @staticmethod
     def _job_from_row(row: aiosqlite.Row) -> JobRecord:
+        keys = set(row.keys())
         return JobRecord(
             id=int(row["id"]),
             kind=str(row["kind"]),
@@ -2537,6 +3014,14 @@ class SQLiteRepository:
             resume_state=row["resume_state"],
             legacy_seq=row["legacy_seq"],
             spoiler=bool(row["spoiler"]),
+            destination_profile_id=(
+                row["destination_profile_id"] if "destination_profile_id" in keys else None
+            ),
+            destination_profile_snapshot_json=(
+                row["destination_profile_snapshot_json"]
+                if "destination_profile_snapshot_json" in keys
+                else None
+            ),
         )
 
     async def list_job_events(self, job_id: int) -> list[JobEventRecord]:

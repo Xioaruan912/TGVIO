@@ -283,6 +283,14 @@ class JobQueue:
         else:
             detail["backup_summary"] = ""
         detail["error_message"] = str(detail.get("error_message") or "")[:1000]
+        snapshot_raw = detail.pop("destination_profile_snapshot_json", None)
+        detail["destination_profile"] = ""
+        if snapshot_raw:
+            try:
+                snapshot = json.loads(snapshot_raw)
+                detail["destination_profile"] = str(snapshot.get("name") or "")[:80]
+            except Exception:
+                detail["destination_profile"] = ""
         return detail
 
     async def durable_record(self, user_id: int, job_id: int):
@@ -572,6 +580,8 @@ class JobQueue:
             cached_path=ticket.cached_path,
             cleanup_extra=ticket.cleanup_extra,
             texts=old_job.texts,
+            destination_profile_id=getattr(old_job, "destination_profile_id", None),
+            destination_profile_snapshot=getattr(old_job, "destination_profile_snapshot", None),
         )
         self._pipeline.active_seqs.add(ticket.new_seq)
         self._pipeline.enqueue(new_job)
@@ -588,6 +598,8 @@ class JobQueue:
                 texts=list(new_job.texts or []),
                 source_url=new_job.url or None,
                 spoiler=new_job.spoiler,
+                destination_profile_id=new_job.destination_profile_id,
+                destination_profile_snapshot=new_job.destination_profile_snapshot,
                 event_type="retry_accepted",
                 event_extra={"retry_of_legacy_seq": ticket.old_seq},
             )
@@ -601,6 +613,43 @@ class JobQueue:
             pending.timeout_task.cancel()
         self._pipeline.active_seqs.add(seq)
         return ConfirmationTicket(seq=seq, pending=pending)
+
+    async def select_pending_destination(self, seq: int, profile_id: int, *, user_id: int) -> str:
+        pending = self._pipeline.pending.get(int(seq))
+        profiles = getattr(self._pipeline, "destination_profiles", None)
+        if pending is None or int(pending.user_id or 0) != int(user_id):
+            return "missing"
+        if profiles is None:
+            return "unavailable"
+        profile = await profiles.repository.get_destination_profile(int(profile_id))
+        if profile is None or not profile.enabled:
+            return "profile_unavailable"
+        snapshot = profiles.repository.destination_profile_snapshot(profile)
+        if self._shadow is not None and getattr(self._pipeline, "repository", None) is not None:
+            await self.drain_shadow()
+            job_id = self.durable_job_id(int(seq))
+            if job_id is None:
+                return "missing"
+            current = await self._pipeline.repository.get_job(job_id)
+            if current is None:
+                return "missing"
+            if not await self._pipeline.repository.set_job_destination_profile(
+                job_id,
+                expected_revision=current.revision,
+                profile_id=profile.id,
+                snapshot=snapshot,
+            ):
+                return "stale"
+        pending.destination_profile_id = profile.id
+        pending.destination_profile_name = profile.name
+        pending.destination_profile_snapshot = snapshot
+        return "ok"
+
+    def pending_confirmation(self, seq: int, *, user_id: int) -> PendingJob | None:
+        pending = self._pipeline.pending.get(int(seq))
+        if pending is None or int(pending.user_id or 0) != int(user_id):
+            return None
+        return pending
 
     def commit_confirmation(
         self,
@@ -618,6 +667,8 @@ class JobQueue:
             spoiler=spoiler,
             user_id=pending.user_id,
             texts=pending.texts,
+            destination_profile_id=pending.destination_profile_id,
+            destination_profile_snapshot=pending.destination_profile_snapshot,
         )
         self._pipeline.enqueue(job)
         if self._shadow is not None:
@@ -762,6 +813,8 @@ class JobQueue:
         status_chat_id: int | None = None,
     ) -> None:
         if self._shadow is not None:
+            profiles = getattr(self._pipeline, "destination_profiles", None)
+            profile = profiles.current_profile if profiles is not None else None
             self._shadow.accept(
                 seq,
                 kind=kind,
@@ -775,4 +828,8 @@ class JobQueue:
                 spoiler=spoiler,
                 status=status,
                 status_chat_id=status_chat_id,
+                destination_profile_id=(profile.id if profile is not None else None),
+                destination_profile_snapshot=(
+                    profiles.current_snapshot() if profiles is not None else None
+                ),
             )

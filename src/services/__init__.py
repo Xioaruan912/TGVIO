@@ -13,6 +13,7 @@ from .stats import RuntimeStatsSnapshot, StatsService
 from .health import RuntimeHeartbeat
 from .dedup import ContentHash, DedupManager, sha256_file
 from .media_compat import MediaCompatibilityManager
+from .destination_profiles import DestinationProfileManager
 
 __all__ = [
     "BackupManager",
@@ -39,4 +40,5 @@ __all__ = [
     "DedupManager",
     "sha256_file",
     "MediaCompatibilityManager",
+    "DestinationProfileManager",
 ]

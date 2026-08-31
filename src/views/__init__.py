@@ -45,6 +45,12 @@ from .tasks import (
     job_detail_view,
 )
 from .stats import stats_view
+from .destination_profiles import (
+    DestinationProfileView,
+    destination_profile_detail_view,
+    destination_profile_test_confirm_view,
+    destination_profiles_view,
+)
 
 __all__ = [
     "MODE_NAMES",
@@ -89,4 +95,8 @@ __all__ = [
     "failure_center_view",
     "job_detail_view",
     "stats_view",
+    "DestinationProfileView",
+    "destination_profiles_view",
+    "destination_profile_detail_view",
+    "destination_profile_test_confirm_view",
 ]

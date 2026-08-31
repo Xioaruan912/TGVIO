@@ -18,6 +18,8 @@ class Job:
     cleanup_extra: str = ""
     started: bool = False
     texts: list = None
+    destination_profile_id: int | None = None
+    destination_profile_snapshot: dict | None = None
 
 
 @dataclass
@@ -36,6 +38,9 @@ class PendingJob:
     timeout_task: object = None
     user_id: int = 0
     texts: list = None
+    destination_profile_id: int | None = None
+    destination_profile_name: str = ""
+    destination_profile_snapshot: dict | None = None
 
 
 @dataclass

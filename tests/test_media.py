@@ -62,7 +62,7 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("新的文案", self.client.sent_files[0]["caption"])
         self.publisher._upload_media_input.assert_not_awaited()
         manager.reuse_input_media.assert_awaited_once_with(
-            self.client, content, spoiler=True
+            self.client, content, spoiler=True, destination_key=None
         )
         manager.mark_hit.assert_awaited_once_with(entry, content)
         manager.record_sent_message.assert_awaited_once()

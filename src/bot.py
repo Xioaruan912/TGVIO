@@ -76,6 +76,7 @@ from .services import (
     ProxyManager,
     ShadowState,
     DedupManager,
+    DestinationProfileManager,
     MediaCompatibilityManager,
     StatsService,
     recover_jobs,
@@ -513,8 +514,15 @@ class _Pipeline:
         return not current
 
     def _spoiler_mode(self, user_id: int) -> str:
-        # 默认"总是正常"：首次使用不询问，需要雪花遮挡的用户用 /mode 自行设置
-        return self._get_pref(user_id, "spoiler_mode", "always_normal")
+        explicit = self.prefs.get(user_id, {}).get("spoiler_mode")
+        if explicit in {"ask", "always_normal", "always_spoiler"}:
+            return explicit
+        profiles = getattr(self, "destination_profiles", None)
+        if profiles is not None:
+            value = str(profiles.current_profile.default_spoiler_mode or "always_normal")
+            if value in {"ask", "always_normal", "always_spoiler"}:
+                return value
+        return "always_normal"
 
     def set_spoiler_mode(self, user_id: int, mode: str) -> None:
         self._set_pref(user_id, "spoiler_mode", mode)
@@ -814,6 +822,12 @@ class _Pipeline:
                 status = None
             if status is not None and getattr(self, "job_queue", None) is not None:
                 await self.job_queue.set_status_reference(seq, status, chat_id=record.user_id)
+            destination_snapshot = None
+            if record.destination_profile_snapshot_json:
+                try:
+                    destination_snapshot = json.loads(record.destination_profile_snapshot_json)
+                except Exception:
+                    destination_snapshot = None
             job = _Job(
                 seq=seq,
                 kind=record.kind,
@@ -824,6 +838,8 @@ class _Pipeline:
                 spoiler=record.spoiler,
                 user_id=record.user_id,
                 texts=texts or None,
+                destination_profile_id=record.destination_profile_id,
+                destination_profile_snapshot=destination_snapshot,
             )
             self._runtime_jobs[seq] = job
             self.active_seqs.add(seq)
@@ -894,9 +910,14 @@ class _Pipeline:
         user_id: int = 0,
         texts: list = None,
     ) -> None:
+        profiles = getattr(self, "destination_profiles", None)
+        profile = profiles.current_profile if profiles is not None else None
         self.pending[seq] = _PendingJob(
             seq=seq, kind=kind, message=message, album=album, user_id=user_id,
             texts=texts,
+            destination_profile_id=(profile.id if profile is not None else None),
+            destination_profile_name=(profile.name if profile is not None else ""),
+            destination_profile_snapshot=(profiles.current_snapshot() if profiles is not None else None),
         )
         self.pending[seq].timeout_task = asyncio.get_running_loop().create_task(
             self._confirm_timeout(seq)
@@ -2416,6 +2437,34 @@ class _Pipeline:
         await self._update_progress_status(seq)
 
     async def _on_pre_publish(self, job, payload) -> None:
+        profiles = getattr(self, "destination_profiles", None)
+        snapshot = None
+        if getattr(self, "repository", None) is not None and getattr(self, "job_queue", None) is not None:
+            job_id = self.job_queue.durable_job_id(job.seq)
+            if job_id is not None:
+                record = await self.repository.get_job(job_id)
+                if record is not None and record.destination_profile_snapshot_json:
+                    try:
+                        snapshot = json.loads(record.destination_profile_snapshot_json)
+                    except (TypeError, ValueError, json.JSONDecodeError):
+                        snapshot = None
+        if snapshot is None:
+            runtime_snapshot = getattr(job, "destination_profile_snapshot", None)
+            if isinstance(runtime_snapshot, dict):
+                snapshot = dict(runtime_snapshot)
+        if snapshot is None and profiles is not None:
+            snapshot = profiles.current_snapshot()
+        if snapshot:
+            footer = profiles.render_snapshot_footer(snapshot) if profiles is not None else None
+            self.publisher.configure_destination_profile(snapshot, footer=footer)
+            job._destination_profile_snapshot = dict(snapshot)
+            job.destination_profile_id = snapshot.get("profile_id")
+            job.destination_profile_snapshot = dict(snapshot)
+            job._destination_key = str(snapshot.get("destination_peer") or DEST_CHANNEL)
+            job._backup_policy = str(snapshot.get("backup_policy") or "best_effort")
+        else:
+            job._destination_key = str(DEST_CHANNEL)
+            job._backup_policy = str(self.webdav_cfg.get("backup_policy") or "best_effort")
         self._progress_tracker.begin_phase(job.seq, "publishing")
         if getattr(self, "job_queue", None) is not None and job.seq not in self._repo_publish_claimed:
             self.job_queue.shadow_transition(job.seq, "publish_started", "publishing")
@@ -2432,7 +2481,7 @@ class _Pipeline:
         self._remember_published(job.seq, ids)
         if (
             bool(self.webdav_cfg.get("enabled"))
-            and str(self.webdav_cfg.get("backup_policy") or "best_effort") == "required"
+            and str(getattr(job, "_backup_policy", self.webdav_cfg.get("backup_policy") or "best_effort")) == "required"
             and getattr(self, "repository", None) is not None
         ):
             job._required_backup_pending = True
@@ -3083,6 +3132,12 @@ class _Pipeline:
         else:
             text = "⚠️ 该内容是否为 18+？"
         try:
+            pending = self.pending.get(seq)
+            profile_name = (
+                pending.destination_profile_name
+                if pending is not None and pending.destination_profile_name
+                else "默认频道"
+            )
             status = await self.client.send_message(
                 chat_id,
                 text,
@@ -3091,6 +3146,7 @@ class _Pipeline:
                         Button.inline("🔞 是（雪花遮挡）", f"confirm:{seq}:1"),
                         Button.inline("✅ 否", f"confirm:{seq}:0"),
                     ],
+                    [Button.inline(f"🎯 {profile_name[:30]}", f"cp:{seq}")],
                     [Button.inline("❌ 取消", f"cancel:{seq}")],
                 ],
             )
@@ -3157,7 +3213,13 @@ class _Pipeline:
             await self._safe_edit(job, card, buttons=buttons)
 
 
-def register_handlers(client: TelegramClient, repository=None, *, start_workers: bool = True):
+def register_handlers(
+    client: TelegramClient,
+    repository=None,
+    *,
+    default_destination_profile=None,
+    start_workers: bool = True,
+):
     """Build the pipeline and install the extracted R1 handler layer."""
     pipeline = _Pipeline(client)
     # R2-A lifecycle seam only: the in-memory pipeline remains the runtime
@@ -3176,6 +3238,11 @@ def register_handlers(client: TelegramClient, repository=None, *, start_workers:
     pipeline.interactions = interactions
     pipeline.operations = operations
     pipeline.stats_service = stats
+    pipeline.destination_profiles = (
+        DestinationProfileManager(repository, default_destination_profile)
+        if repository is not None and default_destination_profile is not None
+        else None
+    )
     pipeline.dedup_manager = DedupManager(repository, destination_key=str(DEST_CHANNEL)) if repository is not None else None
     pipeline.publisher.dedup_manager = pipeline.dedup_manager
     pipeline.shadow_state = shadow
@@ -3197,6 +3264,7 @@ def register_handlers(client: TelegramClient, repository=None, *, start_workers:
         start_text=_START_TEXT,
         about_text=_ABOUT_TEXT,
         delete_after=_delete_after,
+        destinations=pipeline.destination_profiles,
     )
     install_handlers(ctx)
     if start_workers:

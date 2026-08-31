@@ -310,6 +310,47 @@ class MediaPublisher:
         self._caption_footer = " ".join(
             x for x in (channel_at, group_at) if x
         ).strip()
+        self._discussion_group_peer = None
+        self._publish_lock = asyncio.Lock()
+        self._base_profile = {
+            "dest": dest,
+            "cover_mode": bool(cover_mode),
+            "forward_caption": bool(forward_caption),
+            "caption_footer": self._caption_footer,
+            "discussion_group_peer": None,
+        }
+
+    def configure_destination_profile(self, snapshot: dict | None, *, footer: str | None = None) -> None:
+        """Apply one immutable job profile snapshot for the duration of a publish."""
+        data = snapshot or {}
+        self.dest = data.get("destination_peer") or self._base_profile["dest"]
+        self.cover_mode = bool(data.get("cover_mode", self._base_profile["cover_mode"]))
+        self.forward_caption = bool(
+            data.get("forward_caption", self._base_profile["forward_caption"])
+        )
+        if footer is None:
+            footer = " ".join(
+                value
+                for value in (str(data.get("channel_at") or ""), str(data.get("group_at") or ""))
+                if value
+            ).strip()
+        self._caption_footer = str(footer or "")[:1024]
+        self._discussion_group_peer = data.get("discussion_group_peer")
+        self._dest_input = None
+        self._group_input = None
+        self._group_id = None
+        self._thread_root = None
+
+    def reset_destination_profile(self) -> None:
+        self.dest = self._base_profile["dest"]
+        self.cover_mode = self._base_profile["cover_mode"]
+        self.forward_caption = self._base_profile["forward_caption"]
+        self._caption_footer = self._base_profile["caption_footer"]
+        self._discussion_group_peer = self._base_profile["discussion_group_peer"]
+        self._dest_input = None
+        self._group_input = None
+        self._group_id = None
+        self._thread_root = None
 
     def _with_footer(self, text: str) -> str:
         """caption 末尾自动追加 @频道 @群组（footer），保证不超 1024 字符。"""
@@ -327,15 +368,20 @@ class MediaPublisher:
         return self._workdir_fn(seq)
 
     async def publish(self, job, payload) -> list:
-        job._publish_send_attempts = 0
-        if not hasattr(job, "_published_refs"):
-            job._published_refs = []
-        for hook in self.pre_publish_hooks:
-            await hook(job, payload)
-        ids = await self._publish(job, payload)
-        for hook in self.post_publish_hooks:
-            await hook(job, ids)
-        return ids
+        async with self._publish_lock:
+            self.reset_destination_profile()
+            job._publish_send_attempts = 0
+            if not hasattr(job, "_published_refs"):
+                job._published_refs = []
+            try:
+                for hook in self.pre_publish_hooks:
+                    await hook(job, payload)
+                ids = await self._publish(job, payload)
+                for hook in self.post_publish_hooks:
+                    await hook(job, ids)
+                return ids
+            finally:
+                self.reset_destination_profile()
 
     @staticmethod
     def _peer_id(peer) -> int:
@@ -422,6 +468,14 @@ class MediaPublisher:
 
     async def _get_discussion_group(self):
         if self._group_input is not None:
+            return self._group_input
+        if self._discussion_group_peer:
+            chat = await self.client.get_entity(self._discussion_group_peer)
+            self._group_input = await self.client.get_input_entity(chat)
+            try:
+                self._group_id = int(getattr(chat, "id", 0) or 0)
+            except (TypeError, ValueError):
+                self._group_id = None
             return self._group_input
         dest_input = await self._get_dest_input()
         full = await self.client(
@@ -951,7 +1005,10 @@ class MediaPublisher:
         if manager is not None and content is not None:
             try:
                 media, entry = await manager.reuse_input_media(
-                    self.client, content, spoiler=bool(spoiler)
+                    self.client,
+                    content,
+                    spoiler=bool(spoiler),
+                    destination_key=getattr(job, "_destination_key", None),
                 )
                 if media is not None and entry is not None:
                     pending = getattr(job, "_dedup_reused", {})
@@ -970,7 +1027,11 @@ class MediaPublisher:
             return
         try:
             reused = getattr(job, "_dedup_reused", {}).pop(os.path.realpath(path), None)
-            await manager.record_sent_message(content, message)
+            await manager.record_sent_message(
+                content,
+                message,
+                destination_key=getattr(job, "_destination_key", None),
+            )
             if reused is not None:
                 await manager.mark_hit(reused[0], content)
         except Exception as exc:

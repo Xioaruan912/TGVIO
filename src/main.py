@@ -9,6 +9,7 @@ from telethon.tl import types
 from . import bot, config
 from .repository import SQLiteRepository
 from .services import RuntimeHeartbeat
+from .storage import JsonStore
 
 logging.basicConfig(
     level=logging.INFO,
@@ -23,6 +24,7 @@ _COMMANDS = [
     types.BotCommand("health", "本地健康检查"),
     types.BotCommand("diag", "导出脱敏诊断"),
     types.BotCommand("mode", "设置 18+ 处理方式"),
+    types.BotCommand("profiles", "管理发布目的地"),
     types.BotCommand("webdav", "配置 WebDAV 备份链接"),
     types.BotCommand("webdavlogs", "查看上传记录 / 本地缓存"),
     types.BotCommand("proxy", "代理设置（HTTP）"),
@@ -91,6 +93,27 @@ async def main() -> None:
         )
         if applied:
             logger.info("SQLite migrations applied on startup: %s", applied)
+        legacy_webdav = JsonStore(os.path.join("session", "webdav.json"), {}).load()
+        legacy_backup_policy = (
+            str(legacy_webdav.get("backup_policy") or "best_effort")
+            if isinstance(legacy_webdav, dict)
+            else "best_effort"
+        )
+        if legacy_backup_policy not in {"best_effort", "required"}:
+            legacy_backup_policy = "best_effort"
+        env_destination_profile = await repository.ensure_env_destination_profile(
+            destination_peer=config.DEST_CHANNEL,
+            channel_at=config.CHANNEL_AT,
+            group_at=config.GROUP_AT,
+            cover_mode=config.COVER_MODE,
+            forward_caption=config.FORWARD_CAPTION,
+            default_spoiler_mode="always_normal",
+            backup_policy=legacy_backup_policy,
+        )
+        default_destination_profile = (
+            await repository.get_default_destination_profile()
+            or env_destination_profile
+        )
         reconciled = await repository.reconcile_daily_stats()
         if reconciled:
             logger.info("Daily stats reconciled: %d metrics", reconciled)
@@ -106,7 +129,12 @@ async def main() -> None:
         _install_sigterm_handler(client)
 
         await _setup_commands(client)
-        pipeline = bot.register_handlers(client, repository=repository, start_workers=False)
+        pipeline = bot.register_handlers(
+            client,
+            repository=repository,
+            default_destination_profile=default_destination_profile,
+            start_workers=False,
+        )
         await pipeline.recover_from_repository()
         pipeline.start()
         await pipeline.apply_proxy_on_start()
