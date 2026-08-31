@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `67d3db1`（F4：只读 stats/diagnostics、runtime heartbeat、Docker liveness/readiness、幂等 daily stats）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 10:28 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **169 tests 全通过**；`scripts/healthcheck.py` 与 `scripts/readiness.py` 均通过，镜像 `APP_COMMIT=67d3db1`，生产 `DISK_ENFORCE=true` 保持不变。F4 migration 5 只新增统计/去重表，不改变现有 job/backup schema 语义。
+- 当前分支：`main`。当前生产运行代码基线为 `5ae529c`（F4：只读 stats/health/diagnostics、runtime heartbeat、Docker liveness/readiness、幂等 daily stats 与跨 UTC 日 metric scope）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 10:32 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **172 tests 全通过**；`scripts/healthcheck.py` 与 `scripts/readiness.py` 均通过，镜像 `APP_COMMIT=5ae529c`，生产 `DISK_ENFORCE=true` 保持不变。F4 migration 5 新增统计/去重表；migration 6 将统计去重键扩展为 `(scope_key, metric, day_utc)`，不改变现有 job/backup schema 语义。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1797,3 +1797,14 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4 已完成。当前下一阶段�
 - 测试：F4 stats/health/repository 专项 36/36；完整源码和最终标准 Docker 镜像均 **169 项 unittest 全通过**，`compileall`、`git diff --check`、compose config、静态镜像 secret-path 检查均通过。0001～0004 checksum 未变；0005 checksum 固定为 `aee37a54e2e1858b2fa206b0a284a79b031fd66cba6d61a65ff2cdc933c032ba`。
 - VPS：部署前 DB 备份 `/root/telegram-video-forwarder-releases/state-pre-67d3db1-20260831-102655.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-67d3db1`，源码 `/root/telegram-video-forwarder-releases/pre-67d3db1.tar.gz`；启动 migration 5 前还自动创建 `session/db_backups/state-pre-migrate-20260831-102748.sqlite3`。部署后镜像 `sha256:6a2a6995d9caebf1b66342289437e047d13bfead5b7e5710e9e2fd11cbaf74e5`，容器 `running`、`restart=0`、health=`healthy`，schema `[1,2,3,4,5]`、`integrity=ok`，health/readiness 均通过，`APP_COMMIT=67d3db1`，生产 169 tests 全通过，启动日志无异常。
 - 下一步精确入口：第 16.5 节 B1。优先抽取 WebDAV 生命周期/attempt UI 与显式连接测试；不要破坏 F2-C 的 durable retry 和协议层完整性保护。
+
+### 2026-08-31 10:32 - F4 health/event summary 与 daily metric scope 修正
+
+- 状态：F4 补强已完成、推送并部署生产；F4 主项保持完成，下一阶段仍为 B1。
+- 实现 commits：`5dea23d`（health/self-check、事件类型汇总、`/health` 与诊断 heartbeat 信息）、`5ae529c`（`fix(stats): migrate daily metric scope safely`）。此前 `67d3db1` 已先部署 F4 migration 5，因此没有修改已应用的 0005 checksum；新增 migration 6 做向前兼容修正。
+- health/UI：`/stats` 增加最近 event type/count，只查询 `job_events.event_type` 聚合，绝不读取 payload；新增 `/health` 与 `h:health`，只读 heartbeat readiness/liveness、SQLite、磁盘、Telegram `is_connected()` 和缓存 WebDAV 状态，不主动发送探测、PROPFIND、代理切换或磁盘清理。`/diag` 增加 heartbeat live/ready/age 与最近 event type，继续保持无 URL/凭证/caption/path 输出。
+- 统计修正：migration 6 将 `stat_metric_applied` 主键从 `(scope_key,metric)` 迁移为 `(scope_key,metric,day_utc)`，保留 migration 5 已有数据；同一 scope/metric 同一 UTC 日仍幂等，不同 UTC 日可以独立累计。生产 migration 5 checksum 保持 `aee37a54...` 不变，避免修改已应用 migration。
+- 测试：最终标准 Docker 镜像 **172 项 unittest 全通过**；新增 heartbeat health、event summary 脱敏、跨 UTC 日 metric scope 测试。`compileall`、`git diff --check`、compose config、静态镜像 secret-path 检查均通过。
+- VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-5ae529c-20260831-103307.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-5ae529c`，源码 `/root/telegram-video-forwarder-releases/pre-5ae529c.tar.gz`。部署后镜像 `sha256:dbcaeea10bb48213664dfe8a37a518cf62d516af38b7054212d4091c2f75484b`，容器 `running`、`restart=0`、health=`healthy`，schema `[1,2,3,4,5,6]`、`integrity=ok`、incomplete/claims=0，生产 172 tests、healthcheck/readiness 均通过，`APP_COMMIT=5ae529c`。
+- 回滚：由于 schema 6 改变 stats 去重表结构，若回滚到不认识 schema6 的旧代码，应先停容器并恢复上述 pre-5ae529c DB backup，再启动 rollback image；不要自动 destructive downgrade。
+- 下一步精确入口：B1，先把连接测试/容量读取/attempt detail 生命周期收进 BackupManager；F4 不再扩展 Web Dashboard 或远程主动探测。
