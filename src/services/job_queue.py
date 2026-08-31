@@ -446,6 +446,10 @@ class JobQueue:
         force_normal: bool = False,
         texts: list | None = None,
         reserved_seq: int | None = None,
+        spoiler_override: bool | None = None,
+        destination_profile_id: int | None = None,
+        destination_profile_snapshot: dict[str, Any] | None = None,
+        allow_album_merge: bool = True,
     ) -> int:
         return await self._pipeline._auto_enqueue(
             kind,
@@ -455,6 +459,10 @@ class JobQueue:
             force_normal=force_normal,
             texts=texts,
             reserved_seq=reserved_seq,
+            spoiler_override=spoiler_override,
+            destination_profile_id=destination_profile_id,
+            destination_profile_snapshot=destination_profile_snapshot,
+            allow_album_merge=allow_album_merge,
         )
 
     def reserve_seq(self) -> int:

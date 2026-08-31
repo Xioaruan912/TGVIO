@@ -77,6 +77,7 @@ from .services import (
     ShadowState,
     DedupManager,
     DestinationProfileManager,
+    SourceProfileManager,
     MediaCompatibilityManager,
     StatsService,
     recover_jobs,
@@ -3030,9 +3031,13 @@ class _Pipeline:
         force_normal: bool = False,
         texts: list = None,
         reserved_seq: int | None = None,
+        spoiler_override: bool | None = None,
+        destination_profile_id: int | None = None,
+        destination_profile_snapshot: dict | None = None,
+        allow_album_merge: bool = True,
     ) -> int:
         # 队列级合并：同一用户已有"入队未下载"的相册任务时，追加消息而非新建任务
-        if reserved_seq is None and kind == "album" and album:
+        if allow_album_merge and reserved_seq is None and kind == "album" and album:
             existing_seq = self.pending_albums.get(user_id)
             if existing_seq is not None:
                 existing = self.album_jobs.get(existing_seq)
@@ -3070,7 +3075,10 @@ class _Pipeline:
                     return existing_seq
 
         mode = self._spoiler_mode(user_id)
-        if force_normal:
+        if spoiler_override is not None:
+            spoiler = bool(spoiler_override)
+            label = "🔞 雪花遮挡" if spoiler else "✅ 正常"
+        elif force_normal:
             spoiler = False
             label = "✅ 正常"
         else:
@@ -3097,14 +3105,22 @@ class _Pipeline:
             user_id=user_id,
             texts=texts,
             destination_profile_id=(
-                self.destination_profiles.current_profile.id
-                if getattr(self, "destination_profiles", None) is not None
-                else None
+                destination_profile_id
+                if destination_profile_id is not None
+                else (
+                    self.destination_profiles.current_profile.id
+                    if getattr(self, "destination_profiles", None) is not None
+                    else None
+                )
             ),
             destination_profile_snapshot=(
-                self.destination_profiles.current_snapshot()
-                if getattr(self, "destination_profiles", None) is not None
-                else None
+                dict(destination_profile_snapshot)
+                if destination_profile_snapshot is not None
+                else (
+                    self.destination_profiles.current_snapshot()
+                    if getattr(self, "destination_profiles", None) is not None
+                    else None
+                )
             ),
         )
         if kind == "album":
@@ -3258,6 +3274,7 @@ def register_handlers(
         if repository is not None and default_destination_profile is not None
         else None
     )
+    pipeline.source_profiles = SourceProfileManager(repository) if repository is not None else None
     pipeline.dedup_manager = DedupManager(repository, destination_key=str(DEST_CHANNEL)) if repository is not None else None
     pipeline.publisher.dedup_manager = pipeline.dedup_manager
     pipeline.shadow_state = shadow
@@ -3280,6 +3297,7 @@ def register_handlers(
         about_text=_ABOUT_TEXT,
         delete_after=_delete_after,
         destinations=pipeline.destination_profiles,
+        sources=pipeline.source_profiles,
     )
     install_handlers(ctx)
     if start_workers:

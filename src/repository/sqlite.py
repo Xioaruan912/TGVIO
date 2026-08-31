@@ -171,6 +171,38 @@ class DestinationProfileRecord:
 
 
 @dataclass(frozen=True)
+class SourceProfileRecord:
+    id: int
+    name: str
+    source_peer: str
+    source_peer_id: int
+    destination_profile_id: int
+    owner_user_id: int
+    enabled: bool
+    album_gather_seconds: float
+    spoiler_policy: str
+    caption_policy: str
+    backup_policy: str
+    verified_at: float | None
+    created_at: float
+    updated_at: float
+
+
+@dataclass(frozen=True)
+class SourceEventRecord:
+    id: int
+    source_profile_id: int
+    source_peer_id: int
+    source_message_id: int
+    grouped_id: int | None
+    state: str
+    job_legacy_seq: int | None
+    error_code: str | None
+    created_at: float
+    updated_at: float
+
+
+@dataclass(frozen=True)
 class PublishedMessageRecord:
     id: int
     job_id: int
@@ -232,6 +264,8 @@ class SQLiteRepository:
             "stat_metric_applied",
             "dedup_entries",
             "destination_profiles",
+            "source_profiles",
+            "source_events",
         }
     )
 
@@ -2976,6 +3010,21 @@ class SQLiteRepository:
                     await conn.rollback()
                     return "default"
                 cursor = await conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_profiles'"
+                )
+                has_sources = await cursor.fetchone()
+                await cursor.close()
+                if has_sources is not None:
+                    cursor = await conn.execute(
+                        "SELECT COUNT(*) AS n FROM source_profiles WHERE destination_profile_id=? AND enabled=1",
+                        (int(profile_id),),
+                    )
+                    source_refs = await cursor.fetchone()
+                    await cursor.close()
+                    if int(source_refs["n"] if source_refs else 0) > 0:
+                        await conn.rollback()
+                        return "source_in_use"
+                cursor = await conn.execute(
                     """SELECT COUNT(*) AS n FROM jobs
                        WHERE destination_profile_id=? AND state NOT IN ('succeeded','failed','cancelled')""",
                     (int(profile_id),),
@@ -2994,6 +3043,273 @@ class SQLiteRepository:
             except Exception:
                 await conn.rollback()
                 raise
+
+    @staticmethod
+    def _source_profile_from_row(row: aiosqlite.Row) -> SourceProfileRecord:
+        return SourceProfileRecord(
+            id=int(row["id"]),
+            name=str(row["name"]),
+            source_peer=str(row["source_peer"]),
+            source_peer_id=int(row["source_peer_id"]),
+            destination_profile_id=int(row["destination_profile_id"]),
+            owner_user_id=int(row["owner_user_id"]),
+            enabled=bool(row["enabled"]),
+            album_gather_seconds=float(row["album_gather_seconds"]),
+            spoiler_policy=str(row["spoiler_policy"]),
+            caption_policy=str(row["caption_policy"]),
+            backup_policy=str(row["backup_policy"]),
+            verified_at=float(row["verified_at"]) if row["verified_at"] is not None else None,
+            created_at=float(row["created_at"]),
+            updated_at=float(row["updated_at"]),
+        )
+
+    @staticmethod
+    def _source_event_from_row(row: aiosqlite.Row) -> SourceEventRecord:
+        return SourceEventRecord(
+            id=int(row["id"]),
+            source_profile_id=int(row["source_profile_id"]),
+            source_peer_id=int(row["source_peer_id"]),
+            source_message_id=int(row["source_message_id"]),
+            grouped_id=int(row["grouped_id"]) if row["grouped_id"] is not None else None,
+            state=str(row["state"]),
+            job_legacy_seq=(
+                int(row["job_legacy_seq"]) if row["job_legacy_seq"] is not None else None
+            ),
+            error_code=row["error_code"],
+            created_at=float(row["created_at"]),
+            updated_at=float(row["updated_at"]),
+        )
+
+    async def create_source_profile(
+        self,
+        *,
+        name: str,
+        source_peer: str,
+        source_peer_id: int,
+        destination_profile_id: int,
+        owner_user_id: int,
+        album_gather_seconds: float = 2.0,
+        spoiler_policy: str = "normal",
+        caption_policy: str = "preserve",
+        backup_policy: str = "inherit",
+        verified_at: float | None = None,
+        now: float | None = None,
+    ) -> SourceProfileRecord:
+        clean_name = str(name).strip()[:80]
+        peer = str(source_peer).strip()
+        if not clean_name or not peer or not int(source_peer_id):
+            raise RepositoryError("source profile name and peer are required")
+        if spoiler_policy not in {"normal", "spoiler", "rule"}:
+            raise RepositoryError("invalid source spoiler policy")
+        if caption_policy not in {"preserve", "strip"}:
+            raise RepositoryError("invalid source caption policy")
+        if backup_policy not in {"inherit", "best_effort", "required"}:
+            raise RepositoryError("invalid source backup policy")
+        gather = min(30.0, max(0.5, float(album_gather_seconds)))
+        destination = await self.get_destination_profile(int(destination_profile_id))
+        if destination is None or not destination.enabled:
+            raise RepositoryError("destination profile is unavailable")
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """INSERT INTO source_profiles(
+                       name,source_peer,source_peer_id,destination_profile_id,owner_user_id,
+                       enabled,album_gather_seconds,spoiler_policy,caption_policy,backup_policy,
+                       verified_at,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    clean_name, peer, int(source_peer_id), int(destination_profile_id),
+                    int(owner_user_id), 0, gather, spoiler_policy, caption_policy,
+                    backup_policy, verified_at, timestamp, timestamp,
+                ),
+            )
+            profile_id = int(cursor.lastrowid)
+            await cursor.close()
+            await conn.commit()
+        profile = await self.get_source_profile(profile_id)
+        if profile is None:
+            raise RepositoryError("created source profile could not be read back")
+        return profile
+
+    async def get_source_profile(self, profile_id: int) -> SourceProfileRecord | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT * FROM source_profiles WHERE id=?", (int(profile_id),)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self._source_profile_from_row(row) if row is not None else None
+
+    async def get_enabled_source_profile_by_peer(self, source_peer_id: int) -> SourceProfileRecord | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT * FROM source_profiles WHERE source_peer_id=? AND enabled=1 LIMIT 1",
+            (int(source_peer_id),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self._source_profile_from_row(row) if row is not None else None
+
+    async def list_source_profiles(self) -> list[SourceProfileRecord]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT * FROM source_profiles ORDER BY enabled DESC,id"
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [self._source_profile_from_row(row) for row in rows]
+
+    async def update_source_profile(self, profile_id: int, **changes: Any) -> str:
+        allowed = {
+            "enabled", "destination_profile_id", "album_gather_seconds", "spoiler_policy",
+            "caption_policy", "backup_policy", "verified_at", "name",
+        }
+        if set(changes) - allowed:
+            raise RepositoryError("unsupported source profile field")
+        if not changes:
+            return "noop"
+        normalized: dict[str, Any] = {}
+        for key, value in changes.items():
+            if key == "enabled":
+                normalized[key] = int(bool(value))
+            elif key == "destination_profile_id":
+                destination = await self.get_destination_profile(int(value))
+                if destination is None or not destination.enabled:
+                    return "destination_unavailable"
+                normalized[key] = int(value)
+            elif key == "album_gather_seconds":
+                normalized[key] = min(30.0, max(0.5, float(value)))
+            elif key == "spoiler_policy":
+                if str(value) not in {"normal", "spoiler", "rule"}:
+                    raise RepositoryError("invalid source spoiler policy")
+                normalized[key] = str(value)
+            elif key == "caption_policy":
+                if str(value) not in {"preserve", "strip"}:
+                    raise RepositoryError("invalid source caption policy")
+                normalized[key] = str(value)
+            elif key == "backup_policy":
+                if str(value) not in {"inherit", "best_effort", "required"}:
+                    raise RepositoryError("invalid source backup policy")
+                normalized[key] = str(value)
+            elif key == "name":
+                name = str(value).strip()[:80]
+                if not name:
+                    raise RepositoryError("source profile name is required")
+                normalized[key] = name
+            else:
+                normalized[key] = value
+        current = await self.get_source_profile(int(profile_id))
+        if current is None:
+            return "missing"
+        if normalized.get("enabled") == 1 and current.verified_at is None and "verified_at" not in normalized:
+            return "unverified"
+        if normalized.get("enabled") == 1:
+            destination_id = int(
+                normalized.get("destination_profile_id", current.destination_profile_id)
+            )
+            destination = await self.get_destination_profile(destination_id)
+            if destination is None or not destination.enabled:
+                return "destination_unavailable"
+        conn = self._require_conn()
+        async with self._write_lock:
+            assignments = ",".join(f"{key}=?" for key in normalized)
+            params = [normalized[key] for key in normalized]
+            params.extend([time.time(), int(profile_id)])
+            await conn.execute(
+                f"UPDATE source_profiles SET {assignments},updated_at=? WHERE id=?",
+                tuple(params),
+            )
+            await conn.commit()
+        return "ok"
+
+    async def record_source_event(
+        self,
+        *,
+        source_profile_id: int,
+        source_peer_id: int,
+        source_message_id: int,
+        grouped_id: int | None = None,
+        now: float | None = None,
+    ) -> tuple[SourceEventRecord, bool]:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """INSERT OR IGNORE INTO source_events(
+                       source_profile_id,source_peer_id,source_message_id,grouped_id,state,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?)""",
+                (
+                    int(source_profile_id), int(source_peer_id), int(source_message_id),
+                    int(grouped_id) if grouped_id is not None else None,
+                    "received", timestamp, timestamp,
+                ),
+            )
+            inserted = cursor.rowcount == 1
+            await cursor.close()
+            await conn.commit()
+        cursor = await conn.execute(
+            "SELECT * FROM source_events WHERE source_peer_id=? AND source_message_id=?",
+            (int(source_peer_id), int(source_message_id)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            raise RepositoryError("source event could not be read back")
+        return self._source_event_from_row(row), inserted
+
+    async def mark_source_events_enqueued(
+        self,
+        event_ids: Iterable[int],
+        *,
+        job_legacy_seq: int,
+    ) -> None:
+        ids = sorted({int(value) for value in event_ids})
+        if not ids:
+            return
+        conn = self._require_conn()
+        marks = ",".join("?" for _ in ids)
+        async with self._write_lock:
+            await conn.execute(
+                f"UPDATE source_events SET state='enqueued',job_legacy_seq=?,updated_at=? WHERE id IN ({marks})",
+                (int(job_legacy_seq), time.time(), *ids),
+            )
+            await conn.commit()
+
+    async def mark_source_events_failed(self, event_ids: Iterable[int], *, error_code: str) -> None:
+        ids = sorted({int(value) for value in event_ids})
+        if not ids:
+            return
+        conn = self._require_conn()
+        marks = ",".join("?" for _ in ids)
+        async with self._write_lock:
+            await conn.execute(
+                f"UPDATE source_events SET state='failed',error_code=?,updated_at=? WHERE id IN ({marks})",
+                (_sanitize_error_message(error_code)[:120], time.time(), *ids),
+            )
+            await conn.commit()
+
+    async def interrupt_received_source_events(self) -> int:
+        """Close the audit state after restart without replaying historical source updates."""
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_events'"
+        )
+        exists = await cursor.fetchone()
+        await cursor.close()
+        if exists is None:
+            return 0
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """UPDATE source_events
+                   SET state='interrupted',error_code='process_restart',updated_at=?
+                   WHERE state='received'""",
+                (time.time(),),
+            )
+            changed = max(0, int(cursor.rowcount or 0))
+            await cursor.close()
+            await conn.commit()
+        return changed
 
     @staticmethod
     def _job_from_row(row: aiosqlite.Row) -> JobRecord:

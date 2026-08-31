@@ -12,6 +12,7 @@ from .common import HandlerContext
 from .jobs import register_job_callbacks
 from .proxy import register_proxy_callbacks
 from .settings import register_setting_callbacks
+from .source_profiles import register_source_callbacks
 
 
 CallbackHandler = Callable[[HandlerContext, Any, str], Awaitable[None]]
@@ -44,6 +45,7 @@ def build_callback_router() -> CallbackRouter:
     register_setting_callbacks(router)
     register_proxy_callbacks(router)
     register_collection_callbacks(router)
+    register_source_callbacks(router)
     return router
 
 

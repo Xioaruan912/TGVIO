@@ -255,7 +255,7 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("📋 任务队列：2 运行 · 3 等待 · 1 失败", text)
         self.assertEqual(
             callback_data(buttons),
-            [b"h:begin", b"h:end", b"h:q", b"h:f", b"h:dp", b"h:w", b"h:s", b"h:status", b"h:help", b"h:r"],
+            [b"h:begin", b"h:end", b"h:q", b"h:f", b"h:dp", b"h:sp", b"h:w", b"h:s", b"h:status", b"h:help", b"h:r"],
         )
 
         card, card_buttons = job_card_view(

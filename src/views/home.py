@@ -62,7 +62,8 @@ def home_view(state: HomeViewState) -> tuple[str, list]:
     buttons = [
         [Button.inline("➕ 开始合集", "h:begin"), Button.inline("🛑 结束合集", "h:end")],
         [Button.inline("📋 任务队列", "h:q"), Button.inline("❌ 失败任务", "h:f")],
-        [Button.inline("🎯 发布目的地", "h:dp"), Button.inline("☁️ 备份管理", "h:w")],
+        [Button.inline("🎯 发布目的地", "h:dp"), Button.inline("📡 自动来源", "h:sp")],
+        [Button.inline("☁️ 备份管理", "h:w")],
         [Button.inline("⚙️ 设置", "h:s")],
         [Button.inline("📊 运行状态", "h:status"), Button.inline("❓ 帮助", "h:help")],
         [Button.inline("🔄 刷新", "h:r")],

@@ -25,6 +25,7 @@ _COMMANDS = [
     types.BotCommand("diag", "导出脱敏诊断"),
     types.BotCommand("mode", "设置 18+ 处理方式"),
     types.BotCommand("profiles", "管理发布目的地"),
+    types.BotCommand("sources", "管理自动来源"),
     types.BotCommand("webdav", "配置 WebDAV 备份链接"),
     types.BotCommand("webdavlogs", "查看上传记录 / 本地缓存"),
     types.BotCommand("proxy", "代理设置（HTTP）"),
@@ -114,6 +115,12 @@ async def main() -> None:
             await repository.get_default_destination_profile()
             or env_destination_profile
         )
+        interrupted_sources = await repository.interrupt_received_source_events()
+        if interrupted_sources:
+            logger.warning(
+                "Marked %d in-flight source event(s) interrupted after restart; no history replay",
+                interrupted_sources,
+            )
         reconciled = await repository.reconcile_daily_stats()
         if reconciled:
             logger.info("Daily stats reconciled: %d metrics", reconciled)

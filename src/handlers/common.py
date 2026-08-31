@@ -14,6 +14,7 @@ from ..services import (
     JobQueue,
     OperationStore,
     ProxyManager,
+    SourceProfileManager,
     StatsService,
 )
 
@@ -41,6 +42,7 @@ class HandlerContext:
     about_text: str
     delete_after: Callable[[object, float], Awaitable[None]]
     destinations: DestinationProfileManager | None = None
+    sources: SourceProfileManager | None = None
 
     def authorized(self, event: Any) -> bool:
         return event.sender_id in self.allowed_users

@@ -12,6 +12,7 @@ from .collection import handle_begin, handle_end
 from .common import HandlerContext
 from .proxy import handle_proxy_input
 from .settings import handle_destination_profile_input, handle_webdav_input
+from .source_profiles import handle_source_profile_input
 
 
 logger = logging.getLogger(__name__)
@@ -42,6 +43,9 @@ def register_private_handler(ctx: HandlerContext) -> None:
                 return
             if interaction.kind == "destination_profile":
                 await handle_destination_profile_input(ctx, event, interaction)
+                return
+            if interaction.kind == "source_profile":
+                await handle_source_profile_input(ctx, event, interaction)
                 return
 
         if any(

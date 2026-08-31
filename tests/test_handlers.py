@@ -1,7 +1,9 @@
+import asyncio
 import os
 import tempfile
 import unittest
 from unittest.mock import AsyncMock, patch
+from telethon.tl.types import MessageMediaPhoto
 
 from src import bot
 from src.webdav import WebDavProbeResult, WebDavWriteProbeResult
@@ -12,6 +14,7 @@ from tests.fakes import (
     FakeCallbackEvent,
     FakeClient,
     FakeDownloader,
+    FakeMessage,
     FakeNewMessageEvent,
     FakePublisher,
 )
@@ -62,6 +65,7 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "on_diag",
                 "on_mode",
                 "on_profiles",
+                "on_sources",
                 "on_webdav",
                 "on_webdavlogs",
                 "on_proxy",
@@ -70,6 +74,7 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 "on_queue",
                 "on_callback",
                 "on_private_message",
+                "on_source_message",
             },
         )
         self.assertIsInstance(self.pipeline.job_queue, JobQueue)
@@ -171,6 +176,117 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         client.get_input_entity.assert_awaited_once_with("@archive")
         client.send_message.assert_awaited_once()
         sent.delete.assert_awaited_once()
+
+    async def test_enabled_source_profile_enqueues_each_source_message_once(self) -> None:
+        repo = SQLiteRepository(
+            os.path.join(self.tempdir.name, "sources.sqlite3"),
+            download_root=os.path.join(self.tempdir.name, "downloads"),
+        )
+        await repo.open()
+        await repo.migrate()
+        self.addAsyncCleanup(repo.close)
+        default = await repo.ensure_env_destination_profile(
+            destination_peer="@default",
+            channel_at="@default",
+        )
+        client = FakeClient()
+        with patch.object(bot._Pipeline, "start", autospec=True):
+            pipeline = bot.register_handlers(
+                client,
+                repository=repo,
+                default_destination_profile=default,
+            )
+        source = await pipeline.source_profiles.create_verified(
+            name="来源",
+            source_peer="@source",
+            source_peer_id=-10012345,
+            destination_profile_id=default.id,
+            owner_user_id=42,
+        )
+        self.assertEqual(await pipeline.source_profiles.set_enabled(source.id, True), "ok")
+
+        message = FakeMessage(
+            77,
+            media=MessageMediaPhoto(photo=None),
+        )
+        event = FakeNewMessageEvent(
+            client,
+            "",
+            sender_id=999,
+            chat_id=-10012345,
+            message=message,
+        )
+        source_handler = client.handlers["on_source_message"]
+        await source_handler(event)
+        first_active = set(pipeline.active_seqs)
+        self.assertEqual(len(first_active), 1)
+        await pipeline.job_queue.drain_shadow()
+
+        await source_handler(event)
+        self.assertEqual(set(pipeline.active_seqs), first_active)
+        conn = repo._require_conn()
+        count = await (await conn.execute("SELECT COUNT(*) AS n FROM source_events")).fetchone()
+        self.assertEqual(count["n"], 1)
+        row = await (await conn.execute("SELECT state,job_legacy_seq FROM source_events")).fetchone()
+        self.assertEqual(row["state"], "enqueued")
+        self.assertIsNotNone(row["job_legacy_seq"])
+        jobs = await (await conn.execute("SELECT COUNT(*) AS n FROM jobs WHERE legacy_seq=?", (row["job_legacy_seq"],))).fetchone()
+        self.assertEqual(jobs["n"], 1)
+
+    async def test_source_grouped_media_becomes_one_album_job(self) -> None:
+        repo = SQLiteRepository(
+            os.path.join(self.tempdir.name, "source-album.sqlite3"),
+            download_root=os.path.join(self.tempdir.name, "downloads"),
+        )
+        await repo.open()
+        await repo.migrate()
+        self.addAsyncCleanup(repo.close)
+        default = await repo.ensure_env_destination_profile(
+            destination_peer="@default",
+            channel_at="@default",
+        )
+        client = FakeClient()
+        with patch.object(bot._Pipeline, "start", autospec=True):
+            pipeline = bot.register_handlers(
+                client,
+                repository=repo,
+                default_destination_profile=default,
+            )
+        source = await pipeline.source_profiles.create_verified(
+            name="相册来源",
+            source_peer="@album-source",
+            source_peer_id=-10022345,
+            destination_profile_id=default.id,
+            owner_user_id=42,
+        )
+        await pipeline.source_profiles.update(source.id, album_gather_seconds=0.5)
+        await pipeline.source_profiles.set_enabled(source.id, True)
+
+        source_handler = client.handlers["on_source_message"]
+        for message_id in (10, 11):
+            event = FakeNewMessageEvent(
+                client,
+                "",
+                sender_id=999,
+                chat_id=-10022345,
+                message=FakeMessage(
+                    message_id,
+                    media=MessageMediaPhoto(photo=None),
+                    grouped_id=555,
+                ),
+            )
+            await source_handler(event)
+        await asyncio.sleep(0.65)
+        await pipeline.job_queue.drain_shadow()
+
+        conn = repo._require_conn()
+        rows = await (await conn.execute("SELECT state,job_legacy_seq FROM source_events ORDER BY id")).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["state"] == "enqueued" for row in rows))
+        self.assertEqual(len({row["job_legacy_seq"] for row in rows}), 1)
+        seq = int(rows[0]["job_legacy_seq"])
+        self.assertEqual(pipeline._runtime_jobs[seq].kind, "album")
+        self.assertEqual([item.id for item in pipeline._runtime_jobs[seq].album], [10, 11])
 
     async def test_webdav_input_uses_explicit_interaction_session(self) -> None:
         callback = self.client.handlers["on_callback"]
