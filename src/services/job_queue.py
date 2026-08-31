@@ -101,6 +101,31 @@ class JobQueue:
             "disk_total_gb": disk_total,
         }
 
+    async def disk_cleanup_plan(self):
+        """Build an F3 cleanup dry run; this method never deletes files."""
+        repository = getattr(self._pipeline, "repository", None)
+        manager = getattr(self._pipeline, "disk", None)
+        if repository is None or manager is None:
+            return None
+        inventory = await repository.cleanup_inventory()
+        retry_ids: set[int] = set()
+        webdav_ids: set[int] = set()
+        for seq in getattr(self._pipeline, "retryable", {}):
+            job_id = self.durable_job_id(int(seq))
+            if job_id is not None:
+                retry_ids.add(int(job_id))
+        for seq in getattr(self._pipeline, "webdav_keep_cache", set()):
+            job_id = self.durable_job_id(int(seq))
+            if job_id is not None:
+                webdav_ids.add(int(job_id))
+        return manager.cleanup_plan(
+            inventory,
+            cache_retention_hours=getattr(self._pipeline, "_disk_cache_retention_hours", 72.0),
+            failed_retention_hours=getattr(self._pipeline, "_disk_failed_retention_hours", 168.0),
+            retry_protected_job_ids=retry_ids,
+            webdav_protected_job_ids=webdav_ids,
+        )
+
     async def durable_queue_page(
         self,
         user_id: int,

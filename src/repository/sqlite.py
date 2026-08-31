@@ -1480,6 +1480,54 @@ class SQLiteRepository:
         await cursor.close()
         return {str(row["state"]): int(row["n"]) for row in rows}
 
+    async def cleanup_inventory(self, *, limit: int = 1000) -> list[dict[str, Any]]:
+        """Return durable facts needed to build a safe disk-cleanup dry run.
+
+        This deliberately returns data only.  Filesystem validation and retention
+        policy live in ``DiskManager`` so the repository never deletes paths.
+        """
+        conn = self._require_conn()
+        limit = max(1, min(int(limit), 5000))
+        cursor = await conn.execute(
+            """
+            SELECT
+                j.id AS job_id,
+                j.legacy_seq,
+                j.state,
+                j.local_dir,
+                j.updated_at,
+                j.finished_at,
+                j.next_retry_at,
+                j.claim_owner,
+                j.claim_kind,
+                COALESCE((
+                    SELECT SUM(i.size_bytes)
+                    FROM job_items i
+                    WHERE i.job_id=j.id AND i.local_path IS NOT NULL
+                ),0) AS item_bytes,
+                (
+                    SELECT a.state
+                    FROM backup_attempts a
+                    WHERE a.job_id=j.id
+                    ORDER BY a.id DESC LIMIT 1
+                ) AS backup_state,
+                (
+                    SELECT a.next_retry_at
+                    FROM backup_attempts a
+                    WHERE a.job_id=j.id
+                    ORDER BY a.id DESC LIMIT 1
+                ) AS backup_next_retry_at
+            FROM jobs j
+            WHERE j.local_dir IS NOT NULL
+            ORDER BY COALESCE(j.finished_at,j.updated_at) ASC, j.id ASC
+            LIMIT ?
+            """,
+            (limit,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
     async def page_jobs(
         self,
         *,

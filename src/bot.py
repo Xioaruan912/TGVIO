@@ -21,6 +21,7 @@ from .config import (
     AUTO_DELETE_SECONDS,
     CHANNEL_AT,
     COLLECTION_GATHER_SECONDS,
+    CACHE_RETENTION_HOURS,
     CONFIRM_TIMEOUT,
     COVER_MODE,
     COVER_WIDTH,
@@ -32,6 +33,7 @@ from .config import (
     DOWNLOAD_TIMEOUT,
     DOWNLOAD_WORKERS,
     FORWARD_CAPTION,
+    FAILED_CACHE_RETENTION_HOURS,
     GROUP_AT,
     MAX_COVER_IMAGES,
     MAX_FILE_SIZE,
@@ -226,6 +228,8 @@ class _Pipeline:
             max_cache_bytes=MAX_CACHE_BYTES,
             unknown_reserve_bytes=UNKNOWN_JOB_RESERVE_BYTES,
         )
+        self._disk_cache_retention_hours = CACHE_RETENTION_HOURS
+        self._disk_failed_retention_hours = FAILED_CACHE_RETENTION_HOURS
         self.network = NetworkCoordinator(
             proxies=lambda: self.proxy_cfg.get("proxies", []),
             current=lambda: int(self.proxy_cfg.get("current", -1)),

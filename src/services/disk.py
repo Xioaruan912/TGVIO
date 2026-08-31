@@ -5,8 +5,10 @@ from __future__ import annotations
 import os
 import shutil
 import threading
+import time
 from dataclasses import dataclass
 from pathlib import Path
+from typing import Any, Iterable
 
 
 @dataclass(frozen=True)
@@ -34,6 +36,38 @@ class DiskDecision:
     required_free_bytes: int
     free_percent: float
     reason: str = ""
+
+
+@dataclass(frozen=True)
+class CleanupCandidate:
+    job_id: int
+    legacy_seq: int | None
+    state: str
+    path: str
+    bytes_on_disk: int
+    age_seconds: float
+
+
+@dataclass(frozen=True)
+class CleanupProtected:
+    job_id: int
+    path: str
+    reason: str
+    bytes_on_disk: int
+
+
+@dataclass(frozen=True)
+class CleanupPlan:
+    candidates: tuple[CleanupCandidate, ...]
+    protected: tuple[CleanupProtected, ...]
+
+    @property
+    def reclaimable_bytes(self) -> int:
+        return sum(item.bytes_on_disk for item in self.candidates)
+
+    @property
+    def protected_bytes(self) -> int:
+        return sum(item.bytes_on_disk for item in self.protected)
 
 
 class DiskManager:
@@ -129,3 +163,104 @@ class DiskManager:
         if resolved.parent != self.root or not resolved.name.startswith("job-"):
             raise ValueError("path is not a direct job directory")
         return resolved
+
+    def cleanup_plan(
+        self,
+        inventory: Iterable[dict[str, Any]],
+        *,
+        now: float | None = None,
+        cache_retention_hours: float = 72.0,
+        failed_retention_hours: float = 168.0,
+        retry_protected_job_ids: set[int] | None = None,
+        webdav_protected_job_ids: set[int] | None = None,
+    ) -> CleanupPlan:
+        """Classify cleanup candidates without deleting anything."""
+        current = time.time() if now is None else float(now)
+        retry_protected = {int(value) for value in (retry_protected_job_ids or set())}
+        webdav_protected = {int(value) for value in (webdav_protected_job_ids or set())}
+        candidates: list[CleanupCandidate] = []
+        protected: list[CleanupProtected] = []
+        terminal = {"succeeded", "cancelled", "failed"}
+
+        for row in inventory:
+            job_id = int(row.get("job_id") or 0)
+            path_value = str(row.get("local_dir") or "")
+            if not path_value:
+                continue
+            try:
+                job_dir = self.validate_job_dir(path_value)
+            except ValueError:
+                protected.append(CleanupProtected(job_id, path_value, "unsafe-path", 0))
+                continue
+            bytes_on_disk, has_partial = self._job_dir_size(job_dir)
+            state = str(row.get("state") or "")
+            reason = ""
+            if state not in terminal:
+                reason = "non-terminal"
+            elif row.get("claim_owner") or row.get("claim_kind"):
+                reason = "active-claim"
+            elif job_id in retry_protected:
+                reason = "runtime-retry-protected"
+            elif job_id in webdav_protected:
+                reason = "runtime-webdav-protected"
+            elif has_partial:
+                reason = "partial-file"
+            else:
+                next_retry_at = float(row.get("next_retry_at") or 0)
+                if next_retry_at > current:
+                    reason = "job-retry-window"
+                backup_state = str(row.get("backup_state") or "")
+                backup_next = float(row.get("backup_next_retry_at") or 0)
+                if not reason and backup_state in {"running", "retrying", "failed"}:
+                    reason = "backup-protected"
+                if not reason and backup_next > current:
+                    reason = "backup-retry-window"
+
+            finished = float(row.get("finished_at") or row.get("updated_at") or current)
+            age_seconds = max(0.0, current - finished)
+            retention = (
+                max(0.0, float(failed_retention_hours)) * 3600.0
+                if state == "failed"
+                else max(0.0, float(cache_retention_hours)) * 3600.0
+            )
+            if not reason and age_seconds < retention:
+                reason = "retention"
+
+            if reason:
+                protected.append(
+                    CleanupProtected(job_id, str(job_dir), reason, bytes_on_disk)
+                )
+            else:
+                legacy = row.get("legacy_seq")
+                candidates.append(
+                    CleanupCandidate(
+                        job_id=job_id,
+                        legacy_seq=int(legacy) if legacy is not None else None,
+                        state=state,
+                        path=str(job_dir),
+                        bytes_on_disk=bytes_on_disk,
+                        age_seconds=age_seconds,
+                    )
+                )
+
+        candidates.sort(key=lambda item: (-item.age_seconds, item.job_id))
+        return CleanupPlan(tuple(candidates), tuple(protected))
+
+    def _job_dir_size(self, job_dir: Path) -> tuple[int, bool]:
+        if not job_dir.exists():
+            return 0, False
+        total = 0
+        partial = False
+        for root, dirs, files in os.walk(job_dir, followlinks=False):
+            dirs[:] = [name for name in dirs if not Path(root, name).is_symlink()]
+            for name in files:
+                path = Path(root, name)
+                if path.is_symlink():
+                    continue
+                if name.endswith(".part") or ".part-" in name:
+                    partial = True
+                try:
+                    total += path.stat().st_size
+                except OSError:
+                    continue
+        return int(total), partial

@@ -39,6 +39,46 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(check["synchronous"], 2)
         self.assertTrue(SQLiteRepository.REQUIRED_TABLES.issubset(check["tables"]))
 
+    async def test_cleanup_inventory_exposes_only_durable_cleanup_facts(self) -> None:
+        job_dir = self.download_root / "job-77"
+        job_dir.mkdir()
+        local_path = job_dir / "cached.mp4"
+        local_path.write_bytes(b"cache")
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="failed",
+            source_kind="url",
+            legacy_seq=77,
+            items=[{"local_path": str(local_path), "size_bytes": 5, "metadata": {"schema_version": 1}}],
+            event_payload={"schema_version": 1},
+            now=100.0,
+        )
+        conn = self.repo._require_conn()
+        await conn.execute(
+            "UPDATE jobs SET local_dir=?,finished_at=?,next_retry_at=? WHERE id=?",
+            (str(job_dir), 200.0, 500.0, job.id),
+        )
+        await conn.commit()
+        attempt = await self.repo.create_backup_attempt(
+            job_id=job.id,
+            state="failed",
+            remote_dir="remote",
+            now=210.0,
+        )
+        self.assertGreater(attempt.id, 0)
+
+        rows = await self.repo.cleanup_inventory()
+        self.assertEqual(len(rows), 1)
+        row = rows[0]
+        self.assertEqual(row["job_id"], job.id)
+        self.assertEqual(row["legacy_seq"], 77)
+        self.assertEqual(row["state"], "failed")
+        self.assertEqual(row["local_dir"], str(job_dir))
+        self.assertEqual(row["item_bytes"], 5)
+        self.assertEqual(row["next_retry_at"], 500.0)
+        self.assertEqual(row["backup_state"], "failed")
+
     async def test_runtime_entities_preserve_item_and_text_order(self) -> None:
         job = await self.repo.accept_job(
             kind="collection",
