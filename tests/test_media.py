@@ -6,6 +6,7 @@ from unittest.mock import AsyncMock, patch
 
 from src.media import MediaPublisher, PublishPartialError
 from src.models import Job
+from src.services.dedup import ContentHash
 from tests.fakes import FakeClient, FakeStatusMessage
 
 
@@ -31,6 +32,59 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         with open(path, "wb") as media_file:
             media_file.write(content)
         return path
+
+    async def test_dedup_hit_skips_byte_upload_and_preserves_new_caption(self) -> None:
+        path = self.make_file("reuse.mp4", b"x" * 512)
+        job = Job(
+            seq=9,
+            kind="media",
+            status=FakeStatusMessage(),
+            message=SimpleNamespace(message="新的文案"),
+            spoiler=True,
+        )
+        content = ContentHash(os.path.realpath(path), "ab" * 32, 512)
+        job._content_hashes = {os.path.realpath(path): content}
+        entry = SimpleNamespace(id=7)
+        manager = SimpleNamespace(
+            reuse_input_media=AsyncMock(return_value=("reused-media", entry)),
+            record_sent_message=AsyncMock(),
+            mark_hit=AsyncMock(),
+        )
+        self.publisher.dedup_manager = manager
+        self.publisher.cover_mode = False
+        self.publisher._upload_media_input = AsyncMock(side_effect=AssertionError("must not upload bytes"))
+        self.publisher._get_dest_input = AsyncMock(return_value="dest-input")
+
+        result = await self.publisher._publish_media(job, path)
+
+        self.assertEqual(len(result), 1)
+        self.assertEqual(self.client.sent_files[0]["file"], "reused-media")
+        self.assertIn("新的文案", self.client.sent_files[0]["caption"])
+        self.publisher._upload_media_input.assert_not_awaited()
+        manager.reuse_input_media.assert_awaited_once_with(
+            self.client, content, spoiler=True
+        )
+        manager.mark_hit.assert_awaited_once_with(entry, content)
+        manager.record_sent_message.assert_awaited_once()
+
+    async def test_dedup_miss_falls_back_to_normal_upload(self) -> None:
+        path = self.make_file("fallback.mp4", b"y" * 512)
+        job = Job(seq=8, kind="url", status=FakeStatusMessage())
+        content = ContentHash(os.path.realpath(path), "cd" * 32, 512)
+        job._content_hashes = {os.path.realpath(path): content}
+        self.publisher.dedup_manager = SimpleNamespace(
+            reuse_input_media=AsyncMock(return_value=(None, None)),
+            record_sent_message=AsyncMock(),
+            mark_hit=AsyncMock(),
+        )
+        self.publisher.cover_mode = False
+        self.publisher._upload_media_input = AsyncMock(return_value="uploaded-media")
+        self.publisher._get_dest_input = AsyncMock(return_value="dest-input")
+
+        await self.publisher._publish_media(job, path)
+
+        self.publisher._upload_media_input.assert_awaited_once()
+        self.assertEqual(self.client.sent_files[0]["file"], "uploaded-media")
 
     async def test_collection_cover_preserves_text_order_and_returns_peer_pairs(self) -> None:
         photo = self.make_file("cover.jpg")

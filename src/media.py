@@ -296,6 +296,7 @@ class MediaPublisher:
         self.post_publish_hooks = []  # async (job, ids) -> None
         self.checkpoint_hooks = []    # async (job, canonical_refs) -> None
         self.progress_hooks = []      # async (seq, received, total, item, items) -> None
+        self.dedup_manager = None
         self._dest_input = None
         self._group_input = None
         self._group_id = None
@@ -380,7 +381,7 @@ class MediaPublisher:
         if self.forward_caption and job.kind == "media":
             caption = job.message.message[:1024] or None
         caption = self._with_footer(caption) or None
-        media = await self._upload_media_input(path, job.spoiler, job.seq)
+        media = await self._media_input(job, path, job.spoiler, job.seq)
         if self.cover_mode and is_video_path(path):
             attempts_before = int(getattr(job, "_publish_send_attempts", 0))
             try:
@@ -393,6 +394,7 @@ class MediaPublisher:
         dest_input = await self._get_dest_input()
         self._begin_send(job)
         msg = await self.client.send_file(self.dest, media, caption=caption)
+        await self._record_dedup_message(job, path, msg)
         await self._checkpoint(
             job, getattr(msg, "peer_id", None) or dest_input, [msg.id], "destination"
         )
@@ -410,6 +412,7 @@ class MediaPublisher:
             job, getattr(cover_msg, "peer_id", None) or dest_input, [cover_msg.id], "cover"
         )
         group_peer, comment_id = await self._post_comment(job, media, cover_msg)
+        await self._record_dedup_ref(job, video_path, group_peer, comment_id)
         await self._checkpoint(job, group_peer, [comment_id], "comment")
         return [(dest_input, cover_msg.id), (group_peer, comment_id)]
 
@@ -548,8 +551,8 @@ class MediaPublisher:
         single_media = []
         total = total_items or len(paths)
         for index, path in enumerate(paths):
-            fm = await self._upload_media_input(
-                path, spoiler, seq, item=item_offset + index + 1, items=total
+            fm = await self._media_input(
+                job, path, spoiler, seq, item=item_offset + index + 1, items=total
             )
             result = await self.client(
                 functions.messages.UploadMediaRequest(group, fm)
@@ -574,15 +577,20 @@ class MediaPublisher:
             )
         )
         ids = []
+        sent_messages = []
         for update in getattr(result, "updates", []) or []:
             if isinstance(update, types.UpdateNewChannelMessage):
                 ids.append(update.message.id)
+                sent_messages.append(update.message)
             elif isinstance(update, types.UpdateNewMessage):
                 ids.append(update.message.id)
+                sent_messages.append(update.message)
         if not ids:
             raise RuntimeError("评论相册发送后未取到 id")
         for cid in ids:
             self._note_group_id(cid)
+        for path, message in zip(paths, sent_messages):
+            await self._record_dedup_message(job, path, message)
         await self._checkpoint(job, group, ids, "comment")
         return group, ids
 
@@ -658,11 +666,12 @@ class MediaPublisher:
             attempts_before = int(getattr(job, "_publish_send_attempts", 0))
             try:
                 if len(chunk) == 1:
-                    media = await self._upload_media_input(
-                        chunk[0], job.spoiler, job.seq,
+                    media = await self._media_input(
+                        job, chunk[0], job.spoiler, job.seq,
                         item=start + 1, items=len(video_paths),
                     )
                     group_peer, comment_id = await self._post_comment(job, media, root_msg)
+                    await self._record_dedup_ref(job, chunk[0], group_peer, comment_id)
                     await self._checkpoint(job, group_peer, [comment_id], "comment")
                     refs.append((group_peer, comment_id))
                 else:
@@ -678,12 +687,13 @@ class MediaPublisher:
                     "Album comment publish failed (%s), fallback direct", exc
                 )
                 for index, _p in enumerate(chunk):
-                    media = await self._upload_media_input(
-                        _p, job.spoiler, job.seq,
+                    media = await self._media_input(
+                        job, _p, job.spoiler, job.seq,
                         item=start + index + 1, items=len(video_paths),
                     )
                     self._begin_send(job)
                     msg = await self.client.send_file(self.dest, media)
+                    await self._record_dedup_message(job, _p, msg)
                     await self._checkpoint(
                         job, getattr(msg, "peer_id", None) or dest_input,
                         [msg.id], "fallback",
@@ -792,11 +802,12 @@ class MediaPublisher:
                 attempts_before = int(getattr(job, "_publish_send_attempts", 0))
                 try:
                     if len(chunk) == 1:
-                        media = await self._upload_media_input(
-                            chunk[0], job.spoiler, job.seq,
+                        media = await self._media_input(
+                            job, chunk[0], job.spoiler, job.seq,
                             item=start + 1, items=len(video_paths),
                         )
                         group_peer, comment_id = await self._post_comment(job, media, root_msg)
+                        await self._record_dedup_ref(job, chunk[0], group_peer, comment_id)
                         await self._checkpoint(job, group_peer, [comment_id], "comment")
                         refs.append((group_peer, comment_id))
                     else:
@@ -812,12 +823,13 @@ class MediaPublisher:
                         "Collection comment publish failed (%s), fallback direct", exc
                     )
                     for index, _p in enumerate(chunk):
-                        media = await self._upload_media_input(
-                            _p, job.spoiler, job.seq,
+                        media = await self._media_input(
+                            job, _p, job.spoiler, job.seq,
                             item=start + index + 1, items=len(video_paths),
                         )
                         self._begin_send(job)
                         msg = await self.client.send_file(self.dest, media)
+                        await self._record_dedup_message(job, _p, msg)
                         await self._checkpoint(
                             job, getattr(msg, "peer_id", None) or dest_input,
                             [msg.id], "fallback",
@@ -833,13 +845,14 @@ class MediaPublisher:
         i = 0
         while i < total:
             if is_video_path(paths[i]):
-                media = await self._upload_media_input(
-                    paths[i], job.spoiler, job.seq, item=i + 1, items=total
+                media = await self._media_input(
+                    job, paths[i], job.spoiler, job.seq, item=i + 1, items=total
                 )
                 self._begin_send(job)
                 msg = await self.client.send_file(
                     self.dest, media, caption=self._with_footer(captions[i]) or None
                 )
+                await self._record_dedup_message(job, paths[i], msg)
                 await self._checkpoint(
                     job, getattr(msg, "peer_id", None) or dest_input,
                     [msg.id], "destination",
@@ -884,8 +897,8 @@ class MediaPublisher:
             single_media = []
             for index, path in enumerate(chunk):
                 item_index = start + index
-                fm = await self._upload_media_input(
-                    path, spoiler, job.seq, item=item_index + 1, items=total
+                fm = await self._media_input(
+                    job, path, spoiler, job.seq, item=item_index + 1, items=total
                 )
                 result = await self.client(
                     functions.messages.UploadMediaRequest(dest_input, fm)
@@ -912,16 +925,63 @@ class MediaPublisher:
                 )
             )
             chunk_ids = []
+            chunk_messages = []
             for update in getattr(result, "updates", []) or []:
                 if isinstance(update, types.UpdateNewChannelMessage):
                     chunk_ids.append(update.message.id)
+                    chunk_messages.append(update.message)
                 elif isinstance(update, types.UpdateNewMessage):
                     chunk_ids.append(update.message.id)
+                    chunk_messages.append(update.message)
             if not chunk_ids:
                 raise PublishPartialError()
             ids.extend(chunk_ids)
+            for path, message in zip(chunk, chunk_messages):
+                await self._record_dedup_message(job, path, message)
             await self._checkpoint(job, dest_input, chunk_ids, role)
         return ids
+
+    async def _media_input(self, job, path, spoiler, seq, item=1, items=1):
+        manager = self.dedup_manager
+        content = getattr(job, "_content_hashes", {}).get(os.path.realpath(path))
+        if manager is not None and content is not None:
+            try:
+                media, entry = await manager.reuse_input_media(
+                    self.client, content, spoiler=bool(spoiler)
+                )
+                if media is not None and entry is not None:
+                    pending = getattr(job, "_dedup_reused", {})
+                    pending[os.path.realpath(path)] = (entry, content)
+                    job._dedup_reused = pending
+                    logger.info("Job #%s D1 media reuse hit (%d bytes)", seq, content.size_bytes)
+                    return media
+            except Exception as exc:
+                logger.warning("Job #%s D1 reuse fallback: %s", seq, exc.__class__.__name__)
+        return await self._upload_media_input(path, spoiler, seq, item=item, items=items)
+
+    async def _record_dedup_message(self, job, path, message) -> None:
+        manager = self.dedup_manager
+        content = getattr(job, "_content_hashes", {}).get(os.path.realpath(path))
+        if manager is None or content is None:
+            return
+        try:
+            reused = getattr(job, "_dedup_reused", {}).pop(os.path.realpath(path), None)
+            await manager.record_sent_message(content, message)
+            if reused is not None:
+                await manager.mark_hit(reused[0], content)
+        except Exception as exc:
+            logger.warning("Job #%s D1 index update skipped: %s", job.seq, exc.__class__.__name__)
+
+    async def _record_dedup_ref(self, job, path, peer, message_id: int) -> None:
+        manager = self.dedup_manager
+        content = getattr(job, "_content_hashes", {}).get(os.path.realpath(path))
+        if manager is None or content is None:
+            return
+        try:
+            message = await self.client.get_messages(peer, ids=int(message_id))
+            await self._record_dedup_message(job, path, message)
+        except Exception as exc:
+            logger.warning("Job #%s D1 ref refresh skipped: %s", job.seq, exc.__class__.__name__)
 
     async def _upload_media_input(self, path, spoiler, seq, item=1, items=1):
         uploaded = await self._upload_concurrent(path, seq, item, items)

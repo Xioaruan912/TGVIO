@@ -1327,6 +1327,34 @@ class SQLiteRepository:
             raise RepositoryError("dedup entry missing after upsert")
         return found
 
+    async def mark_dedup_hit(self, entry_id: int, *, saved_bytes: int, now: float | None = None) -> None:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                await conn.execute(
+                    "UPDATE dedup_entries SET hit_count=hit_count+1,last_used_at=? WHERE id=?",
+                    (timestamp, int(entry_id)),
+                )
+                await self._apply_stat_metric_tx(
+                    conn,
+                    scope_key=f"dedup_hit:{int(entry_id)}:{int(timestamp * 1000)}",
+                    metric="saved_upload_bytes",
+                    value=max(0, int(saved_bytes)),
+                    timestamp=timestamp,
+                )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def delete_dedup_entry(self, entry_id: int) -> None:
+        conn = self._require_conn()
+        async with self._write_lock:
+            await conn.execute("DELETE FROM dedup_entries WHERE id=?", (int(entry_id),))
+            await conn.commit()
+
     @staticmethod
     def _dedup_from_row(row: aiosqlite.Row) -> DedupEntryRecord:
         return DedupEntryRecord(

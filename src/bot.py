@@ -1396,6 +1396,7 @@ class _Pipeline:
         try:
             hashes = await manager.hash_job_paths(job.seq, paths)
             if hashes:
+                job._content_hashes = {os.path.realpath(item.path): item for item in hashes}
                 logger.info("Job #%s D1 hashed %d media file(s)", job.seq, len(hashes))
         except Exception as exc:
             # D1 indexing is an optimization. It must never break the publish path.
@@ -3129,6 +3130,7 @@ def register_handlers(client: TelegramClient, repository=None, *, start_workers:
     pipeline.operations = operations
     pipeline.stats_service = stats
     pipeline.dedup_manager = DedupManager(repository, destination_key=str(DEST_CHANNEL)) if repository is not None else None
+    pipeline.publisher.dedup_manager = pipeline.dedup_manager
     pipeline.shadow_state = shadow
     ctx = HandlerContext(
         client=client,
