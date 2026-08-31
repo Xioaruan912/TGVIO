@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `2f3bc60`（B1 完成：显式 WebDAV probe、durable attempt/file UI、required policy、durable autoretry 与精确远端删除确认）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 11:29 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **188 tests 全通过**；镜像 `APP_COMMIT=2f3bc60`，生产 `DISK_ENFORCE=true`，WebDAV `backup_policy=best_effort` 保持不变。B1-D 无 schema migration。
+- 当前分支：`main`。当前生产运行代码基线为 `4fcc6e9`（D1 完成：SHA-256 内容索引、destination-scoped Telegram 媒体复用、stale 引用自动回退、本次发布仍生成新消息与新 caption/spoiler）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 11:48 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **199 tests 全通过**；镜像 `APP_COMMIT=4fcc6e9`，生产 `DISK_ENFORCE=true`，WebDAV `backup_policy=best_effort` 保持不变。D1 migration 7 新增 `content_sha256/dedup_entries`，D1-B 无新增 migration。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -426,9 +426,9 @@ docker compose config --quiet
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [x] `b5450e6`（2026-08-31） |
 | F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [x] `dddaa9f`（2026-08-31；F2-A/B/C/D 完成） |
 | F3 | P1 | 磁盘预检、配额、保留策略和安全清理 | R2 | [x] `26d5596`（2026-08-31；F3-A/B/C 完成） |
-| F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [x] `67d3db1`（2026-08-31；schema 4→5） |
-| B1 | P1 | WebDAV 生命周期抽取、连通/容量/策略 UI | R1、U2 | [ ] |
-| D1 | P2 | SHA-256 去重、目标频道媒体复用/秒传 | R2、R3 | [ ] |
+| F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [x] `5ae529c`（2026-08-31；schema 4→6） |
+| B1 | P1 | WebDAV 生命周期抽取、连通/容量/策略 UI | R1、U2 | [x] `2f3bc60`（2026-08-31；B1-A/B/C/D 完成） |
+| D1 | P2 | SHA-256 去重、目标频道媒体复用/秒传 | R2、R3 | [x] `4fcc6e9`（2026-08-31；schema 6→7 + media reuse） |
 | M1 | P2 | 视频兼容性检查、faststart remux、缩略图增强 | F3 | [ ] |
 | DP1 | P2 | 多目的地发布配置档案 | R3、U2 | [ ] |
 | S1 | P2 | 指定源频道自动中转（仅新消息） | DP1 | [ ] |
@@ -1488,7 +1488,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1 已完成。当前下一阶段是 **D1：SHA-256 去重与 Telegram 媒体复用**；不要同时夹带 M1/多目的地/Web Dashboard。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1 已完成。当前下一阶段是 **M1：媒体兼容性检查、faststart remux 与缩略图增强**；不要同时夹带 DP1/S1/多目的地/Web Dashboard。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1503,7 +1503,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1 已完成。当前下一阶
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理进入 D1：新增 SHA-256 内容索引与 destination-scoped Telegram media descriptor，下载完成后流式 hash；命中时刷新已知目标消息媒体引用并发送新消息，任何引用失效/权限/API 错误必须自动回退本地普通上传。D1 不能改变现有 MD5 WebDAV 远端命名，也不能把“命中去重”误解为跳过本次发布。
+下一位代理进入 M1：先做 ffprobe metadata 与 MP4 faststart 判定，默认只 remux 不有损转码；需要 remux 时必须纳入 DiskManager reservation，并保留原文件直到新文件完整验证。缩略图增强应采用多候选/黑帧规避，但不能改变现有发布顺序、dedup SHA-256 内容索引或 WebDAV MD5 远端命名。
 
 ## 21. 执行日志
 
@@ -1847,3 +1847,16 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1 已完成。当前下一阶
 - 测试：完整源码和最终标准 Docker 镜像均 **188 项 unittest 全通过**；required 成功/失败、published refs 保留、policy confirmation、durable autoretry `cache_missing` 排除、DB 精确 remote delete 与协议状态矩阵均有回归。`compileall`、`git diff --check`、compose config、静态镜像检查通过；schema/migration 仍 `[1,2,3,4,5,6]` 未改变。
 - VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-2f3bc60-20260831-113004.sqlite3`，并保留 rollback image/source archive。部署后镜像 `sha256:ada58caa1c60062fdb7bbbce56a1a071d9d1bb13437ebfe41231b954fbd734cb`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=2f3bc60`，schema6/`integrity=ok`、incomplete/claims/active-backup=0，生产 188 tests 全通过，启动日志正常。
 - 下一步精确入口：D1。先做 `dedup_entries` migration + 流式 SHA-256/DAO + destination-scoped lookup；再接 MediaPublisher 引用刷新/复用，失败必须透明回退普通上传，最后接 saved upload bytes 统计/UI。
+
+### 2026-08-31 11:48 - D1 SHA-256 去重与 Telegram 媒体复用
+
+- 状态：D1 已完成、推送并部署生产；下一阶段进入 M1。
+- 实现 commits：`1856179`（`feat(dedup): add D1 content hash index`，schema 6→7）与 `4fcc6e9`（`feat(dedup): reuse Telegram media references`）。
+- 内容索引：下载完成后以 1 MiB chunk 流式计算 SHA-256，写入 `job_items.content_sha256`；新增 destination-scoped `dedup_entries`，键为 `(sha256,size_bytes,media_kind,destination_key)`，保存已知目标消息 peer/message 与 Telegram media descriptor。现有 WebDAV MD5 前 8 位远端命名未改变。
+- 发布复用：所有原始用户媒体发布分支在真正上传字节前走统一 `_media_input()`；命中后先刷新目标频道已知消息，构造 `InputMediaPhoto/InputMediaDocument`，本次仍发送**新的 Telegram 消息**，因此新的 caption/footer/spoiler 与 checkpoint/published refs 语义保持不变。自动生成的 cover/thumbnail 不进入 dedup 内容索引。
+- fallback：目标消息已删除、file reference 失效、权限/API/get_messages 异常或 descriptor 不可用时，删除该 stale dedup entry 并透明回退原普通上传；D1 优化自身错误不会让发布失败。
+- 索引刷新与统计：每次新消息成功后以新的 message/media descriptor upsert 索引；命中后增加 `hit_count` 和 `daily_stats.saved_upload_bytes`，`/stats` 继续显示“秒传节省”。撤销某条 published message 只更新该 job 的 `published_messages.deleted_at`，不会级联删除其它任务或 dedup 记录；若索引指向的消息后来不可用，下次 lookup 会 fail-safe 回退。
+- 验收：同内容改名命中；同大小不同内容不命中；destination scope 隔离；命中不调用字节上传；新 caption 与 spoiler 保留；stale 引用自动回退；相册/collection 原始媒体均走统一 resolver；撤销一条消息不破坏其它任务记录。
+- 测试：完整源码与最终标准 Docker 镜像均 **199 项 unittest 全通过**；`compileall`、`git diff --check`、compose config、静态镜像 secret-path 检查通过。migration 7 checksum `7c8374a3...` 保持不变。
+- VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-4fcc6e9-20260831-114857.sqlite3`，并保留 `telegram-video-forwarder:rollback-pre-4fcc6e9` 与源码归档。部署后镜像 `sha256:31df6f4c626944ae8f7ad6ae880002b18dbf8d3426b950b9318d42a16774e3fd`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=4fcc6e9`，schema `[1,2,3,4,5,6,7]`、`integrity=ok`、incomplete/claims=0，生产 199 tests 全通过。部署时 dedup 表为空，因此没有通过生产真实频道制造重复媒体副作用。
+- 下一步精确入口：M1。先建立 ffprobe metadata/faststart 判定与纯 remux helper；默认不做有损转码，remux 前必须向 DiskManager 申请额外 reservation，成功验证后再切换 local_path/hash，失败保留原文件并继续原发布路径。
