@@ -1904,3 +1904,15 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 已完
 - VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-5d5f2aa-20260831-125217.sqlite3`，并保留 `telegram-video-forwarder:rollback-pre-5d5f2aa` 与源码归档。部署后镜像 `sha256:bb2dc229c750ccdf5560a1b81f814ff1d361faa45c50ef2bbc16a1b4c2d58414`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=5d5f2aa`，schema `[1..9]`、`integrity=ok`、incomplete=0，生产 225 tests 全通过；`source_profiles=0/source_enabled=0/source_events=0`，没有自动转发副作用。
 - 回滚：schema9 旧代码不认识；回滚到 S1 前应停容器并恢复 pre-5d5f2aa DB backup，再启动 rollback image，不做 destructive downgrade。
 - 下一步精确入口：第 18.1 节配置重构，先做 immutable `Settings`、required env fail-fast 与范围校验，旧模块常量保留一个迁移周期。
+
+### 2026-08-31 13:13 - Settings 配置重构实现完成，生产后验待 SSH 恢复
+
+- 状态：第 18.1 节实现与本地/镜像门禁已完成并推送，但**尚未标为完成**；生产 recreate 命令已发出后 SSH 连续被远端主动关闭，因此禁止重复部署，待 SSH 恢复后只做后验确认。
+- 实现 commit：`a053dc9`（`refactor(config): add validated static settings`）。
+- 配置模型：新增 immutable `Settings` dataclass；生产 `main()` 使用 `Settings.from_env(strict=True)` 在创建目录、数据库或 Telegram client 前 fail-fast，并将同一 Settings 实例注入 Pipeline。旧 module constants 继续 re-export 一个迁移周期；`register_handlers()` 未传 settings 时从旧常量即时构造兼容 snapshot，保留历史测试/embedders patch 行为。
+- 校验：`API_ID/API_HASH/BOT_TOKEN/DEST_CHANNEL/ALLOWED_USERS` 必填；并发数、workers、timeout、Telegram part size、文件上限、磁盘阈值、M1 模式与 thumbnail position 均做范围/枚举校验。错误只报告变量名，不回显值。
+- 脱敏：`settings.safe_summary()` 只暴露 destination 类型、allowlist 数量、worker/part size、布尔模式等白名单字段；启动日志与 `/diag` 使用 safe summary，不输出真实 destination、用户 ID、API hash/token。
+- 动静态边界：`.env.example` 明确静态 env 修改需重启；WebDAV/代理/用户偏好/destination/source profile 继续由 runtime UI 管理，profile 修改只影响新任务。
+- 测试：最终源码与标准 Docker 镜像均 **229 项 unittest 全通过**；`compileall`、`git diff --check`、compose config、静态镜像 secret-path 均通过；schema/migration 保持 `[1..9]` 不变。
+- 生产 preflight：部署前确认 `APP_COMMIT=5d5f2aa`、schema9/integrity、incomplete/claims/backup=0、source_enabled=0；回滚 DB `/root/telegram-video-forwarder-releases/state-pre-a053dc9-20260831-131247.sqlite3`，并保留 rollback image/source archive。新 candidate 镜像已使用生产 `.env` 成功执行 `Settings.from_env(strict=True)`，只输出 safe summary，说明现有非敏感范围合法。
+- 未完成：`docker compose up -d --force-recreate bot` 已发出后 SSH 控制连接被关闭；随后两次新 SSH 也被远端关闭，尚未确认 `APP_COMMIT=a053dc9`、health/restart、生产 229 tests 与启动日志。因此不要重复 recreate；SSH 恢复后先只读检查实际容器状态，若已运行 a053dc9 则补后验并勾选 18.1。
