@@ -4,8 +4,8 @@ import logging
 import mimetypes
 import os
 import re
-import subprocess
 import struct
+import weakref
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -15,6 +15,50 @@ _IMAGE_EXTS = {"jpg", "jpeg", "png", "gif", "bmp", "webp"}
 _VIDEO_EXTS = {"mp4", "mkv", "webm", "mov", "avi", "m4v", "flv", "wmv", "3gp", "ts"}
 _THUMB_MAX = 320
 _THUMB_MAX_BYTES = 40 * 1024
+_MEDIA_PROCESS_CONCURRENCY = 2
+_MEDIA_PROCESS_LIMITS: weakref.WeakKeyDictionary[asyncio.AbstractEventLoop, asyncio.Semaphore] = (
+    weakref.WeakKeyDictionary()
+)
+_FFPROBE_TIMEOUT = 30.0
+_FFMPEG_TIMEOUT = 180.0
+
+
+@dataclass(frozen=True)
+class _ProcessResult:
+    returncode: int
+    stdout: str
+    stderr: str
+
+
+def _media_process_limit() -> asyncio.Semaphore:
+    loop = asyncio.get_running_loop()
+    limit = _MEDIA_PROCESS_LIMITS.get(loop)
+    if limit is None:
+        limit = asyncio.Semaphore(_MEDIA_PROCESS_CONCURRENCY)
+        _MEDIA_PROCESS_LIMITS[loop] = limit
+    return limit
+
+
+async def _run_media_process(cmd: list[str], *, timeout: float) -> _ProcessResult:
+    """Run ffmpeg/ffprobe with bounded concurrency and hard cancellation."""
+    async with _media_process_limit():
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+        )
+        try:
+            stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=timeout)
+        except BaseException:
+            if process.returncode is None:
+                process.kill()
+                await process.communicate()
+            raise
+    return _ProcessResult(
+        returncode=int(process.returncode or 0),
+        stdout=stdout.decode("utf-8", errors="replace"),
+        stderr=stderr.decode("utf-8", errors="replace"),
+    )
 
 
 @dataclass(frozen=True)
@@ -46,10 +90,6 @@ class MediaMetadata:
 
 
 async def probe_media_metadata(path: str) -> MediaMetadata:
-    return await asyncio.to_thread(_probe_media_metadata_sync, path)
-
-
-def _probe_media_metadata_sync(path: str) -> MediaMetadata:
     cmd = [
         "ffprobe",
         "-v",
@@ -62,7 +102,7 @@ def _probe_media_metadata_sync(path: str) -> MediaMetadata:
         "json",
         path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = await _run_media_process(cmd, timeout=_FFPROBE_TIMEOUT)
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe 失败: {result.stderr.strip()[-500:] or 'unknown'}")
     data = json.loads(result.stdout or "{}")
@@ -92,7 +132,11 @@ def _probe_media_metadata_sync(path: str) -> MediaMetadata:
     except (TypeError, ValueError):
         rotation = 0
     container = str(fmt.get("format_name") or "").lower()
-    faststart = _mp4_faststart_sync(path) if _looks_like_mp4(path, container) else None
+    faststart = (
+        await asyncio.to_thread(_mp4_faststart_sync, path)
+        if _looks_like_mp4(path, container)
+        else None
+    )
     return MediaMetadata(
         path=os.path.realpath(path),
         container=container,
@@ -152,10 +196,6 @@ def _mp4_faststart_sync(path: str) -> bool | None:
 
 
 async def remux_faststart(path: str, output_path: str | None = None) -> str:
-    return await asyncio.to_thread(_remux_faststart_sync, path, output_path)
-
-
-def _remux_faststart_sync(path: str, output_path: str | None = None) -> str:
     source = Path(path).resolve()
     target = Path(output_path).resolve() if output_path else source.with_name(
         f"{source.stem}.faststart{source.suffix or '.mp4'}"
@@ -164,13 +204,12 @@ def _remux_faststart_sync(path: str, output_path: str | None = None) -> str:
         raise ValueError("faststart output must remain in the same job directory")
     if target == source:
         raise ValueError("faststart output must differ from source")
-    result = subprocess.run(
+    result = await _run_media_process(
         [
             "ffmpeg", "-y", "-v", "error", "-i", str(source), "-map", "0",
             "-c", "copy", "-movflags", "+faststart", str(target),
         ],
-        capture_output=True,
-        text=True,
+        timeout=_FFMPEG_TIMEOUT,
     )
     if result.returncode != 0 or not target.is_file() or target.stat().st_size <= 0:
         try:
@@ -178,8 +217,8 @@ def _remux_faststart_sync(path: str, output_path: str | None = None) -> str:
         except OSError:
             pass
         raise RuntimeError(f"faststart remux 失败: {result.stderr.strip()[-500:] or 'unknown'}")
-    before = _probe_media_metadata_sync(str(source))
-    after = _probe_media_metadata_sync(str(target))
+    before = await probe_media_metadata(str(source))
+    after = await probe_media_metadata(str(target))
     tolerance = max(1.0, before.duration_seconds * 0.02)
     valid = (
         before.stream_count == after.stream_count
@@ -196,10 +235,6 @@ def _remux_faststart_sync(path: str, output_path: str | None = None) -> str:
 
 
 async def probe_video(path: str) -> tuple[int, int, int]:
-    return await asyncio.to_thread(_probe_video_sync, path)
-
-
-def _probe_video_sync(path: str) -> tuple[int, int, int]:
     cmd = [
         "ffprobe",
         "-v",
@@ -214,7 +249,7 @@ def _probe_video_sync(path: str) -> tuple[int, int, int]:
         "json",
         path,
     ]
-    result = subprocess.run(cmd, capture_output=True, text=True)
+    result = await _run_media_process(cmd, timeout=_FFPROBE_TIMEOUT)
     if result.returncode != 0:
         raise RuntimeError(f"ffprobe 失败: {result.stderr.strip()[-500:] or 'unknown'}")
 
@@ -237,10 +272,6 @@ def _probe_video_sync(path: str) -> tuple[int, int, int]:
 
 
 async def make_cover(path: str, workdir: str, max_w: int = 1280) -> str:
-    return await asyncio.to_thread(_make_cover_sync, path, workdir, max_w)
-
-
-def _make_cover_sync(path: str, workdir: str, max_w: int = 1280) -> str:
     out = os.path.join(workdir, "cover.jpg")
     for seek in ("1", "0"):
         cmd = [
@@ -260,7 +291,7 @@ def _make_cover_sync(path: str, workdir: str, max_w: int = 1280) -> str:
             "3",
             out,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = await _run_media_process(cmd, timeout=_FFMPEG_TIMEOUT)
         if result.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0:
             return out
     detail = result.stderr.strip()[-500:] if result.stderr.strip() else "no frames"
@@ -268,40 +299,8 @@ def _make_cover_sync(path: str, workdir: str, max_w: int = 1280) -> str:
 
 
 async def make_thumb(path: str, workdir: str, position: str = "auto") -> str | None:
-    return await asyncio.to_thread(_make_thumb_sync, path, workdir, position)
-
-
-def _thumbnail_seeks(path: str, position: str = "auto") -> list[float]:
-    if position != "auto":
-        try:
-            return [max(0.0, float(position)), 1.0, 0.0]
-        except (TypeError, ValueError):
-            pass
-    try:
-        duration, _, _ = _probe_video_sync(path)
-    except Exception:
-        duration = 0
-    if duration > 0:
-        return [duration * ratio for ratio in (0.10, 0.20, 0.30)]
-    return [1.0, 0.0]
-
-
-def _frame_is_black(path: str) -> bool:
-    result = subprocess.run(
-        [
-            "ffmpeg", "-v", "info", "-i", path,
-            "-vf", "blackframe=amount=95:threshold=32", "-f", "null", "-",
-        ],
-        capture_output=True,
-        text=True,
-    )
-    match = re.search(r"pblack:(\d+)", result.stderr or "")
-    return bool(match and int(match.group(1)) >= 95)
-
-
-def _make_thumb_sync(path: str, workdir: str, position: str = "auto") -> str | None:
     out = os.path.join(workdir, "thumb.jpg")
-    for seek in _thumbnail_seeks(path, position)[:3]:
+    for seek in (await _thumbnail_seeks(path, position))[:3]:
         cmd = [
             "ffmpeg",
             "-y",
@@ -319,9 +318,9 @@ def _make_thumb_sync(path: str, workdir: str, position: str = "auto") -> str | N
             "5",
             out,
         ]
-        result = subprocess.run(cmd, capture_output=True, text=True)
+        result = await _run_media_process(cmd, timeout=_FFMPEG_TIMEOUT)
         if result.returncode == 0 and os.path.isfile(out) and os.path.getsize(out) > 0:
-            if _frame_is_black(out):
+            if await _frame_is_black(out):
                 try:
                     os.remove(out)
                 except OSError:
@@ -338,6 +337,33 @@ def _make_thumb_sync(path: str, workdir: str, position: str = "auto") -> str | N
             return out
     detail = result.stderr.strip()[-500:] if result.stderr.strip() else "no frames"
     raise RuntimeError(f"生成缩略图失败: {detail}")
+
+
+async def _thumbnail_seeks(path: str, position: str = "auto") -> list[float]:
+    if position != "auto":
+        try:
+            return [max(0.0, float(position)), 1.0, 0.0]
+        except (TypeError, ValueError):
+            pass
+    try:
+        duration, _, _ = await probe_video(path)
+    except Exception:
+        duration = 0
+    if duration > 0:
+        return [duration * ratio for ratio in (0.10, 0.20, 0.30)]
+    return [1.0, 0.0]
+
+
+async def _frame_is_black(path: str) -> bool:
+    result = await _run_media_process(
+        [
+            "ffmpeg", "-v", "info", "-i", path,
+            "-vf", "blackframe=amount=95:threshold=32", "-f", "null", "-",
+        ],
+        timeout=_FFMPEG_TIMEOUT,
+    )
+    match = re.search(r"pblack:(\d+)", result.stderr or "")
+    return bool(match and int(match.group(1)) >= 95)
 
 
 def is_photo_path(path: str) -> bool:

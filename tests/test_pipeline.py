@@ -8,6 +8,7 @@ from unittest.mock import AsyncMock, patch
 
 from src import bot
 from src.models import Job, RetryInfo
+from src.services.dedup import ContentHash
 from tests.fakes import (
     FakeBackupClient,
     FakeCallbackEvent,
@@ -1116,6 +1117,43 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
 
         self.pipeline._schedule_cleanup(seq, "")
         self.assertFalse(os.path.exists(workdir))
+
+    async def test_webdav_initial_upload_reuses_dedup_md5_pass(self) -> None:
+        seq = 305
+        workdir = self.pipeline._workdir(seq)
+        os.makedirs(workdir)
+        path = os.path.join(workdir, "video.mp4")
+        with open(path, "wb") as media_file:
+            media_file.write(b"media")
+        job = self.make_job(seq)
+        job.user_id = 0
+        job._content_hashes = {
+            os.path.realpath(path): ContentHash(
+                os.path.realpath(path), "ab" * 32, 5, md5_short="11223344"
+            )
+        }
+        self.pipeline.webdav_cfg.update(
+            {
+                "enabled": True,
+                "url": "https://dav.invalid/dav",
+                "user": "user",
+                "pass": "pass",
+                "path": "/backup",
+                "retry": 0,
+            }
+        )
+        fake = FakeBackupClient()
+
+        with patch.object(bot, "_file_md5_short", side_effect=AssertionError("unexpected rescan")), patch.object(
+            bot.webdav, "upload_once", side_effect=fake.upload_once
+        ), patch.object(bot.webdav, "remote_file_size", side_effect=fake.remote_file_size):
+            await self.pipeline._on_webdav_upload(job, path)
+            tasks = [
+                task for task, task_seq in self.pipeline._webdav_tasks.items() if task_seq == seq
+            ]
+            await asyncio.gather(*tasks)
+
+        self.assertEqual(fake.upload_calls[0]["remote_name"], "11223344.mp4")
 
     async def test_webdav_initial_failure_protects_cache_from_cleanup(self) -> None:
         seq = 310

@@ -2081,8 +2081,12 @@ class SQLiteRepository:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
                 cursor = await conn.execute(
-                    """SELECT id,state,download_state,accepted_at,updated_at,finished_at
-                       FROM jobs ORDER BY id"""
+                    """SELECT j.id,j.state,j.download_state,j.accepted_at,j.updated_at,j.finished_at,
+                              COALESCE(SUM(i.size_bytes),0) AS item_bytes
+                       FROM jobs j
+                       LEFT JOIN job_items i ON i.job_id=j.id
+                       GROUP BY j.id
+                       ORDER BY j.id"""
                 )
                 jobs = await cursor.fetchall()
                 await cursor.close()
@@ -2094,33 +2098,21 @@ class SQLiteRepository:
                         value=1, timestamp=accepted_at,
                     ))
                     if str(row["download_state"]) == "succeeded":
-                        size_cursor = await conn.execute(
-                            "SELECT COALESCE(SUM(size_bytes),0) AS n FROM job_items WHERE job_id=?",
-                            (job_id,),
-                        )
-                        size_row = await size_cursor.fetchone()
-                        await size_cursor.close()
                         applied += int(await self._apply_stat_metric_tx(
                             conn, scope_key=f"job:{job_id}", metric="downloaded_bytes",
-                            value=int(size_row["n"] if size_row else 0),
+                            value=int(row["item_bytes"]),
                             timestamp=float(row["updated_at"]),
                         ))
                     terminal_at = float(row["finished_at"] or row["updated_at"])
                     state = str(row["state"])
                     if state == "succeeded":
-                        size_cursor = await conn.execute(
-                            "SELECT COALESCE(SUM(size_bytes),0) AS n FROM job_items WHERE job_id=?",
-                            (job_id,),
-                        )
-                        size_row = await size_cursor.fetchone()
-                        await size_cursor.close()
                         applied += int(await self._apply_stat_metric_tx(
                             conn, scope_key=f"job:{job_id}", metric="succeeded_jobs",
                             value=1, timestamp=terminal_at,
                         ))
                         applied += int(await self._apply_stat_metric_tx(
                             conn, scope_key=f"job:{job_id}", metric="published_bytes",
-                            value=int(size_row["n"] if size_row else 0), timestamp=terminal_at,
+                            value=int(row["item_bytes"]), timestamp=terminal_at,
                         ))
                     elif state == "failed":
                         applied += int(await self._apply_stat_metric_tx(

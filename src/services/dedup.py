@@ -20,11 +20,13 @@ class ContentHash:
     path: str
     sha256: str
     size_bytes: int
+    md5_short: str = ""
 
 
 def sha256_file(path: str, *, chunk_size: int = _HASH_CHUNK) -> ContentHash:
-    """Hash one file with bounded memory."""
+    """Hash one file with bounded memory, reusing the pass for WebDAV MD5 naming."""
     digest = hashlib.sha256()
+    md5 = hashlib.md5()
     size = 0
     with open(path, "rb") as handle:
         while True:
@@ -32,8 +34,14 @@ def sha256_file(path: str, *, chunk_size: int = _HASH_CHUNK) -> ContentHash:
             if not chunk:
                 break
             digest.update(chunk)
+            md5.update(chunk)
             size += len(chunk)
-    return ContentHash(path=os.path.realpath(path), sha256=digest.hexdigest(), size_bytes=size)
+    return ContentHash(
+        path=os.path.realpath(path),
+        sha256=digest.hexdigest(),
+        size_bytes=size,
+        md5_short=md5.hexdigest()[:8],
+    )
 
 
 class DedupManager:

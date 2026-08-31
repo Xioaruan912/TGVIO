@@ -1562,11 +1562,14 @@ class _Pipeline:
             "remote_dir": remote_dir,
             "files": [],
         }
+        content_hashes = getattr(job, "_content_hashes", {})
         for p in file_list:
             stem, ext = os.path.splitext(os.path.basename(p))
+            content_hash = content_hashes.get(os.path.realpath(p))
+            md5_short = getattr(content_hash, "md5_short", "") or _file_md5_short(p)
             log["files"].append(
                 {
-                    "name": f"{_file_md5_short(p)}{ext}",
+                    "name": f"{md5_short}{ext}",
                     "local": p,
                     "status": "pending",
                 }

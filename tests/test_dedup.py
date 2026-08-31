@@ -26,6 +26,7 @@ class DedupHashTests(unittest.TestCase):
             a = sha256_file(str(first), chunk_size=4096)
             b = sha256_file(str(second), chunk_size=4096)
         self.assertEqual(a.sha256, b.sha256)
+        self.assertEqual(a.md5_short, b.md5_short)
         self.assertEqual(a.size_bytes, len(payload))
 
     def test_same_size_different_content_does_not_match(self) -> None:

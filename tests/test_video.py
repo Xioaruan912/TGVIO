@@ -1,3 +1,4 @@
+import asyncio
 import os
 import subprocess
 import tempfile
@@ -8,7 +9,7 @@ from unittest.mock import AsyncMock, patch
 
 from src.media import MediaDownloader
 from src.services.media_compat import MediaCompatibilityManager
-from src.video import make_thumb, probe_media_metadata, remux_faststart
+from src.video import _run_media_process, make_thumb, probe_media_metadata, remux_faststart
 
 
 class VideoMetadataTests(unittest.IsolatedAsyncioTestCase):
@@ -57,13 +58,61 @@ class VideoMetadataTests(unittest.IsolatedAsyncioTestCase):
             root = Path(tmp)
             source = root / "sample.mp4"
             self._make_mp4(source)
-            with patch("src.video._thumbnail_seeks", return_value=[0.1, 0.2]), patch(
-                "src.video._frame_is_black", side_effect=[True, False]
+            with patch("src.video._thumbnail_seeks", new=AsyncMock(return_value=[0.1, 0.2])), patch(
+                "src.video._frame_is_black", new=AsyncMock(side_effect=[True, False])
             ) as black:
                 thumb = await make_thumb(str(source), str(root), position="auto")
             self.assertTrue(thumb)
             self.assertTrue(Path(thumb).exists())
             self.assertEqual(black.call_count, 2)
+
+    async def test_media_process_cancellation_kills_child(self) -> None:
+        task = asyncio.create_task(
+            _run_media_process(
+                ["python", "-c", "import time; time.sleep(30)"],
+                timeout=60,
+            )
+        )
+        await asyncio.sleep(0.1)
+        task.cancel()
+        with self.assertRaises(asyncio.CancelledError):
+            await asyncio.wait_for(task, timeout=2)
+
+    async def test_media_process_concurrency_is_bounded_to_two(self) -> None:
+        active = 0
+        peak = 0
+        release = asyncio.Event()
+
+        class _Process:
+            returncode = None
+
+            async def communicate(self):
+                nonlocal active, peak
+                active += 1
+                peak = max(peak, active)
+                try:
+                    await release.wait()
+                finally:
+                    active -= 1
+                self.returncode = 0
+                return b"", b""
+
+            def kill(self):
+                self.returncode = -9
+
+        async def _spawn(*_args, **_kwargs):
+            return _Process()
+
+        with patch("src.video.asyncio.create_subprocess_exec", new=_spawn):
+            tasks = [
+                asyncio.create_task(_run_media_process(["ffprobe"], timeout=5))
+                for _ in range(3)
+            ]
+            await asyncio.sleep(0.05)
+            self.assertEqual(peak, 2)
+            release.set()
+            await asyncio.gather(*tasks)
+        self.assertEqual(peak, 2)
 
 
 class PostDownloadHookTests(unittest.IsolatedAsyncioTestCase):

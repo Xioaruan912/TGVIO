@@ -1,3 +1,4 @@
+import asyncio
 import os
 import json
 import tempfile
@@ -147,6 +148,52 @@ class StatsRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(first)
         self.assertFalse(duplicate)
         self.assertTrue(second_day)
+
+    async def test_reconcile_one_hundred_jobs_one_thousand_items_stays_cooperative(self) -> None:
+        for seq in range(1, 101):
+            job = await self.repo.accept_job(
+                kind="album",
+                user_id=1,
+                state="queued",
+                source_kind="telegram",
+                legacy_seq=1000 + seq,
+                items=[{"media_kind": "video", "size_bytes": 1024} for _ in range(10)],
+            )
+            conn = self.repo._require_conn()
+            await conn.execute(
+                """UPDATE jobs SET state='succeeded',download_state='succeeded',
+                          publish_state='succeeded',finished_at=updated_at
+                   WHERE id=?""",
+                (job.id,),
+            )
+            await conn.commit()
+        conn = self.repo._require_conn()
+        await conn.execute("DELETE FROM daily_stats")
+        await conn.execute("DELETE FROM stat_metric_applied")
+        await conn.commit()
+
+        ticks = 0
+        stop = False
+
+        async def ticker() -> None:
+            nonlocal ticks
+            while not stop:
+                ticks += 1
+                await asyncio.sleep(0)
+
+        tick_task = asyncio.create_task(ticker())
+        try:
+            await asyncio.wait_for(self.repo.reconcile_daily_stats(), timeout=3.0)
+        finally:
+            stop = True
+            await tick_task
+
+        stats = await self.repo.stats_snapshot()
+        self.assertEqual(stats["totals"]["accepted_jobs"], 100)
+        self.assertEqual(stats["totals"]["succeeded_jobs"], 100)
+        self.assertEqual(stats["totals"]["downloaded_bytes"], 1000 * 1024)
+        self.assertEqual(stats["totals"]["published_bytes"], 1000 * 1024)
+        self.assertGreater(ticks, 10)
 
 
 class StatsViewTests(unittest.TestCase):
