@@ -55,6 +55,7 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             "WEBDAV_COUNT_FILE": os.path.join(state_dir, "webdav-count.json"),
             "PROXY_FILE": os.path.join(state_dir, "proxy.json"),
             "DOWNLOAD_DIR": download_dir,
+            "DISK_ENFORCE": False,
             "AUTO_DELETE_SECONDS": 0,
             "ALLOWED_USERS": {42},
             "MediaDownloader": FakeDownloader,
