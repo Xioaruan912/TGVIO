@@ -57,14 +57,14 @@
 
 ## Next extraction targets
 
-1. F3: add a `DiskManager` in monitor-only mode first, with safe download-root
-   path validation, free-space snapshots and per-job reservations.
-2. Add pre-accept/pre-download capacity checks while keeping
-   `DISK_ENFORCE=false` until production observations confirm thresholds.
-3. Build deterministic cleanup candidate selection for terminal, unclaimed,
-   non-retry-protected job caches; never recursively delete unchecked paths.
+1. F3-B: build deterministic cleanup candidate selection for terminal,
+   unclaimed, non-retry-protected job caches; keep it dry-run first.
+2. Exclude active jobs, claims, WebDAV-protected files and `.part` writers, and
+   validate every candidate as a direct `job-*` child of download root.
+3. F3-C: add pre-accept/pre-download enforcement and bounded cleanup-to-watermark
+   only after production monitor thresholds are validated.
 4. Keep F4 stats/health and B1 WebDAV lifecycle extraction separate until F3
-   monitoring and cleanup tests are deployed.
+   cleanup/enforcement tests are deployed.
 
 ## UI direction
 

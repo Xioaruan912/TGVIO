@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `dddaa9f`（F2 完成：统一错误/retry、publish checkpoint、WebDAV durable retry、串行 NetworkCoordinator）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 08:51 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、incomplete jobs/claims/active backup 为 0，生产容器 147 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。F2 未新增 migration，R3 recovery/shutdown、U1 progress、U2 durable UI 与 F1 cancel 基线继续由现有测试保护。
+- 当前分支：`main`。当前生产运行代码基线为 `c5d3bf0`（F3-A：DiskManager 监控模式、活跃任务 reservation、安全路径边界；`DISK_ENFORCE=false`）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 08:56 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、incomplete jobs 为 0，生产容器 151 tests 全通过；磁盘监控实际 `DISK_ENFORCE=false`、reservation=0、约 47.48GB/48.51% 可用。F3-A 未新增 migration，F2/R3/U1/U2/F1 基线继续由现有测试保护。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1488,14 +1488,17 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2 已完成。当前下一阶段是 **F3：磁盘预检、配额、保留策略和安全清理**；不要同时夹带 F4/B1/Web Dashboard、多频道或转码。
+R0、R1、R2、R3、U1、U2、F1、F2 已完成。当前正在执行 **F3：磁盘预检、配额、保留策略和安全清理**；不要同时夹带 F4/B1/Web Dashboard、多频道或转码。
 
 - [x] F2-A：集中 domain error taxonomy、安全摘要/脱敏 traceback frame、download retry budget、指数退避+jitter、FloodWait 精确等待、可立即取消的 backoff、`error_code/error_message/retry_count/next_retry_at` 持久化、失败中心错误码/动作提示。（2026-08-31，`31a8335`）
 - [x] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试；已有 refs 不提供普通重试并可进入撤销人工流程。（2026-08-31，`d1025cc`）
 - [x] F2-C：WebDAV 初传/自动补传/手动重试/缓存补传统一接入 classifier + 独立 backup budget，持久化 attempt/file 错误与 attempt retry/next time，并保留远端大小幂等确认。（2026-08-31，`f16b663`；生产 143 tests、schema4/integrity、restart=0、源码哈希均已补验通过）
 - [x] F2-D：集中 `NetworkCoordinator` 串行代理切换，download/publish/backup budget 隔离、partial publish/error-specific UI 集成测试、代理 generation 防并发重连抖动。（2026-08-31，`dddaa9f`）
+- [x] F3-A：`DiskManager` 监控模式、磁盘快照、活跃任务 reservation、已知/未知任务预留估算、download-root/job-dir 安全路径校验；生产保持 `DISK_ENFORCE=false`。（2026-08-31，`c5d3bf0`）
+- [ ] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），先 dry-run/测试，不直接自动删除。
+- [ ] F3-C：接受/下载前强制容量门禁、必要时安全清理到水位、事件/统计与生产阈值验证；全部部署后才标 F3 主项完成。
 
-下一位代理从 F3 开始：先按第 16.3 节做 `DiskManager` 监控模式（`DISK_ENFORCE=false`）与 reservation 计算/安全路径边界测试，再接接受任务前预检和保留/清理策略；不要直接开启生产强制拒绝。
+下一位代理从 F3-B 开始：先实现 repository-aware cleanup candidate 选择和 dry-run，严格验证目录必须是 download root 下直接 `job-*`，并排除运行 job、claim、WebDAV 活跃/失败保护、retry-protected 和 `.part`；未完成 dry-run/测试前不得开启自动删除或 `DISK_ENFORCE=true`。
 
 ## 21. 执行日志
 
@@ -1746,3 +1749,15 @@ R0、R1、R2、R3、U1、U2、F1、F2 已完成。当前下一阶段是 **F3：�
 - VPS：部署前确认生产实际为 `f16b663`、关键源码无漂移、`restart=0`、无 active transfer/incomplete/claims/backup；部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-dddaa9f-20260831-085115.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-dddaa9f`，源码 `/root/telegram-video-forwarder-releases/pre-dddaa9f.tar.gz`。部署后容器 `running`、`restart=0`，镜像 `sha256:ef0b55bad45ba05b269d36d805d74c81d8b7dedadbdd102a47b4fefc13fbb613`；生产关键源码 SHA-256 与 commit 一致，schema4/`integrity=ok`、incomplete/claims/active backup 均为 0，生产容器 147 tests 全通过，静态镜像 clean。
 - 数据迁移：无；F2 全阶段均复用 schema `[1,2,3,4]`，代码回滚不要求降库。
 - 下一步精确入口：第 16.3 节 F3。先上线 DiskManager 监控模式和 reservation/清理候选测试，再考虑 `DISK_ENFORCE=true`，不要直接在生产启用强制阻断。
+
+### 2026-08-31 08:56 - F3-A DiskManager 监控模式
+
+- 状态：F3-A 已完成、推送并部署生产；F3 主工作包仍在进行中，下一步进入 F3-B 安全清理候选/dry-run。
+- 实现 commit：`c5d3bf0`（`feat(disk): add F3 monitor reservations`）。
+- 已完成：新增 `src/services/disk.py`，提供 `DiskSnapshot/DiskDecision/DiskManager`；统一读取 download root 磁盘快照，维护 active-job reservation，已知 Telegram/cached 文件按可确定大小预留，URL/未知来源默认使用 `UNKNOWN_JOB_RESERVE_BYTES=2GB`；队列级 album merge 会重新计算 reservation，任务 `_finish_seq()` 统一释放。
+- 安全边界：`validate_managed_path()` 使用 resolve/commonpath 限制在 download root；`validate_job_dir()` 进一步要求必须是 download root 的直接 `job-*` 子目录。F3-A 不执行清理，仅为后续 F3-B/C 提供边界。
+- 配置：新增 `DISK_ENFORCE=false`、`MIN_FREE_BYTES=5GB`、`MIN_FREE_PERCENT=10`、`MAX_CACHE_BYTES=0`、`CACHE_RETENTION_HOURS=72`、`FAILED_CACHE_RETENTION_HOURS=168`、`DISK_CHECK_INTERVAL=60`、`UNKNOWN_JOB_RESERVE_BYTES=2GB`；`.env.example` 已记录。生产没有设置强制开关，因此保持 monitor-only，不拒绝任务。
+- 测试：最终本地源码与最终构建镜像均 **151 项 unittest 全通过**；新增 monitor/enforce 判定、并发 reservation、路径逃逸和 pipeline reservation 生命周期测试。`compileall`、`git diff --check`、compose config、Docker build、静态镜像秘密路径检查全部通过；schema 仍 `[1,2,3,4]`，0001～0004 checksum 未改。
+- VPS：部署前确认生产实际为 `dddaa9f`、`restart=0`、无 active transfer/incomplete/claims/backup；部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-c5d3bf0-20260831-085649.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-c5d3bf0`，源码 `/root/telegram-video-forwarder-releases/pre-c5d3bf0.tar.gz`。部署后容器 `running`、`restart=0`，镜像 `sha256:4074f5918824e9e608da3f5df77f38e30ae16cbef8d60cb902506565199b5546`；生产关键源码 SHA-256 与 commit 一致，schema4/`integrity=ok`、incomplete=0，生产容器 151 tests 全通过，静态镜像 clean。
+- 生产磁盘快照：`DISK_ENFORCE=false`、reservation=0、free≈47.48GB、free≈48.51%；当前仅记录/告警，不做自动删除或拒绝。
+- 下一步精确入口：F3-B。先实现清理候选 dry-run 与 repository/claim/WebDAV/retry protection 过滤，不触发实际 unlink/rmdir；候选算法测试稳定后再讨论自动清理。
