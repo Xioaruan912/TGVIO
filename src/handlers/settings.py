@@ -9,7 +9,13 @@ from typing import Any
 from telethon import Button, events
 
 from ..views import (
+    BackupAttemptDetailView,
+    BackupAttemptListItemView,
+    BackupAttemptPageView,
+    BackupFileItemView,
     HomeViewState,
+    backup_attempt_detail_view,
+    backup_attempt_page_view,
     MODE_NAMES,
     WebDavConfigViewState,
     home_button,
@@ -68,6 +74,60 @@ async def _home(ctx: HandlerContext, user_id: int) -> tuple[str, list]:
         webdav_health=_webdav_health(ctx),
     )
     return home_view(HomeViewState(**snapshot))
+
+
+async def _webdav_attempt_page(ctx: HandlerContext, page: int) -> tuple[str, list]:
+    data = await ctx.backup.attempt_page(page)
+    items = tuple(
+        BackupAttemptListItemView(
+            attempt_id=int(item["id"]),
+            legacy_seq=item.get("legacy_seq"),
+            state=str(item.get("state") or "unknown"),
+            remote_dir=str(item.get("remote_dir") or ""),
+            total_files=int(item.get("total_files") or 0),
+            succeeded_files=int(item.get("succeeded_files") or 0),
+            failed_files=int(item.get("failed_files") or 0),
+            total_bytes=int(item.get("total_bytes") or 0),
+            created_at=float(item.get("created_at") or 0),
+            error_code=str(item.get("error_code") or ""),
+        )
+        for item in data["items"]
+    )
+    return backup_attempt_page_view(
+        BackupAttemptPageView(
+            page=int(data["page"]), pages=int(data["pages"]), total=int(data["total"]), items=items
+        )
+    )
+
+
+async def _webdav_attempt_detail(ctx: HandlerContext, attempt_id: int, page: int) -> tuple[str, list] | None:
+    data = await ctx.backup.attempt_detail_page(attempt_id, page)
+    if data is None:
+        return None
+    attempt = data["attempt"]
+    files = tuple(
+        BackupFileItemView(
+            file_id=int(item["id"]),
+            remote_name=str(item.get("remote_name") or ""),
+            size_bytes=int(item.get("size_bytes") or 0),
+            state=str(item.get("state") or "unknown"),
+            bytes_done=int(item.get("bytes_done") or 0),
+            error_code=str(item.get("error_code") or ""),
+        )
+        for item in data["files"]
+    )
+    return backup_attempt_detail_view(
+        BackupAttemptDetailView(
+            attempt_id=int(attempt["id"]),
+            legacy_seq=attempt.get("legacy_seq"),
+            state=str(attempt.get("state") or "unknown"),
+            remote_dir=str(attempt.get("remote_dir") or ""),
+            retry_count=int(attempt.get("retry_count") or 0),
+            next_retry_at=attempt.get("next_retry_at"),
+            error_code=str(attempt.get("error_code") or ""),
+            page=int(data["page"]), pages=int(data["pages"]), total=int(data["total"]), files=files,
+        )
+    )
 
 
 def register_setting_commands(ctx: HandlerContext) -> None:
@@ -200,7 +260,10 @@ def register_setting_commands(ctx: HandlerContext) -> None:
         if not ctx.authorized(event):
             return
         ctx.interactions.cancel(event.sender_id, "webdav")
-        text, buttons = ctx.pipeline._webdav_logs_view()
+        if ctx.backup.repository is not None:
+            text, buttons = await _webdav_attempt_page(ctx, 0)
+        else:
+            text, buttons = ctx.pipeline._webdav_logs_view()
         await ctx.respond(event, text, buttons=buttons, auto_delete=False)
 
 async def callback_mode(ctx: HandlerContext, event: Any, data: str) -> None:
@@ -355,7 +418,10 @@ async def callback_webdav_config(ctx: HandlerContext, event: Any, data: str) -> 
     field = data.split(":", 1)[1]
     if field == "logs":
         await ctx.answer(event, "上传记录")
-        text, buttons = ctx.pipeline._webdav_logs_view()
+        if ctx.backup.repository is not None:
+            text, buttons = await _webdav_attempt_page(ctx, 0)
+        else:
+            text, buttons = ctx.pipeline._webdav_logs_view()
         await ctx.edit(event, text, buttons=buttons)
         return
     if field == "edit":
@@ -453,6 +519,45 @@ async def callback_webdav_retry(ctx: HandlerContext, event: Any, data: str) -> N
     await ctx.edit(event, text, buttons=buttons)
 
 
+async def callback_webdav_durable(ctx: HandlerContext, event: Any, data: str) -> None:
+    parts = data.split(":")
+    if len(parts) < 3:
+        await ctx.answer(event, "无效操作")
+        return
+    action = parts[1]
+    if action == "p" and parts[2].isdigit():
+        text, buttons = await _webdav_attempt_page(ctx, int(parts[2]))
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "a" and len(parts) == 4 and parts[2].isdigit() and parts[3].isdigit():
+        rendered = await _webdav_attempt_detail(ctx, int(parts[2]), int(parts[3]))
+        if rendered is None:
+            await ctx.answer(event, "记录不存在或已过期")
+            return
+        await ctx.edit(event, rendered[0], buttons=rendered[1])
+        return
+    if action == "fr" and parts[2].isdigit():
+        await ctx.answer(event, "正在重试文件…")
+        result = await ctx.backup.retry_file(int(parts[2]))
+        await ctx.answer(event, result)
+        row = await ctx.backup.repository.backup_file_detail(int(parts[2])) if ctx.backup.repository is not None else None
+        if row is not None:
+            rendered = await _webdav_attempt_detail(ctx, int(row["attempt_id"]), 0)
+            if rendered is not None:
+                await ctx.edit(event, rendered[0], buttons=rendered[1])
+        return
+    if action == "ar" and parts[2].isdigit():
+        attempt_id = int(parts[2])
+        await ctx.answer(event, "正在重试失败文件…")
+        result = await ctx.backup.retry_attempt(attempt_id)
+        await ctx.answer(event, result)
+        rendered = await _webdav_attempt_detail(ctx, attempt_id, 0)
+        if rendered is not None:
+            await ctx.edit(event, rendered[0], buttons=rendered[1])
+        return
+    await ctx.answer(event, "无效操作")
+
+
 async def callback_webdav_delete(ctx: HandlerContext, event: Any, data: str) -> None:
     key = data.split(":", 1)[1]
     await ctx.answer(event, await ctx.backup.delete(key))
@@ -539,5 +644,6 @@ def register_setting_callbacks(router: Any) -> None:
     router.prefix("wd_del:", callback_webdav_delete)
     router.prefix("wd_cache_up:", callback_webdav_cache)
     router.prefix("wd_w:", callback_webdav_write_test)
+    router.prefix("wd:", callback_webdav_durable)
     router.prefix("mode:", callback_mode)
 

@@ -1,6 +1,10 @@
 import unittest
 
 from src.views import (
+    BackupAttemptDetailView,
+    BackupAttemptListItemView,
+    BackupAttemptPageView,
+    BackupFileItemView,
     HomeViewState,
     JobCardView,
     MODE_NAMES,
@@ -11,6 +15,8 @@ from src.views import (
     SESSION_BTN_BEGIN,
     SESSION_BTN_END,
     WebDavConfigViewState,
+    backup_attempt_detail_view,
+    backup_attempt_page_view,
     mode_buttons,
     home_view,
     job_card_view,
@@ -130,7 +136,7 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("🔄 重试    5 次", fields_text)
         self.assertEqual(
             callback_data(main_buttons),
-            [b"wd_cfg:off", b"wd_cfg:test", b"wd_cfg:edit", b"h:r"],
+            [b"wd_cfg:off", b"wd_cfg:test", b"wd_cfg:logs", b"wd_cfg:edit", b"h:r"],
         )
         self.assertEqual(
             callback_data(fields_buttons),
@@ -145,6 +151,42 @@ class ViewRenderingTests(unittest.TestCase):
             ],
         )
 
+    def test_durable_webdav_attempt_views_use_short_id_callbacks(self) -> None:
+        text, buttons = backup_attempt_page_view(
+            BackupAttemptPageView(
+                page=0,
+                pages=2,
+                total=6,
+                items=(
+                    BackupAttemptListItemView(
+                        attempt_id=12, legacy_seq=77, state="failed", remote_dir="archive/77",
+                        total_files=2, succeeded_files=1, failed_files=1, total_bytes=8,
+                        created_at=1_700_000_000, error_code="webdav_server",
+                    ),
+                ),
+            )
+        )
+        self.assertIn("job #77", text)
+        self.assertIn("失败 1", text)
+        self.assertIn(b"wd:a:12:0", callback_data(buttons))
+        self.assertTrue(all(len(data) <= 64 for data in callback_data(buttons)))
+
+        detail, detail_buttons = backup_attempt_detail_view(
+            BackupAttemptDetailView(
+                attempt_id=12, legacy_seq=77, state="failed", remote_dir="archive/77",
+                retry_count=1, next_retry_at=None, error_code="webdav_server",
+                page=0, pages=1, total=1,
+                files=(
+                    BackupFileItemView(
+                        file_id=44, remote_name="abc.mp4", size_bytes=8, state="failed",
+                        bytes_done=0, error_code="webdav_server",
+                    ),
+                ),
+            )
+        )
+        self.assertIn("Attempt #12", detail)
+        self.assertIn(b"wd:fr:44", callback_data(detail_buttons))
+        self.assertIn(b"wd:ar:12", callback_data(detail_buttons))
         probe_text, probe_buttons = webdav_probe_view(
             WebDavProbeResult(
                 True,

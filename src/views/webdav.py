@@ -1,6 +1,7 @@
 """WebDAV configuration renderers."""
 
 from dataclasses import dataclass
+from datetime import datetime
 
 from telethon import Button
 
@@ -13,6 +14,53 @@ class WebDavConfigViewState:
     has_password: bool = False
     path: str = ""
     retry: int | str | None = 0
+
+
+@dataclass(frozen=True)
+class BackupAttemptListItemView:
+    attempt_id: int
+    legacy_seq: int | None
+    state: str
+    remote_dir: str
+    total_files: int
+    succeeded_files: int
+    failed_files: int
+    total_bytes: int
+    created_at: float
+    error_code: str = ""
+
+
+@dataclass(frozen=True)
+class BackupAttemptPageView:
+    page: int
+    pages: int
+    total: int
+    items: tuple[BackupAttemptListItemView, ...]
+
+
+@dataclass(frozen=True)
+class BackupFileItemView:
+    file_id: int
+    remote_name: str
+    size_bytes: int
+    state: str
+    bytes_done: int
+    error_code: str = ""
+
+
+@dataclass(frozen=True)
+class BackupAttemptDetailView:
+    attempt_id: int
+    legacy_seq: int | None
+    state: str
+    remote_dir: str
+    retry_count: int
+    next_retry_at: float | None
+    error_code: str
+    page: int
+    pages: int
+    total: int
+    files: tuple[BackupFileItemView, ...]
 
 
 def webdav_cfg_lines(state: WebDavConfigViewState) -> list:
@@ -50,6 +98,7 @@ def webdav_cfg_view(state: WebDavConfigViewState) -> tuple:
     buttons = [
         [toggle],
         [Button.inline("🧪 测试连接", "wd_cfg:test")],
+        [Button.inline("📁 上传记录", "wd_cfg:logs")],
         [Button.inline("⚙️ 修改配置", "wd_cfg:edit")],
         [Button.inline("🏠 首页", "h:r")],
     ]
@@ -160,4 +209,100 @@ def webdav_cfg_fields_view(state: WebDavConfigViewState) -> tuple:
         [Button.inline("⬅️ 返回", "wd_cfg:back")],
         [Button.inline("🏠 首页", "h:r")],
     ]
+    return "\n".join(lines), buttons
+
+
+def _human_size(value: int) -> str:
+    size = max(0, int(value))
+    if size >= 1024 ** 3:
+        return f"{size / 1024 ** 3:.1f} GB"
+    if size >= 1024 ** 2:
+        return f"{size / 1024 ** 2:.1f} MB"
+    if size >= 1024:
+        return f"{size / 1024:.1f} KB"
+    return f"{size} B"
+
+
+def _short(value: str, limit: int = 72) -> str:
+    text = str(value or "")
+    if len(text) <= limit:
+        return text
+    return text[: max(1, limit - 1)] + "…"
+
+
+def backup_attempt_page_view(state: BackupAttemptPageView) -> tuple[str, list]:
+    page = min(max(0, state.page), max(1, state.pages) - 1)
+    lines = [
+        f"☁️ WebDAV 上传记录 · 第 {page + 1}/{max(1, state.pages)} 页",
+        f"共 {state.total} 次 durable attempt",
+        "──────────",
+    ]
+    buttons: list = []
+    if not state.items:
+        lines.append("暂无 durable WebDAV 上传记录。")
+    for index, item in enumerate(state.items, start=1):
+        status = {
+            "pending": "⏳ 等待",
+            "running": "📤 上传中",
+            "retry_wait": "⏰ 等待重试",
+            "succeeded": "✅ 成功",
+            "failed": "❌ 失败",
+            "interrupted": "⚠️ 中断",
+            "deleted": "🗑 已删除",
+        }.get(item.state, item.state)
+        seq = item.legacy_seq if item.legacy_seq is not None else item.attempt_id
+        created = datetime.fromtimestamp(item.created_at).strftime("%m-%d %H:%M")
+        lines.append(
+            f"{index}. {status} · job #{seq} · {created}\n"
+            f"   文件 {item.succeeded_files}/{item.total_files} · {_human_size(item.total_bytes)}"
+        )
+        if item.failed_files:
+            lines.append(f"   失败 {item.failed_files} · {item.error_code or 'unknown'}")
+        buttons.append([Button.inline(f"{index} 详情", f"wd:a:{item.attempt_id}:0")])
+    nav = []
+    if page > 0:
+        nav.append(Button.inline("⬅️", f"wd:p:{page - 1}"))
+    nav.append(Button.inline("🔄", f"wd:p:{page}"))
+    if page + 1 < max(1, state.pages):
+        nav.append(Button.inline("➡️", f"wd:p:{page + 1}"))
+    buttons.append(nav)
+    buttons.append([Button.inline("⬅️ WebDAV", "wd_cfg:back"), Button.inline("🏠 首页", "h:r")])
+    return "\n".join(lines), buttons
+
+
+def backup_attempt_detail_view(state: BackupAttemptDetailView) -> tuple[str, list]:
+    seq = state.legacy_seq if state.legacy_seq is not None else state.attempt_id
+    lines = [
+        f"☁️ WebDAV Attempt #{state.attempt_id}",
+        f"任务：#{seq}",
+        f"状态：{state.state}",
+        f"远端目录：{_short(state.remote_dir, 96) or '（空）'}",
+        f"重试：{state.retry_count}",
+        f"文件：{state.total}",
+        "──────────",
+    ]
+    if state.error_code:
+        lines.append(f"错误码：{state.error_code}")
+    if state.next_retry_at:
+        lines.append(f"下次自动重试：{datetime.fromtimestamp(state.next_retry_at).strftime('%m-%d %H:%M:%S')}")
+    buttons: list = []
+    for index, item in enumerate(state.files, start=1):
+        mark = "✅" if item.state in {"succeeded", "deleted"} else "❌" if item.state == "failed" else "⏳"
+        lines.append(
+            f"{index}. {mark} {_short(item.remote_name)} · {_human_size(item.size_bytes)} · {item.state}"
+            + (f" · {item.error_code}" if item.error_code else "")
+        )
+        if item.state not in {"succeeded", "deleted"}:
+            buttons.append([Button.inline(f"🔄 重试文件 {index}", f"wd:fr:{item.file_id}")])
+    if any(item.state not in {"succeeded", "deleted"} for item in state.files):
+        buttons.append([Button.inline("🔄 重试本 attempt 失败文件", f"wd:ar:{state.attempt_id}")])
+    page = min(max(0, state.page), max(1, state.pages) - 1)
+    nav = []
+    if page > 0:
+        nav.append(Button.inline("⬅️", f"wd:a:{state.attempt_id}:{page - 1}"))
+    if page + 1 < max(1, state.pages):
+        nav.append(Button.inline("➡️", f"wd:a:{state.attempt_id}:{page + 1}"))
+    if nav:
+        buttons.append(nav)
+    buttons.append([Button.inline("⬅️ 上传记录", "wd:p:0"), Button.inline("🏠 首页", "h:r")])
     return "\n".join(lines), buttons

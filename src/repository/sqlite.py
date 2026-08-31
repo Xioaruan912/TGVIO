@@ -1272,6 +1272,125 @@ class SQLiteRepository:
         await cursor.close()
         return [BackupFileRecord(int(r["id"]), int(r["attempt_id"]), str(r["local_path"]), str(r["remote_name"]), int(r["size_bytes"]), str(r["state"]), int(r["bytes_done"])) for r in rows]
 
+    async def count_backup_attempts(self) -> int:
+        conn = self._require_conn()
+        cursor = await conn.execute("SELECT COUNT(*) FROM backup_attempts")
+        row = await cursor.fetchone()
+        await cursor.close()
+        return int(row[0] if row else 0)
+
+    async def list_backup_attempt_page(self, *, limit: int = 5, offset: int = 0) -> list[dict[str, Any]]:
+        """List durable backup attempts with aggregate file counts for Telegram UI."""
+        conn = self._require_conn()
+        limit = max(1, min(int(limit), 20))
+        offset = max(0, int(offset))
+        cursor = await conn.execute(
+            """
+            SELECT a.id,a.job_id,j.legacy_seq,a.state,a.remote_dir,a.retry_count,a.next_retry_at,
+                   a.error_code,a.created_at,a.updated_at,a.finished_at,
+                   COUNT(f.id) AS total_files,
+                   COALESCE(SUM(f.size_bytes),0) AS total_bytes,
+                   SUM(CASE WHEN f.state='succeeded' THEN 1 ELSE 0 END) AS succeeded_files,
+                   SUM(CASE WHEN f.state='failed' THEN 1 ELSE 0 END) AS failed_files
+            FROM backup_attempts a
+            JOIN jobs j ON j.id=a.job_id
+            LEFT JOIN backup_files f ON f.attempt_id=a.id
+            GROUP BY a.id
+            ORDER BY a.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (limit, offset),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+    async def backup_attempt_detail(self, attempt_id: int) -> dict[str, Any] | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            """
+            SELECT a.id,a.job_id,j.legacy_seq,a.state,a.remote_dir,a.retry_count,a.next_retry_at,
+                   a.error_code,a.error_message,a.created_at,a.updated_at,a.finished_at
+            FROM backup_attempts a JOIN jobs j ON j.id=a.job_id
+            WHERE a.id=?
+            """,
+            (int(attempt_id),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row is not None else None
+
+    async def count_backup_files(self, attempt_id: int) -> int:
+        conn = self._require_conn()
+        cursor = await conn.execute("SELECT COUNT(*) FROM backup_files WHERE attempt_id=?", (int(attempt_id),))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return int(row[0] if row else 0)
+
+    async def list_backup_file_page(
+        self, attempt_id: int, *, limit: int = 5, offset: int = 0
+    ) -> list[dict[str, Any]]:
+        conn = self._require_conn()
+        limit = max(1, min(int(limit), 20))
+        offset = max(0, int(offset))
+        cursor = await conn.execute(
+            """
+            SELECT id,attempt_id,remote_name,size_bytes,state,bytes_done,error_code,error_message,
+                   CASE WHEN local_path <> '' THEN 1 ELSE 0 END AS has_local_path
+            FROM backup_files
+            WHERE attempt_id=?
+            ORDER BY id
+            LIMIT ? OFFSET ?
+            """,
+            (int(attempt_id), limit, offset),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows]
+
+    async def backup_file_detail(self, file_id: int) -> dict[str, Any] | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            """
+            SELECT f.id,f.attempt_id,f.local_path,f.remote_name,f.size_bytes,f.state,f.bytes_done,
+                   f.error_code,f.error_message,a.job_id,a.remote_dir,j.legacy_seq
+            FROM backup_files f
+            JOIN backup_attempts a ON a.id=f.attempt_id
+            JOIN jobs j ON j.id=a.job_id
+            WHERE f.id=?
+            """,
+            (int(file_id),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row is not None else None
+
+    async def backup_retry_file_ids(self, attempt_id: int) -> list[int]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT id FROM backup_files WHERE attempt_id=? AND state NOT IN ('succeeded','deleted') ORDER BY id",
+            (int(attempt_id),),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [int(row[0]) for row in rows]
+
+    async def backup_attempt_file_summary(self, attempt_id: int) -> dict[str, Any]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            """
+            SELECT COUNT(*) AS total,
+                   SUM(CASE WHEN state NOT IN ('succeeded','deleted') THEN 1 ELSE 0 END) AS failed,
+                   MIN(CASE WHEN state NOT IN ('succeeded','deleted') THEN error_code END) AS error_code,
+                   MIN(CASE WHEN state NOT IN ('succeeded','deleted') THEN error_message END) AS error_message
+            FROM backup_files WHERE attempt_id=?
+            """,
+            (int(attempt_id),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row is not None else {"total": 0, "failed": 0}
+
     async def list_job_texts(self, job_id: int) -> list[str]:
         conn = self._require_conn()
         cursor = await conn.execute("SELECT text FROM job_texts WHERE job_id=? ORDER BY ordinal", (job_id,))

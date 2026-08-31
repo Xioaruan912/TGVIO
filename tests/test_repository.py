@@ -39,6 +39,44 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(check["synchronous"], 2)
         self.assertTrue(SQLiteRepository.REQUIRED_TABLES.issubset(check["tables"]))
 
+    async def test_backup_attempt_pages_are_sql_backed_and_include_file_aggregates(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url", user_id=1, state="queued", source_kind="url",
+            source_url="https://example.invalid/a", legacy_seq=77,
+            event_payload={"schema_version": 1},
+        )
+        attempt = await self.repo.create_backup_attempt(
+            job_id=job.id, state="failed", remote_dir="backup/77"
+        )
+        job_dir = self.download_root / "job-77"
+        job_dir.mkdir()
+        one = job_dir / "one.mp4"; one.write_bytes(b"aaa")
+        two = job_dir / "two.mp4"; two.write_bytes(b"bbbbb")
+        first = await self.repo.create_backup_file(
+            attempt_id=attempt.id, local_path=str(one), remote_name="one.mp4",
+            size_bytes=3, state="succeeded",
+        )
+        second = await self.repo.create_backup_file(
+            attempt_id=attempt.id, local_path=str(two), remote_name="two.mp4",
+            size_bytes=5, state="failed",
+        )
+        await self.repo.update_backup_file_status(
+            second.id, state="failed", error_code="webdav_server", error_message="safe"
+        )
+
+        page = await self.repo.list_backup_attempt_page(limit=5, offset=0)
+        detail = await self.repo.backup_attempt_detail(attempt.id)
+        files = await self.repo.list_backup_file_page(attempt.id, limit=5, offset=0)
+        retry_ids = await self.repo.backup_retry_file_ids(attempt.id)
+
+        self.assertEqual(page[0]["legacy_seq"], 77)
+        self.assertEqual(page[0]["total_files"], 2)
+        self.assertEqual(page[0]["total_bytes"], 8)
+        self.assertEqual(page[0]["failed_files"], 1)
+        self.assertEqual(detail["remote_dir"], "backup/77")
+        self.assertEqual([item["id"] for item in files], [first.id, second.id])
+        self.assertEqual(retry_ids, [second.id])
+
     async def test_cleanup_inventory_exposes_only_durable_cleanup_facts(self) -> None:
         job_dir = self.download_root / "job-77"
         job_dir.mkdir()
