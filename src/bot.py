@@ -667,6 +667,9 @@ class _Pipeline:
         self, kind: str, status: object, message: object, url: str = "", user_id: int = 0
     ) -> int:
         seq = self.reserve_seq()
+        profiles = getattr(self, "destination_profiles", None)
+        profile = profiles.current_profile if profiles is not None else None
+        profile_snapshot = profiles.current_snapshot() if profiles is not None else None
         self.enqueue(
             _Job(
                 seq=seq,
@@ -675,6 +678,8 @@ class _Pipeline:
                 message=message,
                 url=url,
                 user_id=user_id,
+                destination_profile_id=(profile.id if profile is not None else None),
+                destination_profile_snapshot=profile_snapshot,
             )
         )
         if getattr(self, "job_queue", None) is not None:
@@ -3091,6 +3096,16 @@ class _Pipeline:
             spoiler=spoiler,
             user_id=user_id,
             texts=texts,
+            destination_profile_id=(
+                self.destination_profiles.current_profile.id
+                if getattr(self, "destination_profiles", None) is not None
+                else None
+            ),
+            destination_profile_snapshot=(
+                self.destination_profiles.current_snapshot()
+                if getattr(self, "destination_profiles", None) is not None
+                else None
+            ),
         )
         if kind == "album":
             self.album_jobs[seq] = job
