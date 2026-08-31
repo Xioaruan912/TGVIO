@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `31a8335`（F2-A：统一错误模型、下载阶段退避/取消、失败持久化与错误专属 UI；部署归档含交接 commit `d187e18`）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 07:38 CST 最后一次部署验证时容器 `running`、`restart=0`、`OOMKilled=false`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、active jobs/claims 为 0，生产容器 130 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。F2-A 未新增 migration，R3 recovery/shutdown、U1 progress、U2 durable UI 和 F1 cancel 基线继续由现有测试保护。
+- 当前分支：`main`。当前生产运行代码基线为 `d1025cc`（F2-B：publish 副作用逐条 checkpoint、`publish_partial` fail-closed、零副作用 publish budget/retry 完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 08:28 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、active jobs/claims 为 0，生产容器 138 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。F2-B 未新增 migration，R3 recovery/shutdown、U1 progress、U2 durable UI、F1 cancel 与 F2-A download retry 基线继续由现有测试保护。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1491,11 +1491,11 @@ fix(webdav): preserve cache across interrupted verify
 R0、R1、R2、R3、U1、U2、F1 已完成。当前正在执行 **F2：错误分类、失败中心与阶段级重试/退避**；不要同时夹带 F3 磁盘配额、Web Dashboard、多频道或转码。
 
 - [x] F2-A：集中 domain error taxonomy、安全摘要/脱敏 traceback frame、download retry budget、指数退避+jitter、FloodWait 精确等待、可立即取消的 backoff、`error_code/error_message/retry_count/next_retry_at` 持久化、失败中心错误码/动作提示。（2026-08-31，`31a8335`）
-- [ ] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试，已有 refs 必须进入继续/撤销人工动作。
+- [x] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试；已有 refs 不提供普通重试并可进入撤销人工流程。（2026-08-31，`d1025cc`）
 - [ ] F2-C：把 WebDAV 初传/自动补传/手动重试接入同一 classifier/policy，按现有配置形成独立 backup budget，并持久化 attempt/file 的 error/retry/next time；保留远端大小幂等确认。
 - [ ] F2-D：集中 `NetworkCoordinator` 串行代理切换，补 download/publish/backup budget 隔离、partial publish 和错误专属按钮集成测试；全部部署验证后才标 F2 主项完成。
 
-下一位代理必须从 F2-B 开始：先读 `src/media.py` 的所有 publish 分支及 `src/services/shadow_state.py::complete_publish`，新增“每次 Telegram send 成功即 callback checkpoint”协议和失败注入测试，不能先开启 publish 自动重试。
+下一位代理必须从 F2-C 开始：先盘点 `src/bot.py` 的 WebDAV 初传、自动补传、手动重试以及 `src/webdav.py` 的协议返回方式，把它们接入同一 classifier/retry policy 和 durable backup attempt/file 状态；必须保留现有远端大小确认与“响应超时但远端已完整则成功”的幂等保护。
 
 ## 21. 执行日志
 
@@ -1709,3 +1709,17 @@ R0、R1、R2、R3、U1、U2、F1 已完成。当前正在执行 **F2：错误分
 - 未完成与风险：publish 仍只在整批成功后保存 refs，不能安全自动重试；WebDAV 仍使用旧内部 retry；代理切换尚未集中串行。因此 F2 主复选框保持 `[ ]`。
 - 回滚：镜像 `telegram-video-forwarder:rollback-pre-d187e18`（旧 image `sha256:4393cdd6...`）；源码 `/root/telegram-video-forwarder-releases/pre-d187e18.tar.gz`；SQLite 在线备份 `/root/telegram-video-forwarder-releases/state-pre-d187e18-20260831-0739.sqlite3`。部署 archive 时间比 VPS 时钟约快 87 秒，仅有 tar future timestamp 提示，构建/运行不受影响。
 - 下一步精确入口：按上方 F2-B，从 `MediaPublisher` 每次成功 send 的副作用 checkpoint 和失败注入测试开始；未完成 checkpoint 前不得开启 publish 自动重试。
+
+### 2026-08-31 08:28 - F2-B publish checkpoint 与 partial publish 保护
+
+- 状态：F2-B 已完成、推送并部署生产；F2 主工作包继续进入 F2-C。
+- 基线 commit：`d6574ae`；实现 commit：`d1025cc`（`feat(publish): checkpoint partial side effects`）。
+- 已完成：`MediaPublisher` 对普通频道消息、封面、讨论组单条评论、讨论组相册、合集、fallback direct 与相册 chunk 的可见 Telegram send 建立统一 checkpoint hook；一旦拿到可确认 message id，立即 canonicalize 为 `(peer_id,message_id,role)` 并写入 `published_messages`，不再等整批 publish 成功后才保存。comment helper 内部也在成功取 id 后立即 checkpoint，缩小 helper 返回到持久化之间的崩溃窗口。
+- partial 保护：每个 publish attempt 记录是否已开始可见 send；只要 send 已开始或已有 checkpoint refs，后续网络/超时异常统一归为 `publish_partial`，不进入自动重试，也不加入普通 retryable 队列。只有明确 `send_attempts == 0` 且 refs 为空的错误才按 publish budget（默认 2）使用统一 `RetryPolicy` 指数退避/FloodWait 策略；retry timing/error 元数据继续走现有 durable `record_retry()`。
+- durable 一致性：repository 新增幂等 `checkpoint_published_messages()`，重复 ref 不重复写 event；去重键按 `(peer_id,message_id)` 而不是只按 message id，允许不同 peer 恰好同号消息并存。最终 succeeded 使用 job 已 canonicalize 的 `_published_refs`，保留 `cover/comment/destination/fallback` role，避免 Telethon `InputPeer*` 在最终转换时退化成 `peer_id=0` 假重复。
+- 测试：最终本地绑定源码与最终构建镜像均 **138 项 unittest 全通过**；新增 send-before-failure partial、confirmed side-effect checkpoint、零副作用 publish 自动重试、partial 不重试、cross-peer 同 message id、checkpoint event 幂等、repository-backed partial failure 保留 refs、最终完成不重复 refs/保留 role 测试。`py_compile`、`git diff --check`、compose config、Docker build、静态镜像秘密路径检查全部通过；schema 仍 `[1,2,3,4]`，0001～0004 checksum 未修改。
+- VPS：部署前确认生产实际源码与 `31a8335` 完全一致、容器 `restart=0`、无活动传输、DB schema4/`integrity=ok` 且 incomplete/claims 为 0；2026-08-31 08:28 CST 安全部署 `d1025cc`。部署后容器 `running`、`restart=0`，镜像 `sha256:cd579356a9678328c2cabe2146a8175f5d9663877ece5bb70b38201f767c17ae`，生产关键源码 SHA-256 与 commit 一致，生产容器 138 tests 及 repository-backed partial publish 专项均通过。
+- 数据迁移：无；继续使用 schema `[1,2,3,4]`。部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-d1025cc-20260831-082812.sqlite3`；代码回滚不需要降库。
+- 回滚：镜像 `telegram-video-forwarder:rollback-pre-d1025cc`；源码 `/root/telegram-video-forwarder-releases/pre-d1025cc.tar.gz`；上述 SQLite 在线备份保留。tar future timestamp 仍来自 VPS 时钟约慢 120 秒，不影响构建/运行。
+- 未完成与风险：WebDAV 初传/自动补传/手动重试仍使用旧独立 retry 语义；集中 `NetworkCoordinator` 和真正的 partial“继续剩余发布”按钮仍未实现，因此 F2 主项保持 `[ ]`。
+- 下一步精确入口：按上方 F2-C，从 WebDAV attempt/file 的 classifier + 独立 backup budget + durable error/retry timing 开始，保留远端大小幂等确认。

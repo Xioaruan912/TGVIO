@@ -19,7 +19,9 @@
 - `src/downloader.py`: cancellable yt-dlp Python-API adapter with immutable
   progress events, cooperative thread stop and validated per-job outputs.
 - `src/media.py`: Telegram media download and publish transport plus URL adapter
-  integration; URL progress reuses the shared U1 progress pipeline.
+  integration; URL progress reuses the shared U1 progress pipeline, while F2-B
+  checkpoints every confirmed visible Telegram publish side effect before the
+  overall publish transaction is considered complete.
 - `src/webdav.py`: WebDAV protocol, integrity verification and retry.
 - `src/views/`: pure Telegram renderers fed by immutable/basic view state,
   including stable home/task cards plus U2 durable queue/detail/failure/
@@ -55,14 +57,13 @@
 
 ## Next extraction targets
 
-1. F2: introduce a centralized domain error classifier and safe error summary
-   used by workers, repository snapshots and the failure center.
-2. Add phase-specific retry budgets/backoff without changing the durable FIFO
-   and publish idempotency guarantees established in R3.
-3. Treat Telegram FloodWait separately from normal exponential backoff and
-   persist retry timing/error codes for restart-safe behavior.
-4. Keep F3 disk quota/enforcement separate until F2 failure/retry behavior is
-   tested and deployed.
+1. F2-C: route initial WebDAV upload, automatic replay and manual retry through
+   the shared error classifier and an independent backup retry budget.
+2. Persist backup attempt/file error code, retry count and next retry time while
+   preserving current remote-size idempotency checks and timeout-success logic.
+3. F2-D: centralize proxy switching in a serial NetworkCoordinator and finish
+   download/publish/backup budget isolation plus partial-publish UI actions.
+4. Keep F3 disk quota/enforcement separate until F2 is fully tested and deployed.
 
 ## UI direction
 
