@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `2535264`（M1 完成：ffprobe compatibility metadata、可选无损 faststart remux、磁盘 reservation、黑帧规避缩略图；生产保持 analyze-only）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 12:01 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **208 tests 全通过**；镜像 `APP_COMMIT=2535264`，生产 `MEDIA_COMPAT_MODE=analyze`、`TRANSCODE_ENABLED=false`、`DISK_ENFORCE=true`，WebDAV `backup_policy=best_effort` 保持不变。M1 无 schema migration。
+- 当前分支：`main`。当前生产运行代码基线为 `b8191ff`（DP1 完成：多目的地 profile、job snapshot、profile-scoped publish/dedup/backup policy 与确认式测试发送）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 12:36 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7, 8]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **217 tests 全通过**；镜像 `APP_COMMIT=b8191ff`。migration 8 只新增 `destination_profiles` 与 jobs profile snapshot 字段；生产自动建立且仅建立一个只读 `默认频道` env profile，没有创建或切换任何额外目的地。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -430,7 +430,7 @@ docker compose config --quiet
 | B1 | P1 | WebDAV 生命周期抽取、连通/容量/策略 UI | R1、U2 | [x] `2f3bc60`（2026-08-31；B1-A/B/C/D 完成） |
 | D1 | P2 | SHA-256 去重、目标频道媒体复用/秒传 | R2、R3 | [x] `4fcc6e9`（2026-08-31；schema 6→7 + media reuse） |
 | M1 | P2 | 视频兼容性检查、faststart remux、缩略图增强 | F3 | [x] `2535264`（2026-08-31；生产默认 analyze） |
-| DP1 | P2 | 多目的地发布配置档案 | R3、U2 | [ ] |
+| DP1 | P2 | 多目的地发布配置档案 | R3、U2 | [x] `b8191ff`（2026-08-31；schema 7→8） |
 | S1 | P2 | 指定源频道自动中转（仅新消息） | DP1 | [ ] |
 | O1 | Later | 可选 Web Dashboard/外部通知/指标导出 | F4 且用户确认 | [ ] |
 
@@ -1488,7 +1488,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1 已完成。下一候选阶段是 **DP1：多目的地发布配置档案**；DP1/S1 属于会改变产品行为和配置模型的 v18.x 范围，按第 17 节约束需用户再次确认范围后再开始，不要自动推进 Web Dashboard/O1。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1 已完成。当前下一阶段是 **S1：指定源频道自动中转（仅新消息）**；用户已在 DP1/S1 范围提示后明确“继续”，可按第 17.4 节继续 S1，但不要自动推进 Web Dashboard/O1。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1503,7 +1503,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1 已完成。下�
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理在用户确认 v18.x 范围后进入 DP1：先设计 destination profile schema/snapshot 与当前单一 `DEST_CHANNEL` 的兼容迁移，再接 profile 选择 UI；不得在未确认范围前开始 S1 自动源频道中转或 O1 Web Dashboard。
+下一位代理进入 S1：先做 `source_profiles` schema、`(source_peer_id,source_message_id)` 幂等 source event 记录与 disabled-by-default UI，再把 bot 实时收到的新 source update 适配进现有 JobQueue；不补历史、不做编辑/删除反向同步，也不进入 O1。
 
 ## 21. 执行日志
 
@@ -1875,3 +1875,18 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1 已完成。下�
 - 测试：完整源码与最终标准 Docker 镜像均 **208 项 unittest 全通过**；覆盖真实 ffmpeg 生成 MP4、atom faststart 判定、无损 remux 校验、hook replacement、analyze 不改路径、磁盘不足跳过、reservation 恢复、metadata merge/durable detail、黑帧候选回退。`compileall`、`git diff --check`、compose config、静态镜像 secret-path、无自动转码审计均通过；schema/migration 保持 `[1,2,3,4,5,6,7]`。
 - VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-2535264-20260831-120218.sqlite3`，并保留 `telegram-video-forwarder:rollback-pre-2535264` 与源码归档。部署后镜像 `sha256:647ff98bced6e03808818c914dcefbb0648468ca3deb19509aa515a13b514f62`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=2535264`，schema7/`integrity=ok`、incomplete/claims=0，生产 208 tests 全通过。
 - 下一步：等待用户确认 DP1/S1 的 v18.x 产品范围；确认后先 DP1 profile schema/snapshot，不直接跳到 S1。
+
+### 2026-08-31 12:36 - DP1 多目的地发布配置档案
+
+- 状态：DP1 已完成、推送并部署生产；用户在 v18.x 范围提示后明确“继续”，下一阶段进入 S1。
+- 实现 commit：`b8191ff`（`feat(profiles): add DP1 destination profiles`），schema 7→8。
+- schema：migration 8 新增 `destination_profiles`，并给 `jobs` 增加 nullable `destination_profile_id` 与 `destination_profile_snapshot_json`。当前 `.env` 的单一 `DEST_CHANNEL` 启动时自动注册为只读 `默认频道` env profile；生产部署后 profile 总数为 1，且 `source_kind=env/enabled=1/is_default=1/read_only=1`，没有自动创建或切换任何用户 profile。
+- snapshot：job 接受/确认时保存 immutable profile snapshot；修改/切换默认 profile 只影响之后接受的新任务。retry 会继承原 job snapshot。U2 任务详情与首页显示 profile 名称。
+- publish：Publisher 在单一 publish lock 内按 job snapshot 临时覆盖 destination、讨论组、cover mode、forward caption 与 footer，`finally` 恢复基线，避免跨任务串 profile；D1 dedup lookup/upsert 使用本 job destination key 隔离不同目的地；required/best_effort 读取本 job snapshot policy。
+- UI：新增 `/profiles` 与首页入口，支持列表、详情、新建、编辑、设默认、禁用、default spoiler、backup policy、footer template。env profile 只读；禁用会阻止默认 profile、只读 profile 和被非终态 job 引用的 profile，不级联历史任务。
+- 外部验证：profile 测试发送必须先生成短期一次性 confirmation token；确认后才解析 entity/讨论组并发送测试消息，测试消息随后立即 delete。未确认阶段无 Telegram 发送副作用。cover mode 开启前会验证目标/讨论组可解析或目标频道存在 linked discussion。
+- footer：只允许 `{channel_at}`、`{group_at}`、`{profile_name}` 三个白名单变量，不执行表达式，模板限长；非法 brace/变量直接拒绝。
+- 测试：完整源码与最终标准 Docker 镜像均 **217 项 unittest 全通过**；覆盖默认切换不改变已有 job snapshot、read-only/default/in-use disable、destination-scoped publish/dedup、footer 白名单、确认式测试发送且成功后清理测试消息。`compileall`、`git diff --check`、compose config、静态镜像 secret-path 均通过。migration 8 checksum `27f465a9...`。
+- VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-b8191ff-20260831-123637.sqlite3`，并保留 `telegram-video-forwarder:rollback-pre-b8191ff` 与源码归档。部署后镜像 `sha256:163a59526a9d058b297ab81383768c9e6419a7d4e9304280c1be24ec88367b49`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=b8191ff`，schema `[1..8]`、`integrity=ok`、incomplete=0，生产 217 tests 全通过。
+- 回滚：旧代码不认识 schema8；需要回滚到 DP1 前时先停容器并恢复上述 pre-b8191ff DB backup，再启动 rollback image，不做 destructive downgrade。
+- 下一步精确入口：S1-A，先做 `source_profiles` 与 source event 幂等表；只处理 bot 实时收到的新 update，profile 默认 disabled，暂不补历史、编辑同步或删除同步。
