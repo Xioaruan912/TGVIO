@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import hashlib
 import json
 import logging
@@ -725,10 +726,43 @@ class _Pipeline:
                 decision.reason,
             )
 
+    async def _ensure_disk_capacity(self, job: _Job) -> None:
+        manager = getattr(self, "disk", None)
+        if manager is None:
+            return
+        if manager.enforce and manager.max_cache_bytes and getattr(self, "job_queue", None) is not None:
+            await self.job_queue.cleanup_to_waterline()
+        decision = manager.reserve(job.seq, self._estimate_job_bytes(job))
+        job.disk_reserved_bytes = decision.requested_bytes
+        if decision.allowed:
+            return
+        if getattr(self, "job_queue", None) is not None and getattr(self, "repository", None) is not None:
+            report = await self.job_queue.cleanup_to_waterline()
+            if report["cleaned"] or report["failed"]:
+                logger.info(
+                    "Disk cleanup before job #%s cleaned=%d failed=%d freed=%d",
+                    job.seq,
+                    report["cleaned"],
+                    report["failed"],
+                    report["freed_bytes"],
+                )
+            decision = manager.reserve(job.seq, self._estimate_job_bytes(job))
+            job.disk_reserved_bytes = decision.requested_bytes
+        if not decision.allowed:
+            manager.release(job.seq)
+            raise OSError(errno.ENOSPC, "disk capacity gate")
+
+    async def _run_download_with_capacity(self, job: _Job):
+        await self._ensure_disk_capacity(job)
+        return await self.downloader.run(job)
+
     async def recover_from_repository(self) -> list:
         """Repair durable jobs and recreate only transport-safe runtime objects."""
         if getattr(self, "repository", None) is None:
             return []
+        released_cleanup = await self.repository.release_interrupted_disk_cleanup_claims()
+        if released_cleanup:
+            logger.warning("Released %d interrupted disk cleanup claims", released_cleanup)
         actions = await recover_jobs(self.repository)
         for action in actions:
             record = action.job
@@ -1082,7 +1116,7 @@ class _Pipeline:
                         break
                     network_generation = self.network.generation
                     task = asyncio.get_running_loop().create_task(
-                        self.downloader.run(job)
+                        self._run_download_with_capacity(job)
                     )
                     self._download_tasks[job.seq] = task
                     done, _ = await asyncio.wait({task}, timeout=DOWNLOAD_TIMEOUT)

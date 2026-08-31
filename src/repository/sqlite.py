@@ -1494,6 +1494,7 @@ class SQLiteRepository:
                 j.id AS job_id,
                 j.legacy_seq,
                 j.state,
+                j.revision,
                 j.local_dir,
                 j.updated_at,
                 j.finished_at,
@@ -1527,6 +1528,203 @@ class SQLiteRepository:
         rows = await cursor.fetchall()
         await cursor.close()
         return [dict(row) for row in rows]
+
+    async def acquire_disk_cleanup_claim(
+        self,
+        job_id: int,
+        *,
+        expected_revision: int,
+        owner: str,
+    ) -> JobRecord | None:
+        """Reserve one terminal job for filesystem cleanup using revision CAS."""
+        conn = self._require_conn()
+        now = time.time()
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """
+                UPDATE jobs
+                SET claim_owner=?,claim_kind='cleanup',heartbeat_at=?,revision=revision+1,updated_at=?
+                WHERE id=? AND revision=? AND state IN ('succeeded','failed','cancelled')
+                  AND claim_owner IS NULL
+                """,
+                (str(owner), now, now, int(job_id), int(expected_revision)),
+            )
+            changed = int(cursor.rowcount or 0)
+            await cursor.close()
+            await conn.commit()
+        if not changed:
+            return None
+        return await self.get_job(int(job_id))
+
+    async def finish_disk_cleanup(
+        self,
+        job_id: int,
+        *,
+        expected_revision: int,
+        owner: str,
+        freed_bytes: int,
+    ) -> bool:
+        """Commit successful cleanup and clear durable local cache references."""
+        conn = self._require_conn()
+        now = time.time()
+        payload = json.dumps(
+            {"schema_version": 1, "freed_bytes": max(0, int(freed_bytes))},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    """
+                    SELECT state,revision,claim_owner,claim_kind
+                    FROM jobs WHERE id=?
+                    """,
+                    (int(job_id),),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if (
+                    row is None
+                    or int(row["revision"]) != int(expected_revision)
+                    or str(row["claim_owner"] or "") != str(owner)
+                    or str(row["claim_kind"] or "") != "cleanup"
+                    or str(row["state"]) not in {"succeeded", "failed", "cancelled"}
+                ):
+                    await conn.rollback()
+                    return False
+                state = str(row["state"])
+                await conn.execute(
+                    "UPDATE job_items SET local_path=NULL WHERE job_id=?",
+                    (int(job_id),),
+                )
+                await conn.execute(
+                    """
+                    UPDATE jobs
+                    SET local_dir=NULL,claim_owner=NULL,claim_kind=NULL,heartbeat_at=NULL,
+                        revision=revision+1,updated_at=?
+                    WHERE id=? AND revision=?
+                    """,
+                    (now, int(job_id), int(expected_revision)),
+                )
+                await conn.execute(
+                    """
+                    INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                    VALUES (?,'disk_cleanup',?,?,?,?)
+                    """,
+                    (int(job_id), state, state, payload, now),
+                )
+                await conn.commit()
+                return True
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def abort_disk_cleanup_claim(
+        self,
+        job_id: int,
+        *,
+        expected_revision: int,
+        owner: str,
+        freed_bytes: int = 0,
+    ) -> bool:
+        """Release a cleanup claim after partial filesystem failure."""
+        conn = self._require_conn()
+        now = time.time()
+        payload = json.dumps(
+            {"schema_version": 1, "freed_bytes": max(0, int(freed_bytes))},
+            separators=(",", ":"),
+            sort_keys=True,
+        )
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    """
+                    SELECT state FROM jobs
+                    WHERE id=? AND revision=? AND claim_owner=? AND claim_kind='cleanup'
+                    """,
+                    (int(job_id), int(expected_revision), str(owner)),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    await conn.rollback()
+                    return False
+                state = str(row["state"])
+                cursor = await conn.execute(
+                    """
+                    UPDATE jobs
+                    SET claim_owner=NULL,claim_kind=NULL,heartbeat_at=NULL,
+                        revision=revision+1,updated_at=?
+                    WHERE id=? AND revision=? AND claim_owner=? AND claim_kind='cleanup'
+                    """,
+                    (now, int(job_id), int(expected_revision), str(owner)),
+                )
+                changed = int(cursor.rowcount or 0)
+                await cursor.close()
+                if not changed:
+                    await conn.rollback()
+                    return False
+                await conn.execute(
+                    """
+                    INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                    VALUES (?,'disk_cleanup_failed',?,?,?,?)
+                    """,
+                    (int(job_id), state, state, payload, now),
+                )
+                await conn.commit()
+                return True
+            except Exception:
+                await conn.rollback()
+                raise
+
+    async def release_interrupted_disk_cleanup_claims(self) -> int:
+        """Release cleanup claims left by a previous process after restart."""
+        conn = self._require_conn()
+        now = time.time()
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    """
+                    SELECT id,state FROM jobs
+                    WHERE claim_kind='cleanup' AND claim_owner IS NOT NULL
+                    ORDER BY id
+                    """
+                )
+                rows = await cursor.fetchall()
+                await cursor.close()
+                for row in rows:
+                    job_id = int(row["id"])
+                    state = str(row["state"])
+                    await conn.execute(
+                        """
+                        UPDATE jobs
+                        SET claim_owner=NULL,claim_kind=NULL,heartbeat_at=NULL,
+                            revision=revision+1,updated_at=?
+                        WHERE id=? AND claim_kind='cleanup'
+                        """,
+                        (now, job_id),
+                    )
+                    await conn.execute(
+                        """
+                        INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at)
+                        VALUES (?,'disk_cleanup_interrupted',?,?,?,?)
+                        """,
+                        (
+                            job_id,
+                            state,
+                            state,
+                            '{"schema_version":1}',
+                            now,
+                        ),
+                    )
+                await conn.commit()
+                return len(rows)
+            except Exception:
+                await conn.rollback()
+                raise
 
     async def page_jobs(
         self,

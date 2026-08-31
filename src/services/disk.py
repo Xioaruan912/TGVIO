@@ -43,6 +43,7 @@ class CleanupCandidate:
     job_id: int
     legacy_seq: int | None
     state: str
+    revision: int
     path: str
     bytes_on_disk: int
     age_seconds: float
@@ -68,6 +69,14 @@ class CleanupPlan:
     @property
     def protected_bytes(self) -> int:
         return sum(item.bytes_on_disk for item in self.protected)
+
+
+@dataclass(frozen=True)
+class CleanupExecution:
+    complete: bool
+    freed_bytes: int
+    remaining_bytes: int
+    errors: tuple[str, ...] = ()
 
 
 class DiskManager:
@@ -237,6 +246,7 @@ class DiskManager:
                         job_id=job_id,
                         legacy_seq=int(legacy) if legacy is not None else None,
                         state=state,
+                        revision=int(row.get("revision") or 0),
                         path=str(job_dir),
                         bytes_on_disk=bytes_on_disk,
                         age_seconds=age_seconds,
@@ -245,6 +255,60 @@ class DiskManager:
 
         candidates.sort(key=lambda item: (-item.age_seconds, item.job_id))
         return CleanupPlan(tuple(candidates), tuple(protected))
+
+    def cleanup_candidate(self, candidate: CleanupCandidate) -> CleanupExecution:
+        """Delete one already-selected job dir explicitly, never via recursive rm."""
+        job_dir = self.validate_job_dir(candidate.path)
+        before, has_partial = self._job_dir_size(job_dir)
+        if has_partial:
+            return CleanupExecution(False, 0, before, ("partial-file",))
+        if not job_dir.exists():
+            return CleanupExecution(True, 0, 0)
+
+        errors: list[str] = []
+        for root, dirs, files in os.walk(job_dir, topdown=False, followlinks=False):
+            root_path = self.validate_managed_path(root)
+            for name in files:
+                path = self.validate_managed_path(root_path / name)
+                try:
+                    path.unlink()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    errors.append(exc.__class__.__name__)
+            for name in dirs:
+                path = self.validate_managed_path(root_path / name)
+                try:
+                    if path.is_symlink():
+                        path.unlink()
+                    else:
+                        path.rmdir()
+                except FileNotFoundError:
+                    pass
+                except OSError as exc:
+                    errors.append(exc.__class__.__name__)
+        try:
+            job_dir.rmdir()
+        except FileNotFoundError:
+            pass
+        except OSError as exc:
+            errors.append(exc.__class__.__name__)
+        remaining, _ = self._job_dir_size(job_dir)
+        complete = not job_dir.exists()
+        return CleanupExecution(
+            complete=complete,
+            freed_bytes=max(0, before - remaining),
+            remaining_bytes=remaining,
+            errors=tuple(errors),
+        )
+
+    def healthy(self) -> bool:
+        snap = self.snapshot()
+        percent = (snap.available_after_reservations / snap.total * 100.0) if snap.total else 0.0
+        return (
+            snap.available_after_reservations >= self.min_free_bytes
+            and percent >= self.min_free_percent
+        )
 
     def _job_dir_size(self, job_dir: Path) -> tuple[int, bool]:
         if not job_dir.exists():

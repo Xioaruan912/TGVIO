@@ -79,6 +79,119 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["next_retry_at"], 500.0)
         self.assertEqual(row["backup_state"], "failed")
 
+    async def test_disk_cleanup_claim_and_finalize_are_revision_guarded(self) -> None:
+        job_dir = self.download_root / "job-78"
+        job_dir.mkdir()
+        local_path = job_dir / "cached.mp4"
+        local_path.write_bytes(b"cache")
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="succeeded",
+            source_kind="url",
+            legacy_seq=78,
+            items=[{"local_path": str(local_path), "size_bytes": 5, "metadata": {"schema_version": 1}}],
+            event_payload={"schema_version": 1},
+            now=100.0,
+        )
+        conn = self.repo._require_conn()
+        await conn.execute(
+            "UPDATE jobs SET local_dir=?,finished_at=? WHERE id=?",
+            (str(job_dir), 200.0, job.id),
+        )
+        await conn.commit()
+        current = await self.repo.get_job(job.id)
+        claim = await self.repo.acquire_disk_cleanup_claim(
+            job.id,
+            expected_revision=current.revision,
+            owner="test-cleaner",
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(claim.revision, current.revision + 1)
+        stale = await self.repo.finish_disk_cleanup(
+            job.id,
+            expected_revision=current.revision,
+            owner="test-cleaner",
+            freed_bytes=5,
+        )
+        self.assertFalse(stale)
+        applied = await self.repo.finish_disk_cleanup(
+            job.id,
+            expected_revision=claim.revision,
+            owner="test-cleaner",
+            freed_bytes=5,
+        )
+        self.assertTrue(applied)
+        self.assertEqual(await self.repo.cleanup_inventory(), [])
+        items = await self.repo.list_job_items(job.id)
+        self.assertIsNone(items[0].local_path)
+        events = await self.repo.list_job_events(job.id)
+        self.assertEqual(events[-1].event_type, "disk_cleanup")
+
+    async def test_abort_disk_cleanup_releases_claim_without_clearing_paths(self) -> None:
+        job_dir = self.download_root / "job-79"
+        job_dir.mkdir()
+        local_path = job_dir / "cached.mp4"
+        local_path.write_bytes(b"cache")
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="failed",
+            source_kind="url",
+            legacy_seq=79,
+            items=[{"local_path": str(local_path), "size_bytes": 5, "metadata": {"schema_version": 1}}],
+            event_payload={"schema_version": 1},
+        )
+        conn = self.repo._require_conn()
+        await conn.execute("UPDATE jobs SET local_dir=? WHERE id=?", (str(job_dir), job.id))
+        await conn.commit()
+        current = await self.repo.get_job(job.id)
+        claim = await self.repo.acquire_disk_cleanup_claim(
+            job.id, expected_revision=current.revision, owner="test-cleaner"
+        )
+        self.assertIsNotNone(claim)
+        self.assertTrue(
+            await self.repo.abort_disk_cleanup_claim(
+                job.id,
+                expected_revision=claim.revision,
+                owner="test-cleaner",
+                freed_bytes=2,
+            )
+        )
+        items = await self.repo.list_job_items(job.id)
+        self.assertEqual(items[0].local_path, str(local_path))
+        inventory = await self.repo.cleanup_inventory()
+        self.assertEqual(inventory[0]["local_dir"], str(job_dir))
+        events = await self.repo.list_job_events(job.id)
+        self.assertEqual(events[-1].event_type, "disk_cleanup_failed")
+
+    async def test_restart_releases_interrupted_disk_cleanup_claim(self) -> None:
+        job = await self.repo.accept_job(
+            kind="url",
+            user_id=42,
+            state="succeeded",
+            source_kind="url",
+            event_payload={"schema_version": 1},
+        )
+        claim = await self.repo.acquire_disk_cleanup_claim(
+            job.id,
+            expected_revision=job.revision,
+            owner="dead-process",
+        )
+        self.assertIsNotNone(claim)
+        self.assertEqual(await self.repo.release_interrupted_disk_cleanup_claims(), 1)
+        conn = self.repo._require_conn()
+        cursor = await conn.execute(
+            "SELECT claim_owner,claim_kind FROM jobs WHERE id=?",
+            (job.id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        self.assertIsNone(row["claim_owner"])
+        self.assertIsNone(row["claim_kind"])
+        events = await self.repo.list_job_events(job.id)
+        self.assertEqual(events[-1].event_type, "disk_cleanup_interrupted")
+
     async def test_runtime_entities_preserve_item_and_text_order(self) -> None:
         job = await self.repo.accept_job(
             kind="collection",

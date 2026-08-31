@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import asyncio
 import os
 import time
 from typing import Any
@@ -75,12 +76,20 @@ class JobQueue:
             failed = len(self._pipeline.retryable)
         session = self.session(user_id)
         disk_used = disk_total = None
+        disk_reserved = disk_protected = disk_reclaimable = 0.0
+        disk_enforce = False
         try:
             manager = getattr(self._pipeline, "disk", None)
             if manager is not None:
                 usage = manager.snapshot()
                 disk_used = usage.used / (1024 ** 3)
                 disk_total = usage.total / (1024 ** 3)
+                disk_reserved = usage.reserved / (1024 ** 3)
+                disk_enforce = bool(manager.enforce)
+                cleanup = await self.disk_cleanup_plan()
+                if cleanup is not None:
+                    disk_protected = cleanup.protected_bytes / (1024 ** 3)
+                    disk_reclaimable = cleanup.reclaimable_bytes / (1024 ** 3)
             else:
                 import shutil
 
@@ -99,6 +108,10 @@ class JobQueue:
             "paused": bool(self._pipeline._paused),
             "disk_used_gb": disk_used,
             "disk_total_gb": disk_total,
+            "disk_reserved_gb": disk_reserved,
+            "disk_protected_gb": disk_protected,
+            "disk_reclaimable_gb": disk_reclaimable,
+            "disk_enforce": disk_enforce,
         }
 
     async def disk_cleanup_plan(self):
@@ -125,6 +138,59 @@ class JobQueue:
             retry_protected_job_ids=retry_ids,
             webdav_protected_job_ids=webdav_ids,
         )
+
+    async def cleanup_to_waterline(self, *, force: bool = False) -> dict[str, int]:
+        """Execute validated cleanup candidates until capacity/quota is healthy."""
+        repository = getattr(self._pipeline, "repository", None)
+        manager = getattr(self._pipeline, "disk", None)
+        if repository is None or manager is None:
+            return {"cleaned": 0, "failed": 0, "freed_bytes": 0}
+        plan = await self.disk_cleanup_plan()
+        if plan is None:
+            return {"cleaned": 0, "failed": 0, "freed_bytes": 0}
+        total_cache = plan.reclaimable_bytes + plan.protected_bytes
+        owner = f"disk-{os.getpid()}"
+        cleaned = failed = freed = 0
+
+        def needs_cleanup() -> bool:
+            quota_low = bool(manager.max_cache_bytes and total_cache > manager.max_cache_bytes)
+            return force or not manager.healthy() or quota_low
+
+        for candidate in plan.candidates:
+            if not needs_cleanup():
+                break
+            claim = await repository.acquire_disk_cleanup_claim(
+                candidate.job_id,
+                expected_revision=candidate.revision,
+                owner=owner,
+            )
+            if claim is None:
+                continue
+            result = manager.cleanup_candidate(candidate)
+            freed += int(result.freed_bytes)
+            total_cache = max(0, total_cache - int(result.freed_bytes))
+            if result.complete:
+                committed = await asyncio.shield(
+                    repository.finish_disk_cleanup(
+                        candidate.job_id,
+                        expected_revision=claim.revision,
+                        owner=owner,
+                        freed_bytes=result.freed_bytes,
+                    )
+                )
+                if committed:
+                    cleaned += 1
+                    continue
+            await asyncio.shield(
+                repository.abort_disk_cleanup_claim(
+                    candidate.job_id,
+                    expected_revision=claim.revision,
+                    owner=owner,
+                    freed_bytes=result.freed_bytes,
+                )
+            )
+            failed += 1
+        return {"cleaned": cleaned, "failed": failed, "freed_bytes": freed}
 
     async def durable_queue_page(
         self,

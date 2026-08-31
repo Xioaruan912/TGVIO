@@ -1,4 +1,5 @@
 import asyncio
+import errno
 import os
 import tempfile
 import unittest
@@ -81,6 +82,19 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             user_id=42,
             cached_path=path,
         )
+
+    async def test_enforced_disk_gate_fails_closed_when_capacity_remains_low(self) -> None:
+        job = self.make_job(177)
+        self.pipeline.disk.enforce = True
+        self.pipeline.disk.min_free_bytes = 900
+        self.pipeline.disk.min_free_percent = 0
+        self.pipeline.disk.unknown_reserve_bytes = 200
+        usage = type("Usage", (), {"total": 1000, "used": 700, "free": 300})()
+        with patch("src.services.disk.shutil.disk_usage", return_value=usage):
+            with self.assertRaises(OSError) as ctx:
+                await self.pipeline._ensure_disk_capacity(job)
+        self.assertEqual(ctx.exception.errno, errno.ENOSPC)
+        self.assertEqual(self.pipeline.disk.reserved_bytes(job.seq), 0)
 
     def test_disk_reservation_tracks_active_job_lifecycle(self) -> None:
         self.pipeline.disk.unknown_reserve_bytes = 4096

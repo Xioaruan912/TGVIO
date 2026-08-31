@@ -20,6 +20,10 @@ class HomeViewState:
     webdav_health: str = "未配置"
     disk_used_gb: float | None = None
     disk_total_gb: float | None = None
+    disk_reserved_gb: float = 0.0
+    disk_protected_gb: float = 0.0
+    disk_reclaimable_gb: float = 0.0
+    disk_enforce: bool = False
 
 
 def home_view(state: HomeViewState) -> tuple[str, list]:
@@ -36,7 +40,11 @@ def home_view(state: HomeViewState) -> tuple[str, list]:
     if state.disk_used_gb is None or state.disk_total_gb is None:
         disk = "未知"
     else:
-        disk = f"{state.disk_used_gb:.1f} / {state.disk_total_gb:.1f} GB"
+        mode = "强制" if state.disk_enforce else "监控"
+        disk = (
+            f"{state.disk_used_gb:.1f} / {state.disk_total_gb:.1f} GB · {mode}\n"
+            f"   预留 {state.disk_reserved_gb:.2f} GB · 保护 {state.disk_protected_gb:.2f} GB · 可清理 {state.disk_reclaimable_gb:.2f} GB"
+        )
     text = "\n".join(
         [
             "🤖 Telegram 媒体中转站",
