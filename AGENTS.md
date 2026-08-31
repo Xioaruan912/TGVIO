@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `5e49982`（B1-A/B/C：显式 WebDAV read/write probe + durable attempt/file SQL page/detail/retry UI；F4 stats/health 保持纯本地只读）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 11:18 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **179 tests 全通过**；镜像 `APP_COMMIT=5e49982`，生产 `DISK_ENFORCE=true` 保持不变。B1-C 无 schema migration。
+- 当前分支：`main`。当前生产运行代码基线为 `2f3bc60`（B1 完成：显式 WebDAV probe、durable attempt/file UI、required policy、durable autoretry 与精确远端删除确认）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 11:29 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **188 tests 全通过**；镜像 `APP_COMMIT=2f3bc60`，生产 `DISK_ENFORCE=true`，WebDAV `backup_policy=best_effort` 保持不变。B1-D 无 schema migration。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1488,12 +1488,12 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4 已完成。当前下一阶段是 **B1：WebDAV 生命周期抽取、连接/容量/策略 UI 与 attempt 管理增强**；不要同时夹带 D1/M1/多目的地/Web Dashboard。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1 已完成。当前下一阶段是 **D1：SHA-256 去重与 Telegram 媒体复用**；不要同时夹带 M1/多目的地/Web Dashboard。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
 - [x] B1-C：attempt/file SQL 分页详情、单文件重试/失败文件全部重试入口收进 `BackupManager`，主 `/webdavlogs`/上传记录 UI 改读 durable `backup_attempts/backup_files`，callback 只携带 DB id/page；旧 JSON log 回调只保留历史消息兼容。（2026-08-31，`5e49982`）
-- [ ] B1-D：`best_effort|required` backup policy、required 风险确认与主任务最终态协调；远端逐文件删除二次确认与 startup autoretry/recovery 总验收。
+- [x] B1-D：`best_effort|required` backup policy、required 风险确认与主任务最终态协调；durable startup autoretry、远端逐文件删除二次确认与完整 HTTP/verify 总验收。（2026-08-31，`2f3bc60`）
 
 - [x] F2-A：集中 domain error taxonomy、安全摘要/脱敏 traceback frame、download retry budget、指数退避+jitter、FloodWait 精确等待、可立即取消的 backoff、`error_code/error_message/retry_count/next_retry_at` 持久化、失败中心错误码/动作提示。（2026-08-31，`31a8335`）
 - [x] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试；已有 refs 不提供普通重试并可进入撤销人工流程。（2026-08-31，`d1025cc`）
@@ -1503,7 +1503,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4 已完成。当前下一阶段�
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理继续 B1-D：实现 `best_effort|required` backup policy、required 风险确认与主任务最终态协调、远端逐文件删除二次确认，并完成 startup autoretry/recovery 总验收；必须保留现有 verified PUT、PROPFIND 远端大小确认、423/延迟落盘、响应超时但远端完整即成功等可靠性语义，不重写协议层。
+下一位代理进入 D1：新增 SHA-256 内容索引与 destination-scoped Telegram media descriptor，下载完成后流式 hash；命中时刷新已知目标消息媒体引用并发送新消息，任何引用失效/权限/API 错误必须自动回退本地普通上传。D1 不能改变现有 MD5 WebDAV 远端命名，也不能把“命中去重”误解为跳过本次发布。
 
 ## 21. 执行日志
 
@@ -1834,3 +1834,16 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4 已完成。当前下一阶段�
 - 测试：完整源码和最终标准 Docker 镜像均 **179 项 unittest 全通过**；新增 durable attempt aggregate/page、file page/retry ids、短 callback/长文件名截断测试。`compileall`、`git diff --check`、compose config、静态镜像检查通过；schema 仍 `[1,2,3,4,5,6]`，migration checksum 未改。
 - VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-5e49982-20260831-111917.sqlite3`，保留 rollback image/source archive；部署后镜像 `sha256:164abb225eed8ba4947e724c4aa7e078a1ca3773f76fec3c6fee05b5dccd7a18`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=5e49982`，schema6/`integrity=ok`、incomplete=0，生产 179 tests 全通过。
 - 下一步精确入口：B1-D。先在配置层增加 `backup_policy=best_effort|required`（默认 best_effort），required 必须显式风险确认；然后协调发布/备份最终态与远端逐文件删除二次确认，最后做 startup autoretry/recovery + HTTP 状态矩阵总验收。
+
+### 2026-08-31 11:29 - B1-D backup policy、删除确认与 B1 总完成
+
+- 状态：B1-D 已完成、推送并部署生产；B1 主工作包正式完成，下一阶段进入 D1。
+- 实现 commit：`2f3bc60`（`feat(webdav): complete B1 backup lifecycle`）。
+- backup policy：动态 WebDAV 配置新增 `backup_policy=best_effort|required`，缺省仍为 `best_effort`。切到 required 必须经过 5 分钟单次 confirmation token 和明确风险说明；从 required 回 best_effort 可直接执行。生产部署后实际 policy 仍为 `best_effort`，没有替用户自动开启 required。
+- required 协调：Telegram publish 成功后先保留 durable published refs；required 模式下不在 `MediaPublisher.post_publish_hook` 内等待 WebDAV，而是在 Telegram `UPLOAD_TIMEOUT` 边界之外等待 backup task，避免长备份被误判成 `publish_partial`。备份成功才 durable `succeeded`；最终失败则 job 进入 backup failure、已发布 Telegram refs 保留、本地缓存保留，不自动撤回频道消息。
+- durable recovery：生产 repository 模式的每小时/startup autoretry 改读 `backup_attempts/backup_files` due state；`cache_missing` 不会被无限重试，retry 继续复用 B1-C/F2-C 的单文件中央 `_webdav_transfer_file()` 语义。
+- 远端删除：attempt detail 提供二次确认；确认页列出远端目录、文件数、总大小。执行只遍历 durable `backup_files.remote_name` 并逐文件 `DELETE`，不递归删除目录；成功文件标 `deleted`，部分失败保留失败状态并可继续处理。
+- 协议验收：覆盖 PUT 201/204、PROPFIND 401/403/404/405、423 后远端完整、500 无远端文件、响应 timeout 但远端完整、连接断开且远端不存在、远端大小不一致；确认没有假成功、无证据重复 PUT 或递归删除。
+- 测试：完整源码和最终标准 Docker 镜像均 **188 项 unittest 全通过**；required 成功/失败、published refs 保留、policy confirmation、durable autoretry `cache_missing` 排除、DB 精确 remote delete 与协议状态矩阵均有回归。`compileall`、`git diff --check`、compose config、静态镜像检查通过；schema/migration 仍 `[1,2,3,4,5,6]` 未改变。
+- VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-2f3bc60-20260831-113004.sqlite3`，并保留 rollback image/source archive。部署后镜像 `sha256:ada58caa1c60062fdb7bbbce56a1a071d9d1bb13437ebfe41231b954fbd734cb`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=2f3bc60`，schema6/`integrity=ok`、incomplete/claims/active-backup=0，生产 188 tests 全通过，启动日志正常。
+- 下一步精确入口：D1。先做 `dedup_entries` migration + 流式 SHA-256/DAO + destination-scoped lookup；再接 MediaPublisher 引用刷新/复用，失败必须透明回退普通上传，最后接 saved upload bytes 统计/UI。
