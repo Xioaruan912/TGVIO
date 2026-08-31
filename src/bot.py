@@ -24,6 +24,7 @@ from .config import (
     CONFIRM_TIMEOUT,
     COVER_MODE,
     COVER_WIDTH,
+    DISK_ENFORCE,
     DEST_CHANNEL,
     DOWNLOAD_AUTO_RETRY,
     DOWNLOAD_CONCURRENCY,
@@ -34,12 +35,16 @@ from .config import (
     GROUP_AT,
     MAX_COVER_IMAGES,
     MAX_FILE_SIZE,
+    MAX_CACHE_BYTES,
+    MIN_FREE_BYTES,
+    MIN_FREE_PERCENT,
     PART_SIZE_KB,
     PROGRESS_MIN_INTERVAL,
     SESSION_COLLECT,
     SESSION_END_TIMEOUT,
     UPLOAD_TIMEOUT,
     UPLOAD_WORKERS,
+    UNKNOWN_JOB_RESERVE_BYTES,
     WEBDAV_ENABLED,
     WEBDAV_PASS,
     WEBDAV_PATH,
@@ -57,6 +62,7 @@ from .handlers import HandlerContext, install_handlers
 from .services import (
     BackupManager,
     InteractionSessions,
+    DiskManager,
     JobQueue,
     NetworkCoordinator,
     OperationStore,
@@ -212,6 +218,14 @@ class _Pipeline:
         self.webdav_count: dict = self._load_webdav_count()
         self._webdav_count_lock = asyncio.Lock()
         self.proxy_cfg: dict = self._load_proxy_cfg()
+        self.disk = DiskManager(
+            self.download_dir,
+            enforce=DISK_ENFORCE,
+            min_free_bytes=MIN_FREE_BYTES,
+            min_free_percent=MIN_FREE_PERCENT,
+            max_cache_bytes=MAX_CACHE_BYTES,
+            unknown_reserve_bytes=UNKNOWN_JOB_RESERVE_BYTES,
+        )
         self.network = NetworkCoordinator(
             proxies=lambda: self.proxy_cfg.get("proxies", []),
             current=lambda: int(self.proxy_cfg.get("current", -1)),
@@ -649,9 +663,63 @@ class _Pipeline:
     def enqueue(self, job: _Job) -> None:
         if self._stopping:
             raise RuntimeError("pipeline is shutting down")
+        self._reserve_disk_for_job(job)
         self._runtime_jobs[job.seq] = job
         self.input_q.put_nowait(job)
         self.active_seqs.add(job.seq)
+
+    @staticmethod
+    def _message_size_bytes(message: object) -> int:
+        if message is None:
+            return 0
+        candidates = [
+            getattr(getattr(message, "file", None), "size", None),
+            getattr(getattr(message, "document", None), "size", None),
+            getattr(getattr(getattr(message, "media", None), "document", None), "size", None),
+        ]
+        for value in candidates:
+            try:
+                if value is not None and int(value) > 0:
+                    return int(value)
+            except (TypeError, ValueError):
+                continue
+        return 0
+
+    def _estimate_job_bytes(self, job: _Job) -> int | None:
+        if getattr(job, "cached_path", ""):
+            try:
+                return max(0, int(os.path.getsize(job.cached_path)))
+            except OSError:
+                pass
+        if job.kind == "url" or getattr(job, "url", ""):
+            return None
+        messages = []
+        if getattr(job, "album", None):
+            messages.extend(job.album or [])
+        elif getattr(job, "message", None) is not None:
+            messages.append(job.message)
+        sizes = [self._message_size_bytes(message) for message in messages]
+        known = sum(size for size in sizes if size > 0)
+        if messages and known > 0 and all(size > 0 for size in sizes):
+            return known
+        return None
+
+    def _reserve_disk_for_job(self, job: _Job) -> None:
+        manager = getattr(self, "disk", None)
+        if manager is None:
+            return
+        decision = manager.reserve(job.seq, self._estimate_job_bytes(job))
+        job.disk_reserved_bytes = decision.requested_bytes
+        if not decision.healthy:
+            logger.warning(
+                "Job #%s disk preflight low headroom requested=%d available=%d free_after_pct=%.1f enforce=%s reason=%s",
+                job.seq,
+                decision.requested_bytes,
+                decision.available_bytes,
+                decision.free_percent,
+                manager.enforce,
+                decision.reason,
+            )
 
     async def recover_from_repository(self) -> list:
         """Repair durable jobs and recreate only transport-safe runtime objects."""
@@ -2612,6 +2680,8 @@ class _Pipeline:
         self._paused_files.discard(seq)
         self._future_created.pop(seq, None)
         self._runtime_jobs.pop(seq, None)
+        if getattr(self, "disk", None) is not None:
+            self.disk.release(seq)
         if not keep_cache:
             self._schedule_cleanup(seq, cleanup)
 
@@ -2751,6 +2821,7 @@ class _Pipeline:
                     added = [m for m in album if getattr(m, "id", None) not in seen]
                     if added:
                         existing.album.extend(added)
+                        self._reserve_disk_for_job(existing)
                         if getattr(self, "job_queue", None) is not None:
                             self.job_queue.shadow_accept_legacy(
                                 existing_seq,

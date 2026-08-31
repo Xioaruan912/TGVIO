@@ -8,6 +8,7 @@ from .shadow_state import ShadowState
 from .recovery import RecoveryAction, recover_jobs
 from .operations import OperationStore, PendingOperation
 from .network import NetworkCoordinator, NetworkSwitchResult
+from .disk import DiskDecision, DiskManager, DiskSnapshot
 
 __all__ = [
     "BackupManager",
@@ -24,4 +25,7 @@ __all__ = [
     "PendingOperation",
     "NetworkCoordinator",
     "NetworkSwitchResult",
+    "DiskDecision",
+    "DiskManager",
+    "DiskSnapshot",
 ]

@@ -4,7 +4,6 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 import os
-import shutil
 import time
 from typing import Any
 
@@ -77,9 +76,17 @@ class JobQueue:
         session = self.session(user_id)
         disk_used = disk_total = None
         try:
-            usage = shutil.disk_usage(self._pipeline.download_dir)
-            disk_used = (usage.total - usage.free) / (1024 ** 3)
-            disk_total = usage.total / (1024 ** 3)
+            manager = getattr(self._pipeline, "disk", None)
+            if manager is not None:
+                usage = manager.snapshot()
+                disk_used = usage.used / (1024 ** 3)
+                disk_total = usage.total / (1024 ** 3)
+            else:
+                import shutil
+
+                usage = shutil.disk_usage(self._pipeline.download_dir)
+                disk_used = (usage.total - usage.free) / (1024 ** 3)
+                disk_total = usage.total / (1024 ** 3)
         except OSError:
             pass
         return {

@@ -82,6 +82,21 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
             cached_path=path,
         )
 
+    def test_disk_reservation_tracks_active_job_lifecycle(self) -> None:
+        self.pipeline.disk.unknown_reserve_bytes = 4096
+        job = Job(
+            seq=777,
+            kind="url",
+            status=FakeStatusMessage(),
+            url="https://example.invalid/video",
+            user_id=42,
+        )
+        self.pipeline.enqueue(job)
+        self.assertEqual(self.pipeline.disk.reserved_bytes(777), 4096)
+        self.pipeline.jobs[777] = job
+        self.pipeline._finish_seq(777, keep_cache=True)
+        self.assertEqual(self.pipeline.disk.reserved_bytes(777), 0)
+
     def register_callback_pipeline(self) -> tuple[bot._Pipeline, FakeClient]:
         client = FakeClient()
         with patch.object(bot._Pipeline, "start", autospec=True) as start:
