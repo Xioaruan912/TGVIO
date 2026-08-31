@@ -35,11 +35,16 @@
 - `src/services/proxy_manager.py`: proxy settings/switching facade.
 - `src/services/interactions.py`: revisioned input interaction sessions.
 - `src/repository/`: SQLite lifecycle, checksum-verified forward migrations,
-  schema 4 runtime/recovery metadata, revision-CAS transitions, atomic
+  schema 5 runtime/recovery + idempotent daily-stats metadata, revision-CAS transitions, atomic
   download/publish claims, claim heartbeat/interruption, local-cache
   persistence, accepted aggregates, events, published refs, backup and
-  interaction-session DAOs. Production schema 4 exists at
+  interaction-session DAOs. Production schema 5 exists at
   `session/state.sqlite3` and drives worker acquisition/restart classification.
+- `src/services/stats.py`: read-only runtime/repository/disk summaries plus
+  redacted diagnostic export; never probes external services as a side effect.
+- `src/services/health.py` + `scripts/healthcheck.py`/`readiness.py`: local
+  heartbeat, liveness and readiness boundaries independent of Telegram/WebDAV
+  remote availability.
 - `src/services/recovery.py`: fail-closed startup recovery planner for queued,
   downloading, ready, publishing and interrupted durable jobs.
 - `src/services/shadow_state.py`: serialized best-effort mirror from the legacy
@@ -57,14 +62,13 @@
 
 ## Next extraction targets
 
-1. F4: add `/stats` and a read-only health/self-check view using repository,
-   disk and runtime snapshots rather than scraping logs.
-2. Add redacted diagnostics and bounded event summaries without exposing
-   credentials, source URLs, local absolute paths or private captions.
-3. Keep health checks side-effect free: no Telegram send, WebDAV probe, cleanup
-   or proxy reconnect just because a user opens diagnostics.
-4. Keep B1 WebDAV lifecycle extraction separate until F4 stats/health is tested
-   and deployed.
+1. B1: move WebDAV lifecycle/attempt orchestration behind `BackupManager`
+   without rewriting the verified PUT/PROPFIND protocol safeguards.
+2. Add explicit read-only connection testing, optional write-test cleanup,
+   quota/capacity discovery and backup-policy UI.
+3. Unify attempt/file detail, retry and remote-delete confirmation on durable
+   repository records; never recursively delete remote user directories.
+4. Keep D1/M1/multi-destination work separate until B1 is tested and deployed.
 
 ## UI direction
 

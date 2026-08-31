@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `26d5596`（F3 完成：DiskManager reservation、repository-aware cleanup dry-run、安全 cleanup claim/CAS、显式逐文件清理、cleanup interrupted 恢复与强制容量 gate）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 09:25 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、incomplete jobs/claims 为 0，生产容器 161 tests 全通过；生产已启用 `DISK_ENFORCE=true`，当前约 47.47GB/48.5% 可用，阈值 5GB/10%，capacity gate 判定 healthy/allowed。F3 未新增 migration，F2/R3/U1/U2/F1 基线继续由现有测试保护。
+- 当前分支：`main`。当前生产运行代码基线为 `67d3db1`（F4：只读 stats/diagnostics、runtime heartbeat、Docker liveness/readiness、幂等 daily stats）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 10:28 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **169 tests 全通过**；`scripts/healthcheck.py` 与 `scripts/readiness.py` 均通过，镜像 `APP_COMMIT=67d3db1`，生产 `DISK_ENFORCE=true` 保持不变。F4 migration 5 只新增统计/去重表，不改变现有 job/backup schema 语义。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -426,7 +426,7 @@ docker compose config --quiet
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [x] `b5450e6`（2026-08-31） |
 | F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [x] `dddaa9f`（2026-08-31；F2-A/B/C/D 完成） |
 | F3 | P1 | 磁盘预检、配额、保留策略和安全清理 | R2 | [x] `26d5596`（2026-08-31；F3-A/B/C 完成） |
-| F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [ ] |
+| F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [x] `67d3db1`（2026-08-31；schema 4→5） |
 | B1 | P1 | WebDAV 生命周期抽取、连通/容量/策略 UI | R1、U2 | [ ] |
 | D1 | P2 | SHA-256 去重、目标频道媒体复用/秒传 | R2、R3 | [ ] |
 | M1 | P2 | 视频兼容性检查、faststart remux、缩略图增强 | F3 | [ ] |
@@ -1488,7 +1488,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2 已完成。当前正在执行 **F3：磁盘预检、配额、保留策略和安全清理**；不要同时夹带 F4/B1/Web Dashboard、多频道或转码。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4 已完成。当前下一阶段是 **B1：WebDAV 生命周期抽取、连接/容量/策略 UI 与 attempt 管理增强**；不要同时夹带 D1/M1/多目的地/Web Dashboard。
 
 - [x] F2-A：集中 domain error taxonomy、安全摘要/脱敏 traceback frame、download retry budget、指数退避+jitter、FloodWait 精确等待、可立即取消的 backoff、`error_code/error_message/retry_count/next_retry_at` 持久化、失败中心错误码/动作提示。（2026-08-31，`31a8335`）
 - [x] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试；已有 refs 不提供普通重试并可进入撤销人工流程。（2026-08-31，`d1025cc`）
@@ -1498,7 +1498,7 @@ R0、R1、R2、R3、U1、U2、F1、F2 已完成。当前正在执行 **F3：磁�
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-F3 主工作包已完成。下一位代理进入 F4：先按第 16.4 节实现 `/stats`、health/self-check、脱敏 diagnostics 与事件汇总；不要同时夹带 B1、Web Dashboard、多频道或转码。
+下一位代理进入 B1：按第 16.5 节先把连接测试、容量读取、备份策略与 attempt/detail UI 统一收进 `BackupManager`；必须保留现有 verified PUT、PROPFIND 远端大小确认、423/延迟落盘、响应超时但远端完整即成功等可靠性语义，不重写协议层。
 
 ## 21. 执行日志
 
@@ -1786,3 +1786,14 @@ F3 主工作包已完成。下一位代理进入 F4：先按第 16.4 节实现 `
 - 强制模式：确认当前 dry-run inventory/candidates/protected/reclaimable 均为 0、free≈47.47GB/48.5%，远高于 5GB/10% 阈值后，将生产 `DISK_ENFORCE=true`；`.env` 切换前副本保留在 `/root/telegram-video-forwarder-releases/env-pre-f3-enforce-20260831-092509.env`（600 权限，本文不记录任何秘密）。重建后 capacity gate `healthy=True/allowed=True`，161 tests、DB integrity、restart/logs 再次通过。
 - 数据迁移：无；F3 全阶段复用 schema `[1,2,3,4]`，代码回滚不要求降库。若只回滚强制模式，可恢复上述 `.env` 副本或将 `DISK_ENFORCE=false` 后 `docker compose up -d --force-recreate --no-build bot`。
 - 下一步精确入口：第 16.4 节 F4。先做只读 `/stats`、health/self-check、脱敏 diagnostics 与事件汇总，不同时进入 B1/Web Dashboard。
+
+### 2026-08-31 10:28 - F4 stats / health / diagnostics
+
+- 状态：F4 已完成、推送并部署生产；下一阶段进入 B1 WebDAV 生命周期/UI 增强。
+- 实现 commit：`67d3db1`（`feat(observability): add F4 stats and health`）。
+- 统计：新增 migration `0005_stats.sql`，提供 `daily_stats` 与 `(scope_key, metric)` 去重表 `stat_metric_applied`；accepted/succeeded/failed/cancelled、downloaded/published/backed-up bytes 只在 durable 成功/终态写点幂等累计，启动 `reconcile_daily_stats()` 可从既有 jobs/items/backup records 回算，重复执行不会二次计数。
+- UI/诊断：新增只读 `/stats`、`/diag` 与对应首页 callback；统计页读取 repository/runtime/disk/local cached WebDAV health，诊断仅输出 commit、版本、布尔配置摘要、队列/DB/磁盘和错误 code，不输出 `.env`、session、凭证、完整 URL、本地绝对路径或用户 caption；打开 stats/diag 不触发 Telegram send probe、WebDAV probe、代理重连或磁盘清理。
+- health：新增 `RuntimeHeartbeat`、`scripts/healthcheck.py` 和 `scripts/readiness.py`。Docker liveness 只检查 heartbeat/PID、SQLite quick-check+写锁能力及磁盘硬阈值，不依赖 Telegram/WebDAV 远端波动；readiness 额外要求 migration/recovery/workers 完成后的 `ready=true`。Dockerfile 写入 `APP_COMMIT` 并启用本地 `HEALTHCHECK`。
+- 测试：F4 stats/health/repository 专项 36/36；完整源码和最终标准 Docker 镜像均 **169 项 unittest 全通过**，`compileall`、`git diff --check`、compose config、静态镜像 secret-path 检查均通过。0001～0004 checksum 未变；0005 checksum 固定为 `aee37a54e2e1858b2fa206b0a284a79b031fd66cba6d61a65ff2cdc933c032ba`。
+- VPS：部署前 DB 备份 `/root/telegram-video-forwarder-releases/state-pre-67d3db1-20260831-102655.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-67d3db1`，源码 `/root/telegram-video-forwarder-releases/pre-67d3db1.tar.gz`；启动 migration 5 前还自动创建 `session/db_backups/state-pre-migrate-20260831-102748.sqlite3`。部署后镜像 `sha256:6a2a6995d9caebf1b66342289437e047d13bfead5b7e5710e9e2fd11cbaf74e5`，容器 `running`、`restart=0`、health=`healthy`，schema `[1,2,3,4,5]`、`integrity=ok`，health/readiness 均通过，`APP_COMMIT=67d3db1`，生产 169 tests 全通过，启动日志无异常。
+- 下一步精确入口：第 16.5 节 B1。优先抽取 WebDAV 生命周期/attempt UI 与显式连接测试；不要破坏 F2-C 的 durable retry 和协议层完整性保护。
