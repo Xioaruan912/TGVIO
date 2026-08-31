@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `5d5f2aa`（S1 完成：指定来源 realtime-only 自动中转、source event 幂等、grouped media 聚合、来源 UI 与 no-history recovery）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 12:51 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7, 8, 9]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **225 tests 全通过**；镜像 `APP_COMMIT=5d5f2aa`。migration 9 新增 `source_profiles/source_events`；生产 `source_profiles=0`、`source_enabled=0`、`source_events=0`，因此部署没有自动开启任何来源中转。
+- 当前分支：`main`。当前生产运行代码基线为 `a053dc9`（第 18.1 节 Settings 配置重构：immutable Settings、strict fail-fast/range validation、安全摘要与动静态配置边界）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 13:27 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7, 8, 9]`、`integrity=ok`、incomplete jobs/claims 为 0，生产容器 **229 tests 全通过**；镜像 `APP_COMMIT=a053dc9`。生产 `source_enabled=0`，Settings strict validation 已使用真实生产 env 通过且启动日志仅输出 safe summary。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1327,12 +1327,12 @@ Web Dashboard 的启动条件：队列长期超过 Telegram UI 可管理规模�
 
 ### 18.1 配置重构
 
-- [ ] 把 `config.py` 的模块级散落常量封装成不可变 `Settings` dataclass，并在 main 启动时构造一次后注入；保留旧常量 re-export 一个迁移周期。
-- [ ] 对必需项 `API_ID/API_HASH/BOT_TOKEN/DEST_CHANNEL/ALLOWED_USERS` fail-fast；错误只显示变量名，不回显值。
-- [ ] 校验并发数、分片大小、超时、文件上限和磁盘阈值的合理范围；例如 `PART_SIZE_KB` 必须符合 Telegram 支持值，worker 不能为负或无限大。
-- [ ] 提供 `settings.safe_summary()` 供启动日志/诊断，只显示布尔、数量和脱敏 host。
-- [ ] 动态设置（WebDAV、代理、用户偏好、destination profile）与静态 env 分开；界面明确哪些立即生效、哪些只影响新任务、哪些需重启。
-- [ ] 更新 `.env.example`，绝不把生产值复制进去。
+- [x] 把 `config.py` 的模块级散落常量封装成不可变 `Settings` dataclass，并在 main 启动时构造一次后注入；保留旧常量 re-export 一个迁移周期。（2026-08-31，`a053dc9`）
+- [x] 对必需项 `API_ID/API_HASH/BOT_TOKEN/DEST_CHANNEL/ALLOWED_USERS` fail-fast；错误只显示变量名，不回显值。（2026-08-31，`a053dc9`）
+- [x] 校验并发数、分片大小、超时、文件上限和磁盘阈值的合理范围；例如 `PART_SIZE_KB` 必须符合 Telegram 支持值，worker 不能为负或无限大。（2026-08-31，`a053dc9`）
+- [x] 提供 `settings.safe_summary()` 供启动日志/诊断，只显示布尔、数量和脱敏 host。（2026-08-31，`a053dc9`）
+- [x] 动态设置（WebDAV、代理、用户偏好、destination profile）与静态 env 分开；界面明确哪些立即生效、哪些只影响新任务、哪些需重启。（2026-08-31，`a053dc9`）
+- [x] 更新 `.env.example`，绝不把生产值复制进去。（2026-08-31，`a053dc9`）
 
 不强制引入 Pydantic；当前规模用 dataclass + 显式 validator 足够。如果后续配置层显著增长，再评估 Pydantic Settings，不能同时保留两套解析真相。
 
@@ -1488,7 +1488,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 已完成。产品 roadmap 仅剩 Later 的 O1；当前继续第 **18.1 配置重构** 的 6 项技术债，不自动推进 Web Dashboard/O1。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1 节 Settings 配置重构均已完成。产品 roadmap 仅剩 Later 的 O1；当前继续第 **18.2 性能边界** 技术债，不自动推进 Web Dashboard/O1。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1503,7 +1503,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 已完
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理进入第 18.1 节配置重构：先引入 immutable `Settings` + fail-fast/range validation，同时保留旧常量 re-export 一个迁移周期；不要把动态 WebDAV/代理/用户偏好/Profile 重新塞回静态 env，也不进入 O1。
+下一位代理进入第 18.2 节性能边界：先审计 ffmpeg/ffprobe 并发与 subprocess timeout/cancel、100 jobs/1000 items 聚合路径和重复全文件 hash；优先补测试/基准与最小 semaphore，不进入 O1/Web Dashboard。
 
 ## 21. 执行日志
 
@@ -1916,3 +1916,14 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 已完
 - 测试：最终源码与标准 Docker 镜像均 **229 项 unittest 全通过**；`compileall`、`git diff --check`、compose config、静态镜像 secret-path 均通过；schema/migration 保持 `[1..9]` 不变。
 - 生产 preflight：部署前确认 `APP_COMMIT=5d5f2aa`、schema9/integrity、incomplete/claims/backup=0、source_enabled=0；回滚 DB `/root/telegram-video-forwarder-releases/state-pre-a053dc9-20260831-131247.sqlite3`，并保留 rollback image/source archive。新 candidate 镜像已使用生产 `.env` 成功执行 `Settings.from_env(strict=True)`，只输出 safe summary，说明现有非敏感范围合法。
 - 未完成：`docker compose up -d --force-recreate bot` 已发出后 SSH 控制连接被关闭；随后两次新 SSH 也被远端关闭，尚未确认 `APP_COMMIT=a053dc9`、health/restart、生产 229 tests 与启动日志。因此不要重复 recreate；SSH 恢复后先只读检查实际容器状态，若已运行 a053dc9 则补后验并勾选 18.1。
+
+### 2026-08-31 13:27 - Settings 配置重构生产后验完成
+
+- 状态：第 18.1 节已完成、推送并部署生产；下一阶段进入 18.2 性能边界。
+- 实现 commit：`a053dc9`；此前交接 commit `ceeb587` 记录过 SSH 中断后的待验状态。
+- SSH 恢复后先只读确认发现：VPS 宿主源码已是 `a053dc9`，但运行容器仍为旧 `APP_COMMIT=5d5f2aa` / S1 镜像，说明此前 recreate 实际未切换成功；因此在确认 incomplete/claims/backup/source_enabled 均为 0 后，使用既有 pre-a053dc9 DB/rollback image/source 三重回滚点重新执行一次受控 build + force-recreate。
+- 生产后验：容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=a053dc9`；宿主与容器 `src/main.py`、`src/repository/sqlite.py`、`src/services/stats.py` 哈希一致；schema `[1..9]`、`integrity=ok`、incomplete/claims/source_enabled=0。
+- Settings：生产真实 env 通过 `Settings.from_env(strict=True)`；启动日志 `Static settings loaded` / `Bot started` 仅输出 `safe_summary()` 白名单字段，没有输出 destination、用户 ID、API hash/token 等秘密。
+- 测试：生产容器 **229 项 unittest 全通过**；`scripts/healthcheck.py` 与 `scripts/readiness.py` 均通过；启动日志包含 SQLite ready / Bot commands registered / Bot started，无 traceback/error。
+- 回滚资源沿用部署前已创建资源：DB `/root/telegram-video-forwarder-releases/state-pre-a053dc9-20260831-131247.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-a053dc9`、源码 `/root/telegram-video-forwarder-releases/pre-a053dc9.tar.gz`。本阶段无 schema 变更，因此代码回滚不需要数据库 downgrade，但仍优先使用完整回滚点。
+- 下一步精确入口：第 18.2 节性能边界；先审计 ffmpeg/ffprobe semaphore、subprocess timeout/cancel 和 100 jobs/1000 items 聚合/分页热点，再决定最小改动。
