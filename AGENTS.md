@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `4fcc6e9`（D1 完成：SHA-256 内容索引、destination-scoped Telegram 媒体复用、stale 引用自动回退、本次发布仍生成新消息与新 caption/spoiler）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 11:48 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **199 tests 全通过**；镜像 `APP_COMMIT=4fcc6e9`，生产 `DISK_ENFORCE=true`，WebDAV `backup_policy=best_effort` 保持不变。D1 migration 7 新增 `content_sha256/dedup_entries`，D1-B 无新增 migration。
+- 当前分支：`main`。当前生产运行代码基线为 `2535264`（M1 完成：ffprobe compatibility metadata、可选无损 faststart remux、磁盘 reservation、黑帧规避缩略图；生产保持 analyze-only）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 12:01 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7]`、`integrity=ok`、incomplete jobs 为 0，生产容器 **208 tests 全通过**；镜像 `APP_COMMIT=2535264`，生产 `MEDIA_COMPAT_MODE=analyze`、`TRANSCODE_ENABLED=false`、`DISK_ENFORCE=true`，WebDAV `backup_policy=best_effort` 保持不变。M1 无 schema migration。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -429,7 +429,7 @@ docker compose config --quiet
 | F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [x] `5ae529c`（2026-08-31；schema 4→6） |
 | B1 | P1 | WebDAV 生命周期抽取、连通/容量/策略 UI | R1、U2 | [x] `2f3bc60`（2026-08-31；B1-A/B/C/D 完成） |
 | D1 | P2 | SHA-256 去重、目标频道媒体复用/秒传 | R2、R3 | [x] `4fcc6e9`（2026-08-31；schema 6→7 + media reuse） |
-| M1 | P2 | 视频兼容性检查、faststart remux、缩略图增强 | F3 | [ ] |
+| M1 | P2 | 视频兼容性检查、faststart remux、缩略图增强 | F3 | [x] `2535264`（2026-08-31；生产默认 analyze） |
 | DP1 | P2 | 多目的地发布配置档案 | R3、U2 | [ ] |
 | S1 | P2 | 指定源频道自动中转（仅新消息） | DP1 | [ ] |
 | O1 | Later | 可选 Web Dashboard/外部通知/指标导出 | F4 且用户确认 | [ ] |
@@ -1488,7 +1488,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1 已完成。当前下一阶段是 **M1：媒体兼容性检查、faststart remux 与缩略图增强**；不要同时夹带 DP1/S1/多目的地/Web Dashboard。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1 已完成。下一候选阶段是 **DP1：多目的地发布配置档案**；DP1/S1 属于会改变产品行为和配置模型的 v18.x 范围，按第 17 节约束需用户再次确认范围后再开始，不要自动推进 Web Dashboard/O1。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1503,7 +1503,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1 已完成。当前下�
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理进入 M1：先做 ffprobe metadata 与 MP4 faststart 判定，默认只 remux 不有损转码；需要 remux 时必须纳入 DiskManager reservation，并保留原文件直到新文件完整验证。缩略图增强应采用多候选/黑帧规避，但不能改变现有发布顺序、dedup SHA-256 内容索引或 WebDAV MD5 远端命名。
+下一位代理在用户确认 v18.x 范围后进入 DP1：先设计 destination profile schema/snapshot 与当前单一 `DEST_CHANNEL` 的兼容迁移，再接 profile 选择 UI；不得在未确认范围前开始 S1 自动源频道中转或 O1 Web Dashboard。
 
 ## 21. 执行日志
 
@@ -1860,3 +1860,18 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1 已完成。当前下�
 - 测试：完整源码与最终标准 Docker 镜像均 **199 项 unittest 全通过**；`compileall`、`git diff --check`、compose config、静态镜像 secret-path 检查通过。migration 7 checksum `7c8374a3...` 保持不变。
 - VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-4fcc6e9-20260831-114857.sqlite3`，并保留 `telegram-video-forwarder:rollback-pre-4fcc6e9` 与源码归档。部署后镜像 `sha256:31df6f4c626944ae8f7ad6ae880002b18dbf8d3426b950b9318d42a16774e3fd`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=4fcc6e9`，schema `[1,2,3,4,5,6,7]`、`integrity=ok`、incomplete/claims=0，生产 199 tests 全通过。部署时 dedup 表为空，因此没有通过生产真实频道制造重复媒体副作用。
 - 下一步精确入口：M1。先建立 ffprobe metadata/faststart 判定与纯 remux helper；默认不做有损转码，remux 前必须向 DiskManager 申请额外 reservation，成功验证后再切换 local_path/hash，失败保留原文件并继续原发布路径。
+
+### 2026-08-31 12:01 - M1 媒体兼容性、faststart 与缩略图增强
+
+- 状态：M1 已完成、推送并部署生产；v17.x D1/M1 已收尾。下一候选阶段 DP1/S1 需要用户重新确认 v18.x 范围后再开始。
+- 实现 commit：`2535264`（`feat(media): add M1 compatibility and faststart`）。
+- ffprobe metadata：新增规范化 `MediaMetadata`，记录 container、video/audio codec、duration、width/height、rotation、bitrate、stream count 与 MP4 faststart 状态；metadata 合并写入既有 `job_items.metadata_json.media_compat`，不新增 migration，不覆盖旧 metadata。U2 durable detail 重启后仍可显示“可流式播放 / 非 H.264/AAC / 建议 faststart”。
+- faststart：MP4 顶层 atom 安全扫描判断 `moov`/`mdat` 顺序；`remux` 模式只对 H.264 + AAC/无音频且确需 faststart 的媒体执行 `ffmpeg -map 0 -c copy -movflags +faststart`。输出必须仍在同一 job dir，完成后重新 ffprobe 校验 stream count、duration 与 faststart；失败删除临时输出并继续原文件，绝不让 optional 优化使 job 失败。
+- 磁盘：remux 前临时将现有 job reservation 增加一份源文件大小；安全水位不足直接跳过 faststart并恢复原 reservation。原文件不会被 M1 删除，最终仍由现有 F3 job-dir cleanup 生命周期统一清理。
+- hook 顺序：`MediaDownloader.post_download_hooks` 允许 hook 返回 replacement payload；M1 compat 位于 durable download completion、D1 SHA-256 和 WebDAV 之前，因此若未来显式启用 `remux`，DB local_path、dedup hash、Telegram 发布与 WebDAV 都使用已验证后的最终文件；`analyze` 模式不改变路径。
+- 缩略图：`THUMBNAIL_POSITION=auto` 默认按视频约 10%/20%/30% 取最多 3 个候选，使用 blackframe 检测近黑帧并继续下一候选，继续遵守 320px/JPEG/40KB 约束。显式秒数位置仍有回退候选。
+- 转码边界：新增 `TRANSCODE_ENABLED` 配置占位但 M1 **没有任何自动有损转码实现**；静态审计唯一媒体变换命令为 `-c copy`。非 H.264/AAC 继续按现有文件语义发布。
+- 配置：`.env.example` 新增 `MEDIA_COMPAT_MODE=analyze|off|remux`、`FASTSTART_MAX_BYTES`、`TRANSCODE_ENABLED=false`、`THUMBNAIL_POSITION=auto`。生产未写入 M1 env，因此实际读取安全默认 `MEDIA_COMPAT_MODE=analyze`、`TRANSCODE_ENABLED=False`、`THUMBNAIL_POSITION=auto`，本次部署不会自动 remux 生产媒体。
+- 测试：完整源码与最终标准 Docker 镜像均 **208 项 unittest 全通过**；覆盖真实 ffmpeg 生成 MP4、atom faststart 判定、无损 remux 校验、hook replacement、analyze 不改路径、磁盘不足跳过、reservation 恢复、metadata merge/durable detail、黑帧候选回退。`compileall`、`git diff --check`、compose config、静态镜像 secret-path、无自动转码审计均通过；schema/migration 保持 `[1,2,3,4,5,6,7]`。
+- VPS：部署前 DB backup `/root/telegram-video-forwarder-releases/state-pre-2535264-20260831-120218.sqlite3`，并保留 `telegram-video-forwarder:rollback-pre-2535264` 与源码归档。部署后镜像 `sha256:647ff98bced6e03808818c914dcefbb0648468ca3deb19509aa515a13b514f62`，容器 `running`、`restart=0`、health=`healthy`，`APP_COMMIT=2535264`，schema7/`integrity=ok`、incomplete/claims=0，生产 208 tests 全通过。
+- 下一步：等待用户确认 DP1/S1 的 v18.x 产品范围；确认后先 DP1 profile schema/snapshot，不直接跳到 S1。
