@@ -57,14 +57,14 @@
 
 ## Next extraction targets
 
-1. F3-B: build deterministic cleanup candidate selection for terminal,
-   unclaimed, non-retry-protected job caches; keep it dry-run first.
-2. Exclude active jobs, claims, WebDAV-protected files and `.part` writers, and
-   validate every candidate as a direct `job-*` child of download root.
-3. F3-C: add pre-accept/pre-download enforcement and bounded cleanup-to-watermark
-   only after production monitor thresholds are validated.
-4. Keep F4 stats/health and B1 WebDAV lifecycle extraction separate until F3
-   cleanup/enforcement tests are deployed.
+1. F4: add `/stats` and a read-only health/self-check view using repository,
+   disk and runtime snapshots rather than scraping logs.
+2. Add redacted diagnostics and bounded event summaries without exposing
+   credentials, source URLs, local absolute paths or private captions.
+3. Keep health checks side-effect free: no Telegram send, WebDAV probe, cleanup
+   or proxy reconnect just because a user opens diagnostics.
+4. Keep B1 WebDAV lifecycle extraction separate until F4 stats/health is tested
+   and deployed.
 
 ## UI direction
 

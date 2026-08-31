@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `c5d3bf0`（F3-A：DiskManager 监控模式、活跃任务 reservation、安全路径边界；`DISK_ENFORCE=false`）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 08:56 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、incomplete jobs 为 0，生产容器 151 tests 全通过；磁盘监控实际 `DISK_ENFORCE=false`、reservation=0、约 47.48GB/48.51% 可用。F3-A 未新增 migration，F2/R3/U1/U2/F1 基线继续由现有测试保护。
+- 当前分支：`main`。当前生产运行代码基线为 `26d5596`（F3 完成：DiskManager reservation、repository-aware cleanup dry-run、安全 cleanup claim/CAS、显式逐文件清理、cleanup interrupted 恢复与强制容量 gate）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 09:25 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、incomplete jobs/claims 为 0，生产容器 161 tests 全通过；生产已启用 `DISK_ENFORCE=true`，当前约 47.47GB/48.5% 可用，阈值 5GB/10%，capacity gate 判定 healthy/allowed。F3 未新增 migration，F2/R3/U1/U2/F1 基线继续由现有测试保护。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -425,7 +425,7 @@ docker compose config --quiet
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [x] `c5355ab`（2026-08-31） |
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [x] `b5450e6`（2026-08-31） |
 | F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [x] `dddaa9f`（2026-08-31；F2-A/B/C/D 完成） |
-| F3 | P1 | 磁盘预检、配额、保留策略和安全清理 | R2 | [ ] |
+| F3 | P1 | 磁盘预检、配额、保留策略和安全清理 | R2 | [x] `26d5596`（2026-08-31；F3-A/B/C 完成） |
 | F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [ ] |
 | B1 | P1 | WebDAV 生命周期抽取、连通/容量/策略 UI | R1、U2 | [ ] |
 | D1 | P2 | SHA-256 去重、目标频道媒体复用/秒传 | R2、R3 | [ ] |
@@ -1495,10 +1495,10 @@ R0、R1、R2、R3、U1、U2、F1、F2 已完成。当前正在执行 **F3：磁�
 - [x] F2-C：WebDAV 初传/自动补传/手动重试/缓存补传统一接入 classifier + 独立 backup budget，持久化 attempt/file 错误与 attempt retry/next time，并保留远端大小幂等确认。（2026-08-31，`f16b663`；生产 143 tests、schema4/integrity、restart=0、源码哈希均已补验通过）
 - [x] F2-D：集中 `NetworkCoordinator` 串行代理切换，download/publish/backup budget 隔离、partial publish/error-specific UI 集成测试、代理 generation 防并发重连抖动。（2026-08-31，`dddaa9f`）
 - [x] F3-A：`DiskManager` 监控模式、磁盘快照、活跃任务 reservation、已知/未知任务预留估算、download-root/job-dir 安全路径校验；生产保持 `DISK_ENFORCE=false`。（2026-08-31，`c5d3bf0`）
-- [ ] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），先 dry-run/测试，不直接自动删除。
-- [ ] F3-C：接受/下载前强制容量门禁、必要时安全清理到水位、事件/统计与生产阈值验证；全部部署后才标 F3 主项完成。
+- [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
+- [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理从 F3-B 开始：先实现 repository-aware cleanup candidate 选择和 dry-run，严格验证目录必须是 download root 下直接 `job-*`，并排除运行 job、claim、WebDAV 活跃/失败保护、retry-protected 和 `.part`；未完成 dry-run/测试前不得开启自动删除或 `DISK_ENFORCE=true`。
+F3 主工作包已完成。下一位代理进入 F4：先按第 16.4 节实现 `/stats`、health/self-check、脱敏 diagnostics 与事件汇总；不要同时夹带 B1、Web Dashboard、多频道或转码。
 
 ## 21. 执行日志
 
@@ -1761,3 +1761,28 @@ R0、R1、R2、R3、U1、U2、F1、F2 已完成。当前正在执行 **F3：磁�
 - VPS：部署前确认生产实际为 `dddaa9f`、`restart=0`、无 active transfer/incomplete/claims/backup；部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-c5d3bf0-20260831-085649.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-c5d3bf0`，源码 `/root/telegram-video-forwarder-releases/pre-c5d3bf0.tar.gz`。部署后容器 `running`、`restart=0`，镜像 `sha256:4074f5918824e9e608da3f5df77f38e30ae16cbef8d60cb902506565199b5546`；生产关键源码 SHA-256 与 commit 一致，schema4/`integrity=ok`、incomplete=0，生产容器 151 tests 全通过，静态镜像 clean。
 - 生产磁盘快照：`DISK_ENFORCE=false`、reservation=0、free≈47.48GB、free≈48.51%；当前仅记录/告警，不做自动删除或拒绝。
 - 下一步精确入口：F3-B。先实现清理候选 dry-run 与 repository/claim/WebDAV/retry protection 过滤，不触发实际 unlink/rmdir；候选算法测试稳定后再讨论自动清理。
+
+### 2026-08-31 09:04 - F3-B repository-aware cleanup dry-run
+
+- 状态：F3-B 已完成、推送并部署生产；阶段只生成清理候选和保护原因，不包含删除 API。
+- 实现 commit：`2eb7e8e`（`feat(disk): add F3 cleanup dry run`）。
+- durable facts：repository 新增 cleanup inventory，只暴露 job state/revision/legacy seq、local_dir/item paths、claim/retry timing、最新 WebDAV attempt/file 状态等清理判定所需事实；不把删除策略塞进 SQLite DAO。
+- cleanup planner：只接受 terminal `succeeded/failed/cancelled`，按 succeeded/cancelled 72h、failed 168h retention；严格排除 active claim、job retry window、WebDAV running/retrying/failed cache、runtime retryable、runtime `webdav_keep_cache`、`.part` 文件和非法/逃逸目录。候选始终 oldest-first，并统计 reclaimable/protected bytes 与 reason。
+- 路径安全：所有候选必须通过 `DiskManager.validate_job_dir()`，即 resolve/commonpath 后仍是 download root 下直接 `job-*` 子目录；unsafe path fail closed。
+- 测试：本地源码和最终镜像均 **155 项 unittest 全通过**；新增 oldest-first、retention、claim/retry/WebDAV/runtime protection、unsafe path 与 repository inventory 集成测试。schema 仍 `[1,2,3,4]`，0001～0004 checksum 未改。
+- VPS：部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-2eb7e8e-20260831-090438.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-2eb7e8e`，源码 `/root/telegram-video-forwarder-releases/pre-2eb7e8e.tar.gz`。部署后容器 `running`、`restart=0`，生产 155 tests 全通过；只读 dry-run 结果 inventory/candidates/protected/reclaimable 全为 0，因此没有执行任何文件删除。
+- 下一步精确入口：F3-C，加入 cleanup claim/CAS 和显式删除执行，再接 enforce gate；启用强制模式前继续保持生产 `DISK_ENFORCE=false`。
+
+### 2026-08-31 09:25 - F3-C 安全清理执行、容量门禁与 F3 总完成
+
+- 状态：F3-C 已完成、推送并部署生产；F3 主工作包正式完成，下一阶段进入 F4。
+- 实现 commit：`26d5596`（`feat(disk): add F3 safe cleanup enforcement`）。
+- 安全执行：删除前先以 `(job_id, revision)` 获取 durable `claim_kind=cleanup`，阻止并发 retry/UI 对同一 job 产生副作用；随后再次验证 direct `job-*` 边界和 `.part`，只使用显式 bottom-up `unlink`/`rmdir`，不对 DB 路径执行 `rm -rf`。删除成功后 revision-CAS 清 `jobs.local_dir`/`job_items.local_path`、释放 claim 并写 `disk_cleanup` event/释放字节数；删除失败则释放 claim、保留路径并写 `disk_cleanup_failed`，允许下轮继续。
+- 崩溃恢复：启动 recovery 会释放遗留 cleanup claim 并记录 `disk_cleanup_interrupted`；cleanup finalize/abort 使用 shield，降低 graceful shutdown 中途悬挂 claim 的概率。
+- 容量门禁：`cleanup_to_waterline()` 按 oldest-first 候选逐个清理，达到 byte/percent 安全水位即停止；下载 worker 在 `DISK_ENFORCE=true` 时先尝试安全清理并重新评估，仍不足则以 `ENOSPC` 进入统一 `disk_low` classifier/retry 语义。首页只读显示 monitor/enforce、reservation、protected cache 与 reclaimable cache。
+- 测试：本地完整回归 **161 项 unittest 全通过**；新增真实 SQLite+JobQueue 清理执行、claim/CAS、partial delete abort、restart cleanup claim recovery、enforce low-capacity fail-closed 和首页磁盘可见性测试。`compileall`、`git diff --check`、compose config、静态镜像检查通过，schema 仍 `[1,2,3,4]`，0001～0004 checksum 未改。
+- 构建网络说明：Docker Hub 在最终标准 build 阶段连续返回 anonymous-token EOF；requirements/Dockerfile 本阶段未变化，因此先用上一版完整应用镜像作为离线 base、仅覆盖当前源码构建 candidate，candidate 161 tests + 静态检查全通过。生产部署同样以当前生产镜像为离线 base，避免绕过测试或启动第二个 Telegram 实例。
+- VPS：部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-26d5596-20260831-092527.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-26d5596`，源码 `/root/telegram-video-forwarder-releases/pre-26d5596.tar.gz`。部署后镜像 `sha256:0fc00d6ffe1a31499e542b3918555fee5d87875b31cd8019ad3bac9d1c13c228`，容器 `running`、`restart=0`，关键源码 SHA-256 与本地 commit 一致，schema4/`integrity=ok`、incomplete/claims=0，生产 161 tests 全通过，启动日志正常。
+- 强制模式：确认当前 dry-run inventory/candidates/protected/reclaimable 均为 0、free≈47.47GB/48.5%，远高于 5GB/10% 阈值后，将生产 `DISK_ENFORCE=true`；`.env` 切换前副本保留在 `/root/telegram-video-forwarder-releases/env-pre-f3-enforce-20260831-092509.env`（600 权限，本文不记录任何秘密）。重建后 capacity gate `healthy=True/allowed=True`，161 tests、DB integrity、restart/logs 再次通过。
+- 数据迁移：无；F3 全阶段复用 schema `[1,2,3,4]`，代码回滚不要求降库。若只回滚强制模式，可恢复上述 `.env` 副本或将 `DISK_ENFORCE=false` 后 `docker compose up -d --force-recreate --no-build bot`。
+- 下一步精确入口：第 16.4 节 F4。先做只读 `/stats`、health/self-check、脱敏 diagnostics 与事件汇总，不同时进入 B1/Web Dashboard。
