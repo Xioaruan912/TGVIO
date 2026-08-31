@@ -4,7 +4,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from src import bot
-from src.webdav import WebDavProbeResult
+from src.webdav import WebDavProbeResult, WebDavWriteProbeResult
 from src.handlers.callbacks import build_callback_router
 from src.services import BackupManager, InteractionSessions, JobQueue, ProxyManager
 from tests.fakes import (
@@ -168,6 +168,34 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         probe.assert_awaited_once_with()
         self.assertIn("✅ 路径可读取", explicit.edits[-1]["text"])
         self.assertNotIn("secret", explicit.edits[-1]["text"])
+
+    async def test_webdav_write_probe_requires_single_use_confirmation(self) -> None:
+        callback = self.client.handlers["on_callback"]
+        self.pipeline.webdav_cfg.update(
+            url="https://dav.example.invalid",
+            path="/backup",
+            user="user",
+            **{"pass": "secret"},
+        )
+        writer = AsyncMock(
+            return_value=WebDavWriteProbeResult(True, True, True, True, "全部成功")
+        )
+        self.pipeline.backup_manager.test_write = writer
+
+        prompt = FakeCallbackEvent(self.client, b"wd_cfg:wtest")
+        await callback(prompt)
+        writer.assert_not_awaited()
+        confirm_data = prompt.edits[-1]["buttons"][0][0].data
+
+        confirm = FakeCallbackEvent(self.client, confirm_data)
+        await callback(confirm)
+        writer.assert_awaited_once_with()
+        self.assertIn("测试文件清理：成功", confirm.edits[-1]["text"])
+
+        duplicate = FakeCallbackEvent(self.client, confirm_data)
+        await callback(duplicate)
+        self.assertIn("操作已过期，请刷新", duplicate.answers)
+        self.assertEqual(writer.await_count, 1)
 
     async def test_private_url_intake_routes_through_job_queue_facade(self) -> None:
         private = self.client.handlers["on_private_message"]

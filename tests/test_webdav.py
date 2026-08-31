@@ -261,6 +261,21 @@ class WebDavProtocolTests(unittest.TestCase):
         self.assertEqual(denied.status, 401)
         self.assertIn("认证失败", denied.message)
 
+    def test_explicit_write_probe_puts_verifies_and_deletes_random_file(self) -> None:
+        with patch.object(webdav, "_VERIFY_ATTEMPTS", 2), patch.object(
+            webdav, "_VERIFY_INTERVAL", 0
+        ):
+            result = webdav.probe_write(
+                self.base_url, "/backup", "user", "pass"
+            )
+        self.assertTrue(result.ok)
+        self.assertTrue(result.uploaded)
+        self.assertTrue(result.verified)
+        self.assertTrue(result.cleaned)
+        self.assertEqual(self.state.put_calls, 1)
+        self.assertEqual(self.state.delete_calls, 1)
+        self.assertFalse(any(".tgvf-check-" in path for path in self.state.files))
+
 
 if __name__ == "__main__":
     unittest.main()

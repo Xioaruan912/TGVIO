@@ -20,9 +20,11 @@ from src.views import (
     reply_keyboard,
     webdav_cfg_fields_view,
     webdav_probe_view,
+    webdav_write_confirm_view,
+    webdav_write_result_view,
     webdav_cfg_view,
 )
-from src.webdav import WebDavProbeResult
+from src.webdav import WebDavProbeResult, WebDavWriteProbeResult
 
 
 def callback_data(buttons):
@@ -158,8 +160,19 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("只执行只读 PROPFIND", probe_text)
         self.assertEqual(
             callback_data(probe_buttons),
-            [b"wd_cfg:test", b"wd_cfg:back", b"h:r"],
+            [b"wd_cfg:test", b"wd_cfg:wtest", b"wd_cfg:back", b"h:r"],
         )
+
+        confirm_text, confirm_buttons = webdav_write_confirm_view(123456789)
+        self.assertIn("只有确认后", confirm_text)
+        self.assertEqual(
+            callback_data(confirm_buttons),
+            [b"wd_w:y:123456789", b"wd_w:n:123456789", b"wd_cfg:back"],
+        )
+        result_text, _ = webdav_write_result_view(
+            WebDavWriteProbeResult(True, True, True, True, "全部成功")
+        )
+        self.assertIn("测试文件清理：成功", result_text)
 
     def test_home_console_and_task_card_use_short_callbacks(self) -> None:
         text, buttons = home_view(

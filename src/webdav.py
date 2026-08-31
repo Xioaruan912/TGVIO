@@ -12,8 +12,10 @@ import logging
 import os
 import re
 import ssl
+import tempfile
 import time
 import urllib.parse
+import uuid
 import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
@@ -52,6 +54,15 @@ class WebDavProbeResult:
     @property
     def quota_supported(self) -> bool:
         return self.quota_used_bytes is not None or self.quota_available_bytes is not None
+
+
+@dataclass(frozen=True)
+class WebDavWriteProbeResult:
+    ok: bool
+    uploaded: bool
+    verified: bool
+    cleaned: bool
+    status_message: str
 
 
 def _auth_header(user: str, passwd: str) -> str:
@@ -297,6 +308,79 @@ def probe_connection(
     except Exception as exc:
         logger.warning("WebDAV explicit probe failed: %s", exc.__class__.__name__)
         return WebDavProbeResult(False, None, False, message=f"连接失败：{exc.__class__.__name__}")
+
+
+def probe_write(
+    base_url: str,
+    remote_dir: str,
+    user: str,
+    passwd: str,
+) -> WebDavWriteProbeResult:
+    """Explicit write probe: one random tiny file PUT + size verify + DELETE.
+
+    Callers must require an explicit user confirmation before invoking this
+    function. The configured directory must already exist; this test never
+    creates directories.
+    """
+    read_result = probe_connection(base_url, remote_dir, user, passwd)
+    if not read_result.ok:
+        return WebDavWriteProbeResult(
+            False, False, False, True, f"读取前置检查失败：{read_result.message}"
+        )
+    name = f".tgvf-check-{uuid.uuid4().hex}"
+    payload = os.urandom(32)
+    temp_path = ""
+    uploaded = verified = cleaned = False
+    try:
+        with tempfile.NamedTemporaryFile(prefix="tgvf-check-", delete=False) as tmp:
+            tmp.write(payload)
+            temp_path = tmp.name
+        auth = _auth_header(user, passwd)
+        parsed, root_path = _split(base_url)
+        url_path = f"{root_path.rstrip('/')}/{remote_dir.strip('/')}/{name}"
+        conn = _connect(parsed)
+        try:
+            uploaded = bool(_put_file(conn, parsed, url_path, temp_path, auth))
+        finally:
+            conn.close()
+        verified = uploaded and (
+            remote_file_size(base_url, remote_dir, name, user, passwd) == len(payload)
+        )
+        cleaned = delete_remote(
+            base_url, remote_dir, name, user, passwd, retries=0
+        )
+        ok = uploaded and verified and cleaned
+        if ok:
+            message = "写入、远端大小校验和清理均成功"
+        elif not cleaned:
+            message = "写入测试未能确认清理，请检查远端测试文件"
+        elif not verified:
+            message = "写入完成但远端大小校验失败"
+        else:
+            message = "写入测试失败"
+        return WebDavWriteProbeResult(ok, uploaded, verified, cleaned, message)
+    except Exception as exc:
+        # If PUT may have happened, always attempt a best-effort cleanup of the
+        # exact random file; never recursively delete a directory.
+        try:
+            cleaned = delete_remote(
+                base_url, remote_dir, name, user, passwd, retries=0
+            )
+        except Exception:
+            cleaned = False
+        return WebDavWriteProbeResult(
+            False,
+            uploaded,
+            verified,
+            cleaned,
+            f"写入测试失败：{exc.__class__.__name__}",
+        )
+    finally:
+        if temp_path:
+            try:
+                os.unlink(temp_path)
+            except FileNotFoundError:
+                pass
 
 
 def _upload_once(

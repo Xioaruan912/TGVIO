@@ -59,6 +59,17 @@ class BackupManager:
             str(cfg.get("pass") or ""),
         )
 
+    async def test_write(self) -> webdav.WebDavWriteProbeResult:
+        """Run the explicitly confirmed write/verify/delete WebDAV probe."""
+        cfg = self.config_snapshot()
+        return await asyncio.to_thread(
+            webdav.probe_write,
+            str(cfg.get("url") or ""),
+            str(cfg.get("path") or ""),
+            str(cfg.get("user") or ""),
+            str(cfg.get("pass") or ""),
+        )
+
     def logs_snapshot(self) -> dict:
         return {
             key: dict(value) if isinstance(value, dict) else value

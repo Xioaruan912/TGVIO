@@ -19,6 +19,8 @@ from ..views import (
     stats_view,
     webdav_cfg_fields_view,
     webdav_probe_view,
+    webdav_write_confirm_view,
+    webdav_write_result_view,
     webdav_cfg_view,
 )
 from .common import HandlerContext
@@ -375,6 +377,20 @@ async def callback_webdav_config(ctx: HandlerContext, event: Any, data: str) -> 
         text, buttons = webdav_probe_view(result)
         await ctx.edit(event, text, buttons=buttons)
         return
+    if field == "wtest":
+        cfg = ctx.backup.config_snapshot()
+        if not cfg.get("url") or not cfg.get("path"):
+            await ctx.answer(event, "请先配置 WebDAV 地址和路径")
+            return
+        operation = ctx.operations.create(
+            user_id=event.sender_id,
+            action="webdav_write_test",
+            job_id=0,
+            expected_revision=0,
+        )
+        text, buttons = webdav_write_confirm_view(operation.operation_id)
+        await ctx.edit(event, text, buttons=buttons)
+        return
     if field == "back":
         text, buttons = webdav_cfg_view(_webdav_state(ctx))
         await ctx.edit(event, text, buttons=buttons)
@@ -404,6 +420,30 @@ async def callback_webdav_config(ctx: HandlerContext, event: Any, data: str) -> 
         )
         return
     await ctx.answer(event, "无效操作")
+
+
+async def callback_webdav_write_test(ctx: HandlerContext, event: Any, data: str) -> None:
+    parts = data.split(":")
+    if len(parts) != 3 or parts[1] not in {"y", "n"} or not parts[2].isdigit():
+        await ctx.answer(event, "操作已过期，请刷新")
+        return
+    operation_id = int(parts[2])
+    if parts[1] == "n":
+        if ctx.operations.discard(operation_id, user_id=event.sender_id):
+            await ctx.answer(event, "已取消写入测试")
+        else:
+            await ctx.answer(event, "操作已过期，请刷新")
+        text, buttons = webdav_cfg_view(_webdav_state(ctx))
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    operation = ctx.operations.consume(operation_id, user_id=event.sender_id)
+    if operation is None or operation.action != "webdav_write_test":
+        await ctx.answer(event, "操作已过期，请刷新")
+        return
+    await ctx.answer(event, "正在执行写入/校验/清理测试…")
+    result = await ctx.backup.test_write()
+    text, buttons = webdav_write_result_view(result)
+    await ctx.edit(event, text, buttons=buttons)
 
 
 async def callback_webdav_retry(ctx: HandlerContext, event: Any, data: str) -> None:
@@ -498,5 +538,6 @@ def register_setting_callbacks(router: Any) -> None:
     router.prefix("wd_retry:", callback_webdav_retry)
     router.prefix("wd_del:", callback_webdav_delete)
     router.prefix("wd_cache_up:", callback_webdav_cache)
+    router.prefix("wd_w:", callback_webdav_write_test)
     router.prefix("mode:", callback_mode)
 

@@ -21,6 +21,8 @@ from .webdav import (
     webdav_cfg_fields_view,
     webdav_cfg_lines,
     webdav_probe_view,
+    webdav_write_confirm_view,
+    webdav_write_result_view,
     webdav_cfg_view,
 )
 from .tasks import (
@@ -59,6 +61,8 @@ __all__ = [
     "webdav_cfg_view",
     "webdav_cfg_fields_view",
     "webdav_probe_view",
+    "webdav_write_confirm_view",
+    "webdav_write_result_view",
     "DurableQueueItemView",
     "DurableQueuePageView",
     "FailureItemView",

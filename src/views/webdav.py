@@ -85,8 +85,46 @@ def webdav_probe_view(result) -> tuple[str, list]:
             "此测试只执行只读 PROPFIND，不会上传、删除或创建远端文件。",
         ]
     )
-    return "\n".join(lines), [
+    buttons = [
         [Button.inline("🔄 再测一次", "wd_cfg:test")],
+    ]
+    if result.ok:
+        buttons.append([Button.inline("✍️ 写入测试", "wd_cfg:wtest")])
+    buttons.extend([
+        [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
+        [Button.inline("🏠 首页", "h:r")],
+    ])
+    return "\n".join(lines), buttons
+
+
+def webdav_write_confirm_view(operation_id: int) -> tuple[str, list]:
+    return (
+        "✍️ WebDAV 写入测试确认\n"
+        "────────────────────────\n"
+        "将创建一个随机 .tgvf-check-* 小文件，完成 PUT 后校验远端大小，再立即 DELETE。\n"
+        "不会覆盖已有文件，也不会递归删除目录。\n"
+        "只有确认后才会产生远端写入副作用。",
+        [
+            [Button.inline("✅ 确认写入测试", f"wd_w:y:{int(operation_id)}")],
+            [Button.inline("❌ 取消", f"wd_w:n:{int(operation_id)}")],
+            [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
+        ],
+    )
+
+
+def webdav_write_result_view(result) -> tuple[str, list]:
+    icon = "✅" if result.ok else "⚠️"
+    lines = [
+        "✍️ WebDAV 写入测试",
+        "────────────────────────",
+        f"{icon} {result.status_message}",
+        f"PUT：{'成功' if result.uploaded else '未确认'}",
+        f"远端大小校验：{'成功' if result.verified else '未确认'}",
+        f"测试文件清理：{'成功' if result.cleaned else '失败'}",
+    ]
+    if not result.cleaned:
+        lines.append("⚠️ 请检查远端是否残留 .tgvf-check-* 测试文件。")
+    return "\n".join(lines), [
         [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
         [Button.inline("🏠 首页", "h:r")],
     ]
