@@ -8,13 +8,16 @@ from telethon.tl import types
 
 from . import bot, config
 from .repository import SQLiteRepository
+from .security import install_redacting_logging
 from .services import RuntimeHeartbeat
 from .storage import JsonStore
 
+_LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s %(levelname)s %(name)s: %(message)s",
+    format=_LOG_FORMAT,
 )
+install_redacting_logging(fmt=_LOG_FORMAT)
 logger = logging.getLogger(__name__)
 
 _COMMANDS = [

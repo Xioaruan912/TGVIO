@@ -5,6 +5,7 @@ import threading
 import time
 import unittest
 from pathlib import Path
+from types import SimpleNamespace
 from unittest.mock import patch
 
 from src.downloader import CancelToken, DownloadProgress, UrlDownloader
@@ -34,6 +35,16 @@ class UrlDownloaderTests(unittest.IsolatedAsyncioTestCase):
         self.tempdir = tempfile.TemporaryDirectory()
         self.addCleanup(self.tempdir.cleanup)
         self.root = Path(self.tempdir.name)
+        url_patch = patch(
+            "src.downloader.enforce_url_policy",
+            return_value=SimpleNamespace(
+                private_network=False,
+                hostname="example.invalid",
+                addresses=("93.184.216.34",),
+            ),
+        )
+        url_patch.start()
+        self.addCleanup(url_patch.stop)
 
     async def test_progress_unknown_total_and_postprocessing(self) -> None:
         final = self.root / "abc-video.mp4"

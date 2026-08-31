@@ -111,6 +111,7 @@ class Settings:
     faststart_max_bytes: int
     transcode_enabled: bool
     thumbnail_position: str
+    url_private_network_policy: str
 
     @classmethod
     def from_env(
@@ -160,6 +161,13 @@ class Settings:
                 if strict:
                     raise SettingsError("invalid configuration: THUMBNAIL_POSITION") from exc
                 thumbnail_position = "auto"
+        url_private_network_policy = str(
+            env.get("URL_PRIVATE_NETWORK_POLICY", "warn")
+        ).strip().lower() or "warn"
+        if url_private_network_policy not in {"allow", "warn", "block"}:
+            if strict:
+                raise SettingsError("invalid configuration: URL_PRIVATE_NETWORK_POLICY")
+            url_private_network_policy = "warn"
 
         settings = cls(
             api_id=api_id,
@@ -202,6 +210,7 @@ class Settings:
             faststart_max_bytes=_int(env, "FASTSTART_MAX_BYTES", 0, strict=strict),
             transcode_enabled=_bool(env, "TRANSCODE_ENABLED", False, strict=strict),
             thumbnail_position=thumbnail_position,
+            url_private_network_policy=url_private_network_policy,
         )
         if strict:
             settings.validate()
@@ -252,6 +261,7 @@ class Settings:
             "disk_enforce": self.disk_enforce,
             "media_compat_mode": self.media_compat_mode,
             "transcode_enabled": self.transcode_enabled,
+            "url_private_network_policy": self.url_private_network_policy,
             "download_dir_configured": bool(self.download_dir),
         }
 
@@ -322,6 +332,7 @@ MEDIA_COMPAT_MODE = SETTINGS.media_compat_mode
 FASTSTART_MAX_BYTES = SETTINGS.faststart_max_bytes
 TRANSCODE_ENABLED = SETTINGS.transcode_enabled
 THUMBNAIL_POSITION = SETTINGS.thumbnail_position
+URL_PRIVATE_NETWORK_POLICY = SETTINGS.url_private_network_policy
 
 WEBDAV_ENABLED = WEBDAV_BOOTSTRAP.enabled
 WEBDAV_URL = WEBDAV_BOOTSTRAP.url

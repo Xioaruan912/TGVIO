@@ -311,6 +311,7 @@ class _Pipeline:
             static.download_timeout,
             static.download_workers,
             static.part_size_kb,
+            static.url_private_network_policy,
         )
         self.publisher = MediaPublisher(
             client,

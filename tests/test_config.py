@@ -47,6 +47,17 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.api_id, 0)
         self.assertEqual(settings.allowed_users, frozenset())
 
+    def test_url_private_network_policy_is_validated_and_safe_to_summarize(self) -> None:
+        env = base_env()
+        env["URL_PRIVATE_NETWORK_POLICY"] = "block"
+        settings = Settings.from_env(env, strict=True)
+        self.assertEqual(settings.url_private_network_policy, "block")
+        self.assertEqual(settings.safe_summary()["url_private_network_policy"], "block")
+
+        env["URL_PRIVATE_NETWORK_POLICY"] = "invalid"
+        with self.assertRaises(SettingsError):
+            Settings.from_env(env, strict=True)
+
 
 if __name__ == "__main__":
     unittest.main()

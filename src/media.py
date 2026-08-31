@@ -51,12 +51,14 @@ class MediaDownloader:
         download_timeout: int,
         download_workers: int = 8,
         part_size_kb: int = 512,
+        url_private_network_policy: str = "warn",
     ):
         self.client = client
         self._workdir_fn = workdir_fn
         self.download_timeout = download_timeout
         self.download_workers = max(1, download_workers)
         self.part_size_kb = part_size_kb
+        self.url_private_network_policy = str(url_private_network_policy or "warn")
         self.shard_retries = SHARD_RETRIES
         self.pre_download_hooks = []   # async (job) -> None
         self.post_download_hooks = []  # async (job, paths) -> optional replacement paths
@@ -146,6 +148,7 @@ class MediaDownloader:
                     workdir,
                     on_progress=on_url_progress,
                     cancel_token=cancel_token,
+                    private_network_policy=self.url_private_network_policy,
                 )
             finally:
                 job.url_cancel_token = None

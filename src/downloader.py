@@ -11,6 +11,8 @@ from typing import Callable
 
 from yt_dlp import YoutubeDL
 
+from .security import enforce_url_policy
+
 logger = logging.getLogger(__name__)
 
 
@@ -58,8 +60,14 @@ ProgressCallback = Callable[[DownloadProgress], None]
 class UrlDownloader:
     """Async adapter around yt-dlp's Python API with cooperative cancellation."""
 
-    def __init__(self, *, cancel_wait_seconds: float = 10.0) -> None:
+    def __init__(
+        self,
+        *,
+        cancel_wait_seconds: float = 10.0,
+        private_network_policy: str = "warn",
+    ) -> None:
         self.cancel_wait_seconds = max(0.1, float(cancel_wait_seconds))
+        self.private_network_policy = str(private_network_policy or "warn").lower()
 
     async def download(
         self,
@@ -83,6 +91,7 @@ class UrlDownloader:
             download_dir,
             token,
             emit,
+            self.private_network_policy,
         )
         try:
             return await asyncio.shield(worker)
@@ -106,8 +115,9 @@ async def download_video(
     *,
     on_progress: ProgressCallback | None = None,
     cancel_token: CancelToken | None = None,
+    private_network_policy: str = "warn",
 ) -> tuple[str, str]:
-    result = await UrlDownloader().download(
+    result = await UrlDownloader(private_network_policy=private_network_policy).download(
         url,
         download_dir,
         on_progress=on_progress,
@@ -121,9 +131,15 @@ def _download_sync(
     download_dir: str,
     cancel_token: CancelToken,
     emit: ProgressCallback,
+    private_network_policy: str = "warn",
 ) -> DownloadResult:
     root = Path(download_dir).resolve()
     root.mkdir(parents=True, exist_ok=True)
+    risk = enforce_url_policy(url, private_network_policy=private_network_policy)
+    if risk.private_network and private_network_policy == "warn":
+        logger.warning("URL download targets private/local network host=%s", risk.hostname)
+    elif not risk.addresses and private_network_policy == "warn":
+        logger.warning("URL private-network risk unresolved locally host=%s", risk.hostname)
 
     def progress_hook(data: dict) -> None:
         cancel_token.raise_if_cancelled()
