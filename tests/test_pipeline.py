@@ -529,6 +529,35 @@ class PipelineBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.pipeline._finish_seq(170)
         self.pipeline._finish_seq(171)
 
+    async def test_one_hundred_jobs_complete_without_deadlock_or_duplicate_publish(self) -> None:
+        count = 100
+        self.pipeline.publisher.expected_calls = count
+        self.pipeline._schedule_cleanup = lambda _seq, _cleanup: None
+        jobs = [self.make_job(1000 + index) for index in range(count)]
+        for job in jobs:
+            self.pipeline.enqueue(job)
+
+        download_workers = [
+            asyncio.create_task(self.pipeline._download_worker()) for _ in range(8)
+        ]
+        upload_worker = asyncio.create_task(self.pipeline._upload_worker())
+        try:
+            await asyncio.wait_for(self.pipeline.input_q.join(), timeout=3)
+            await asyncio.wait_for(self.pipeline.publisher.completed.wait(), timeout=3)
+            await wait_until(lambda: not self.pipeline.results, timeout=3)
+        finally:
+            for task in download_workers:
+                await cancel_task(task)
+            await cancel_task(upload_worker)
+
+        expected = [job.seq for job in jobs]
+        self.assertEqual(self.pipeline.publisher.calls, expected)
+        self.assertEqual(len(set(self.pipeline.publisher.calls)), count)
+        self.assertEqual(len(self.pipeline.downloader.calls), count)
+        self.assertEqual(set(self.pipeline.downloader.calls), set(expected))
+        self.assertFalse(self.pipeline.jobs)
+        self.assertFalse(self.pipeline.active_seqs)
+
     async def test_running_download_cancel_stops_task_and_settles_job(self) -> None:
         release = asyncio.Event()
         self.pipeline.downloader.expected_calls = 1

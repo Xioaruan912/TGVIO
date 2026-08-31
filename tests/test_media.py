@@ -144,6 +144,33 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.publisher._post_comment.assert_awaited_once_with(job, "video-input", 101)
 
+    async def test_ordered_photo_collection_splits_media_groups_at_ten(self) -> None:
+        paths = [self.make_file(f"photo-{index}.jpg") for index in range(23)]
+        captions = [f"caption-{index}" for index in range(23)]
+        job = Job(
+            seq=20,
+            kind="collection",
+            status=FakeStatusMessage(),
+            spoiler=False,
+        )
+        calls: list[tuple[list[str], list[str]]] = []
+
+        async def fake_send_album(
+            _job, chunk_paths, _dest_input, _spoiler, forced_captions=None, **_kwargs
+        ):
+            calls.append((list(chunk_paths), list(forced_captions or [])))
+            start = sum(len(previous[0]) for previous in calls[:-1])
+            return list(range(start + 1, start + len(chunk_paths) + 1))
+
+        self.publisher._send_album_media = fake_send_album
+        refs = await self.publisher._publish_ordered(
+            job, paths, "dest-input", captions
+        )
+
+        self.assertEqual([len(chunk) for chunk, _ in calls], [10, 10, 3])
+        self.assertEqual([caps for _, caps in calls], [captions[:10], captions[10:20], captions[20:]])
+        self.assertEqual(refs, list(range(1, 24)))
+
     async def test_single_cover_publish_returns_channel_and_comment_references(self) -> None:
         video = self.make_file("single.mp4")
         cover = self.make_file("single-cover.jpg")

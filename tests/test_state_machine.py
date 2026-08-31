@@ -1,9 +1,32 @@
 import unittest
 
-from src.state_machine import InvalidTransition, plan_transition
+from src.state_machine import ALLOWED_TRANSITIONS, InvalidTransition, plan_transition
 
 
 class JobStateMachineTests(unittest.TestCase):
+    def test_every_declared_state_pair_matches_transition_matrix(self) -> None:
+        states = tuple(ALLOWED_TRANSITIONS)
+        for source in states:
+            for target in states:
+                allowed = target in ALLOWED_TRANSITIONS[source]
+                kwargs = {}
+                if source == "paused" and target in {"queued", "downloading", "ready"}:
+                    kwargs["current_resume_state"] = target
+                with self.subTest(source=source, target=target, allowed=allowed):
+                    if allowed:
+                        plan = plan_transition(source, target, **kwargs)
+                        self.assertEqual((plan.from_state, plan.to_state), (source, target))
+                    else:
+                        with self.assertRaises(InvalidTransition):
+                            plan_transition(source, target, **kwargs)
+
+        for unknown in ("", "unknown", "SUCCEEDED"):
+            with self.subTest(unknown=unknown):
+                with self.assertRaises(InvalidTransition):
+                    plan_transition(unknown, "queued")
+                with self.assertRaises(InvalidTransition):
+                    plan_transition("queued", unknown)
+
     def test_pause_records_resume_state_and_only_resumes_there(self) -> None:
         paused = plan_transition("downloading", "paused")
         self.assertEqual(paused.resume_state, "downloading")

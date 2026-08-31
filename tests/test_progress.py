@@ -35,6 +35,25 @@ class ProgressTrackerTests(unittest.TestCase):
         self.assertFalse(tracker.allow_ui(state, now=9.0))
         self.assertTrue(tracker.allow_ui(state, now=15.0))
 
+    def test_unknown_total_has_no_eta_and_global_edit_bucket_is_bounded(self) -> None:
+        tracker = ProgressTracker(
+            ui_interval=0.0,
+            edit_rate=0.0,
+            edit_burst=2.0,
+        )
+        unknown = tracker.update(1, "downloading", 100, 0, 1, 1, now=10.0)
+        unknown = tracker.update(1, "downloading", 200, 0, 1, 1, now=11.0)
+        self.assertEqual(unknown.pct, 0)
+        self.assertIsNotNone(unknown.speed_bps)
+        self.assertIsNone(unknown.eta_seconds)
+
+        first = tracker.update(2, "downloading", 1, 10, 1, 1, now=11.0)
+        second = tracker.update(3, "downloading", 1, 10, 1, 1, now=11.0)
+        third = tracker.update(4, "downloading", 1, 10, 1, 1, now=11.0)
+        self.assertTrue(tracker.allow_ui(first, now=11.0))
+        self.assertTrue(tracker.allow_ui(second, now=11.0))
+        self.assertFalse(tracker.allow_ui(third, now=11.0))
+
 
 if __name__ == "__main__":
     unittest.main()

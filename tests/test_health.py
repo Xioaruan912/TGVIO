@@ -102,6 +102,40 @@ class LocalHealthcheckTests(unittest.TestCase):
             self.assertFalse(ok)
             self.assertEqual(reason, "heartbeat_stale")
 
+    def test_database_unavailable_fails_liveness_and_readiness(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            heartbeat, _db, downloads = self._fixture(root, ready=True)
+            missing_db = root / "missing.sqlite3"
+            env = {
+                "HEALTH_HEARTBEAT_FILE": str(heartbeat),
+                "STATE_DB": str(missing_db),
+                "DOWNLOAD_DIR": str(downloads),
+                "HEALTH_MIN_FREE_BYTES": "0",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                live, live_reason = self.healthcheck.check(require_ready=False)
+                ready, ready_reason = self.healthcheck.check(require_ready=True)
+            self.assertFalse(live)
+            self.assertEqual(live_reason, "database_unavailable")
+            self.assertFalse(ready)
+            self.assertEqual(ready_reason, "database_unavailable")
+
+    def test_disk_hard_threshold_fails_closed(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            heartbeat, db, downloads = self._fixture(root, ready=True)
+            env = {
+                "HEALTH_HEARTBEAT_FILE": str(heartbeat),
+                "STATE_DB": str(db),
+                "DOWNLOAD_DIR": str(downloads),
+                "HEALTH_MIN_FREE_BYTES": "999999999999999999",
+            }
+            with patch.dict(os.environ, env, clear=False):
+                ok, reason = self.healthcheck.check(require_ready=True)
+            self.assertFalse(ok)
+            self.assertEqual(reason, "disk_critical")
+
     def test_dockerfile_healthcheck_does_not_reference_external_probes(self) -> None:
         dockerfile = (Path(__file__).resolve().parents[1] / "Dockerfile").read_text(encoding="utf-8")
         self.assertIn('HEALTHCHECK', dockerfile)

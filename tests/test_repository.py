@@ -42,6 +42,24 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(check["synchronous"], 2)
         self.assertTrue(SQLiteRepository.REQUIRED_TABLES.issubset(check["tables"]))
 
+    async def test_corrupt_database_fails_closed_without_reinitializing_file(self) -> None:
+        root = self.db_path.parent
+        corrupt_path = root / "corrupt.sqlite3"
+        original = b"not-a-sqlite-database\x00private-bytes"
+        corrupt_path.write_bytes(original)
+        repo = SQLiteRepository(
+            corrupt_path,
+            backup_dir=root / "corrupt-backups",
+            download_root=self.download_root,
+        )
+
+        with self.assertRaises(Exception):
+            await repo.open()
+        await repo.close()
+
+        self.assertEqual(corrupt_path.read_bytes(), original)
+        self.assertEqual(list((root / "corrupt-backups").glob("*")), [])
+
     async def test_delete_job_history_requires_owner_revision_and_no_cache(self) -> None:
         job_dir = self.download_root / "job-700"
         job_dir.mkdir()
