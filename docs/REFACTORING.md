@@ -57,13 +57,14 @@
 
 ## Next extraction targets
 
-1. F2-C: route initial WebDAV upload, automatic replay and manual retry through
-   the shared error classifier and an independent backup retry budget.
-2. Persist backup attempt/file error code, retry count and next retry time while
-   preserving current remote-size idempotency checks and timeout-success logic.
-3. F2-D: centralize proxy switching in a serial NetworkCoordinator and finish
-   download/publish/backup budget isolation plus partial-publish UI actions.
-4. Keep F3 disk quota/enforcement separate until F2 is fully tested and deployed.
+1. F3: add a `DiskManager` in monitor-only mode first, with safe download-root
+   path validation, free-space snapshots and per-job reservations.
+2. Add pre-accept/pre-download capacity checks while keeping
+   `DISK_ENFORCE=false` until production observations confirm thresholds.
+3. Build deterministic cleanup candidate selection for terminal, unclaimed,
+   non-retry-protected job caches; never recursively delete unchecked paths.
+4. Keep F4 stats/health and B1 WebDAV lifecycle extraction separate until F3
+   monitoring and cleanup tests are deployed.
 
 ## UI direction
 

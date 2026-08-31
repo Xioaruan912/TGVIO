@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `d1025cc`（F2-B：publish 副作用逐条 checkpoint、`publish_partial` fail-closed、零副作用 publish budget/retry 完成）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 08:28 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、active jobs/claims 为 0，生产容器 138 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。F2-B 未新增 migration，R3 recovery/shutdown、U1 progress、U2 durable UI、F1 cancel 与 F2-A download retry 基线继续由现有测试保护。
+- 当前分支：`main`。当前生产运行代码基线为 `dddaa9f`（F2 完成：统一错误/retry、publish checkpoint、WebDAV durable retry、串行 NetworkCoordinator）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 08:51 CST 最后一次部署验证时容器 `running`、`restart=0`，数据库 schema `[1, 2, 3, 4]`、`integrity=ok`、incomplete jobs/claims/active backup 为 0，生产容器 147 tests 全通过；启动日志包含 `SQLite repository ready...`、`Bot commands registered`、`Bot started`。F2 未新增 migration，R3 recovery/shutdown、U1 progress、U2 durable UI 与 F1 cancel 基线继续由现有测试保护。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -424,7 +424,7 @@ docker compose config --quiet
 | U1 | P1 | 首页控制台、统一任务卡、每任务进度节流 | R1、R3 | [x] `2da964d`（2026-08-30） |
 | U2 | P1 | 队列分页/筛选/详情、分类帮助、确认弹窗 | U1 | [x] `c5355ab`（2026-08-31） |
 | F1 | P1 | yt-dlp 实时进度、速度/ETA、真正取消 | R3、U1 | [x] `b5450e6`（2026-08-31） |
-| F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [ ] |
+| F2 | P1 | 错误分类、失败中心、阶段级重试与退避 | R3、U2 | [x] `dddaa9f`（2026-08-31；F2-A/B/C/D 完成） |
 | F3 | P1 | 磁盘预检、配额、保留策略和安全清理 | R2 | [ ] |
 | F4 | P1 | `/stats`、健康检查、脱敏诊断与事件日志 | R2、F3 | [ ] |
 | B1 | P1 | WebDAV 生命周期抽取、连通/容量/策略 UI | R1、U2 | [ ] |
@@ -1488,14 +1488,14 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1 已完成。当前正在执行 **F2：错误分类、失败中心与阶段级重试/退避**；不要同时夹带 F3 磁盘配额、Web Dashboard、多频道或转码。
+R0、R1、R2、R3、U1、U2、F1、F2 已完成。当前下一阶段是 **F3：磁盘预检、配额、保留策略和安全清理**；不要同时夹带 F4/B1/Web Dashboard、多频道或转码。
 
 - [x] F2-A：集中 domain error taxonomy、安全摘要/脱敏 traceback frame、download retry budget、指数退避+jitter、FloodWait 精确等待、可立即取消的 backoff、`error_code/error_message/retry_count/next_retry_at` 持久化、失败中心错误码/动作提示。（2026-08-31，`31a8335`）
 - [x] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试；已有 refs 不提供普通重试并可进入撤销人工流程。（2026-08-31，`d1025cc`）
 - [x] F2-C：WebDAV 初传/自动补传/手动重试/缓存补传统一接入 classifier + 独立 backup budget，持久化 attempt/file 错误与 attempt retry/next time，并保留远端大小幂等确认。（2026-08-31，`f16b663`；生产 143 tests、schema4/integrity、restart=0、源码哈希均已补验通过）
-- [ ] F2-D：集中 `NetworkCoordinator` 串行代理切换，补 download/publish/backup budget 隔离、partial publish 和错误专属按钮集成测试；全部部署验证后才标 F2 主项完成。
+- [x] F2-D：集中 `NetworkCoordinator` 串行代理切换，download/publish/backup budget 隔离、partial publish/error-specific UI 集成测试、代理 generation 防并发重连抖动。（2026-08-31，`dddaa9f`）
 
-下一位代理从 F2-D 开始：集中 `NetworkCoordinator` 串行代理切换，补 download/publish/backup 三阶段 budget 隔离、partial publish 与错误专属按钮集成测试；F2-D 生产验收通过后才能把 F2 主项标完成。
+下一位代理从 F3 开始：先按第 16.3 节做 `DiskManager` 监控模式（`DISK_ENFORCE=false`）与 reservation 计算/安全路径边界测试，再接接受任务前预检和保留/清理策略；不要直接开启生产强制拒绝。
 
 ## 21. 执行日志
 
@@ -1734,3 +1734,15 @@ R0、R1、R2、R3、U1、U2、F1 已完成。当前正在执行 **F2：错误分
 - 部署前门禁：生产确认仍为 `d1025cc`，关键源码哈希一致，容器 `restart=0`，无活动 transfer/backup、incomplete/claims 为 0，schema `[1,2,3,4]`、`integrity=ok`。部署前 SQLite 一致性备份已创建：`/root/telegram-video-forwarder-releases/state-pre-f16b663-20260831-083854.sqlite3`；回滚镜像 `telegram-video-forwarder:rollback-pre-f16b663` 与源码 `/root/telegram-video-forwarder-releases/pre-f16b663.tar.gz` 已创建。
 - 生产后验：SSH 恢复后只读确认容器 `running`、`restart=0`，镜像 `sha256:06f7588a11c9c5eb09bf8d46b8908d724bd639d5ab33efab7f63774a729cffc2`；生产 `src/bot.py`、`src/webdav.py`、`src/repository/sqlite.py`、`src/services/backup_manager.py` SHA-256 与本地 `f16b663` 完全一致；schema `[1,2,3,4]`、`integrity=ok`、incomplete/claims/active backup 均为 0，启动日志正常，生产容器 **143 tests 全通过**。
 - 下一步精确入口：按上方 F2-D；先集中代理切换与阶段 budget/partial UI 集成测试，不同时进入 F3。
+
+### 2026-08-31 08:51 - F2-D NetworkCoordinator 与 F2 总完成
+
+- 状态：F2-D 已完成、推送并部署生产；F2 主工作包正式完成，下一阶段进入 F3。
+- 实现 commit：`dddaa9f`（`feat(network): serialize proxy failover`）。
+- NetworkCoordinator：新增 `src/services/network.py`，所有手动/启动/自动代理切换统一通过单个 asyncio lock；每次成功 reconnect 推进 generation。并发下载在 transport 开始前记录 generation，若另一个任务已完成代理切换，后续 stale 网络失败只在新连接重试，不再连续切第二次代理，避免并发任务互相 disconnect/reconnect。
+- 代理一致性：代理配置只有在 `client.connect()` 成功后才持久化为 current；失败时恢复旧 client proxy 并 best-effort 恢复连接；所有配置代理都失败后显式恢复直连。本地 ffmpeg postprocessing timeout 不触发代理切换，网络/download timeout 才参与 coordinator。
+- F2 集成：新增 stage budget 隔离测试，确认 download/publish/backup budget 独立；`publish_partial` 用户建议改为 fail-closed 文案，详情页有已发布 refs 时提供撤销，不出现普通 retry 按钮；F2-A/B/C 原有 durable error/retry/checkpoint/WebDAV 行为继续回归。
+- 测试：最终本地源码与最终构建镜像均 **147 项 unittest 全通过**；`compileall`、`git diff --check`、compose config、Docker build、静态镜像秘密路径检查全部通过；schema 仍 `[1,2,3,4]`，0001～0004 checksum 未改。
+- VPS：部署前确认生产实际为 `f16b663`、关键源码无漂移、`restart=0`、无 active transfer/incomplete/claims/backup；部署前 SQLite backup `/root/telegram-video-forwarder-releases/state-pre-dddaa9f-20260831-085115.sqlite3`，回滚镜像 `telegram-video-forwarder:rollback-pre-dddaa9f`，源码 `/root/telegram-video-forwarder-releases/pre-dddaa9f.tar.gz`。部署后容器 `running`、`restart=0`，镜像 `sha256:ef0b55bad45ba05b269d36d805d74c81d8b7dedadbdd102a47b4fefc13fbb613`；生产关键源码 SHA-256 与 commit 一致，schema4/`integrity=ok`、incomplete/claims/active backup 均为 0，生产容器 147 tests 全通过，静态镜像 clean。
+- 数据迁移：无；F2 全阶段均复用 schema `[1,2,3,4]`，代码回滚不要求降库。
+- 下一步精确入口：第 16.3 节 F3。先上线 DiskManager 监控模式和 reservation/清理候选测试，再考虑 `DISK_ENFORCE=true`，不要直接在生产启用强制阻断。
