@@ -30,7 +30,7 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.close()
 
     async def test_initial_migration_is_idempotent_and_pragmas_are_enforced(self) -> None:
-        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3, 4])
+        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3, 4, 5])
         self.assertEqual(await self.repo.migrate(), [])
         check = await self.repo.self_check()
         self.assertEqual(check["integrity"], "ok")
@@ -670,6 +670,72 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(preserved.source_url, "https://example.invalid/r3b")
             self.assertIsNone(preserved.legacy_seq)
             self.assertEqual(await second.schema_versions(), [1, 2, 3, 4])
+        finally:
+            await second.close()
+
+        self.repo = SQLiteRepository(
+            self.db_path,
+            backup_dir=self.backup_dir,
+            download_root=self.download_root,
+        )
+        await self.repo.open()
+        await self.repo.migrate()
+
+    async def test_upgrade_from_schema_four_adds_stats_and_reconciles_existing_jobs(self) -> None:
+        await self.repo.close()
+        root = Path(self.tempdir.name)
+        migration_dir = root / "upgrade-f4-migrations"
+        migration_dir.mkdir()
+        source_dir = Path(__file__).parents[1] / "src" / "repository" / "migrations"
+        for name in (
+            "0001_initial.sql",
+            "0002_runtime_entities.sql",
+            "0003_claims.sql",
+            "0004_recovery.sql",
+        ):
+            (migration_dir / name).write_bytes((source_dir / name).read_bytes())
+
+        db = root / "upgrade-f4.sqlite3"
+        first = SQLiteRepository(
+            db,
+            migrations_dir=migration_dir,
+            backup_dir=self.backup_dir,
+            download_root=self.download_root,
+        )
+        await first.open()
+        await first.migrate()
+        job = await first.accept_job(
+            kind="url",
+            user_id=7,
+            state="queued",
+            source_kind="url",
+            source_url="https://example.invalid/pre-f4",
+            legacy_seq=700,
+            event_payload={"schema_version": 1},
+        )
+        await first.close()
+
+        (migration_dir / "0005_stats.sql").write_bytes(
+            (source_dir / "0005_stats.sql").read_bytes()
+        )
+        second = SQLiteRepository(
+            db,
+            migrations_dir=migration_dir,
+            backup_dir=self.backup_dir,
+            download_root=self.download_root,
+        )
+        await second.open()
+        try:
+            self.assertEqual(await second.migrate(), [5])
+            self.assertIsNotNone(second.last_backup_path)
+            self.assertTrue(second.last_backup_path.exists())
+            preserved = await second.get_job(job.id)
+            self.assertEqual(preserved.source_url, "https://example.invalid/pre-f4")
+            self.assertEqual(await second.schema_versions(), [1, 2, 3, 4, 5])
+            self.assertGreaterEqual(await second.reconcile_daily_stats(), 1)
+            snapshot = await second.stats_snapshot()
+            self.assertEqual(snapshot["totals"]["accepted_jobs"], 1)
+            self.assertEqual(await second.reconcile_daily_stats(), 0)
         finally:
             await second.close()
 

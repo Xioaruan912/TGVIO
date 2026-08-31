@@ -185,8 +185,66 @@ class SQLiteRepository:
             "job_texts",
             "published_messages",
             "interaction_sessions",
+            "daily_stats",
+            "stat_metric_applied",
         }
     )
+
+    _STAT_COLUMNS = frozenset(
+        {
+            "accepted_jobs",
+            "succeeded_jobs",
+            "failed_jobs",
+            "cancelled_jobs",
+            "downloaded_bytes",
+            "published_bytes",
+            "backed_up_bytes",
+            "saved_upload_bytes",
+        }
+    )
+
+    @staticmethod
+    def _day_utc(timestamp: float) -> str:
+        return time.strftime("%Y-%m-%d", time.gmtime(float(timestamp)))
+
+    async def _apply_stat_metric_tx(
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        scope_key: str,
+        metric: str,
+        value: int,
+        timestamp: float,
+    ) -> bool:
+        if metric not in self._STAT_COLUMNS:
+            raise RepositoryError(f"unsupported stat metric: {metric}")
+        cursor = await conn.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='stat_metric_applied'"
+        )
+        available = await cursor.fetchone()
+        await cursor.close()
+        if available is None:
+            return False
+        value = max(0, int(value))
+        day_utc = self._day_utc(timestamp)
+        cursor = await conn.execute(
+            """INSERT OR IGNORE INTO stat_metric_applied(scope_key,metric,day_utc,value,created_at)
+               VALUES (?,?,?,?,?)""",
+            (str(scope_key), str(metric), day_utc, value, float(timestamp)),
+        )
+        inserted = cursor.rowcount == 1
+        await cursor.close()
+        if not inserted:
+            return False
+        await conn.execute(
+            "INSERT OR IGNORE INTO daily_stats(day_utc,updated_at) VALUES (?,?)",
+            (day_utc, float(timestamp)),
+        )
+        await conn.execute(
+            f"UPDATE daily_stats SET {metric}={metric}+?,updated_at=? WHERE day_utc=?",
+            (value, float(timestamp), day_utc),
+        )
+        return True
 
     def __init__(
         self,
@@ -505,6 +563,13 @@ class SQLiteRepository:
                     """,
                     (job_id, event_type, state, payload_json, timestamp),
                 )
+                await self._apply_stat_metric_tx(
+                    conn,
+                    scope_key=f"job:{job_id}",
+                    metric="accepted_jobs",
+                    value=1,
+                    timestamp=timestamp,
+                )
                 await conn.commit()
             except Exception:
                 await conn.rollback()
@@ -595,6 +660,13 @@ class SQLiteRepository:
                     VALUES (?, ?, NULL, ?, ?, ?)
                     """,
                     (job_id, event_type, state, payload_json, timestamp),
+                )
+                await self._apply_stat_metric_tx(
+                    conn,
+                    scope_key=f"job:{job_id}",
+                    metric="accepted_jobs",
+                    value=1,
+                    timestamp=timestamp,
                 )
                 await conn.commit()
             except Exception:
@@ -735,6 +807,22 @@ class SQLiteRepository:
                         timestamp,
                     ),
                 )
+                if plan.to_state == "failed":
+                    await self._apply_stat_metric_tx(
+                        conn,
+                        scope_key=f"job:{job_id}",
+                        metric="failed_jobs",
+                        value=1,
+                        timestamp=timestamp,
+                    )
+                elif plan.to_state == "cancelled":
+                    await self._apply_stat_metric_tx(
+                        conn,
+                        scope_key=f"job:{job_id}",
+                        metric="cancelled_jobs",
+                        value=1,
+                        timestamp=timestamp,
+                    )
                 await conn.commit()
             except InvalidTransition:
                 await conn.rollback()
@@ -1075,6 +1163,19 @@ class SQLiteRepository:
                         timestamp,
                     ),
                 )
+                cursor = await conn.execute(
+                    "SELECT COALESCE(SUM(size_bytes),0) AS n FROM job_items WHERE job_id=?",
+                    (int(job_id),),
+                )
+                size_row = await cursor.fetchone()
+                await cursor.close()
+                await self._apply_stat_metric_tx(
+                    conn,
+                    scope_key=f"job:{job_id}",
+                    metric="downloaded_bytes",
+                    value=int(size_row["n"] if size_row is not None else 0),
+                    timestamp=timestamp,
+                )
                 await conn.commit()
             except Exception:
                 await conn.rollback()
@@ -1233,6 +1334,27 @@ class SQLiteRepository:
                 await conn.execute(
                     "INSERT INTO job_events(job_id,event_type,from_state,to_state,payload_json,created_at) VALUES (?,?,?,?,?,?)",
                     (job_id, "published", plan.from_state, "succeeded", self._encode_versioned_payload({"schema_version": 1, "count": len(messages)}), timestamp),
+                )
+                cursor = await conn.execute(
+                    "SELECT COALESCE(SUM(size_bytes),0) AS n FROM job_items WHERE job_id=?",
+                    (int(job_id),),
+                )
+                size_row = await cursor.fetchone()
+                await cursor.close()
+                published_bytes = int(size_row["n"] if size_row is not None else 0)
+                await self._apply_stat_metric_tx(
+                    conn,
+                    scope_key=f"job:{job_id}",
+                    metric="succeeded_jobs",
+                    value=1,
+                    timestamp=timestamp,
+                )
+                await self._apply_stat_metric_tx(
+                    conn,
+                    scope_key=f"job:{job_id}",
+                    metric="published_bytes",
+                    value=published_bytes,
+                    timestamp=timestamp,
                 )
                 await conn.commit()
             except Exception:
@@ -1479,6 +1601,115 @@ class SQLiteRepository:
         rows = await cursor.fetchall()
         await cursor.close()
         return {str(row["state"]): int(row["n"]) for row in rows}
+
+    async def reconcile_daily_stats(self) -> int:
+        """Idempotently backfill materialized stats from durable source rows."""
+        conn = self._require_conn()
+        applied = 0
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    """SELECT id,state,download_state,accepted_at,updated_at,finished_at
+                       FROM jobs ORDER BY id"""
+                )
+                jobs = await cursor.fetchall()
+                await cursor.close()
+                for row in jobs:
+                    job_id = int(row["id"])
+                    accepted_at = float(row["accepted_at"])
+                    applied += int(await self._apply_stat_metric_tx(
+                        conn, scope_key=f"job:{job_id}", metric="accepted_jobs",
+                        value=1, timestamp=accepted_at,
+                    ))
+                    if str(row["download_state"]) == "succeeded":
+                        size_cursor = await conn.execute(
+                            "SELECT COALESCE(SUM(size_bytes),0) AS n FROM job_items WHERE job_id=?",
+                            (job_id,),
+                        )
+                        size_row = await size_cursor.fetchone()
+                        await size_cursor.close()
+                        applied += int(await self._apply_stat_metric_tx(
+                            conn, scope_key=f"job:{job_id}", metric="downloaded_bytes",
+                            value=int(size_row["n"] if size_row else 0),
+                            timestamp=float(row["updated_at"]),
+                        ))
+                    terminal_at = float(row["finished_at"] or row["updated_at"])
+                    state = str(row["state"])
+                    if state == "succeeded":
+                        size_cursor = await conn.execute(
+                            "SELECT COALESCE(SUM(size_bytes),0) AS n FROM job_items WHERE job_id=?",
+                            (job_id,),
+                        )
+                        size_row = await size_cursor.fetchone()
+                        await size_cursor.close()
+                        applied += int(await self._apply_stat_metric_tx(
+                            conn, scope_key=f"job:{job_id}", metric="succeeded_jobs",
+                            value=1, timestamp=terminal_at,
+                        ))
+                        applied += int(await self._apply_stat_metric_tx(
+                            conn, scope_key=f"job:{job_id}", metric="published_bytes",
+                            value=int(size_row["n"] if size_row else 0), timestamp=terminal_at,
+                        ))
+                    elif state == "failed":
+                        applied += int(await self._apply_stat_metric_tx(
+                            conn, scope_key=f"job:{job_id}", metric="failed_jobs",
+                            value=1, timestamp=terminal_at,
+                        ))
+                    elif state == "cancelled":
+                        applied += int(await self._apply_stat_metric_tx(
+                            conn, scope_key=f"job:{job_id}", metric="cancelled_jobs",
+                            value=1, timestamp=terminal_at,
+                        ))
+                cursor = await conn.execute(
+                    """SELECT f.id,f.size_bytes,a.updated_at
+                       FROM backup_files f
+                       JOIN backup_attempts a ON a.id=f.attempt_id
+                       WHERE f.state='succeeded' ORDER BY f.id"""
+                )
+                files = await cursor.fetchall()
+                await cursor.close()
+                for row in files:
+                    applied += int(await self._apply_stat_metric_tx(
+                        conn,
+                        scope_key=f"backup_file:{int(row['id'])}",
+                        metric="backed_up_bytes",
+                        value=int(row["size_bytes"]),
+                        timestamp=float(row["updated_at"]),
+                    ))
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return applied
+
+    async def stats_snapshot(self, *, now: float | None = None) -> dict[str, Any]:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        today = self._day_utc(timestamp)
+        columns = sorted(self._STAT_COLUMNS)
+        projection = ",".join(columns)
+        cursor = await conn.execute(
+            f"SELECT {projection} FROM daily_stats WHERE day_utc=?",
+            (today,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        today_values = {column: int(row[column]) if row is not None else 0 for column in columns}
+        cursor = await conn.execute(
+            "SELECT " + ",".join(f"COALESCE(SUM({column}),0) AS {column}" for column in columns) + " FROM daily_stats"
+        )
+        total_row = await cursor.fetchone()
+        await cursor.close()
+        totals = {column: int(total_row[column]) if total_row is not None else 0 for column in columns}
+        cursor = await conn.execute(
+            """SELECT error_code,COUNT(*) AS n FROM jobs
+               WHERE error_code IS NOT NULL AND error_code<>''
+               GROUP BY error_code ORDER BY MAX(updated_at) DESC LIMIT 5"""
+        )
+        errors = [{"code": str(item["error_code"]), "count": int(item["n"])} for item in await cursor.fetchall()]
+        await cursor.close()
+        return {"day_utc": today, "today": today_values, "totals": totals, "recent_errors": errors}
 
     async def cleanup_inventory(self, *, limit: int = 1000) -> list[dict[str, Any]]:
         """Return durable facts needed to build a safe disk-cleanup dry run.
@@ -2113,13 +2344,34 @@ class SQLiteRepository:
         conn = self._require_conn()
         safe_message = _sanitize_error_message(error_message) if error_message else None
         async with self._write_lock:
-            await conn.execute(
-                """UPDATE backup_files
-                   SET state=?,bytes_done=COALESCE(?,bytes_done),error_code=?,error_message=?
-                   WHERE id=?""",
-                (str(state), bytes_done, error_code, safe_message, int(file_id)),
-            )
-            await conn.commit()
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    """SELECT f.state,f.size_bytes,a.updated_at
+                       FROM backup_files f JOIN backup_attempts a ON a.id=f.attempt_id
+                       WHERE f.id=?""",
+                    (int(file_id),),
+                )
+                previous = await cursor.fetchone()
+                await cursor.close()
+                await conn.execute(
+                    """UPDATE backup_files
+                       SET state=?,bytes_done=COALESCE(?,bytes_done),error_code=?,error_message=?
+                       WHERE id=?""",
+                    (str(state), bytes_done, error_code, safe_message, int(file_id)),
+                )
+                if previous is not None and str(state) == "succeeded":
+                    await self._apply_stat_metric_tx(
+                        conn,
+                        scope_key=f"backup_file:{int(file_id)}",
+                        metric="backed_up_bytes",
+                        value=int(previous["size_bytes"]),
+                        timestamp=time.time(),
+                    )
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
 
     async def update_backup_attempt_status(
         self,

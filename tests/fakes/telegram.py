@@ -83,6 +83,9 @@ class FakeClient:
     async def connect(self) -> None:
         self.connected = True
 
+    def is_connected(self) -> bool:
+        return bool(self.connected)
+
 
 class FakeCallbackEvent:
     def __init__(

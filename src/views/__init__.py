@@ -33,6 +33,7 @@ from .tasks import (
     failure_center_view,
     job_detail_view,
 )
+from .stats import stats_view
 
 __all__ = [
     "MODE_NAMES",
@@ -65,4 +66,5 @@ __all__ = [
     "durable_queue_view",
     "failure_center_view",
     "job_detail_view",
+    "stats_view",
 ]

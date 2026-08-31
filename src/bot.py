@@ -71,6 +71,7 @@ from .services import (
     OperationStore,
     ProxyManager,
     ShadowState,
+    StatsService,
     recover_jobs,
 )
 from .views import (
@@ -3041,11 +3042,13 @@ def register_handlers(client: TelegramClient, repository=None, *, start_workers:
     proxy = ProxyManager(pipeline)
     interactions = InteractionSessions()
     operations = OperationStore()
+    stats = StatsService(pipeline, repository, backup) if repository is not None else None
     pipeline.job_queue = queue
     pipeline.backup_manager = backup
     pipeline.proxy_manager = proxy
     pipeline.interactions = interactions
     pipeline.operations = operations
+    pipeline.stats_service = stats
     pipeline.shadow_state = shadow
     ctx = HandlerContext(
         client=client,
@@ -3055,6 +3058,7 @@ def register_handlers(client: TelegramClient, repository=None, *, start_workers:
         proxy=proxy,
         interactions=interactions,
         operations=operations,
+        stats=stats,
         allowed_users=set(ALLOWED_USERS),
         auto_delete_seconds=AUTO_DELETE_SECONDS,
         session_collect=SESSION_COLLECT,

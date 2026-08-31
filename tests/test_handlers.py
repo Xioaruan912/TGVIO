@@ -55,6 +55,8 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
             {
                 "on_start",
                 "on_about",
+                "on_stats",
+                "on_diag",
                 "on_mode",
                 "on_webdav",
                 "on_webdavlogs",

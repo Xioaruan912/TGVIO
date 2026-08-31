@@ -16,6 +16,7 @@ from ..views import (
     home_view,
     mode_buttons,
     reply_keyboard,
+    stats_view,
     webdav_cfg_fields_view,
     webdav_cfg_view,
 )
@@ -86,6 +87,32 @@ def register_setting_commands(ctx: HandlerContext) -> None:
         if not ctx.authorized(event):
             return
         await ctx.respond(event, ctx.about_text)
+
+    @ctx.client.on(events.NewMessage(pattern="/stats$"))
+    async def on_stats(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /stats from %s", event.sender_id)
+        if not ctx.authorized(event):
+            return
+        if ctx.stats is None:
+            await ctx.respond(event, "📊 运行状态暂不可用", auto_delete=False)
+            return
+        text, buttons = stats_view(await ctx.stats.snapshot())
+        await ctx.respond(event, text, buttons=buttons, auto_delete=False)
+
+    @ctx.client.on(events.NewMessage(pattern="/diag$"))
+    async def on_diag(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /diag from %s", event.sender_id)
+        if not ctx.authorized(event):
+            return
+        if ctx.stats is None:
+            await ctx.respond(event, "🧾 诊断暂不可用", auto_delete=False)
+            return
+        await ctx.respond(
+            event,
+            await ctx.stats.diagnostics_text(),
+            buttons=home_button(),
+            auto_delete=False,
+        )
 
     @ctx.client.on(events.NewMessage(pattern="/mode$"))
     async def on_mode(event: events.NewMessage.Event) -> None:
@@ -248,14 +275,21 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         await ctx.edit(event, text, buttons=buttons)
         return
     if action == "status":
-        snapshot = await ctx.queue.home_snapshot(event.sender_id)
-        text = (
-            "📊 运行状态\n──────────\n"
-            f"运行：{snapshot['running']}\n等待：{snapshot['waiting']}\n失败：{snapshot['failed']}\n"
-            f"全局队列：{'暂停' if snapshot['paused'] else '运行中'}\n"
-            f"WebDAV：{_webdav_health(ctx)}"
+        if ctx.stats is None:
+            await ctx.edit(event, "📊 运行状态暂不可用", buttons=home_button())
+            return
+        text, buttons = stats_view(await ctx.stats.snapshot())
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "diag":
+        if ctx.stats is None:
+            await ctx.edit(event, "🧾 诊断暂不可用", buttons=home_button())
+            return
+        await ctx.edit(
+            event,
+            await ctx.stats.diagnostics_text(),
+            buttons=home_button(),
         )
-        await ctx.edit(event, text, buttons=home_button())
         return
     if action == "help":
         text = "❓ 帮助中心\n──────────\n请选择主题："

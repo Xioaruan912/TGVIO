@@ -9,6 +9,8 @@ from .recovery import RecoveryAction, recover_jobs
 from .operations import OperationStore, PendingOperation
 from .network import NetworkCoordinator, NetworkSwitchResult
 from .disk import DiskDecision, DiskManager, DiskSnapshot
+from .stats import RuntimeStatsSnapshot, StatsService
+from .health import RuntimeHeartbeat
 
 __all__ = [
     "BackupManager",
@@ -28,4 +30,7 @@ __all__ = [
     "DiskDecision",
     "DiskManager",
     "DiskSnapshot",
+    "RuntimeStatsSnapshot",
+    "StatsService",
+    "RuntimeHeartbeat",
 ]

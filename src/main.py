@@ -8,6 +8,7 @@ from telethon.tl import types
 
 from . import bot, config
 from .repository import SQLiteRepository
+from .services import RuntimeHeartbeat
 
 logging.basicConfig(
     level=logging.INFO,
@@ -18,6 +19,8 @@ logger = logging.getLogger(__name__)
 _COMMANDS = [
     types.BotCommand("start", "使用说明"),
     types.BotCommand("about", "关于/命令说明"),
+    types.BotCommand("stats", "运行状态与健康信息"),
+    types.BotCommand("diag", "导出脱敏诊断"),
     types.BotCommand("mode", "设置 18+ 处理方式"),
     types.BotCommand("webdav", "配置 WebDAV 备份链接"),
     types.BotCommand("webdavlogs", "查看上传记录 / 本地缓存"),
@@ -74,7 +77,9 @@ async def main() -> None:
         download_root=config.DOWNLOAD_DIR,
     )
     pipeline = None
+    heartbeat = RuntimeHeartbeat("session/runtime-health.json")
     await repository.open()
+    heartbeat.start()
     try:
         applied = await repository.migrate()
         check = await repository.self_check()
@@ -85,6 +90,9 @@ async def main() -> None:
         )
         if applied:
             logger.info("SQLite migrations applied on startup: %s", applied)
+        reconciled = await repository.reconcile_daily_stats()
+        if reconciled:
+            logger.info("Daily stats reconciled: %d metrics", reconciled)
 
         client = TelegramClient(
             "session/bot",
@@ -101,6 +109,7 @@ async def main() -> None:
         await pipeline.recover_from_repository()
         pipeline.start()
         await pipeline.apply_proxy_on_start()
+        heartbeat.set_ready(True)
         logger.info(
             "Bot started. dest=%s allowed=%s",
             config.DEST_CHANNEL,
@@ -108,9 +117,11 @@ async def main() -> None:
         )
         await client.run_until_disconnected()
     finally:
+        heartbeat.set_ready(False)
         if pipeline is not None:
             await pipeline.shutdown()
         await repository.close()
+        await heartbeat.stop()
 
 
 if __name__ == "__main__":
