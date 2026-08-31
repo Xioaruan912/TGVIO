@@ -71,6 +71,7 @@ from .services import (
     OperationStore,
     ProxyManager,
     ShadowState,
+    DedupManager,
     StatsService,
     recover_jobs,
 )
@@ -263,6 +264,7 @@ class _Pipeline:
         self.downloader.progress_hooks.append(self._on_download_progress)
         self.downloader.status_hooks.append(self._on_download_status)
         self.downloader.post_download_hooks.append(self._on_download_done)
+        self.downloader.post_download_hooks.append(self._on_dedup_hash)
         self.downloader.post_download_hooks.append(self._on_webdav_upload)
         self.publisher.progress_hooks.append(self._on_upload_progress)
         self.publisher.pre_publish_hooks.append(self._on_pre_publish)
@@ -1386,6 +1388,18 @@ class _Pipeline:
                 self.job_queue.shadow_download_completed(job.seq, file_list)
         text, buttons = self._job_card(job, "ready", payload=paths)
         await self._safe_edit(job, text, buttons=buttons)
+
+    async def _on_dedup_hash(self, job, paths) -> None:
+        manager = getattr(self, "dedup_manager", None)
+        if manager is None or getattr(self, "repository", None) is None:
+            return
+        try:
+            hashes = await manager.hash_job_paths(job.seq, paths)
+            if hashes:
+                logger.info("Job #%s D1 hashed %d media file(s)", job.seq, len(hashes))
+        except Exception as exc:
+            # D1 indexing is an optimization. It must never break the publish path.
+            logger.warning("Job #%s D1 hashing skipped: %s", job.seq, exc.__class__.__name__)
 
     async def _on_webdav_upload(self, job, paths) -> None:
         """下载完成后后台上传到 WebDAV，不阻塞主流程。
@@ -3114,6 +3128,7 @@ def register_handlers(client: TelegramClient, repository=None, *, start_workers:
     pipeline.interactions = interactions
     pipeline.operations = operations
     pipeline.stats_service = stats
+    pipeline.dedup_manager = DedupManager(repository, destination_key=str(DEST_CHANNEL)) if repository is not None else None
     pipeline.shadow_state = shadow
     ctx = HandlerContext(
         client=client,

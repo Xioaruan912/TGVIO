@@ -125,6 +125,25 @@ class JobItemRecord:
     local_path: str | None
     size_bytes: int
     metadata_json: str | None
+    content_sha256: str | None = None
+
+
+@dataclass(frozen=True)
+class DedupEntryRecord:
+    id: int
+    sha256: str
+    size_bytes: int
+    media_kind: str
+    destination_key: str
+    source_peer_id: int
+    source_message_id: int
+    media_id: int | None
+    access_hash: int | None
+    file_reference: bytes | None
+    metadata_json: str | None
+    verified_at: float
+    last_used_at: float
+    hit_count: int
 
 
 @dataclass(frozen=True)
@@ -187,6 +206,7 @@ class SQLiteRepository:
             "interaction_sessions",
             "daily_stats",
             "stat_metric_applied",
+            "dedup_entries",
         }
     )
 
@@ -1202,13 +1222,121 @@ class SQLiteRepository:
 
     async def list_job_items(self, job_id: int) -> list[JobItemRecord]:
         conn = self._require_conn()
+        has_hash = await self._table_has_column("job_items", "content_sha256")
+        hash_expr = "content_sha256" if has_hash else "NULL AS content_sha256"
         cursor = await conn.execute(
-            "SELECT id,job_id,ordinal,source_chat_id,source_message_id,grouped_id,media_kind,local_path,size_bytes,metadata_json FROM job_items WHERE job_id=? ORDER BY ordinal",
+            f"SELECT id,job_id,ordinal,source_chat_id,source_message_id,grouped_id,media_kind,local_path,size_bytes,metadata_json,{hash_expr} FROM job_items WHERE job_id=? ORDER BY ordinal",
             (job_id,),
         )
         rows = await cursor.fetchall()
         await cursor.close()
-        return [JobItemRecord(int(r["id"]), int(r["job_id"]), int(r["ordinal"]), r["source_chat_id"], r["source_message_id"], r["grouped_id"], r["media_kind"], r["local_path"], int(r["size_bytes"]), r["metadata_json"]) for r in rows]
+        return [JobItemRecord(int(r["id"]), int(r["job_id"]), int(r["ordinal"]), r["source_chat_id"], r["source_message_id"], r["grouped_id"], r["media_kind"], r["local_path"], int(r["size_bytes"]), r["metadata_json"], r["content_sha256"]) for r in rows]
+
+    async def set_job_item_content_hashes(
+        self, legacy_seq: int, hashes: list[tuple[str, int]]
+    ) -> int:
+        """Persist D1 hashes by durable item ordinal after download ordering is fixed."""
+        if not hashes or not await self._table_has_column("job_items", "content_sha256"):
+            return 0
+        conn = self._require_conn()
+        async with self._write_lock:
+            cursor = await conn.execute("SELECT id FROM jobs WHERE legacy_seq=?", (int(legacy_seq),))
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                return 0
+            job_id = int(row["id"])
+            changed = 0
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                for ordinal, (digest, size_bytes) in enumerate(hashes, start=1):
+                    cursor = await conn.execute(
+                        """UPDATE job_items SET content_sha256=?,size_bytes=CASE WHEN size_bytes=0 THEN ? ELSE size_bytes END
+                           WHERE job_id=? AND ordinal=?""",
+                        (str(digest), max(0, int(size_bytes)), job_id, ordinal),
+                    )
+                    changed += max(0, int(cursor.rowcount or 0))
+                    await cursor.close()
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return changed
+
+    async def lookup_dedup_entry(
+        self, *, sha256: str, size_bytes: int, media_kind: str, destination_key: str
+    ) -> DedupEntryRecord | None:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            """SELECT id,sha256,size_bytes,media_kind,destination_key,source_peer_id,source_message_id,
+                      media_id,access_hash,file_reference,metadata_json,verified_at,last_used_at,hit_count
+               FROM dedup_entries
+               WHERE sha256=? AND size_bytes=? AND media_kind=? AND destination_key=?""",
+            (str(sha256), int(size_bytes), str(media_kind), str(destination_key)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return self._dedup_from_row(row) if row is not None else None
+
+    async def upsert_dedup_entry(
+        self,
+        *,
+        sha256: str,
+        size_bytes: int,
+        media_kind: str,
+        destination_key: str,
+        source_peer_id: int,
+        source_message_id: int,
+        media_id: int | None = None,
+        access_hash: int | None = None,
+        file_reference: bytes | None = None,
+        metadata: dict[str, Any] | None = None,
+        now: float | None = None,
+    ) -> DedupEntryRecord:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        metadata_json = self._encode_versioned_payload(metadata)
+        async with self._write_lock:
+            await conn.execute(
+                """
+                INSERT INTO dedup_entries(
+                  sha256,size_bytes,media_kind,destination_key,source_peer_id,source_message_id,
+                  media_id,access_hash,file_reference,metadata_json,verified_at,last_used_at,hit_count
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,0)
+                ON CONFLICT(sha256,size_bytes,media_kind,destination_key) DO UPDATE SET
+                  source_peer_id=excluded.source_peer_id,
+                  source_message_id=excluded.source_message_id,
+                  media_id=excluded.media_id,
+                  access_hash=excluded.access_hash,
+                  file_reference=excluded.file_reference,
+                  metadata_json=excluded.metadata_json,
+                  verified_at=excluded.verified_at,
+                  last_used_at=excluded.last_used_at
+                """,
+                (
+                    str(sha256), int(size_bytes), str(media_kind), str(destination_key),
+                    int(source_peer_id), int(source_message_id), media_id, access_hash,
+                    file_reference, metadata_json, timestamp, timestamp,
+                ),
+            )
+            await conn.commit()
+        found = await self.lookup_dedup_entry(
+            sha256=sha256, size_bytes=size_bytes, media_kind=media_kind, destination_key=destination_key
+        )
+        if found is None:
+            raise RepositoryError("dedup entry missing after upsert")
+        return found
+
+    @staticmethod
+    def _dedup_from_row(row: aiosqlite.Row) -> DedupEntryRecord:
+        return DedupEntryRecord(
+            id=int(row["id"]), sha256=str(row["sha256"]), size_bytes=int(row["size_bytes"]),
+            media_kind=str(row["media_kind"]), destination_key=str(row["destination_key"]),
+            source_peer_id=int(row["source_peer_id"]), source_message_id=int(row["source_message_id"]),
+            media_id=row["media_id"], access_hash=row["access_hash"], file_reference=row["file_reference"],
+            metadata_json=row["metadata_json"], verified_at=float(row["verified_at"]),
+            last_used_at=float(row["last_used_at"]), hit_count=int(row["hit_count"]),
+        )
 
     async def append_job_items(self, job_id: int, items: list[dict[str, Any]]) -> None:
         if not items:

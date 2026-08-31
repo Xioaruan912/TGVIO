@@ -11,6 +11,7 @@ from .network import NetworkCoordinator, NetworkSwitchResult
 from .disk import DiskDecision, DiskManager, DiskSnapshot
 from .stats import RuntimeStatsSnapshot, StatsService
 from .health import RuntimeHeartbeat
+from .dedup import ContentHash, DedupManager, sha256_file
 
 __all__ = [
     "BackupManager",
@@ -33,4 +34,7 @@ __all__ = [
     "RuntimeStatsSnapshot",
     "StatsService",
     "RuntimeHeartbeat",
+    "ContentHash",
+    "DedupManager",
+    "sha256_file",
 ]
