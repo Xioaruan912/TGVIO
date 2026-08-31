@@ -42,7 +42,7 @@ async def _view(ctx: HandlerContext, profile: Any) -> SourceProfileView:
 
 async def _list_view(ctx: HandlerContext) -> tuple[str, list]:
     if ctx.sources is None or ctx.destinations is None:
-        return "自动来源暂不可用", [[Button.inline("/start", "h:r")]]
+        return "📡 自动来源暂不可用", [[Button.inline("🏠 首页", "h:r")]]
     items = [await _view(ctx, item) for item in await ctx.sources.list_profiles()]
     return source_profiles_view(tuple(items))
 

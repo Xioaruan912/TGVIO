@@ -72,8 +72,8 @@ def stats_view(state: RuntimeStatsSnapshot) -> tuple[str, list]:
         ]
     )
     buttons = [
-        [Button.inline("/stats", "h:status"), Button.inline("/health", "h:health")],
-        [Button.inline("/diag", "h:diag")],
-        [Button.inline("/start", "h:r")],
+        [Button.inline("🔄 刷新", "h:status"), Button.inline("🩺 健康检查", "h:health")],
+        [Button.inline("🧾 导出诊断", "h:diag")],
+        [Button.inline("🏠 首页", "h:r")],
     ]
     return text, buttons

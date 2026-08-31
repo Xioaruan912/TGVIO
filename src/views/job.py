@@ -102,5 +102,5 @@ def job_card_view(state: JobCardView) -> tuple[str, list]:
         buttons.append([Button.inline("🔄 重试", f"retry:{state.seq}")])
     elif state.phase == "succeeded":
         buttons.append([Button.inline("↩️ 撤销发布", f"undo:{state.seq}")])
-    buttons.append([Button.inline("/queue", "h:q"), Button.inline("/start", "h:r")])
+    buttons.append([Button.inline("📋 查看队列", "h:q"), Button.inline("🏠 首页", "h:r")])
     return "\n".join(lines), buttons

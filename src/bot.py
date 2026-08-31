@@ -19,7 +19,6 @@ from telethon.tl.types import (
     MessageMediaPhoto,
 )
 
-from .commands import command_help_text
 from .config import (
     SETTINGS,
     Settings,
@@ -153,18 +152,36 @@ async def _delete_after(message: object, seconds: float) -> None:
         pass
 
 _START_TEXT = (
-    "Telegram 媒体中转站\n\n"
-    "发送媒体或链接即可创建任务，不需要命令。\n"
-    "需要管理任务、合集、备份、代理或诊断时使用下面的命令。\n\n"
-    f"确认超时 {CONFIRM_TIMEOUT} 秒后自动按正常（非 18+）模式处理；"
-    f"单文件上限 {MAX_FILE_SIZE // (1024 * 1024)} MB。\n\n"
-    + command_help_text(include_start=False)
+    "📤 视频转发机器人\n\n"
+    f"目标频道: {DEST_CHANNEL}\n\n"
+    "使用方式:\n"
+    "1. 转发含视频/图片的消息给我 → 自动开始合集会话，继续转发自动并入 → 完成后发 /end 或点「🛑 结束并发布」按钮发布到频道\n"
+    "2. 发送一个链接（抖音/B站/YouTube 等）→ 自动下载并发布到频道\n\n"
+    "合集：图片进频道封面相册（超过 10 张按序丢弃），全部视频整合进同一个评论区；\n"
+    "会话期间发的文字消息会作为评论，结束时整合为封面文字与封面一起发送。\n"
+    "合集进行中只显示一条状态消息，不会随每次转发反复弹出；发 /end 结束。\n\n"
+    "18+ 处理默认「总是正常」；需要雪花遮挡请用 /mode 设置「总是雪花遮挡」或「每次询问」。\n"
+    "选「是（雪花遮挡）」时，用 Telegram 内置雪花效果遮挡发布，文件内容不被修改。\n\n"
+    f"⚠️ 确认弹窗 {CONFIRM_TIMEOUT} 秒内未回复将自动按正常（非 18+）模式处理。\n"
+    f"⚠️ 单个上传文件上限 {MAX_FILE_SIZE // (1024 * 1024)}MB（平台上限）\n\n"
+    "ℹ️ 关于：视频转发机器人，把转发内容处理后发布到频道。输入 /about 查看全部命令说明。"
 )
 
 _ABOUT_TEXT = (
-    "Telegram 媒体中转站\n\n"
-    "发送媒体或链接即可创建任务；管理功能统一使用命令。\n\n"
-    + command_help_text(include_start=True)
+    "ℹ️ 关于 · 视频转发机器人\n\n"
+    f"把转发的视频/图片/链接处理后发布到 {DEST_CHANNEL}。\n"
+    "支持 18+ 雪花遮挡、合集会话、相册聚合、并行下载/顺序上传队列、\n"
+    "进度条、撤销发布与失败重试。\n\n"
+    "📖 命令说明：\n"
+    "/start    使用说明\n"
+    "/about    关于/命令说明\n"
+    "/mode     设置 18+ 处理方式（默认总是正常，可改每次询问/总是雪花/总是正常）\n"
+    "/webdav   配置 WebDAV 备份链接\n"
+    "/webdavlogs  查看上传记录 / 本地待上传缓存\n"
+    "/proxy    代理设置（HTTP 代理，下载失败自动切换）\n"
+    "/queue    管理队列（逐项取消/暂停/恢复）\n"
+    "/begin    开始合集会话（转发会自动开始）\n"
+    "/end      结束合集并发布（所有视频进同一个评论区）"
 )
 
 

@@ -6,6 +6,7 @@ from dataclasses import dataclass
 
 from telethon import Button
 
+
 @dataclass(frozen=True)
 class HomeViewState:
     session_active: bool = False
@@ -51,7 +52,7 @@ def home_view(state: HomeViewState) -> tuple[str, list]:
             "──────────",
             f"📥 当前合集：{session}",
             f"📋 任务队列：{state.running} 运行 · {state.waiting} 等待 · {state.failed} 失败{paused}",
-            f"🎯 目的地：{state.destination_profile[:48]}",
+            f"🎯 发布目的地：{state.destination_profile[:48]}",
             f"☁️ WebDAV：{webdav}",
             f"💾 磁盘：{disk}",
             "──────────",
@@ -61,7 +62,9 @@ def home_view(state: HomeViewState) -> tuple[str, list]:
     buttons = [
         [Button.inline("➕ 开始合集", "h:begin"), Button.inline("🛑 结束合集", "h:end")],
         [Button.inline("📋 任务队列", "h:q"), Button.inline("❌ 失败任务", "h:f")],
-        [Button.inline("☁️ 备份管理", "h:w"), Button.inline("⚙️ 设置", "h:s")],
+        [Button.inline("🎯 发布目的地", "h:dp"), Button.inline("📡 自动来源", "h:sp")],
+        [Button.inline("☁️ 备份管理", "h:w")],
+        [Button.inline("⚙️ 设置", "h:s")],
         [Button.inline("📊 运行状态", "h:status"), Button.inline("❓ 帮助", "h:help")],
         [Button.inline("🔄 刷新", "h:r")],
     ]

@@ -35,7 +35,7 @@ def destination_profiles_view(items: tuple[DestinationProfileView, ...]) -> tupl
         for item in items
     ]
     buttons.append([Button.inline("➕ 新建目的地", "dp:add")])
-    buttons.append([Button.inline("/profiles", "dp:r"), Button.inline("/start", "h:r")])
+    buttons.append([Button.inline("🔄 刷新", "dp:r"), Button.inline("🏠 首页", "h:r")])
     return "\n".join(lines), buttons
 
 
@@ -65,7 +65,7 @@ def destination_profile_detail_view(item: DestinationProfileView) -> tuple[str, 
         buttons.append([Button.inline("⏸ 禁用", f"dp:x:{item.profile_id}")])
     if item.enabled:
         buttons.append([Button.inline("🧪 测试发送", f"dp:t:{item.profile_id}")])
-    buttons.append([Button.inline("/profiles", "dp:r"), Button.inline("/start", "h:r")])
+    buttons.append([Button.inline("⬅️ 返回", "dp:r"), Button.inline("🏠 首页", "h:r")])
     return text, buttons
 
 

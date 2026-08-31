@@ -216,7 +216,7 @@ def job_detail_view(state: JobDetailViewState) -> tuple[str, list]:
         buttons.append([Button.inline("↩️ 撤销发布", f"j:u:{state.job_id}:{state.revision}")])
     if state.state in {"succeeded", "cancelled", "failed"} and not state.cache_exists:
         buttons.append([Button.inline("🧹 删除历史与文字", f"j:h:{state.job_id}:{state.revision}")])
-    buttons.append([Button.inline("/queue", "q:p:all:0"), home_button()[0]])
+    buttons.append([Button.inline("📋 返回队列", "q:p:all:0"), home_button()[0]])
     return "\n".join(lines), buttons
 
 
@@ -240,7 +240,7 @@ def failure_center_view(items: tuple[FailureItemView, ...], *, page: int, pages:
     if page + 1 < pages:
         nav.append(Button.inline("➡️", f"q:f:failed:{page + 1}"))
     buttons.append(nav)
-    buttons.append([Button.inline("/queue", "q:p:all:0"), home_button()[0]])
+    buttons.append([Button.inline("📋 全部队列", "q:p:all:0"), home_button()[0]])
     return "\n".join(lines), buttons
 
 
@@ -286,6 +286,6 @@ def batch_actions_view(*, waiting_count: int, failed_count: int, failed_bytes: i
     buttons = [
         [Button.inline("⚠️ 取消全部等待任务", "q:bc")],
         [Button.inline("🗑 清理全部失败缓存", "q:bd")],
-        [Button.inline("/queue", "q:p:all:0"), home_button()[0]],
+        [Button.inline("📋 返回队列", "q:p:all:0"), home_button()[0]],
     ]
     return text, buttons
