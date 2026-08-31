@@ -73,12 +73,14 @@ def _install_sigterm_handler(client: TelegramClient) -> None:
 
 
 async def main() -> None:
+    settings = config.Settings.from_env(strict=True)
+    logger.info("Static settings loaded: %s", settings.safe_summary())
     os.makedirs("session", exist_ok=True)
-    os.makedirs(config.DOWNLOAD_DIR, exist_ok=True)
+    os.makedirs(settings.download_dir, exist_ok=True)
 
     repository = SQLiteRepository(
         "session/state.sqlite3",
-        download_root=config.DOWNLOAD_DIR,
+        download_root=settings.download_dir,
     )
     pipeline = None
     heartbeat = RuntimeHeartbeat("session/runtime-health.json")
@@ -103,11 +105,11 @@ async def main() -> None:
         if legacy_backup_policy not in {"best_effort", "required"}:
             legacy_backup_policy = "best_effort"
         env_destination_profile = await repository.ensure_env_destination_profile(
-            destination_peer=config.DEST_CHANNEL,
-            channel_at=config.CHANNEL_AT,
-            group_at=config.GROUP_AT,
-            cover_mode=config.COVER_MODE,
-            forward_caption=config.FORWARD_CAPTION,
+            destination_peer=settings.dest_channel,
+            channel_at=settings.channel_at,
+            group_at=settings.group_at,
+            cover_mode=settings.cover_mode,
+            forward_caption=settings.forward_caption,
             default_spoiler_mode="always_normal",
             backup_policy=legacy_backup_policy,
         )
@@ -127,12 +129,12 @@ async def main() -> None:
 
         client = TelegramClient(
             "session/bot",
-            config.API_ID,
-            config.API_HASH,
+            settings.api_id,
+            settings.api_hash,
             request_retries=8,
             connection_retries=8,
         )
-        await client.start(bot_token=config.BOT_TOKEN)
+        await client.start(bot_token=settings.bot_token)
         _install_sigterm_handler(client)
 
         await _setup_commands(client)
@@ -141,16 +143,13 @@ async def main() -> None:
             repository=repository,
             default_destination_profile=default_destination_profile,
             start_workers=False,
+            settings=settings,
         )
         await pipeline.recover_from_repository()
         pipeline.start()
         await pipeline.apply_proxy_on_start()
         heartbeat.set_ready(True)
-        logger.info(
-            "Bot started. dest=%s allowed=%s",
-            config.DEST_CHANNEL,
-            sorted(config.ALLOWED_USERS),
-        )
+        logger.info("Bot started. settings=%s", settings.safe_summary())
         await client.run_until_disconnected()
     finally:
         heartbeat.set_ready(False)

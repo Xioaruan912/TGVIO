@@ -1,88 +1,331 @@
+"""Validated application configuration.
+
+Static process configuration is represented by immutable :class:`Settings`.
+Runtime-editable WebDAV settings remain separate and are only exposed here as
+a legacy bootstrap during the migration away from module-level constants.
+"""
+
+from __future__ import annotations
+
 import os
+from dataclasses import dataclass
+from typing import Mapping
 
 from dotenv import load_dotenv
+
 
 load_dotenv()
 
 
-def _env_int(key: str, default: int) -> int:
+class SettingsError(ValueError):
+    """Configuration is missing or outside the supported range."""
+
+
+def _raw(env: Mapping[str, str], key: str) -> str | None:
+    value = env.get(key)
+    return value if value is not None else None
+
+
+def _int(env: Mapping[str, str], key: str, default: int, *, strict: bool) -> int:
+    value = _raw(env, key)
+    if value is None or value.strip() == "":
+        return int(default)
     try:
-        return int(os.environ.get(key, str(default)))
-    except ValueError:
-        return default
+        return int(value)
+    except ValueError as exc:
+        if strict:
+            raise SettingsError(f"invalid configuration: {key}") from exc
+        return int(default)
 
 
-def _env_float(key: str, default: float) -> float:
+def _float(env: Mapping[str, str], key: str, default: float, *, strict: bool) -> float:
+    value = _raw(env, key)
+    if value is None or value.strip() == "":
+        return float(default)
     try:
-        return float(os.environ.get(key, str(default)))
-    except ValueError:
-        return default
+        return float(value)
+    except ValueError as exc:
+        if strict:
+            raise SettingsError(f"invalid configuration: {key}") from exc
+        return float(default)
 
 
-def _env_bool(key: str, default: bool) -> bool:
-    val = os.environ.get(key)
-    if val is None:
-        return default
-    return val.strip().lower() in ("1", "true", "yes", "on")
+def _bool(env: Mapping[str, str], key: str, default: bool, *, strict: bool) -> bool:
+    value = _raw(env, key)
+    if value is None or value.strip() == "":
+        return bool(default)
+    normalized = value.strip().lower()
+    if normalized in {"1", "true", "yes", "on"}:
+        return True
+    if normalized in {"0", "false", "no", "off"}:
+        return False
+    if strict:
+        raise SettingsError(f"invalid configuration: {key}")
+    return bool(default)
 
 
-API_ID = _env_int("API_ID", 0)
-API_HASH = os.environ.get("API_HASH", "")
-BOT_TOKEN = os.environ.get("BOT_TOKEN", "")
-DEST_CHANNEL = os.environ.get("DEST_CHANNEL", "")
+def _bounded(key: str, value: int | float, low: int | float, high: int | float) -> None:
+    if value < low or value > high:
+        raise SettingsError(f"invalid configuration range: {key}")
 
-ALLOWED_USERS = {
-    int(x.strip()) for x in os.environ.get("ALLOWED_USERS", "").split(",") if x.strip()
-}
 
-CHANNEL_AT = (
-    os.environ.get("CHANNEL_AT", "").strip()
-    or (DEST_CHANNEL if DEST_CHANNEL.startswith("@") else "")
-)
-GROUP_AT = os.environ.get("GROUP_AT", "").strip()
+@dataclass(frozen=True)
+class Settings:
+    api_id: int
+    api_hash: str
+    bot_token: str
+    dest_channel: str
+    allowed_users: frozenset[int]
+    channel_at: str
+    group_at: str
+    max_file_size: int
+    download_dir: str
+    download_concurrency: int
+    download_timeout: int
+    confirm_timeout: int
+    collection_gather_seconds: float
+    upload_timeout: int
+    forward_caption: bool
+    progress_min_interval: float
+    auto_delete_seconds: int
+    download_auto_retry: int
+    download_workers: int
+    upload_workers: int
+    part_size_kb: int
+    cover_mode: bool
+    cover_width: int
+    max_cover_images: int
+    session_collect: bool
+    session_end_timeout: float
+    disk_enforce: bool
+    min_free_bytes: int
+    min_free_percent: float
+    max_cache_bytes: int
+    cache_retention_hours: float
+    failed_cache_retention_hours: float
+    disk_check_interval: float
+    unknown_job_reserve_bytes: int
+    health_heartbeat_max_age: int
+    health_min_free_bytes: int
+    media_compat_mode: str
+    faststart_max_bytes: int
+    transcode_enabled: bool
+    thumbnail_position: str
 
-MAX_FILE_SIZE = _env_int("MAX_FILE_SIZE", 2000 * 1024 * 1024)
-DOWNLOAD_DIR = os.environ.get("DOWNLOAD_DIR", "/app/downloads")
-DOWNLOAD_CONCURRENCY = _env_int("DOWNLOAD_CONCURRENCY", 3)
-DOWNLOAD_TIMEOUT = _env_int("DOWNLOAD_TIMEOUT", 20 * 60)
-CONFIRM_TIMEOUT = _env_int("CONFIRM_TIMEOUT", 60)
-COLLECTION_GATHER_SECONDS = _env_float("COLLECTION_GATHER_SECONDS", 10.0)
-UPLOAD_TIMEOUT = _env_int("UPLOAD_TIMEOUT", 30 * 60)
-FORWARD_CAPTION = _env_bool("FORWARD_CAPTION", False)
-PROGRESS_MIN_INTERVAL = _env_float("PROGRESS_MIN_INTERVAL", 2.0)
-AUTO_DELETE_SECONDS = _env_int("AUTO_DELETE_SECONDS", 10)
-DOWNLOAD_AUTO_RETRY = _env_int("DOWNLOAD_AUTO_RETRY", 2)
-DOWNLOAD_WORKERS = _env_int("DOWNLOAD_WORKERS", 8)
-UPLOAD_WORKERS = _env_int("UPLOAD_WORKERS", 16)
-PART_SIZE_KB = _env_int("PART_SIZE_KB", 512)
-COVER_MODE = _env_bool("COVER_MODE", False)
-COVER_WIDTH = _env_int("COVER_WIDTH", 1280)
-MAX_COVER_IMAGES = _env_int("MAX_COVER_IMAGES", 10)
-SESSION_COLLECT = _env_bool("SESSION_COLLECT", True)
-SESSION_END_TIMEOUT = _env_float("SESSION_END_TIMEOUT", 5.0)
+    @classmethod
+    def from_env(
+        cls,
+        environ: Mapping[str, str] | None = None,
+        *,
+        strict: bool = True,
+    ) -> "Settings":
+        env = os.environ if environ is None else environ
+        required = ("API_ID", "API_HASH", "BOT_TOKEN", "DEST_CHANNEL", "ALLOWED_USERS")
+        if strict:
+            missing = [key for key in required if not str(env.get(key, "")).strip()]
+            if missing:
+                raise SettingsError("missing required environment variables: " + ", ".join(missing))
 
-WEBDAV_ENABLED = _env_bool("WEBDAV_ENABLED", False)
-WEBDAV_URL = os.environ.get("WEBDAV_URL", "")
-WEBDAV_USER = os.environ.get("WEBDAV_USER", "")
-WEBDAV_PASS = os.environ.get("WEBDAV_PASS", "")
-WEBDAV_PATH = os.environ.get("WEBDAV_PATH", "/115/Pron")
-WEBDAV_RETRY = _env_int("WEBDAV_RETRY", 5)
+        api_id = _int(env, "API_ID", 0, strict=strict)
+        api_hash = str(env.get("API_HASH", "")).strip()
+        bot_token = str(env.get("BOT_TOKEN", "")).strip()
+        dest_channel = str(env.get("DEST_CHANNEL", "")).strip()
+        raw_users = str(env.get("ALLOWED_USERS", ""))
+        try:
+            allowed_users = frozenset(
+                int(value.strip()) for value in raw_users.split(",") if value.strip()
+            )
+        except ValueError as exc:
+            if strict:
+                raise SettingsError("invalid configuration: ALLOWED_USERS") from exc
+            allowed_users = frozenset()
+        if strict and (api_id <= 0 or not allowed_users):
+            key = "API_ID" if api_id <= 0 else "ALLOWED_USERS"
+            raise SettingsError(f"invalid configuration: {key}")
 
-DISK_ENFORCE = _env_bool("DISK_ENFORCE", False)
-MIN_FREE_BYTES = _env_int("MIN_FREE_BYTES", 5 * 1024 * 1024 * 1024)
-MIN_FREE_PERCENT = _env_float("MIN_FREE_PERCENT", 10.0)
-MAX_CACHE_BYTES = _env_int("MAX_CACHE_BYTES", 0)
-CACHE_RETENTION_HOURS = _env_float("CACHE_RETENTION_HOURS", 72.0)
-FAILED_CACHE_RETENTION_HOURS = _env_float("FAILED_CACHE_RETENTION_HOURS", 168.0)
-DISK_CHECK_INTERVAL = _env_float("DISK_CHECK_INTERVAL", 60.0)
-UNKNOWN_JOB_RESERVE_BYTES = _env_int("UNKNOWN_JOB_RESERVE_BYTES", 2 * 1024 * 1024 * 1024)
+        channel_at = str(env.get("CHANNEL_AT", "")).strip()
+        if not channel_at and dest_channel.startswith("@"):
+            channel_at = dest_channel
+        media_mode = str(env.get("MEDIA_COMPAT_MODE", "analyze")).strip().lower() or "analyze"
+        if media_mode not in {"off", "analyze", "remux"}:
+            if strict:
+                raise SettingsError("invalid configuration: MEDIA_COMPAT_MODE")
+            media_mode = "analyze"
+        thumbnail_position = str(env.get("THUMBNAIL_POSITION", "auto")).strip().lower() or "auto"
+        if thumbnail_position != "auto":
+            try:
+                if float(thumbnail_position) < 0:
+                    raise ValueError
+            except ValueError as exc:
+                if strict:
+                    raise SettingsError("invalid configuration: THUMBNAIL_POSITION") from exc
+                thumbnail_position = "auto"
 
-HEALTH_HEARTBEAT_MAX_AGE = _env_int("HEALTH_HEARTBEAT_MAX_AGE", 45)
-HEALTH_MIN_FREE_BYTES = _env_int("HEALTH_MIN_FREE_BYTES", 256 * 1024 * 1024)
+        settings = cls(
+            api_id=api_id,
+            api_hash=api_hash,
+            bot_token=bot_token,
+            dest_channel=dest_channel,
+            allowed_users=allowed_users,
+            channel_at=channel_at,
+            group_at=str(env.get("GROUP_AT", "")).strip(),
+            max_file_size=_int(env, "MAX_FILE_SIZE", 2000 * 1024 * 1024, strict=strict),
+            download_dir=str(env.get("DOWNLOAD_DIR", "/app/downloads")).strip() or "/app/downloads",
+            download_concurrency=_int(env, "DOWNLOAD_CONCURRENCY", 3, strict=strict),
+            download_timeout=_int(env, "DOWNLOAD_TIMEOUT", 20 * 60, strict=strict),
+            confirm_timeout=_int(env, "CONFIRM_TIMEOUT", 60, strict=strict),
+            collection_gather_seconds=_float(env, "COLLECTION_GATHER_SECONDS", 10.0, strict=strict),
+            upload_timeout=_int(env, "UPLOAD_TIMEOUT", 30 * 60, strict=strict),
+            forward_caption=_bool(env, "FORWARD_CAPTION", False, strict=strict),
+            progress_min_interval=_float(env, "PROGRESS_MIN_INTERVAL", 2.0, strict=strict),
+            auto_delete_seconds=_int(env, "AUTO_DELETE_SECONDS", 10, strict=strict),
+            download_auto_retry=_int(env, "DOWNLOAD_AUTO_RETRY", 2, strict=strict),
+            download_workers=_int(env, "DOWNLOAD_WORKERS", 8, strict=strict),
+            upload_workers=_int(env, "UPLOAD_WORKERS", 16, strict=strict),
+            part_size_kb=_int(env, "PART_SIZE_KB", 512, strict=strict),
+            cover_mode=_bool(env, "COVER_MODE", False, strict=strict),
+            cover_width=_int(env, "COVER_WIDTH", 1280, strict=strict),
+            max_cover_images=_int(env, "MAX_COVER_IMAGES", 10, strict=strict),
+            session_collect=_bool(env, "SESSION_COLLECT", True, strict=strict),
+            session_end_timeout=_float(env, "SESSION_END_TIMEOUT", 5.0, strict=strict),
+            disk_enforce=_bool(env, "DISK_ENFORCE", False, strict=strict),
+            min_free_bytes=_int(env, "MIN_FREE_BYTES", 5 * 1024**3, strict=strict),
+            min_free_percent=_float(env, "MIN_FREE_PERCENT", 10.0, strict=strict),
+            max_cache_bytes=_int(env, "MAX_CACHE_BYTES", 0, strict=strict),
+            cache_retention_hours=_float(env, "CACHE_RETENTION_HOURS", 72.0, strict=strict),
+            failed_cache_retention_hours=_float(env, "FAILED_CACHE_RETENTION_HOURS", 168.0, strict=strict),
+            disk_check_interval=_float(env, "DISK_CHECK_INTERVAL", 60.0, strict=strict),
+            unknown_job_reserve_bytes=_int(env, "UNKNOWN_JOB_RESERVE_BYTES", 2 * 1024**3, strict=strict),
+            health_heartbeat_max_age=_int(env, "HEALTH_HEARTBEAT_MAX_AGE", 45, strict=strict),
+            health_min_free_bytes=_int(env, "HEALTH_MIN_FREE_BYTES", 256 * 1024**2, strict=strict),
+            media_compat_mode=media_mode,
+            faststart_max_bytes=_int(env, "FASTSTART_MAX_BYTES", 0, strict=strict),
+            transcode_enabled=_bool(env, "TRANSCODE_ENABLED", False, strict=strict),
+            thumbnail_position=thumbnail_position,
+        )
+        if strict:
+            settings.validate()
+        return settings
 
-MEDIA_COMPAT_MODE = os.environ.get("MEDIA_COMPAT_MODE", "analyze").strip().lower()
-if MEDIA_COMPAT_MODE not in {"off", "analyze", "remux"}:
-    MEDIA_COMPAT_MODE = "analyze"
-FASTSTART_MAX_BYTES = _env_int("FASTSTART_MAX_BYTES", 0)
-TRANSCODE_ENABLED = _env_bool("TRANSCODE_ENABLED", False)
-THUMBNAIL_POSITION = os.environ.get("THUMBNAIL_POSITION", "auto").strip().lower() or "auto"
+    def validate(self) -> None:
+        _bounded("MAX_FILE_SIZE", self.max_file_size, 1, 4 * 1024**3)
+        _bounded("DOWNLOAD_CONCURRENCY", self.download_concurrency, 1, 32)
+        _bounded("DOWNLOAD_TIMEOUT", self.download_timeout, 30, 24 * 3600)
+        _bounded("CONFIRM_TIMEOUT", self.confirm_timeout, 5, 3600)
+        _bounded("COLLECTION_GATHER_SECONDS", self.collection_gather_seconds, 0.5, 120.0)
+        _bounded("UPLOAD_TIMEOUT", self.upload_timeout, 30, 24 * 3600)
+        _bounded("PROGRESS_MIN_INTERVAL", self.progress_min_interval, 0.2, 60.0)
+        _bounded("AUTO_DELETE_SECONDS", self.auto_delete_seconds, 0, 86400)
+        _bounded("DOWNLOAD_AUTO_RETRY", self.download_auto_retry, 0, 20)
+        _bounded("DOWNLOAD_WORKERS", self.download_workers, 1, 64)
+        _bounded("UPLOAD_WORKERS", self.upload_workers, 1, 64)
+        if self.part_size_kb not in {64, 128, 256, 512}:
+            raise SettingsError("invalid configuration: PART_SIZE_KB")
+        _bounded("COVER_WIDTH", self.cover_width, 64, 4096)
+        _bounded("MAX_COVER_IMAGES", self.max_cover_images, 1, 10)
+        _bounded("SESSION_END_TIMEOUT", self.session_end_timeout, 0.2, 300.0)
+        _bounded("MIN_FREE_BYTES", self.min_free_bytes, 0, 1024**5)
+        _bounded("MIN_FREE_PERCENT", self.min_free_percent, 0.0, 100.0)
+        _bounded("MAX_CACHE_BYTES", self.max_cache_bytes, 0, 1024**5)
+        _bounded("CACHE_RETENTION_HOURS", self.cache_retention_hours, 0.0, 24 * 365.0)
+        _bounded("FAILED_CACHE_RETENTION_HOURS", self.failed_cache_retention_hours, 0.0, 24 * 365.0)
+        _bounded("DISK_CHECK_INTERVAL", self.disk_check_interval, 1.0, 3600.0)
+        _bounded("UNKNOWN_JOB_RESERVE_BYTES", self.unknown_job_reserve_bytes, 0, 1024**5)
+        _bounded("HEALTH_HEARTBEAT_MAX_AGE", self.health_heartbeat_max_age, 5, 3600)
+        _bounded("HEALTH_MIN_FREE_BYTES", self.health_min_free_bytes, 0, 1024**5)
+        _bounded("FASTSTART_MAX_BYTES", self.faststart_max_bytes, 0, 4 * 1024**3)
+
+    def safe_summary(self) -> dict[str, object]:
+        """Return diagnostic-safe static configuration without identities/secrets."""
+        return {
+            "destination_kind": (
+                "username" if self.dest_channel.startswith("@") else "numeric_or_other"
+            ),
+            "allowed_users_count": len(self.allowed_users),
+            "download_concurrency": self.download_concurrency,
+            "download_workers": self.download_workers,
+            "upload_workers": self.upload_workers,
+            "part_size_kb": self.part_size_kb,
+            "cover_mode": self.cover_mode,
+            "forward_caption": self.forward_caption,
+            "session_collect": self.session_collect,
+            "disk_enforce": self.disk_enforce,
+            "media_compat_mode": self.media_compat_mode,
+            "transcode_enabled": self.transcode_enabled,
+            "download_dir_configured": bool(self.download_dir),
+        }
+
+
+@dataclass(frozen=True)
+class LegacyWebDavBootstrap:
+    enabled: bool
+    url: str
+    user: str
+    password: str
+    path: str
+    retry: int
+
+    @classmethod
+    def from_env(cls, environ: Mapping[str, str] | None = None) -> "LegacyWebDavBootstrap":
+        env = os.environ if environ is None else environ
+        return cls(
+            enabled=_bool(env, "WEBDAV_ENABLED", False, strict=False),
+            url=str(env.get("WEBDAV_URL", "")),
+            user=str(env.get("WEBDAV_USER", "")),
+            password=str(env.get("WEBDAV_PASS", "")),
+            path=str(env.get("WEBDAV_PATH", "/115/Pron")),
+            retry=_int(env, "WEBDAV_RETRY", 5, strict=False),
+        )
+
+
+# One-cycle compatibility exports. Runtime startup uses strict Settings.from_env().
+SETTINGS = Settings.from_env(strict=False)
+WEBDAV_BOOTSTRAP = LegacyWebDavBootstrap.from_env()
+
+API_ID = SETTINGS.api_id
+API_HASH = SETTINGS.api_hash
+BOT_TOKEN = SETTINGS.bot_token
+DEST_CHANNEL = SETTINGS.dest_channel
+ALLOWED_USERS = set(SETTINGS.allowed_users)
+CHANNEL_AT = SETTINGS.channel_at
+GROUP_AT = SETTINGS.group_at
+MAX_FILE_SIZE = SETTINGS.max_file_size
+DOWNLOAD_DIR = SETTINGS.download_dir
+DOWNLOAD_CONCURRENCY = SETTINGS.download_concurrency
+DOWNLOAD_TIMEOUT = SETTINGS.download_timeout
+CONFIRM_TIMEOUT = SETTINGS.confirm_timeout
+COLLECTION_GATHER_SECONDS = SETTINGS.collection_gather_seconds
+UPLOAD_TIMEOUT = SETTINGS.upload_timeout
+FORWARD_CAPTION = SETTINGS.forward_caption
+PROGRESS_MIN_INTERVAL = SETTINGS.progress_min_interval
+AUTO_DELETE_SECONDS = SETTINGS.auto_delete_seconds
+DOWNLOAD_AUTO_RETRY = SETTINGS.download_auto_retry
+DOWNLOAD_WORKERS = SETTINGS.download_workers
+UPLOAD_WORKERS = SETTINGS.upload_workers
+PART_SIZE_KB = SETTINGS.part_size_kb
+COVER_MODE = SETTINGS.cover_mode
+COVER_WIDTH = SETTINGS.cover_width
+MAX_COVER_IMAGES = SETTINGS.max_cover_images
+SESSION_COLLECT = SETTINGS.session_collect
+SESSION_END_TIMEOUT = SETTINGS.session_end_timeout
+DISK_ENFORCE = SETTINGS.disk_enforce
+MIN_FREE_BYTES = SETTINGS.min_free_bytes
+MIN_FREE_PERCENT = SETTINGS.min_free_percent
+MAX_CACHE_BYTES = SETTINGS.max_cache_bytes
+CACHE_RETENTION_HOURS = SETTINGS.cache_retention_hours
+FAILED_CACHE_RETENTION_HOURS = SETTINGS.failed_cache_retention_hours
+DISK_CHECK_INTERVAL = SETTINGS.disk_check_interval
+UNKNOWN_JOB_RESERVE_BYTES = SETTINGS.unknown_job_reserve_bytes
+HEALTH_HEARTBEAT_MAX_AGE = SETTINGS.health_heartbeat_max_age
+HEALTH_MIN_FREE_BYTES = SETTINGS.health_min_free_bytes
+MEDIA_COMPAT_MODE = SETTINGS.media_compat_mode
+FASTSTART_MAX_BYTES = SETTINGS.faststart_max_bytes
+TRANSCODE_ENABLED = SETTINGS.transcode_enabled
+THUMBNAIL_POSITION = SETTINGS.thumbnail_position
+
+WEBDAV_ENABLED = WEBDAV_BOOTSTRAP.enabled
+WEBDAV_URL = WEBDAV_BOOTSTRAP.url
+WEBDAV_USER = WEBDAV_BOOTSTRAP.user
+WEBDAV_PASS = WEBDAV_BOOTSTRAP.password
+WEBDAV_PATH = WEBDAV_BOOTSTRAP.path
+WEBDAV_RETRY = WEBDAV_BOOTSTRAP.retry

@@ -218,8 +218,6 @@ class StatsService:
         import telethon
         import yt_dlp
 
-        from .. import config
-
         snapshot = await self.snapshot()
         heartbeat_live, heartbeat_ready, heartbeat_age = self._read_heartbeat()
         try:
@@ -231,6 +229,11 @@ class StatsService:
         proxy_count = len(proxy_cfg.get("proxies") or [])
         error_codes = ", ".join(code for code, _ in snapshot.recent_errors[:5]) or "none"
         event_types = ", ".join(name for name, _ in snapshot.recent_events[:5]) or "none"
+        settings = getattr(self._pipeline, "settings", None)
+        safe_settings = settings.safe_summary() if settings is not None else {}
+        settings_text = ",".join(
+            f"{key}={safe_settings[key]}" for key in sorted(safe_settings)
+        ) or "unknown"
         return "\n".join(
             [
                 "🧾 脱敏诊断",
@@ -247,7 +250,7 @@ class StatsService:
                 f"webdav_enabled={str(snapshot.webdav_enabled).lower()}",
                 f"proxy_auto={str(bool(proxy_cfg.get('auto'))).lower()}",
                 f"proxy_count={proxy_count}",
-                f"cover_mode={str(bool(config.COVER_MODE)).lower()}",
+                f"static_settings={settings_text}",
                 f"disk_enforce={str(snapshot.disk_enforce).lower()}",
                 f"disk_healthy={str(snapshot.disk_healthy).lower() if snapshot.disk_healthy is not None else 'unknown'}",
                 f"queue_running={snapshot.running}",

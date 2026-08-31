@@ -7,6 +7,7 @@ import os
 import re
 import shutil
 import time
+from dataclasses import replace
 from datetime import datetime, timedelta
 from types import SimpleNamespace
 
@@ -18,6 +19,8 @@ from telethon.tl.types import (
 )
 
 from .config import (
+    SETTINGS,
+    Settings,
     ALLOWED_USERS,
     AUTO_DELETE_SECONDS,
     CHANNEL_AT,
@@ -184,10 +187,58 @@ _AlbumBuffer = AlbumBuffer
 _Session = Session
 
 
+def _legacy_static_settings() -> Settings:
+    """Build one compatibility snapshot from legacy re-export constants.
+
+    Production startup injects strict ``Settings`` from ``main``.  This path
+    intentionally preserves one migration cycle for tests/embedders that patch
+    the old module constants before calling ``register_handlers``.
+    """
+    return replace(
+        SETTINGS,
+        allowed_users=frozenset(ALLOWED_USERS),
+        auto_delete_seconds=AUTO_DELETE_SECONDS,
+        channel_at=CHANNEL_AT,
+        group_at=GROUP_AT,
+        max_file_size=MAX_FILE_SIZE,
+        download_dir=DOWNLOAD_DIR,
+        download_concurrency=DOWNLOAD_CONCURRENCY,
+        download_timeout=DOWNLOAD_TIMEOUT,
+        confirm_timeout=CONFIRM_TIMEOUT,
+        collection_gather_seconds=COLLECTION_GATHER_SECONDS,
+        upload_timeout=UPLOAD_TIMEOUT,
+        forward_caption=FORWARD_CAPTION,
+        progress_min_interval=PROGRESS_MIN_INTERVAL,
+        download_auto_retry=DOWNLOAD_AUTO_RETRY,
+        download_workers=DOWNLOAD_WORKERS,
+        upload_workers=UPLOAD_WORKERS,
+        part_size_kb=PART_SIZE_KB,
+        cover_mode=COVER_MODE,
+        cover_width=COVER_WIDTH,
+        max_cover_images=MAX_COVER_IMAGES,
+        session_collect=SESSION_COLLECT,
+        session_end_timeout=SESSION_END_TIMEOUT,
+        disk_enforce=DISK_ENFORCE,
+        min_free_bytes=MIN_FREE_BYTES,
+        min_free_percent=MIN_FREE_PERCENT,
+        max_cache_bytes=MAX_CACHE_BYTES,
+        cache_retention_hours=CACHE_RETENTION_HOURS,
+        failed_cache_retention_hours=FAILED_CACHE_RETENTION_HOURS,
+        unknown_job_reserve_bytes=UNKNOWN_JOB_RESERVE_BYTES,
+        media_compat_mode=MEDIA_COMPAT_MODE,
+        faststart_max_bytes=FASTSTART_MAX_BYTES,
+        transcode_enabled=TRANSCODE_ENABLED,
+        thumbnail_position=THUMBNAIL_POSITION,
+        dest_channel=DEST_CHANNEL,
+    )
+
+
 class _Pipeline:
-    def __init__(self, client: TelegramClient) -> None:
+    def __init__(self, client: TelegramClient, settings: Settings | None = None) -> None:
         self.client = client
-        self.download_dir = DOWNLOAD_DIR
+        self.settings = settings or _legacy_static_settings()
+        static = self.settings
+        self.download_dir = static.download_dir
         self.input_q: asyncio.Queue = asyncio.Queue()
         self._runtime_jobs: dict[int, _Job] = {}
         self.jobs: dict[int, _Job] = {}
@@ -214,8 +265,8 @@ class _Pipeline:
         self.published: dict[int, list] = {}
         self.retryable: dict[int, _Job] = {}
         self._paused = False
-        self._progress_tracker = ProgressTracker(ui_interval=PROGRESS_MIN_INTERVAL)
-        self._retry_policy = RetryPolicy(budgets={"download": DOWNLOAD_AUTO_RETRY})
+        self._progress_tracker = ProgressTracker(ui_interval=static.progress_min_interval)
+        self._retry_policy = RetryPolicy(budgets={"download": static.download_auto_retry})
         self._retry_sleep = asyncio.sleep
         self._retry_interrupts: dict[int, asyncio.Event] = {}
         self._status_rebound: set[int] = set()
@@ -232,14 +283,14 @@ class _Pipeline:
         self.proxy_cfg: dict = self._load_proxy_cfg()
         self.disk = DiskManager(
             self.download_dir,
-            enforce=DISK_ENFORCE,
-            min_free_bytes=MIN_FREE_BYTES,
-            min_free_percent=MIN_FREE_PERCENT,
-            max_cache_bytes=MAX_CACHE_BYTES,
-            unknown_reserve_bytes=UNKNOWN_JOB_RESERVE_BYTES,
+            enforce=static.disk_enforce,
+            min_free_bytes=static.min_free_bytes,
+            min_free_percent=static.min_free_percent,
+            max_cache_bytes=static.max_cache_bytes,
+            unknown_reserve_bytes=static.unknown_job_reserve_bytes,
         )
-        self._disk_cache_retention_hours = CACHE_RETENTION_HOURS
-        self._disk_failed_retention_hours = FAILED_CACHE_RETENTION_HOURS
+        self._disk_cache_retention_hours = static.cache_retention_hours
+        self._disk_failed_retention_hours = static.failed_cache_retention_hours
         self.network = NetworkCoordinator(
             proxies=lambda: self.proxy_cfg.get("proxies", []),
             current=lambda: int(self.proxy_cfg.get("current", -1)),
@@ -247,32 +298,36 @@ class _Pipeline:
             apply_proxy=self._apply_proxy_uncoordinated,
         )
         self.media_compat = MediaCompatibilityManager(
-            mode=MEDIA_COMPAT_MODE,
-            faststart_max_bytes=FASTSTART_MAX_BYTES,
-            transcode_enabled=TRANSCODE_ENABLED,
+            mode=static.media_compat_mode,
+            faststart_max_bytes=static.faststart_max_bytes,
+            transcode_enabled=static.transcode_enabled,
             disk=self.disk,
         )
         self._load_prefs()
 
         self.downloader = MediaDownloader(
-            client, self._workdir, DOWNLOAD_TIMEOUT, DOWNLOAD_WORKERS, PART_SIZE_KB
+            client,
+            self._workdir,
+            static.download_timeout,
+            static.download_workers,
+            static.part_size_kb,
         )
         self.publisher = MediaPublisher(
             client,
-            DEST_CHANNEL,
+            static.dest_channel,
             self._workdir,
-            UPLOAD_TIMEOUT,
-            MAX_FILE_SIZE,
-            FORWARD_CAPTION,
-            UPLOAD_WORKERS,
-            PART_SIZE_KB,
-            cover_mode=COVER_MODE,
-            cover_width=COVER_WIDTH,
-            max_cover_images=MAX_COVER_IMAGES,
+            static.upload_timeout,
+            static.max_file_size,
+            static.forward_caption,
+            static.upload_workers,
+            static.part_size_kb,
+            cover_mode=static.cover_mode,
+            cover_width=static.cover_width,
+            max_cover_images=static.max_cover_images,
             group_counter_file=os.path.join("session", "group_counter.txt"),
-            channel_at=CHANNEL_AT,
-            group_at=GROUP_AT,
-            thumbnail_position=THUMBNAIL_POSITION,
+            channel_at=static.channel_at,
+            group_at=static.group_at,
+            thumbnail_position=static.thumbnail_position,
         )
         self.downloader.pre_download_hooks.append(self._on_pre_download)
         self.downloader.progress_hooks.append(self._on_download_progress)
@@ -3250,9 +3305,11 @@ def register_handlers(
     *,
     default_destination_profile=None,
     start_workers: bool = True,
+    settings: Settings | None = None,
 ):
     """Build the pipeline and install the extracted R1 handler layer."""
-    pipeline = _Pipeline(client)
+    static = settings or _legacy_static_settings()
+    pipeline = _Pipeline(client, settings=static)
     # R2-A lifecycle seam only: the in-memory pipeline remains the runtime
     # source of truth until the explicit R2-B dual-write migration stage.
     pipeline.repository = repository
@@ -3275,7 +3332,7 @@ def register_handlers(
         else None
     )
     pipeline.source_profiles = SourceProfileManager(repository) if repository is not None else None
-    pipeline.dedup_manager = DedupManager(repository, destination_key=str(DEST_CHANNEL)) if repository is not None else None
+    pipeline.dedup_manager = DedupManager(repository, destination_key=str(static.dest_channel)) if repository is not None else None
     pipeline.publisher.dedup_manager = pipeline.dedup_manager
     pipeline.shadow_state = shadow
     ctx = HandlerContext(
@@ -3287,12 +3344,12 @@ def register_handlers(
         interactions=interactions,
         operations=operations,
         stats=stats,
-        allowed_users=set(ALLOWED_USERS),
-        auto_delete_seconds=AUTO_DELETE_SECONDS,
-        session_collect=SESSION_COLLECT,
+        allowed_users=set(static.allowed_users),
+        auto_delete_seconds=static.auto_delete_seconds,
+        session_collect=static.session_collect,
         media_types=MEDIA_TYPES,
         url_re=URL_RE,
-        dest_channel=DEST_CHANNEL,
+        dest_channel=static.dest_channel,
         start_text=_START_TEXT,
         about_text=_ABOUT_TEXT,
         delete_after=_delete_after,
