@@ -1492,10 +1492,10 @@ R0、R1、R2、R3、U1、U2、F1 已完成。当前正在执行 **F2：错误分
 
 - [x] F2-A：集中 domain error taxonomy、安全摘要/脱敏 traceback frame、download retry budget、指数退避+jitter、FloodWait 精确等待、可立即取消的 backoff、`error_code/error_message/retry_count/next_retry_at` 持久化、失败中心错误码/动作提示。（2026-08-31，`31a8335`）
 - [x] F2-B：publish 每个成功副作用即时 checkpoint 到 `published_messages`；失败时识别 `publish_partial`，只有确认零副作用才允许自动退避重试；已有 refs 不提供普通重试并可进入撤销人工流程。（2026-08-31，`d1025cc`）
-- [ ] F2-C：实现代码已完成并推送 `f16b663`：WebDAV 初传/自动补传/手动重试/缓存补传已统一接入 classifier + 独立 backup budget，持久化 attempt/file 错误与 attempt retry/next time，并保留远端大小幂等确认；本地/最终镜像 143 tests 全通过。2026-08-31 部署命令已执行到 `Container Started`，但随后生产 SSH 连续被远端主动关闭，**尚未完成生产后验，因此不得标 `[x]`，也不要重复部署**。连接恢复后只做只读验收（源码哈希、143 tests、schema4/integrity、restart=0、日志、静态镜像），通过后再标完成。
+- [x] F2-C：WebDAV 初传/自动补传/手动重试/缓存补传统一接入 classifier + 独立 backup budget，持久化 attempt/file 错误与 attempt retry/next time，并保留远端大小幂等确认。（2026-08-31，`f16b663`；生产 143 tests、schema4/integrity、restart=0、源码哈希均已补验通过）
 - [ ] F2-D：集中 `NetworkCoordinator` 串行代理切换，补 download/publish/backup budget 隔离、partial publish 和错误专属按钮集成测试；全部部署验证后才标 F2 主项完成。
 
-下一位代理先不要继续开发 F2-D，也不要重复部署 F2-C。先恢复生产 SSH，只读确认 `f16b663` 是否已实际运行；若源码哈希/镜像/143 tests/schema4/integrity/restart/logs 全部健康，则补 F2-C 部署记录并标 `[x]`，随后再进入 F2-D。
+下一位代理从 F2-D 开始：集中 `NetworkCoordinator` 串行代理切换，补 download/publish/backup 三阶段 budget 隔离、partial publish 与错误专属按钮集成测试；F2-D 生产验收通过后才能把 F2 主项标完成。
 
 ## 21. 执行日志
 
@@ -1724,13 +1724,13 @@ R0、R1、R2、R3、U1、U2、F1 已完成。当前正在执行 **F2：错误分
 - 未完成与风险：WebDAV 初传/自动补传/手动重试仍使用旧独立 retry 语义；集中 `NetworkCoordinator` 和真正的 partial“继续剩余发布”按钮仍未实现，因此 F2 主项保持 `[ ]`。
 - 下一步精确入口：按上方 F2-C，从 WebDAV attempt/file 的 classifier + 独立 backup budget + durable error/retry timing 开始，保留远端大小幂等确认。
 
-### 2026-08-31 08:40 - F2-C 实现完成，生产后验待 SSH 恢复
+### 2026-08-31 08:40 - F2-C WebDAV 统一 retry policy
 
-- 状态：F2-C 实现已完成并推送 GitHub，但**尚未标完成**；生产部署命令执行到容器 `Recreated/Started` 后，VPS SSH 连续主动关闭连接，无法完成只读生产后验。不要重复部署或继续 F2-D，先恢复 SSH 后确认实际状态。
+- 状态：F2-C 已完成、推送并部署生产；部署后曾遇到 VPS SSH 短时连续主动关闭，后续连接恢复并完成全部只读生产后验。
 - 实现 commit：`f16b663`（`feat(backup): unify WebDAV retry policy`）。
 - 已完成：WebDAV 初传、手动重试、每小时自动补传和缓存补传统一走 `_webdav_transfer_file()`；每次先 `remote_file_size` 幂等查重，再只执行一次 verified PUT，协议层保留“响应超时/423/其它状态但 PROPFIND 最终确认远端大小一致则成功”的保护。跨 attempt retry 统一由 `RetryPolicy(stage="backup")` 管理，budget 继续取现有 WebDAV `retry` 配置，backup backoff 使用 60 秒起步、3600 秒 cap；401/403 不重试，423/5xx/网络类按 classifier 处理。
 - durable：复用现有 schema 1 字段，无 migration 5；新增 backup attempt/file ensure/update DAO，持久化 file state/error、attempt state/error/retry_count/next_retry_at/finished_at。自动补传会读取 durable `next_retry_at`，未到窗口不 PUT；手动重试允许用户主动触发。旧 JSON WebDAV log 继续兼容 UI/cache 索引，并显示安全 error_code/预计自动重试时间。
 - 测试：本地绑定源码和最终构建镜像均 **143 项 unittest 全通过**；新增 WebDAV 401/423/503 classifier、独立 backup backoff、durable retry window、repository-backed 503→退避→成功、自动扫描尊重 durable retry window 测试。`compileall`、`git diff --check`、compose config、Docker build、静态镜像秘密路径检查全部通过；0001～0004 checksum 未变化。
 - 部署前门禁：生产确认仍为 `d1025cc`，关键源码哈希一致，容器 `restart=0`，无活动 transfer/backup、incomplete/claims 为 0，schema `[1,2,3,4]`、`integrity=ok`。部署前 SQLite 一致性备份已创建：`/root/telegram-video-forwarder-releases/state-pre-f16b663-20260831-083854.sqlite3`；回滚镜像 `telegram-video-forwarder:rollback-pre-f16b663` 与源码 `/root/telegram-video-forwarder-releases/pre-f16b663.tar.gz` 已创建。
-- 部署异常：`docker compose build bot` 与 `docker compose up -d --force-recreate bot` 输出已显示新容器 `Recreated`、`Started`；随后 SSH 控制连接未返回并被本地终止。之后连续三次新的 SSH 连接均被 `199.47.242.40:22` 主动关闭，因此**当前不能声明 `f16b663` 已健康运行**。
-- 下一步精确入口：SSH 恢复后只读检查容器状态/restart/image、启动日志、生产源码 SHA-256、schema4/integrity、active backup/incomplete/claims、生产容器 143 tests 与静态镜像；全部通过后把 F2-C 标 `[x]` 并补 docs-only 部署提交，再进入 F2-D。
+- 生产后验：SSH 恢复后只读确认容器 `running`、`restart=0`，镜像 `sha256:06f7588a11c9c5eb09bf8d46b8908d724bd639d5ab33efab7f63774a729cffc2`；生产 `src/bot.py`、`src/webdav.py`、`src/repository/sqlite.py`、`src/services/backup_manager.py` SHA-256 与本地 `f16b663` 完全一致；schema `[1,2,3,4]`、`integrity=ok`、incomplete/claims/active backup 均为 0，启动日志正常，生产容器 **143 tests 全通过**。
+- 下一步精确入口：按上方 F2-D；先集中代理切换与阶段 budget/partial UI 集成测试，不同时进入 F3。
