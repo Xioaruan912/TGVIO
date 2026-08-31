@@ -118,8 +118,7 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("/queue — 查看运行、等待、失败任务", event.responses[0].text)
         self.assertIn("/about — 查看完整命令说明", event.responses[0].text)
         sent = self.client.sent_messages[-1]
-        callbacks = [button.data for row in sent["buttons"] for button in row]
-        self.assertEqual(callbacks, [])
+        self.assertNotIn("buttons", sent)
 
         callback = self.client.handlers["on_callback"]
         refresh = FakeCallbackEvent(self.client, b"h:r")

@@ -56,6 +56,8 @@ class HandlerContext:
         **kwargs: Any,
     ) -> object | None:
         try:
+            if kwargs.get("buttons") in ([], ()):
+                kwargs.pop("buttons", None)
             message = await event.respond(text, **kwargs)
             if auto_delete and self.auto_delete_seconds > 0:
                 asyncio.get_running_loop().create_task(
