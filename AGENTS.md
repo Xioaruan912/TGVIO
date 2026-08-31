@@ -7,8 +7,8 @@
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。当前生产运行代码基线为 `8a2407b`（第 18.2 节性能边界：ffmpeg/ffprobe 有界异步 subprocess、hash 单次扫描复用、stats reconcile 消除 N+1）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 13:40 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7, 8, 9]`、`integrity=ok`、incomplete jobs/claims 为 0，生产容器 **233 tests 全通过**；镜像 `APP_COMMIT=8a2407b`。生产 `source_enabled=0`，health/readiness 均通过，本阶段无 schema 变更。
+- 当前分支：`main`。当前生产运行代码基线为 `880f3af`（第 18.3 节安全/隐私收尾；业务安全实现 `707fc2f`，`880f3af` 修正 Docker build 的 `APP_COMMIT` 传递）；开始工作时仍须用 `git log -1` 和生产源码哈希确认最新状态。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。2026-08-31 22:31 CST 最后一次部署验证时容器 `running`、`restart=0`、Docker health=`healthy`，数据库 schema `[1, 2, 3, 4, 5, 6, 7, 8, 9]`、`integrity=ok`、incomplete jobs/claims/active backup 为 0，生产容器 **250 tests 全通过**；镜像 `APP_COMMIT=880f3af`。生产 `source_enabled=0`，URL 私网策略为 `warn`，history/event retention 均为 30 天；`.env`/SQLite DB 权限为 `0600`，`session`/`downloads` 为 `0700`，health/readiness 与启动日志脱敏扫描均通过。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1348,14 +1348,14 @@ Web Dashboard 的启动条件：队列长期超过 Telegram UI 可管理规模�
 
 ### 18.3 安全和隐私
 
-- 所有 command/callback/普通消息入口都执行 user allowlist；callback 还要验证 job.user_id 或管理员权限。
-- SQL 全部参数化；不把 callback、caption、文件名拼成 SQL。
-- URL 下载仅接受 `http/https`，拒绝 `file:` 等本地 scheme；输出路径做 root containment。是否阻止内网地址可配置，但默认至少记录风险，公开多用户前必须实现 SSRF 防护。
-- 代理和 WebDAV URL 解析使用标准库，不用包含凭证的 URL 做 UI label；日志通过 redact filter 清理 `user:pass@`、Authorization 和 token。
-- 文件名只作展示；本地由 job/item id 命名或严格 sanitize。远端路径各 segment 单独 quote，禁止 `..` 路径逃逸。
-- 删除操作按数据库已知 job/item/file id 解析目标，并验证 root/peer/profile；不能接收用户提供的任意绝对路径或 peer。
-- 诊断包、测试 fixture、数据库备份和 CI artifact 都不得包含 `.env`、`session/bot.session`、代理/WebDAV 密码或真实私密媒体。
-- 历史任务和 caption 设置保留期；默认保留任务元数据 30 天、事件 30～90 天可配置，媒体按磁盘策略更早清理。用户明确删除历史时清理关联文本，但保留必要匿名统计。
+- [x] 所有 command/callback/普通消息入口都执行 user allowlist；callback 还要验证 job.user_id 或管理员权限。（2026-08-31，`707fc2f`；runtime seq owner + durable user/revision 双层校验）
+- [x] SQL 全部参数化；不把 callback、caption、文件名拼成 SQL。（2026-08-31，`707fc2f` 审计确认；retention/delete-history 新 SQL 继续全部使用绑定参数）
+- [x] URL 下载仅接受 `http/https`，拒绝 `file:` 等本地 scheme；输出路径做 root containment。是否阻止内网地址可配置，但默认至少记录风险，公开多用户前必须实现 SSRF 防护。（2026-08-31，`6f0de1a`/`707fc2f`；`allow|warn|block`，生产保持单用户 `warn`。若未来开放公网多用户，必须先启用 `block` 并补 redirect/per-request 防护，不得沿用当前 warn 基线）
+- [x] 代理和 WebDAV URL 解析使用标准库，不用包含凭证的 URL 做 UI label；日志通过 redact filter 清理 `user:pass@`、Authorization 和 token。（2026-08-31，`6f0de1a`/`707fc2f`）
+- [x] 文件名只作展示；本地由 job/item id 命名或严格 sanitize。远端路径各 segment 单独 quote，禁止 `..` 路径逃逸。（2026-08-31，`707fc2f`；WebDAV root/remote/name 分段校验 + request quote）
+- [x] 删除操作按数据库已知 job/item/file id 解析目标，并验证 root/peer/profile；不能接收用户提供的任意绝对路径或 peer。（2026-08-31，`707fc2f`；cache managed-root、published refs、backup file ids、owner/revision 均有边界）
+- [x] 诊断包、测试 fixture、数据库备份和 CI artifact 都不得包含 `.env`、`session/bot.session`、代理/WebDAV 密码或真实私密媒体。（2026-08-31，`6f0de1a`/`707fc2f`；静态镜像 secret-path 与生产日志 pattern scan 均 clean）
+- [x] 历史任务和 caption 设置保留期；默认保留任务元数据 30 天、事件 30～90 天可配置，媒体按磁盘策略更早清理。用户明确删除历史时清理关联文本，但保留必要匿名统计。（2026-08-31，`707fc2f`；history=30d、event=30d 默认，自动 prune 仅处理安全 terminal job，手动删除要求 owner/revision/no-cache/no-active-backup，`daily_stats` 保留）
 
 ## 19. 测试矩阵与验收门禁
 
@@ -1488,7 +1488,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1/18.2 节技术债均已完成。产品 roadmap 仅剩 Later 的 O1；当前继续第 **18.3 安全和隐私** 技术债，不自动推进 Web Dashboard/O1。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1/18.2/18.3 节技术债均已完成。产品 roadmap 仅剩 Later 的 O1；当前不自动推进 Web Dashboard/O1，下一步先按第 19 节测试矩阵做缺口审计和补强。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1503,7 +1503,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理进入第 18.3 节安全和隐私：先做入口 allowlist/callback ownership、URL/SSRF、日志脱敏、删除目标校验与历史/caption retention 审计；优先补缺口测试与最小安全边界，不进入 O1/Web Dashboard。
+下一位代理进入第 19 节测试矩阵：先逐项映射现有 250 tests，只有确实缺失的行为才补测试；优先状态机/迁移损坏 fail-closed、queue claim/recovery/callback ≤64 bytes 等门禁，不进入 O1/Web Dashboard。
 
 ## 21. 执行日志
 
@@ -1938,3 +1938,15 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - 生产部署前确认 `a053dc9` health=healthy、restart=0、schema1～9/integrity ok、incomplete/claims/backup/source_enabled=0；部署后宿主/容器 `video.py`、`dedup.py`、`sqlite.py`、`bot.py` 哈希一致，health/readiness、启动日志和生产 **233 tests** 全通过。
 - 回滚资源：DB `/root/telegram-video-forwarder-releases/state-pre-8a2407b-20260831-134022.sqlite3`；镜像 `telegram-video-forwarder:rollback-pre-8a2407b`；源码 `/root/telegram-video-forwarder-releases/pre-8a2407b.tar.gz`。本阶段无 schema 变更。
 - 下一步精确入口：第 18.3 节安全和隐私；先审计 allowlist/callback ownership、URL SSRF、日志 redact filter、删除目标解析和历史/caption retention。
+
+### 2026-08-31 22:31 - 18.3 安全/隐私完成并部署
+
+- 状态：第 18.3 节已完成、推送并部署生产；产品 roadmap 仍只剩 Later 的 O1，下一步先做第 19 节测试矩阵缺口审计，不自动进入 Web Dashboard。
+- 审计方式：用户说明曾由其他 AI 修改本地 worktree；接手时没有盲目提交或覆盖生产，而是先确认 `HEAD/origin=6f0de1a`、生产仍为 `8a2407b`，再逐文件审查 21 个 dirty files。Docker/source-mounted 首轮回归发现两处真实回归：运行中任务被 queue view 隐藏、undo callback 因 owner 索引缺失失效；均修复并保留严格 owner 校验。另发现 periodic maintenance 错误调用 `cleanup_to_waterline(force=True)`，已改为 `force=False`，避免磁盘健康时主动清空所有可回收缓存。
+- 安全实现：`6f0de1a` 增加最终日志 formatter 脱敏与 URL risk policy；`707fc2f` 完成 callback/runtime ownership、WebDAV URL/path/name 标准化与 traversal 防护、filename sanitize、managed cache/path 删除校验、0600/0700 私有运行数据权限、history/event retention 与显式 delete-history。生产 URL 私网策略保持单用户 `warn`；若未来公开多用户，必须先切 `block` 并补 redirect/per-request SSRF 防护。
+- retention：`HISTORY_RETENTION_DAYS=30`、`EVENT_RETENTION_DAYS=30` 为当前默认；自动 maintenance 只删除达到保留期且 terminal、无 local cache、无 claim、无 active backup 的 job，并保留匿名 `daily_stats`；手动历史删除要求 owner + revision，且有缓存/活动备份时拒绝。新增 repository/pipeline 门禁锁住这些语义。
+- 发布修复：首次部署 `707fc2f` 后发现镜像 `APP_COMMIT=unknown`，根因是 Compose 未传 Docker build arg；`880f3af` 显式传递 `${APP_COMMIT:-unknown}`，并把 Dockerfile ARG/ENV 移到依赖安装后，既恢复版本可观测性又不因 commit 变化失去 apt/pip cache。生产宿主 `.env` 同时由 0666 收紧为 0600，未读取或输出任何 secret；`session`/`downloads` 为 0700，SQLite DB 为 0600。
+- 测试/门禁：最终源码、标准 Docker 镜像和生产容器均 **250 tests 全通过**；`compileall`、`git diff --check`、compose config、静态镜像 secret-path、生产日志敏感 pattern scan 均通过。migration 0001～0009 checksum 完全未变，schema 仍 `[1..9]`。
+- 生产：最终 `APP_COMMIT=880f3af`，镜像 `sha256:07db6777375e1a369d799e6e06f8719f1ed5876c88e1a0a8d946092d81c53af8`，容器 `running`、`restart=0`、health=`healthy`，readiness 通过，schema9/`integrity=ok`，incomplete/claims/active-backup/source_enabled 均为 0；宿主/容器关键源码哈希与本地一致，启动日志仅输出 safe settings summary。
+- 回滚：`707fc2f` 备份为 DB `/root/telegram-video-forwarder-releases/state-pre-707fc2f-20260831-222801.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-707fc2f`、源码 `/root/telegram-video-forwarder-releases/pre-707fc2f.tar.gz`；最终发布修复另有 DB `/root/telegram-video-forwarder-releases/state-pre-880f3af-20260831-223158.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-880f3af`、源码 `/root/telegram-video-forwarder-releases/pre-880f3af.tar.gz`。
+- 下一步精确入口：第 19 节测试矩阵；先映射现有 250 tests 与 19.1/19.2/19.3 条目，仅补真实缺口，不进入 O1/Web Dashboard。
