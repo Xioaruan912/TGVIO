@@ -1,14 +1,14 @@
 # 视频转发机器人 — 项目说明（供 Agent 参考）
 
 > 本文件面向后续接手该项目的开发/运维 Agent，说明已实现功能、架构、关键技术点与已知问题、以及未来方向。
-> 最后更新：2026-08-31（当前生产基线 + 完整重构/功能/UI 技术方案）
+> 最后更新：2026-09-01（当前生产基线 + 完整重构/功能/UI 技术方案）
 >
 > **阅读顺序**：第 0 节和第 11 节以后是当前权威执行说明；第 1～9 节保留大量已实现功能与历史踩坑，若与权威章节冲突，以权威章节为准。
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。2026-08-31 23:40 CST 已执行最新统一部署，容器切换瞬间确认 `APP_COMMIT=7fde66b`、`running`、`restart=0`；切换前生产真实基线已重新确认是 `880f3af`（更早一次检查曾看到 `8a2407b`，随后其他 AI 的 18.3 部署才真正生效）。**切换后的完整 health/readiness/schema/hash/production-tests 后验尚未完成**，因为 VPS SSH 随后连续两次在握手阶段主动关闭；下一位代理必须先只读验收，禁止再次 recreate。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。`7fde66b` 部署前门禁：旧 `880f3af` 容器 `healthy`/`restart=0`，schema `[1..9]`、`integrity=ok`、incomplete/claims/active backup/source open event 均为 0；有 1 个 enabled source profile。DB/image/source 三重回滚点已建立。本轮未修改 `.env`、`session/`、`downloads/` 内容。
+- 当前分支：`main`。2026-09-01 00:20 CST 生产已部署 `f144a13 fix(ui): restore button navigation`，修复 `7fde66b` 将 Telegram 顶层/设置/帮助/子页改为 command-first 的 UI 回归；`fe59b1e` 仅恢复首页按钮，`f144a13` 才完整恢复 command-first 之前的按钮式 Bot 导航。生产容器 `APP_COMMIT=f144a13`、`running`、`restart=0`、Docker health=`healthy`；GitHub 后续 `85e61e9` 仅修复测试隔离，不含运行代码，因此无需为该 commit 重建生产。
+- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。当前 schema `[1..9]`、`integrity=ok`、incomplete/claims 均为 0；宿主/容器关键 UI 源码 hash 与 `f144a13` 一致，启动日志正常。生产容器完整测试在隔离 fake pipeline 的 test-only `DISK_ENFORCE=false` 下 **259 tests 全通过**，真实 bot 进程仍确认 `DISK_ENFORCE=true`。本轮未修改 `.env`、`session/`、`downloads/` 内容。
 - 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
@@ -1309,6 +1309,8 @@ backup_policy
 
 用户已于 2026-08-31 明确允许开始 O1。当前先用 `demo/o1-dashboard-taste.html` 验证信息架构与视觉方向，**单 HTML 只使用模拟数据，不连接生产、不开放端口、不产生 mutation**。从 Demo 进入真实服务时仍遵守：
 
+**Telegram Bot 与 Web Dashboard 的交互边界**：Bot 保持按钮优先的原生 Telegram UI；slash commands 继续作为 BotFather 菜单/快捷入口存在，但不得再次用命令文字替代首页、设置、帮助和返回按钮。Web Dashboard 是独立管理面，不以修改 Bot 导航作为前置条件。
+
 - 只读 dashboard 先行，复用同一 repository/service，不直接操作数据库。
 - 单独监听 localhost，通过反向代理、TLS、强认证和 CSRF 防护；不得把管理端口直接暴露公网。
 - 删除/重试等 mutation 仍走 service command 和审计事件。
@@ -1495,7 +1497,7 @@ fix(webdav): preserve cache across interrupted verify
 
 ### 20.6 当前下一步（2026-08-31）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1/18.2/18.3 节代码工作均已完成；第 19 节测试矩阵已补强到 **259 tests** 并全绿。用户现已明确授权 O1，因此下一产品阶段切到 O1。当前先完成 Bot 顶层导航“命令优先”与单 HTML mock Demo；真实 Dashboard 服务/API/认证仍未开始。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1/18.2/18.3 节代码工作均已完成；第 19 节测试矩阵已补强到 **259 tests** 并全绿。用户现已明确授权 O1，因此下一产品阶段切到 O1。Telegram Bot 已恢复并固定为按钮优先导航；单 HTML mock Demo 已存在，真实 Dashboard service/API/auth 尚未开始。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1510,7 +1512,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理**不要再次部署**：先只读确认当前容器仍为 `APP_COMMIT=7fde66b`，并补齐 health/readiness、schema9/integrity、宿主/容器源码 hash、259 production tests 与启动日志后验。全部通过后再进入 O1-A：定义 localhost-only、只读 Web service/API contract，并让 `demo/o1-dashboard-taste.html` 的 mock DTO 与真实 service DTO 对齐。O1-A 不实现 mutation。
+下一位代理直接进入 O1-A：定义 localhost-only、只读 Web service/API contract，并让 `demo/o1-dashboard-taste.html` 的 mock DTO 与真实 service DTO 对齐。O1-A 不实现 mutation，不改 Telegram Bot 导航，不开放公网端口。若需要确认生产基线，只读检查 `APP_COMMIT=f144a13`、health/schema/hash 即可；不要因 GitHub 的 test-only `85e61e9` 重建生产。
 
 ## 21. 执行日志
 
@@ -1968,3 +1970,11 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - 生产发布前确认旧容器真实为 `APP_COMMIT=880f3af`，宿主关键源码哈希与该 commit 完全一致；schema9/integrity ok，incomplete/claims/active-backup/source-received 均为 0，有 1 个 enabled source profile。回滚资源时间戳 `20260831-233921`：DB `state-pre-7fde66b-20260831-233921.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-7fde66b`、源码 `source-pre-7fde66b-20260831-233921.tar.gz`。
 - 部署：发布包 SHA-256 `cde415db622f4640ceb0efd1faf32041b1539c1e187934c6f051cff67e631247`；生产标准 build 成功，切换前再次确认 0 incomplete/claim/active-backup/source-open；随后 `--no-build` 单次 recreate，切换瞬间确认 `running`、`restart=0`、`APP_COMMIT=7fde66b`。
 - 未完成后验：recreate 后第一次与唯一一次 SSH 重试均在 key-exchange/握手阶段被 VPS 主动关闭，因此尚不能声称 health/readiness/schema/hash/259 production tests 已通过。**下一步只做这些只读后验，不得重复 build/recreate。**
+
+### 2026-09-01 00:24 - 恢复 Telegram 按钮导航并重新锁定 O1 边界
+
+- 根因确认：`7fde66b feat(ui): make bot navigation command first` 将首页、设置、帮助和多个子页的原生 Telegram inline button 文案替换为 slash-command-first；`fe59b1e` 只恢复了首页 action panel，因此设置页仍会显示 `/mode /profiles /sources /webdav /proxy` 文本列表。
+- 修复：`f144a13 fix(ui): restore button navigation` 将 `src/bot.py`、settings/source handlers 及 home/job/queue/proxy/stats/tasks/WebDAV/profile views 精确恢复到 `7fde66b` 父版本的按钮式导航；slash commands 与 BotFather command menu 继续保留，但不再替代 UI 按钮。UI/handler/pipeline 专项 67 tests、完整 source-mounted **259 tests**、compileall/diff/compose 均通过。
+- 生产：部署前 `fe59b1e` 容器 `running`/`restart=0`/health=`healthy`，schema9/integrity ok，incomplete/claims/active-backup 均为 0。回滚时间戳 `20260901-002023`：DB `state-pre-f144a13-20260901-002023.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-f144a13`、源码 `pre-f144a13-20260901-002023.tar.gz`。发布后 `APP_COMMIT=f144a13`、镜像 `sha256:1c0fac469a9fe8455e4980d22c08a9bc8bb0f606e742ffcfa6691454f9d1d5e2`、health=`healthy`、restart=0、schema9/integrity ok，关键 UI 源码 hash 与本地一致。
+- 测试隔离：生产全量测试第一次只有 100-jobs fake load test 超时，定位为 fake pipeline 继承真实 `DISK_ENFORCE=true` 后按 2GiB unknown reserve 触发真实磁盘 gate，并非 UI/runtime 回归。`85e61e9 test(runtime): isolate disk policy in pipeline load test` 在测试 setup 显式关闭 disk enforcement；使用等价的 `docker exec -e DISK_ENFORCE=false` 重新跑生产 **259/259 全通过**，同时确认真实 bot 进程 `DISK_ENFORCE=true` 未改变。该提交仅改测试，无需重建生产。
+- O1 边界：Web Dashboard 与 Telegram Bot UI 解耦。下一步 O1-A 只做 localhost-only、read-only service/API contract，复用 repository/service DTO；不得再次以“命令优先”为由改 Bot 首页/设置/帮助按钮，也不得直接公网监听或在 Web handler 中写 SQL/mutation。
