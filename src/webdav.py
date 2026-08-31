@@ -6,6 +6,7 @@
 """
 
 import base64
+from dataclasses import dataclass
 import http.client
 import logging
 import os
@@ -13,6 +14,7 @@ import re
 import ssl
 import time
 import urllib.parse
+import xml.etree.ElementTree as ET
 
 logger = logging.getLogger(__name__)
 
@@ -36,6 +38,20 @@ class WebDavUploadError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
+
+
+@dataclass(frozen=True)
+class WebDavProbeResult:
+    ok: bool
+    status: int | None
+    readable: bool
+    quota_used_bytes: int | None = None
+    quota_available_bytes: int | None = None
+    message: str = ""
+
+    @property
+    def quota_supported(self) -> bool:
+        return self.quota_used_bytes is not None or self.quota_available_bytes is not None
 
 
 def _auth_header(user: str, passwd: str) -> str:
@@ -202,6 +218,85 @@ def remote_file_size(
     except Exception as exc:
         logger.warning("WebDAV remote_file_size %s/%s failed: %s", remote_dir, filename, exc)
         return None
+
+
+def probe_connection(
+    base_url: str,
+    remote_dir: str,
+    user: str,
+    passwd: str,
+) -> WebDavProbeResult:
+    """Explicit read-only WebDAV PROPFIND probe with optional DAV quota discovery.
+
+    This function never creates directories, uploads files, deletes anything, or
+    falls back to local disk capacity. It is intended only for a user-triggered
+    "test connection" action.
+    """
+    try:
+        auth = _auth_header(user, passwd)
+        parsed, root_path = _split(base_url)
+        url_path = f"{root_path.rstrip('/')}/{remote_dir.strip('/')}".rstrip("/") or "/"
+        target = urllib.parse.urlunsplit(
+            (parsed.scheme, parsed.netloc, urllib.parse.quote(url_path, safe="/"), "", "")
+        )
+        body = (
+            '<?xml version="1.0"?><D:propfind xmlns:D="DAV:">'
+            "<D:prop><D:resourcetype/><D:quota-used-bytes/>"
+            "<D:quota-available-bytes/></D:prop></D:propfind>"
+        )
+        conn = _connect(parsed)
+        try:
+            conn.request(
+                "PROPFIND",
+                target,
+                body=body,
+                headers={
+                    "Authorization": auth,
+                    "Depth": "0",
+                    "Content-Type": "application/xml",
+                },
+            )
+            resp = conn.getresponse()
+            data = resp.read()
+        finally:
+            conn.close()
+
+        status = int(resp.status)
+        if status in (401, 403):
+            return WebDavProbeResult(False, status, False, message="认证失败或无读取权限")
+        if status == 404:
+            return WebDavProbeResult(False, status, False, message="配置路径不存在")
+        if status == 405:
+            return WebDavProbeResult(False, status, False, message="服务器不支持 PROPFIND")
+        if status not in (200, 207):
+            return WebDavProbeResult(False, status, False, message=f"PROPFIND 返回 HTTP {status}")
+
+        used = available = None
+        if data:
+            try:
+                root = ET.fromstring(data)
+                for elem in root.iter():
+                    local = elem.tag.rsplit("}", 1)[-1]
+                    text = (elem.text or "").strip()
+                    if local == "quota-used-bytes" and text.isdigit():
+                        used = int(text)
+                    elif local == "quota-available-bytes" and text.isdigit():
+                        available = int(text)
+            except ET.ParseError:
+                # Read access is still proven by the successful PROPFIND status;
+                # malformed/non-XML quota output is treated as unsupported quota.
+                pass
+        return WebDavProbeResult(
+            True,
+            status,
+            True,
+            quota_used_bytes=used,
+            quota_available_bytes=available,
+            message="读取成功",
+        )
+    except Exception as exc:
+        logger.warning("WebDAV explicit probe failed: %s", exc.__class__.__name__)
+        return WebDavProbeResult(False, None, False, message=f"连接失败：{exc.__class__.__name__}")
 
 
 def _upload_once(

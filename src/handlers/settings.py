@@ -18,6 +18,7 @@ from ..views import (
     reply_keyboard,
     stats_view,
     webdav_cfg_fields_view,
+    webdav_probe_view,
     webdav_cfg_view,
 )
 from .common import HandlerContext
@@ -358,6 +359,20 @@ async def callback_webdav_config(ctx: HandlerContext, event: Any, data: str) -> 
     if field == "edit":
         await ctx.answer(event, "修改配置")
         text, buttons = webdav_cfg_fields_view(_webdav_state(ctx))
+        await ctx.edit(event, text, buttons=buttons)
+        return
+    if field == "test":
+        await ctx.answer(event, "正在测试 WebDAV 读取连接…")
+        cfg = ctx.backup.config_snapshot()
+        if not cfg.get("url") or not cfg.get("path"):
+            await ctx.edit(
+                event,
+                "🧪 WebDAV 连接测试\n────────────────────────\n❌ 请先配置地址和路径",
+                buttons=[[Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")], home_button()],
+            )
+            return
+        result = await ctx.backup.test_connection()
+        text, buttons = webdav_probe_view(result)
         await ctx.edit(event, text, buttons=buttons)
         return
     if field == "back":

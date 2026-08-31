@@ -1,9 +1,10 @@
 import os
 import tempfile
 import unittest
-from unittest.mock import patch
+from unittest.mock import AsyncMock, patch
 
 from src import bot
+from src.webdav import WebDavProbeResult
 from src.handlers.callbacks import build_callback_router
 from src.services import BackupManager, InteractionSessions, JobQueue, ProxyManager
 from tests.fakes import (
@@ -138,6 +139,35 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.pipeline.webdav_cfg["path"], "/archive")
         self.assertIsNone(self.pipeline.interactions.get(42))
         self.assertIn("已更新 WebDAV path", event.responses[0].text)
+
+    async def test_webdav_remote_probe_runs_only_on_explicit_test_callback(self) -> None:
+        callback = self.client.handlers["on_callback"]
+        self.pipeline.webdav_cfg.update(
+            url="https://dav.example.invalid",
+            path="/backup",
+            user="user",
+            **{"pass": "secret"},
+        )
+        probe = AsyncMock(
+            return_value=WebDavProbeResult(
+                True,
+                207,
+                True,
+                quota_available_bytes=1024,
+                message="读取成功",
+            )
+        )
+        self.pipeline.backup_manager.test_connection = probe
+
+        open_page = FakeCallbackEvent(self.client, b"h:w")
+        await callback(open_page)
+        probe.assert_not_awaited()
+
+        explicit = FakeCallbackEvent(self.client, b"wd_cfg:test")
+        await callback(explicit)
+        probe.assert_awaited_once_with()
+        self.assertIn("✅ 路径可读取", explicit.edits[-1]["text"])
+        self.assertNotIn("secret", explicit.edits[-1]["text"])
 
     async def test_private_url_intake_routes_through_job_queue_facade(self) -> None:
         private = self.client.handlers["on_private_message"]

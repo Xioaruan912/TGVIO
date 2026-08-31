@@ -49,10 +49,56 @@ def webdav_cfg_view(state: WebDavConfigViewState) -> tuple:
     )
     buttons = [
         [toggle],
+        [Button.inline("🧪 测试连接", "wd_cfg:test")],
         [Button.inline("⚙️ 修改配置", "wd_cfg:edit")],
         [Button.inline("🏠 首页", "h:r")],
     ]
     return "\n".join(lines), buttons
+
+
+def webdav_probe_view(result) -> tuple[str, list]:
+    if result.ok:
+        lines = [
+            "🧪 WebDAV 连接测试",
+            "────────────────────────",
+            "✅ 路径可读取",
+            f"HTTP：{result.status}",
+        ]
+        if result.quota_supported:
+            if result.quota_used_bytes is not None:
+                lines.append(f"已使用：{_fmt_bytes(result.quota_used_bytes)}")
+            if result.quota_available_bytes is not None:
+                lines.append(f"可用额度：{_fmt_bytes(result.quota_available_bytes)}")
+        else:
+            lines.append("容量：服务器未提供 DAV quota")
+    else:
+        lines = [
+            "🧪 WebDAV 连接测试",
+            "────────────────────────",
+            "❌ 连接/读取检查失败",
+            f"HTTP：{result.status if result.status is not None else '无响应'}",
+            f"原因：{result.message}",
+        ]
+    lines.extend(
+        [
+            "────────────────────────",
+            "此测试只执行只读 PROPFIND，不会上传、删除或创建远端文件。",
+        ]
+    )
+    return "\n".join(lines), [
+        [Button.inline("🔄 再测一次", "wd_cfg:test")],
+        [Button.inline("⬅️ 返回 WebDAV", "wd_cfg:back")],
+        [Button.inline("🏠 首页", "h:r")],
+    ]
+
+
+def _fmt_bytes(value: int) -> str:
+    size = float(max(0, int(value)))
+    for unit in ("B", "KB", "MB", "GB", "TB"):
+        if size < 1024.0 or unit == "TB":
+            return f"{size:.1f} {unit}"
+        size /= 1024.0
+    return f"{size:.1f} TB"
 
 
 def webdav_cfg_fields_view(state: WebDavConfigViewState) -> tuple:

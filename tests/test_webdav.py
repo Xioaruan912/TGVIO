@@ -19,6 +19,9 @@ class _DavState:
         self.put_status = 201
         self.put_delay = 0.0
         self.store_put = True
+        self.probe_status = 207
+        self.quota_used: int | None = None
+        self.quota_available: int | None = None
 
 
 class _DavHandler(BaseHTTPRequestHandler):
@@ -63,6 +66,23 @@ class _DavHandler(BaseHTTPRequestHandler):
     def do_PROPFIND(self) -> None:
         self.state.propfind_calls += 1
         payload = self.state.files.get(self._path())
+        if self._path() == "/dav/backup":
+            if self.state.probe_status != 207:
+                self._respond(self.state.probe_status)
+                return
+            quota = ""
+            if self.state.quota_used is not None:
+                quota += f"<D:quota-used-bytes>{self.state.quota_used}</D:quota-used-bytes>"
+            if self.state.quota_available is not None:
+                quota += f"<D:quota-available-bytes>{self.state.quota_available}</D:quota-available-bytes>"
+            body = (
+                '<?xml version="1.0"?><D:multistatus xmlns:D="DAV:">'
+                "<D:response><D:propstat><D:prop>"
+                f"{quota}<D:resourcetype><D:collection/></D:resourcetype>"
+                "</D:prop></D:propstat></D:response></D:multistatus>"
+            ).encode()
+            self._respond(207, body)
+            return
         if payload is None:
             self._respond(404)
             return
@@ -212,6 +232,34 @@ class WebDavProtocolTests(unittest.TestCase):
 
         self.assertFalse(uploaded)
         self.assertEqual(self.state.put_calls, 1)
+
+    def test_explicit_probe_reads_quota_without_writing(self) -> None:
+        self.state.quota_used = 3 * 1024
+        self.state.quota_available = 7 * 1024
+        result = webdav.probe_connection(
+            self.base_url, "/backup", "user", "pass"
+        )
+        self.assertTrue(result.ok)
+        self.assertEqual(result.status, 207)
+        self.assertEqual(result.quota_used_bytes, 3 * 1024)
+        self.assertEqual(result.quota_available_bytes, 7 * 1024)
+        self.assertEqual(self.state.put_calls, 0)
+        self.assertEqual(self.state.delete_calls, 0)
+
+    def test_explicit_probe_distinguishes_auth_and_unsupported_quota(self) -> None:
+        result = webdav.probe_connection(
+            self.base_url, "/backup", "user", "pass"
+        )
+        self.assertTrue(result.ok)
+        self.assertFalse(result.quota_supported)
+
+        self.state.probe_status = 401
+        denied = webdav.probe_connection(
+            self.base_url, "/backup", "user", "pass"
+        )
+        self.assertFalse(denied.ok)
+        self.assertEqual(denied.status, 401)
+        self.assertIn("认证失败", denied.message)
 
 
 if __name__ == "__main__":

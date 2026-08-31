@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import asyncio
 from typing import Any
+
+from .. import webdav
 
 
 class BackupManager:
@@ -44,6 +47,17 @@ class BackupManager:
 
     async def autoretry_once(self) -> None:
         await self._pipeline._webdav_autoretry_once()
+
+    async def test_connection(self) -> webdav.WebDavProbeResult:
+        """Run the explicit read-only WebDAV connectivity/quota probe."""
+        cfg = self.config_snapshot()
+        return await asyncio.to_thread(
+            webdav.probe_connection,
+            str(cfg.get("url") or ""),
+            str(cfg.get("path") or ""),
+            str(cfg.get("user") or ""),
+            str(cfg.get("pass") or ""),
+        )
 
     def logs_snapshot(self) -> dict:
         return {

@@ -19,8 +19,10 @@ from src.views import (
     queue_view,
     reply_keyboard,
     webdav_cfg_fields_view,
+    webdav_probe_view,
     webdav_cfg_view,
 )
+from src.webdav import WebDavProbeResult
 
 
 def callback_data(buttons):
@@ -126,7 +128,7 @@ class ViewRenderingTests(unittest.TestCase):
         self.assertIn("🔄 重试    5 次", fields_text)
         self.assertEqual(
             callback_data(main_buttons),
-            [b"wd_cfg:off", b"wd_cfg:edit", b"h:r"],
+            [b"wd_cfg:off", b"wd_cfg:test", b"wd_cfg:edit", b"h:r"],
         )
         self.assertEqual(
             callback_data(fields_buttons),
@@ -139,6 +141,24 @@ class ViewRenderingTests(unittest.TestCase):
                 b"wd_cfg:back",
                 b"h:r",
             ],
+        )
+
+        probe_text, probe_buttons = webdav_probe_view(
+            WebDavProbeResult(
+                True,
+                207,
+                True,
+                quota_used_bytes=1024,
+                quota_available_bytes=2048,
+                message="读取成功",
+            )
+        )
+        self.assertIn("✅ 路径可读取", probe_text)
+        self.assertIn("可用额度：2.0 KB", probe_text)
+        self.assertIn("只执行只读 PROPFIND", probe_text)
+        self.assertEqual(
+            callback_data(probe_buttons),
+            [b"wd_cfg:test", b"wd_cfg:back", b"h:r"],
         )
 
     def test_home_console_and_task_card_use_short_callbacks(self) -> None:
