@@ -334,6 +334,8 @@ class _Pipeline:
             static.forward_caption,
             static.upload_workers,
             static.part_size_kb,
+            large_file_policy=static.large_file_policy,
+            split_part_bytes=static.split_part_bytes,
             cover_mode=static.cover_mode,
             cover_width=static.cover_width,
             max_cover_images=static.max_cover_images,

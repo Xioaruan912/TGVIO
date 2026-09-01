@@ -20,6 +20,7 @@ from telethon.utils import get_input_document, get_input_photo, get_peer_id
 
 from .downloader import CancelToken, DownloadProgress, download_video
 from .security import sanitize_filename
+from .services.splitter import SplitStorageError, create_split_bundle
 from .video import guess_mime, is_photo_path, is_video_path, make_cover, make_thumb, probe_video
 
 logger = logging.getLogger(__name__)
@@ -303,6 +304,8 @@ class MediaPublisher:
         channel_at: str = "",
         group_at: str = "",
         thumbnail_position: str = "auto",
+        large_file_policy: str = "reject",
+        split_part_bytes: int | None = None,
     ):
         self.client = client
         self.dest = dest
@@ -316,6 +319,8 @@ class MediaPublisher:
         self.cover_width = cover_width
         self.max_cover_images = max(1, max_cover_images)
         self.thumbnail_position = thumbnail_position or "auto"
+        self.large_file_policy = str(large_file_policy or "reject").lower()
+        self.split_part_bytes = int(split_part_bytes or max(1, max_file_size - 16 * 1024 * 1024))
         self.pre_publish_hooks = []   # async (job, payload) -> None
         self.post_publish_hooks = []  # async (job, ids) -> None
         self.checkpoint_hooks = []    # async (job, canonical_refs) -> None
@@ -437,11 +442,65 @@ class MediaPublisher:
             raise PublishPartialError() from exc
 
     async def _publish(self, job, payload):
+        paths = payload if isinstance(payload, list) else [payload]
+        if any(os.path.getsize(path) > self.max_file_size for path in paths):
+            if self.large_file_policy != "split":
+                oversize = next(path for path in paths if os.path.getsize(path) > self.max_file_size)
+                raise FileTooLargeError(os.path.getsize(oversize), self.max_file_size)
+            return await self._publish_split_fallback(job, paths)
         if job.kind == "collection":
             return await self._publish_collection(job, payload)
         if isinstance(payload, list):
             return await self._publish_album(job, payload)
         return await self._publish_media(job, payload)
+
+    async def _publish_split_fallback(self, job, paths: list[str]) -> list:
+        """Publish a mixed/oversize payload as direct documents in source order.
+
+        This deliberately bypasses cover/comment and album APIs: a volume is a
+        recoverable document, never a pretend playable video.  Checkpoints are
+        emitted after every visible message, preserving partial-publish safety.
+        """
+        captions = self._album_captions(job, paths) if len(paths) > 1 else [
+            (job.message.message[:1024] if self.forward_caption and getattr(job, "kind", "") == "media" else "")
+        ]
+        dest_input = await self._get_dest_input()
+        ids: list[int] = []
+        attempts_before = int(getattr(job, "_publish_send_attempts", 0))
+        try:
+            for index, path in enumerate(paths, start=1):
+                caption = captions[index - 1] if index <= len(captions) else ""
+                if os.path.getsize(path) <= self.max_file_size:
+                    media = await self._media_input(job, path, job.spoiler, job.seq, index, len(paths))
+                    self._begin_send(job)
+                    msg = await self.client.send_file(self.dest, media, caption=self._with_footer(caption) or None)
+                    await self._record_dedup_message(job, path, msg)
+                    await self._checkpoint(job, getattr(msg, "peer_id", None) or dest_input, [msg.id], "destination")
+                    ids.append(msg.id)
+                    continue
+                bundle = await asyncio.to_thread(
+                    create_split_bundle, path, self._workdir(job.seq), self.split_part_bytes
+                )
+                note = (
+                    f"📦 可校验分卷：{bundle.original_name}\n"
+                    f"共 {len(bundle.parts)} 卷；请先下载 manifest 和全部 part，再按 SHA-256 校验后重组。\n"
+                    f"{caption}"
+                )[:1024]
+                manifest_media = await self._upload_media_input(bundle.manifest_path, False, job.seq, 1, len(bundle.parts) + 1)
+                self._begin_send(job)
+                manifest_message = await self.client.send_file(self.dest, manifest_media, caption=self._with_footer(note) or None)
+                await self._checkpoint(job, getattr(manifest_message, "peer_id", None) or dest_input, [manifest_message.id], "split_manifest")
+                ids.append(manifest_message.id)
+                for part_index, part_path in enumerate(bundle.parts, start=1):
+                    part_media = await self._upload_media_input(part_path, False, job.seq, part_index + 1, len(bundle.parts) + 1)
+                    self._begin_send(job)
+                    message = await self.client.send_file(self.dest, part_media, caption=f"分卷 {part_index}/{len(bundle.parts)}")
+                    await self._checkpoint(job, getattr(message, "peer_id", None) or dest_input, [message.id], "split_part")
+                    ids.append(message.id)
+        except Exception as exc:
+            self._raise_partial_if_started(job, attempts_before, exc)
+            raise
+        return ids
 
     async def _publish_media(self, job, path) -> list:
         size = os.path.getsize(path)

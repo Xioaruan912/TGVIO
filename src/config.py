@@ -86,6 +86,8 @@ class Settings:
     channel_at: str
     group_at: str
     max_file_size: int
+    large_file_policy: str
+    split_part_bytes: int
     download_dir: str
     download_concurrency: int
     download_timeout: int
@@ -189,6 +191,8 @@ class Settings:
                 raise SettingsError("invalid configuration: URL_PRIVATE_NETWORK_POLICY")
             url_private_network_policy = "warn"
 
+        max_file_size = _int(env, "MAX_FILE_SIZE", 2000 * 1024 * 1024, strict=strict)
+        split_default = min(1900 * 1024 * 1024, max(1, max_file_size - 16 * 1024 * 1024))
         settings = cls(
             api_id=api_id,
             api_hash=api_hash,
@@ -197,7 +201,9 @@ class Settings:
             allowed_users=allowed_users,
             channel_at=channel_at,
             group_at=str(env.get("GROUP_AT", "")).strip(),
-            max_file_size=_int(env, "MAX_FILE_SIZE", 2000 * 1024 * 1024, strict=strict),
+            max_file_size=max_file_size,
+            large_file_policy=str(env.get("LARGE_FILE_POLICY", "reject")).strip().lower() or "reject",
+            split_part_bytes=_int(env, "SPLIT_PART_BYTES", split_default, strict=strict),
             download_dir=str(env.get("DOWNLOAD_DIR", "/app/downloads")).strip() or "/app/downloads",
             download_concurrency=_int(env, "DOWNLOAD_CONCURRENCY", 3, strict=strict),
             download_timeout=_int(env, "DOWNLOAD_TIMEOUT", 20 * 60, strict=strict),
@@ -251,6 +257,10 @@ class Settings:
 
     def validate(self) -> None:
         _bounded("MAX_FILE_SIZE", self.max_file_size, 1, 4 * 1024**3)
+        if self.large_file_policy not in {"reject", "split"}:
+            raise SettingsError("invalid configuration: LARGE_FILE_POLICY")
+        if self.large_file_policy == "split":
+            _bounded("SPLIT_PART_BYTES", self.split_part_bytes, 64 * 1024**2, self.max_file_size - 1)
         _bounded("DOWNLOAD_CONCURRENCY", self.download_concurrency, 1, 32)
         _bounded("DOWNLOAD_TIMEOUT", self.download_timeout, 30, 24 * 3600)
         _bounded("CONFIRM_TIMEOUT", self.confirm_timeout, 5, 3600)

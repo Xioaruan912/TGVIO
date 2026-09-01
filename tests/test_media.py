@@ -6,7 +6,8 @@ from unittest.mock import AsyncMock, patch
 
 from telethon.tl import types
 
-from src.media import MediaDownloader, MediaPublisher, PublishPartialError
+from src.media import FileTooLargeError, MediaDownloader, MediaPublisher, PublishPartialError
+from src.services.splitter import create_split_bundle
 from src.models import Job
 from src.services.dedup import ContentHash
 from tests.fakes import FakeClient, FakeStatusMessage
@@ -50,6 +51,47 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         with open(path, "wb") as media_file:
             media_file.write(content)
         return path
+
+    def test_split_bundle_is_streamed_bounded_and_verifiable(self) -> None:
+        source = self.make_file("very large.mp4", b"abcdefghijk")
+        bundle = create_split_bundle(source, self.tempdir.name, 4)
+        self.assertEqual(len(bundle.parts), 3)
+        self.assertTrue(all(os.path.getsize(part) <= 4 for part in bundle.parts))
+        with open(bundle.manifest_path, encoding="utf-8") as manifest_file:
+            manifest = __import__("json").load(manifest_file)
+        self.assertEqual(manifest["original_size_bytes"], 11)
+        self.assertEqual(manifest["part_count"], 3)
+        from pathlib import Path
+        self.assertEqual(b"".join(Path(part).read_bytes() for part in bundle.parts), b"abcdefghijk")
+
+    async def test_oversize_split_publishes_manifest_then_ordered_parts_with_checkpoints(self) -> None:
+        self.publisher.max_file_size = 8
+        self.publisher.large_file_policy = "split"
+        self.publisher.split_part_bytes = 5
+        self.publisher.cover_mode = True
+        path = self.make_file("large.mp4", b"0123456789AB")
+        job = Job(seq=77, kind="media", status=FakeStatusMessage(), message=SimpleNamespace(message="caption"))
+        self.publisher._get_dest_input = AsyncMock(return_value="dest-input")
+        self.publisher._upload_media_input = AsyncMock(side_effect=lambda path, *_args, **_kwargs: os.path.basename(path))
+        checkpoints = []
+
+        async def capture(_job, refs):
+            checkpoints.append(refs)
+
+        self.publisher.checkpoint_hooks.append(capture)
+        result = await self.publisher._publish(job, path)
+
+        self.assertEqual(len(result), 4)  # manifest + 3 bounded volumes
+        self.assertEqual(len(checkpoints), 4)
+        self.assertIn("parts.json", self.client.sent_files[0]["file"])
+        self.assertTrue(all("part" in sent["file"] for sent in self.client.sent_files[1:]))
+        self.assertIn("可校验分卷", self.client.sent_files[0]["caption"])
+
+    async def test_oversize_remains_rejected_without_opt_in(self) -> None:
+        self.publisher.max_file_size = 8
+        path = self.make_file("large.mp4", b"0123456789")
+        with self.assertRaises(FileTooLargeError):
+            await self.publisher._publish(Job(seq=78, kind="media", status=FakeStatusMessage()), path)
 
     async def test_dedup_hit_skips_byte_upload_and_preserves_new_caption(self) -> None:
         path = self.make_file("reuse.mp4", b"x" * 512)

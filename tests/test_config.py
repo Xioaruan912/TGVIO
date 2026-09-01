@@ -110,6 +110,16 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(url=url), self.assertRaises(SettingsError):
                 Settings.from_env(invalid, strict=True)
 
+    def test_large_file_split_is_opt_in_and_bounded(self) -> None:
+        self.assertEqual(Settings.from_env(base_env(), strict=True).large_file_policy, "reject")
+        env = base_env()
+        env.update(LARGE_FILE_POLICY="split", SPLIT_PART_BYTES=str(64 * 1024 * 1024))
+        self.assertEqual(Settings.from_env(env, strict=True).large_file_policy, "split")
+        for key, value in (("LARGE_FILE_POLICY", "anything"), ("SPLIT_PART_BYTES", "1")):
+            invalid = dict(env, **{key: value})
+            with self.subTest(key=key), self.assertRaises(SettingsError):
+                Settings.from_env(invalid, strict=True)
+
 
 if __name__ == "__main__":
     unittest.main()
