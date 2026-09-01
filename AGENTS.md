@@ -1512,6 +1512,15 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 - **多用户/国际化/批量内容编辑**：分别依赖访问控制与公平配额、文案资源模型、U1/U2 预览确认语义；只有对应真实用户场景确定后再拆分工作包。
 - **启用现有 O1 能力**：这不是代码开发。Dashboard 要在 VPS `.env` 设置强 token 后用 Unix socket + SSH forwarding 访问；Webhook 要提供 HTTPS endpoint 和独立强 token。不得为方便而开放公网监听。
 
+### 2026-09-01 - 用户授权的下一批：只读面启用与超限媒体安全分卷（进行中）
+
+用户决策：先完成/启用只读操作；超过 2GB 采用分割；多用户、国际化与批量编辑可以后续评估；启动已交付的 O1 能力。以下是本轮唯一授权范围：
+
+1. **只读 Dashboard 启用**：在 HostDZire 的既有 `.env` 中生成并写入仅用于 `DASHBOARD_TOKEN` 的高熵随机值，设置 `DASHBOARD_ENABLED=true`，保留 `DASHBOARD_SOCKET=session/dashboard.sock`，不设置 Docker port、不启用 Webhook（尚未提供 HTTPS 接收 URL）。先备份 `.env`/当前镜像，重建一个 bot 容器；验收 socket 为 0600、容器 healthy/restart=0、匿名 API 为 401、Bearer API/metrics 可用。token 不写入 Git、AGENTS、日志或聊天；用户通过其 VPS root 会话读取/轮换。
+2. **超限分卷策略**：新增明确 opt-in 的静态配置（默认 `LARGE_FILE_POLICY=reject`，启用值 `split`；`SPLIT_PART_BYTES` 必须小于 `MAX_FILE_SIZE` 并保留 Telegram/multipart 余量）。不增加 `MAX_FILE_SIZE`，不使用无校验的“改后缀”或截断。超限文件在发布前使用流式读写生成顺序分卷与最小 manifest（原始安全文件名、总大小、SHA-256、part count/size/hash）；每个分卷独立小于上传护栏，按顺序作为 document 发布，caption 明确这是可复原分卷且给出标准重组命令。原文件和已生成分卷只在整个任务成功后交由既有 cleanup；失败/取消时保留，避免不可恢复的数据状态。
+3. **发布一致性**：分卷发送逐条 checkpoint 到既有 `published_messages`；任何已发送 part 后的异常必须沿用 `PublishPartialError`，禁止自动重发造成重复。封面/讨论组模式对分卷不伪装成可播放视频，统一走直发 document，避免错误的 cover/comment 语义。Dedup 不把临时分卷误写为原始媒体索引。
+4. **测试/文档/发布**：补 Settings 边界、streaming split/manifest/hash/清理、publisher 顺序/partial checkpoint/默认拒绝和 UI 错误提示测试；跑完整镜像测试、静态/镜像秘密检查。先推 GitHub，再按 O1 同等三重回滚流程发布 VPS 并记录 commit、schema（预期不迁移）、health、hash、测试及 Dashboard socket 验收。多用户/国际化/批量编辑不在本轮实现；等真实使用场景和权限模型确定后单独立项。
+
 ## 21. 执行日志
 
 ### 2026-08-30 - 规划与交接文档
