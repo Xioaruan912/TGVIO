@@ -10,7 +10,7 @@ class CommandPresentationTests(unittest.TestCase):
         self.assertEqual(
             names,
             [
-                "start", "queue", "begin", "end", "mode", "profiles", "sources",
+                "start", "queue", "begin", "end", "mode", "profiles",
                 "webdav", "webdavlogs", "proxy", "dashboard", "stats", "health", "diag", "about",
             ],
         )

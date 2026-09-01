@@ -261,7 +261,7 @@ class ViewRenderingTests(unittest.TestCase):
             [
                 b"h:begin", b"h:end",
                 b"h:q", b"h:f",
-                b"h:dp", b"h:sp",
+                b"h:dp",
                 b"h:w", b"h:dashboard", b"h:s",
                 b"h:status", b"h:help",
                 b"h:r",

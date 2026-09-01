@@ -7,7 +7,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 from src.dashboard import DashboardServer
-from src.repository import DestinationProfileRecord, SQLiteRepository, SourceProfileRecord
+from src.repository import DestinationProfileRecord, SQLiteRepository
 from src.services.dashboard import DashboardService
 from src.services.stats import RuntimeStatsSnapshot
 
@@ -84,29 +84,6 @@ class _Destinations:
         ]
 
 
-class _Sources:
-    async def list_profiles(self):
-        return [
-            SourceProfileRecord(
-                id=2,
-                name="来源 <一>",
-                source_peer="@private_source",
-                source_peer_id=-100123456789,
-                destination_profile_id=1,
-                owner_user_id=99887766,
-                enabled=True,
-                album_gather_seconds=2.0,
-                sequential_video_gather_seconds=120.0,
-                spoiler_policy="normal",
-                caption_policy="strip",
-                backup_policy="inherit",
-                verified_at=1.0,
-                created_at=1.0,
-                updated_at=1.0,
-            )
-        ]
-
-
 class DashboardReadModelTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tempdir = tempfile.TemporaryDirectory()
@@ -120,7 +97,6 @@ class DashboardReadModelTests(unittest.IsolatedAsyncioTestCase):
         pipeline = SimpleNamespace(
             disk=None,
             destination_profiles=_Destinations(),
-            source_profiles=_Sources(),
         )
         self.stats = _Stats()
         self.service = DashboardService(pipeline, self.repo, self.stats)
@@ -162,15 +138,11 @@ class DashboardReadModelTests(unittest.IsolatedAsyncioTestCase):
         dto = await self.service.routing()
         rendered = json.dumps(dto, ensure_ascii=False)
         self.assertIn("默认 ‹目标›", rendered)
-        self.assertIn("来源 ‹一›", rendered)
-        self.assertEqual(dto["sources"][0]["native_album_wait_seconds"], 2.0)
-        self.assertEqual(dto["sources"][0]["sequential_video_wait_seconds"], 120.0)
+        self.assertEqual(dto["sources"], [])
         for secret in (
             "private_destination",
-            "private_source",
             "private_group",
             "99887766",
-            "-100123456789",
             "private footer",
         ):
             self.assertNotIn(secret, rendered)

@@ -25,7 +25,6 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("end", "结束并发布合集", "结束当前合集并按顺序发布", "任务"),
     CommandSpec("mode", "设置 18+ 处理", "切换正常、询问或雪花遮挡", "任务"),
     CommandSpec("profiles", "管理发布目标", "管理发布频道和发布策略", "配置"),
-    CommandSpec("sources", "管理自动来源", "管理自动监听和转发来源", "配置"),
     CommandSpec("webdav", "配置 WebDAV 备份", "配置、测试和开关 WebDAV", "配置"),
     CommandSpec("webdavlogs", "查看备份记录", "查看 WebDAV 记录和失败项", "配置"),
     CommandSpec("proxy", "管理下载代理", "管理 URL 下载使用的 HTTP 代理", "配置"),

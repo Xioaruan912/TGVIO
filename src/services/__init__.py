@@ -14,14 +14,6 @@ from .health import RuntimeHeartbeat
 from .dedup import ContentHash, DedupManager, sha256_file
 from .media_compat import MediaCompatibilityManager
 from .destination_profiles import DestinationProfileManager
-from .source_profiles import SourceProfileManager
-from .source_runtime import (
-    SourceAccessResult,
-    SourceProfileRuntime,
-    SourceRuntimeStartupReport,
-    is_video_message,
-    probe_source_access,
-)
 from .dashboard import DashboardService
 from .notifications import (
     UrllibWebhookTransport,
@@ -56,12 +48,6 @@ __all__ = [
     "sha256_file",
     "MediaCompatibilityManager",
     "DestinationProfileManager",
-    "SourceProfileManager",
-    "SourceAccessResult",
-    "SourceProfileRuntime",
-    "SourceRuntimeStartupReport",
-    "is_video_message",
-    "probe_source_access",
     "DashboardService",
     "UrllibWebhookTransport",
     "WebhookNotifier",

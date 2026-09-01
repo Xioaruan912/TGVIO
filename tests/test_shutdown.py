@@ -59,12 +59,9 @@ class GracefulShutdownTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.close()
 
     async def test_idle_and_repeated_shutdown_are_idempotent(self) -> None:
-        source_runtime = type("_SourceRuntime", (), {"close": AsyncMock()})()
-        self.pipeline.source_runtime = source_runtime
         self.pipeline.start()
         await self.pipeline.shutdown(timeout=0)
         await self.pipeline.shutdown(timeout=0)
-        source_runtime.close.assert_awaited_once()
         self.assertTrue(self.pipeline._stopping)
         self.assertTrue(self.pipeline._shutdown_complete)
         self.assertFalse([task for task in self.pipeline._worker_tasks if not task.done()])

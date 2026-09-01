@@ -427,12 +427,6 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         text, buttons = await _destination_profiles(ctx)
         await ctx.edit(event, text, buttons=buttons)
         return
-    if action == "sp":
-        from .source_profiles import _list_view as _source_profiles_view
-
-        text, buttons = await _source_profiles_view(ctx)
-        await ctx.edit(event, text, buttons=buttons)
-        return
     if action == "s":
         mode = MODE_NAMES[ctx.queue.spoiler_mode(event.sender_id)]
         progress = "开启" if ctx.queue.progress_enabled(event.sender_id) else "关闭"
@@ -446,7 +440,7 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
         )
         buttons = [
             [Button.inline("🔞 18+ 模式", "h:mode"), Button.inline("📊 切换进度", "toggle_progress")],
-            [Button.inline("🎯 发布目的地", "h:dp"), Button.inline("📡 自动来源", "h:sp")],
+            [Button.inline("🎯 发布目的地", "h:dp")],
             [Button.inline("☁️ WebDAV", "h:w"), Button.inline("🔐 Dashboard", "h:dashboard")],
             [Button.inline("🌐 代理", "h:p")],
             home_button(),
@@ -1003,7 +997,7 @@ async def callback_destination_profile(ctx: HandlerContext, event: Any, data: st
         return
     if action == "x":
         result = await ctx.destinations.disable(profile_id)
-        await ctx.answer(event, {"ok":"已禁用","read_only":"只读 profile","default":"请先切换默认","in_use":"仍有未完成任务引用","source_in_use":"仍有已启用自动来源引用"}.get(result, result))
+        await ctx.answer(event, {"ok":"已禁用","read_only":"只读 profile","default":"请先切换默认","in_use":"仍有未完成任务引用"}.get(result, result))
         text, buttons = await _destination_profiles(ctx)
         await ctx.edit(event, text, buttons=buttons)
         return

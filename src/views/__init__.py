@@ -52,11 +52,6 @@ from .destination_profiles import (
     destination_profile_test_confirm_view,
     destination_profiles_view,
 )
-from .source_profiles import (
-    SourceProfileView,
-    source_profile_detail_view,
-    source_profiles_view,
-)
 
 __all__ = [
     "MODE_NAMES",
@@ -107,7 +102,4 @@ __all__ = [
     "destination_profiles_view",
     "destination_profile_detail_view",
     "destination_profile_test_confirm_view",
-    "SourceProfileView",
-    "source_profiles_view",
-    "source_profile_detail_view",
 ]

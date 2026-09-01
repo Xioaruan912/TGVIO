@@ -271,31 +271,11 @@ class DashboardService:
                         "read_only": bool(profile.read_only),
                     }
                 )
-        sources = []
-        source_manager = getattr(self._pipeline, "source_profiles", None)
-        if source_manager is not None:
-            for profile in await source_manager.list_profiles():
-                sources.append(
-                    {
-                        "id": int(profile.id),
-                        "name": _label(profile.name),
-                        "destination_profile_id": int(profile.destination_profile_id),
-                        "enabled": bool(profile.enabled),
-                        "verified": profile.verified_at is not None,
-                        "spoiler_policy": _code(profile.spoiler_policy),
-                        "caption_policy": _code(profile.caption_policy),
-                        "backup_policy": _code(profile.backup_policy),
-                        "native_album_wait_seconds": float(profile.album_gather_seconds),
-                        "sequential_video_wait_seconds": float(
-                            profile.sequential_video_gather_seconds
-                        ),
-                    }
-                )
         return {
             "schema_version": self.schema_version,
             "generated_at": time.time(),
             "destinations": destinations,
-            "sources": sources,
+            "sources": [],
         }
 
     async def health(self) -> dict[str, Any]:

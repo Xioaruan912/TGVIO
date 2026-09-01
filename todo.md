@@ -74,7 +74,7 @@ sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=
 
 - [ ] **实机验证"卡正在下载"是否根除**：部署已完成，若用户使用中再现，看 `download progress` 日志与媒体 DC 连通性（`curl -m 10 https://91.108.56.132`）
 - [ ] **合集会话实机验证**：转发两个相册（视频+图片）→ 确认整合到一个评论区；图片 >10 丢弃；5s 按钮超时；/end 发布（需用户本人操作）
-- [x] **频道直发模式**：已由 source profile / 自动源摄取能力取代旧设想，当前实现与验收见 `AGENTS.md`。
+- [ ] **频道直发模式**：原 source profile / 自动源摄取能力已于 2026-09-01 按用户要求退役；当前不提供自动监听来源频道功能。若未来重新需要，应作为独立新功能重新设计，不复活旧 runtime。
 - [x] **队列持久化**：已迁移为 SQLite durable job queue，并包含恢复、claim、迁移与 integrity 验收。
 - [x] **`/stats` 统计命令**：已实现持久化统计与 `/stats` 视图。
 - [x] **>2GB 突破**：未采用旧清单建议的 Local Bot API Server；已实现安全超限媒体处理。视频走可播放分段，非视频走带 manifest/SHA-256 的二进制分卷，并完成 2,100,000,000-byte 生产实测。

@@ -3605,21 +3605,6 @@ class SQLiteRepository:
                     await conn.rollback()
                     return "default"
                 cursor = await conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_profiles'"
-                )
-                has_sources = await cursor.fetchone()
-                await cursor.close()
-                if has_sources is not None:
-                    cursor = await conn.execute(
-                        "SELECT COUNT(*) AS n FROM source_profiles WHERE destination_profile_id=? AND enabled=1",
-                        (int(profile_id),),
-                    )
-                    source_refs = await cursor.fetchone()
-                    await cursor.close()
-                    if int(source_refs["n"] if source_refs else 0) > 0:
-                        await conn.rollback()
-                        return "source_in_use"
-                cursor = await conn.execute(
                     """SELECT COUNT(*) AS n FROM jobs
                        WHERE destination_profile_id=? AND state NOT IN ('succeeded','failed','cancelled')""",
                     (int(profile_id),),

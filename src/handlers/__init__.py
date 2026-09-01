@@ -7,7 +7,6 @@ from .jobs import register_job_commands
 from .private import register_private_handler
 from .proxy import register_proxy_command
 from .settings import register_setting_commands
-from .source_profiles import register_source_profile_handlers
 
 
 def install_handlers(ctx: HandlerContext) -> None:
@@ -15,7 +14,6 @@ def install_handlers(ctx: HandlerContext) -> None:
     register_proxy_command(ctx)
     register_collection_commands(ctx)
     register_job_commands(ctx)
-    register_source_profile_handlers(ctx)
     register_callback_handler(ctx)
     register_private_handler(ctx)
 
