@@ -22,6 +22,8 @@ from ..views import (
     home_button,
     home_view,
     DestinationProfileView,
+    DashboardAccessViewState,
+    dashboard_access_view,
     destination_profile_detail_view,
     destination_profile_test_confirm_view,
     destination_profiles_view,
@@ -39,6 +41,21 @@ from .common import HandlerContext
 
 
 logger = logging.getLogger(__name__)
+
+
+def _event_is_private(event: Any) -> bool:
+    return bool(getattr(event, "is_private", False))
+
+
+def _dashboard_access(ctx: HandlerContext) -> tuple[str, list]:
+    settings = ctx.pipeline.settings
+    return dashboard_access_view(
+        DashboardAccessViewState(
+            enabled=bool(settings.dashboard_enabled),
+            public_url=str(settings.dashboard_public_url),
+            token=str(settings.dashboard_token),
+        )
+    )
 
 
 def _webdav_state(ctx: HandlerContext) -> WebDavConfigViewState:
@@ -193,6 +210,23 @@ def register_setting_commands(ctx: HandlerContext) -> None:
         if not ctx.authorized(event):
             return
         await ctx.respond(event, ctx.about_text)
+
+    @ctx.client.on(events.NewMessage(pattern="/dashboard$", func=lambda event: event.is_private))
+    async def on_dashboard(event: events.NewMessage.Event) -> None:
+        logger.info("CMD /dashboard from %s", event.sender_id)
+        if not ctx.authorized(event):
+            return
+        if not _event_is_private(event):
+            await ctx.respond(event, "🔒 Dashboard 凭据仅在 Bot 私聊中显示。", auto_delete=False)
+            return
+        text, buttons = _dashboard_access(ctx)
+        await ctx.respond(
+            event,
+            text,
+            buttons=buttons,
+            parse_mode="html",
+            auto_delete=False,
+        )
 
     @ctx.client.on(events.NewMessage(pattern="/stats$"))
     async def on_stats(event: events.NewMessage.Event) -> None:
@@ -407,16 +441,24 @@ async def callback_home(ctx: HandlerContext, event: Any, data: str) -> None:
             f"🔞 18+ 模式：{mode}\n"
             f"📊 任务进度：{progress}\n"
             f"☁️ WebDAV：{'启用' if ctx.backup.get_config('enabled') else '停用'}\n"
+            f"🔐 Dashboard：{'启用' if ctx.pipeline.settings.dashboard_enabled else '停用'}\n"
             "──────────\n静态 .env 配置需重启后生效。"
         )
         buttons = [
             [Button.inline("🔞 18+ 模式", "h:mode"), Button.inline("📊 切换进度", "toggle_progress")],
             [Button.inline("🎯 发布目的地", "h:dp"), Button.inline("📡 自动来源", "h:sp")],
-            [Button.inline("☁️ WebDAV", "h:w")],
+            [Button.inline("☁️ WebDAV", "h:w"), Button.inline("🔐 Dashboard", "h:dashboard")],
             [Button.inline("🌐 代理", "h:p")],
             home_button(),
         ]
         await ctx.edit(event, text, buttons=buttons)
+        return
+    if action == "dashboard":
+        if not _event_is_private(event):
+            await ctx.answer(event, "Dashboard 凭据仅在私聊中显示")
+            return
+        text, buttons = _dashboard_access(ctx)
+        await ctx.edit(event, text, buttons=buttons, parse_mode="html")
         return
     if action == "mode":
         mode = ctx.queue.spoiler_mode(event.sender_id)

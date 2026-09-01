@@ -9,6 +9,7 @@ from .common import (
 )
 from .proxy import ProxyViewState, proxy_list_view, proxy_view
 from .home import HomeViewState, home_button, home_view
+from .dashboard import DashboardAccessViewState, dashboard_access_view
 from .job import JobCardView, job_card_view
 from .queue import (
     PendingQueueItemView,
@@ -69,6 +70,8 @@ __all__ = [
     "HomeViewState",
     "home_view",
     "home_button",
+    "DashboardAccessViewState",
+    "dashboard_access_view",
     "JobCardView",
     "job_card_view",
     "QueueItemView",

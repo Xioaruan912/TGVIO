@@ -5,6 +5,7 @@ from src.views import (
     BackupAttemptListItemView,
     BackupAttemptPageView,
     BackupFileItemView,
+    DashboardAccessViewState,
     HomeViewState,
     JobCardView,
     MODE_NAMES,
@@ -17,6 +18,7 @@ from src.views import (
     WebDavConfigViewState,
     backup_attempt_detail_view,
     backup_attempt_page_view,
+    dashboard_access_view,
     mode_buttons,
     home_view,
     job_card_view,
@@ -260,7 +262,7 @@ class ViewRenderingTests(unittest.TestCase):
                 b"h:begin", b"h:end",
                 b"h:q", b"h:f",
                 b"h:dp", b"h:sp",
-                b"h:w", b"h:s",
+                b"h:w", b"h:dashboard", b"h:s",
                 b"h:status", b"h:help",
                 b"h:r",
             ],
@@ -305,6 +307,27 @@ class ViewRenderingTests(unittest.TestCase):
         )
         self.assertIn("已传输：64.0 MB", unknown)
         self.assertNotIn("0%", unknown)
+
+    def test_dashboard_access_view_escapes_credentials_and_keeps_token_out_of_url(self) -> None:
+        token = "<&token-0123456789abcdef0123456789>"
+        text, buttons = dashboard_access_view(
+            DashboardAccessViewState(
+                enabled=True,
+                public_url="http://dashboard.example:8787",
+                token=token,
+            )
+        )
+        self.assertIn("&lt;&amp;token", text)
+        self.assertNotIn(token, text)
+        self.assertEqual(buttons[0][0].url, "http://dashboard.example:8787")
+        self.assertNotIn("token", buttons[0][0].url)
+        self.assertEqual(buttons[1][0].data, b"h:r")
+
+        incomplete, incomplete_buttons = dashboard_access_view(
+            DashboardAccessViewState(enabled=True, public_url="", token=token)
+        )
+        self.assertNotIn(token, incomplete)
+        self.assertEqual(callback_data(incomplete_buttons), [b"h:r"])
 
     def test_common_mode_and_session_keyboards_keep_callbacks(self) -> None:
         self.assertEqual(

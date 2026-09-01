@@ -78,6 +78,8 @@ curl --unix-socket session/dashboard.sock \
 ssh -L 8787:/root/telegram-video-forwarder/session/dashboard.sock root@your-vps
 ```
 
+若 Bot 仅由可信白名单用户本人使用，可设置 `DASHBOARD_PUBLIC_URL`，随后在 Bot 私聊点击“🔐 Dashboard”或发送 `/dashboard` 获取地址和可复制 Token。该入口拒绝群组访问；打开按钮只带地址，不会把 Token 放进 URL。公网 HTTP 没有 TLS，Token 会以明文链路传输，请仅在明确接受该风险时使用。
+
 只读 API contract：`/api/v1/overview`、`/api/v1/jobs`、`/api/v1/storage`、`/api/v1/routing`、`/api/v1/health`。HTML shell 可在私有 socket 上加载；所有运行数据和 `/metrics` 都必须认证。Dashboard 不暴露 caption、消息正文、源 URL、本地路径、Telegram user/chat/peer id、代理或 WebDAV 凭据。
 
 Webhook 另行设置 `WEBHOOK_ENABLED=true`、HTTPS `WEBHOOK_URL` 和至少 32 字节的 `WEBHOOK_TOKEN`。接收方使用 `HMAC-SHA256(token, X-TVF-Timestamp + "." + raw_body)` 校验 `X-TVF-Signature`，并应拒绝过旧时间戳以防重放。Webhook 失败不会阻塞 Telegram 主流程；事件留在 outbox 按有限次数重试。
@@ -150,6 +152,7 @@ COVER_WIDTH=1280   # 封面图最大宽/高像素
 | `DASHBOARD_PORT` | `8787` | TCP 模式端口 |
 | `DASHBOARD_PUBLIC_BIND` | `false` | 显式允许 Dashboard 监听公网地址；不提供 TLS |
 | `DASHBOARD_BIND` | `127.0.0.1` | Docker 发布地址；公网开放时设为 `0.0.0.0` |
+| `DASHBOARD_PUBLIC_URL` | 空 | 仅供 Bot 私聊显示的 Dashboard 根地址；不得包含凭据/query/fragment |
 | `WEBHOOK_ENABLED` | `false` | 启用脱敏 HTTPS Webhook outbox dispatcher |
 | `WEBHOOK_TIMEOUT` | `10` | 单次 Webhook 超时秒数 |
 | `WEBHOOK_MAX_ATTEMPTS` | `8` | Webhook 最大尝试次数（1～20） |

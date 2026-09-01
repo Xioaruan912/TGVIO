@@ -66,6 +66,7 @@ from .config import (
     WEBDAV_URL,
     WEBDAV_USER,
 )
+from .commands import command_help_text
 from .domain import ErrorCode, RetryPolicy, classify_error, safe_traceback
 from . import webdav
 from .media import FileTooLargeError, MediaDownloader, MediaPublisher, PublishPartialError
@@ -173,15 +174,7 @@ _ABOUT_TEXT = (
     "支持 18+ 雪花遮挡、合集会话、相册聚合、并行下载/顺序上传队列、\n"
     "进度条、撤销发布与失败重试。\n\n"
     "📖 命令说明：\n"
-    "/start    使用说明\n"
-    "/about    关于/命令说明\n"
-    "/mode     设置 18+ 处理方式（默认总是正常，可改每次询问/总是雪花/总是正常）\n"
-    "/webdav   配置 WebDAV 备份链接\n"
-    "/webdavlogs  查看上传记录 / 本地待上传缓存\n"
-    "/proxy    代理设置（HTTP 代理，下载失败自动切换）\n"
-    "/queue    管理队列（逐项取消/暂停/恢复）\n"
-    "/begin    开始合集会话（转发会自动开始）\n"
-    "/end      结束合集并发布（所有视频进同一个评论区）"
+    + command_help_text(include_start=True)
 )
 
 

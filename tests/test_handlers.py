@@ -1,4 +1,5 @@
 import asyncio
+from dataclasses import replace
 import os
 import tempfile
 import unittest
@@ -60,6 +61,7 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
             {
                 "on_start",
                 "on_about",
+                "on_dashboard",
                 "on_stats",
                 "on_health",
                 "on_diag",
@@ -129,7 +131,7 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
                 b"h:begin", b"h:end",
                 b"h:q", b"h:f",
                 b"h:dp", b"h:sp",
-                b"h:w", b"h:s",
+                b"h:w", b"h:dashboard", b"h:s",
                 b"h:status", b"h:help",
                 b"h:r",
             ],
@@ -144,6 +146,71 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         await callback(end)
         self.assertIn("当前没有进行中的合集", end.answers)
         self.assertIn("合集：未开始", end.edits[-1]["text"])
+
+    async def test_dashboard_credentials_are_private_allowlisted_and_not_in_callbacks(self) -> None:
+        secret = "<&dashboard-secret-0123456789abcdef>"
+        settings = replace(
+            bot._legacy_static_settings(),
+            allowed_users=frozenset({42}),
+            dashboard_enabled=True,
+            dashboard_public_url="http://199.47.242.40:8787",
+            dashboard_token=secret,
+        )
+        client = FakeClient()
+        with patch.object(bot._Pipeline, "start", autospec=True):
+            bot.register_handlers(client, settings=settings)
+
+        command = client.handlers["on_dashboard"]
+        private = FakeNewMessageEvent(client, "/dashboard")
+        await command(private)
+        self.assertEqual(len(private.responses), 1)
+        rendered = client.sent_messages[-1]
+        self.assertIn("&lt;&amp;dashboard-secret", rendered["text"])
+        self.assertNotIn(secret, rendered["text"])
+        self.assertEqual(rendered["parse_mode"], "html")
+        self.assertFalse(rendered["message"].deleted)
+        buttons = rendered["buttons"]
+        self.assertEqual(buttons[0][0].url, "http://199.47.242.40:8787")
+        callback_payloads = [
+            button.data
+            for row in buttons
+            for button in row
+            if getattr(button, "data", None) is not None
+        ]
+        self.assertNotIn(secret.encode(), callback_payloads)
+
+        about = FakeNewMessageEvent(client, "/about")
+        await client.handlers["on_about"](about)
+        self.assertIn("/dashboard — 获取只读控制台地址和 Token", about.responses[-1].text)
+
+        group = FakeNewMessageEvent(client, "/dashboard", chat_id=-100123)
+        await command(group)
+        self.assertNotIn(secret, "".join(message.text for message in group.responses))
+
+        unauthorized = FakeNewMessageEvent(client, "/dashboard", sender_id=99)
+        await command(unauthorized)
+        self.assertEqual(unauthorized.responses, [])
+
+        callback = client.handlers["on_callback"]
+        opened = FakeCallbackEvent(client, b"h:dashboard")
+        await callback(opened)
+        self.assertIn("&lt;&amp;dashboard-secret", opened.edits[-1]["text"])
+        self.assertEqual(opened.edits[-1]["parse_mode"], "html")
+
+        group_callback = FakeCallbackEvent(client, b"h:dashboard", chat_id=-100123)
+        await callback(group_callback)
+        self.assertEqual(group_callback.edits, [])
+        self.assertNotIn(secret, "".join(group_callback.answers))
+
+        settings_page = FakeCallbackEvent(client, b"h:s")
+        await callback(settings_page)
+        settings_callbacks = [
+            button.data
+            for row in settings_page.edits[-1]["buttons"]
+            for button in row
+            if getattr(button, "data", None) is not None
+        ]
+        self.assertIn(b"h:dashboard", settings_callbacks)
 
     async def test_destination_profile_test_requires_confirmation_and_cleans_message(self) -> None:
         repo = SQLiteRepository(

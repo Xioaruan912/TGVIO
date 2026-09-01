@@ -95,6 +95,29 @@ class SettingsTests(unittest.TestCase):
         with self.assertRaises(SettingsError):
             Settings.from_env(invalid, strict=True)
 
+    def test_dashboard_public_url_is_root_only_and_hidden_from_summary(self) -> None:
+        env = base_env()
+        env.update(
+            DASHBOARD_ENABLED="true",
+            DASHBOARD_TOKEN="x" * 32,
+            DASHBOARD_PUBLIC_URL="http://dashboard.example:8787",
+        )
+        settings = Settings.from_env(env, strict=True)
+        self.assertEqual(settings.dashboard_public_url, "http://dashboard.example:8787")
+        rendered = repr(settings.safe_summary())
+        self.assertTrue(settings.safe_summary()["dashboard_public_url_configured"])
+        self.assertNotIn("dashboard.example", rendered)
+
+        for url in (
+            "ftp://dashboard.example",
+            "http://user:pass@dashboard.example",
+            "http://dashboard.example/private",
+            "http://dashboard.example/?token=secret",
+            "http://dashboard.example/#secret",
+        ):
+            with self.subTest(url=url), self.assertRaises(SettingsError):
+                Settings.from_env(dict(env, DASHBOARD_PUBLIC_URL=url), strict=True)
+
     def test_webhook_requires_https_and_hides_endpoint_and_token(self) -> None:
         env = base_env()
         env.update(

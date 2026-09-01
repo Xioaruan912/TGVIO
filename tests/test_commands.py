@@ -11,7 +11,7 @@ class CommandPresentationTests(unittest.TestCase):
             names,
             [
                 "start", "queue", "begin", "end", "mode", "profiles", "sources",
-                "webdav", "webdavlogs", "proxy", "stats", "health", "diag", "about",
+                "webdav", "webdavlogs", "proxy", "dashboard", "stats", "health", "diag", "about",
             ],
         )
         for name, description in command_menu_pairs():

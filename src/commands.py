@@ -29,6 +29,7 @@ COMMAND_SPECS: tuple[CommandSpec, ...] = (
     CommandSpec("webdav", "配置 WebDAV 备份", "配置、测试和开关 WebDAV", "配置"),
     CommandSpec("webdavlogs", "查看备份记录", "查看 WebDAV 记录和失败项", "配置"),
     CommandSpec("proxy", "管理下载代理", "管理 URL 下载使用的 HTTP 代理", "配置"),
+    CommandSpec("dashboard", "获取控制台凭据", "获取只读控制台地址和 Token", "系统"),
     CommandSpec("stats", "查看运行统计", "查看任务、资源和缓存统计", "系统"),
     CommandSpec("health", "检查本地健康", "检查 heartbeat、数据库和磁盘", "系统"),
     CommandSpec("diag", "导出脱敏诊断", "查看不含凭证和内容的诊断摘要", "系统"),

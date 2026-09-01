@@ -125,6 +125,7 @@ class Settings:
     url_private_network_policy: str
     dashboard_enabled: bool
     dashboard_public_bind: bool
+    dashboard_public_url: str
     dashboard_host: str
     dashboard_port: int
     dashboard_socket: str
@@ -242,6 +243,7 @@ class Settings:
             url_private_network_policy=url_private_network_policy,
             dashboard_enabled=_bool(env, "DASHBOARD_ENABLED", False, strict=strict),
             dashboard_public_bind=_bool(env, "DASHBOARD_PUBLIC_BIND", False, strict=strict),
+            dashboard_public_url=str(env.get("DASHBOARD_PUBLIC_URL", "")).strip(),
             dashboard_host=str(env.get("DASHBOARD_HOST", "127.0.0.1")).strip() or "127.0.0.1",
             dashboard_port=_int(env, "DASHBOARD_PORT", 8787, strict=strict),
             dashboard_socket=str(env.get("DASHBOARD_SOCKET", "session/dashboard.sock")).strip(),
@@ -294,6 +296,24 @@ class Settings:
         _bounded("WEBHOOK_TIMEOUT", self.webhook_timeout, 1.0, 60.0)
         _bounded("WEBHOOK_MAX_ATTEMPTS", self.webhook_max_attempts, 1, 20)
         _bounded("WEBHOOK_POLL_INTERVAL", self.webhook_poll_interval, 0.2, 60.0)
+        if self.dashboard_public_url:
+            try:
+                dashboard_url = urlsplit(self.dashboard_public_url)
+                dashboard_url_port = dashboard_url.port
+            except ValueError as exc:
+                raise SettingsError("invalid configuration: DASHBOARD_PUBLIC_URL") from exc
+            if (
+                len(self.dashboard_public_url) > 2048
+                or dashboard_url.scheme.lower() not in {"http", "https"}
+                or not dashboard_url.hostname
+                or dashboard_url.username is not None
+                or dashboard_url.password is not None
+                or dashboard_url.path not in {"", "/"}
+                or dashboard_url.query
+                or dashboard_url.fragment
+                or dashboard_url_port == 0
+            ):
+                raise SettingsError("invalid configuration: DASHBOARD_PUBLIC_URL")
         if self.dashboard_enabled:
             allowed_hosts = {"127.0.0.1", "::1", "localhost"}
             if self.dashboard_public_bind:
@@ -348,6 +368,7 @@ class Settings:
             "download_dir_configured": bool(self.download_dir),
             "dashboard_enabled": self.dashboard_enabled,
             "dashboard_transport": "unix" if self.dashboard_socket else ("tcp-public" if self.dashboard_public_bind else "tcp-loopback"),
+            "dashboard_public_url_configured": bool(self.dashboard_public_url),
             "dashboard_port": self.dashboard_port,
             "webhook_enabled": self.webhook_enabled,
             "webhook_max_attempts": self.webhook_max_attempts,
@@ -424,6 +445,7 @@ TRANSCODE_ENABLED = SETTINGS.transcode_enabled
 THUMBNAIL_POSITION = SETTINGS.thumbnail_position
 URL_PRIVATE_NETWORK_POLICY = SETTINGS.url_private_network_policy
 DASHBOARD_ENABLED = SETTINGS.dashboard_enabled
+DASHBOARD_PUBLIC_URL = SETTINGS.dashboard_public_url
 DASHBOARD_HOST = SETTINGS.dashboard_host
 DASHBOARD_PORT = SETTINGS.dashboard_port
 DASHBOARD_SOCKET = SETTINGS.dashboard_socket

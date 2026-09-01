@@ -1542,6 +1542,15 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 
 真实超限验收：active jobs=0 后停止生产 bot，使用同一 Telethon session（无双 bot）上传 2,100,000,000-byte 合成文件；生成 2 个不超过 1,992,294,400 bytes 的 binary volumes + 1 个 manifest，共 3 条消息，150.5s 成功。manifest mode/原始大小/part count/max size 断言通过，随后 3 条消息全部撤回、明确测试文件/目录全部删除并恢复生产。最终 VPS 镜像 **288 tests**（23.058s）全绿，`APP_COMMIT=0511b58`、源码哈希一致、schema 10/integrity ok、Dashboard 200、容器 healthy/restart=0。审计报告第 1～5 项全部收口；按用户要求不处理第 6 和第 7。
 
+### 2026-09-01 - Bot UI 获取 Dashboard 地址与 Token（进行中）
+
+- 用户明确该 Bot 仅本人使用，并授权把 Dashboard 访问凭据写入 Telegram Bot 私聊 UI。实现仍采用最小权限：只有 `ALLOWED_USERS` 中的用户且消息/按钮发生在私聊时才能查看；群组命令不得回显凭据。
+- 增加 `/dashboard` 命令，并在首页、设置页增加 `🔐 Dashboard` 按钮。页面显示只读状态、可点击的公开地址和可复制的 Bearer Token；打开网页的 URL 按钮只包含地址，token 不进入 URL query、callback data、日志、异常、BotFather 命令描述或 Git。
+- 增加可选静态配置 `DASHBOARD_PUBLIC_URL`，仅用于 Bot UI 展示，不改变监听/鉴权。严格接受根路径的 `http/https` URL，拒绝用户信息、query、fragment 和无 host；`safe_summary()` 只输出“是否配置”，不输出完整地址。HostDZire 生产值设置为 `http://199.47.242.40:8787`。
+- 页面使用 Telegram HTML `<code>` 显示经转义 token，方便客户端复制，并提示不要转发；Dashboard 未启用、地址未配置或 token 缺失时 fail closed，不生成打开按钮或泄露空/错误凭据。凭据消息不自动删除，避免复制时消失。
+- 验收：补配置边界/脱敏、命令注册、首页按钮、allowlist + 私聊门禁、callback 页面和“secret 不进入 callback/日志”回归；跑完整 unittest、compileall、diff/compose/build/镜像检查。只提交明确文件并保留现有 `demo/o1-dashboard-demo.html` 删除不动；推送 GitHub 后按三重回滚流程发布 VPS，核对 `APP_COMMIT`、health/restart、schema/integrity、公开 200/匿名 API 401/认证 200，再把精确结果写回本节。
+- 当前进度：代码、文档和自动化回归已实现；source-mounted 应用镜像完整 **291 tests** 全绿，配置/命令/视图/handler 专项 35 项全绿，`compileall`、`git diff --check`、Compose config 与本地严格 Settings 解析通过。尚待精确 commit 的标准镜像构建、GitHub 推送和 VPS 发布后验，因此本节继续标记“进行中”。
+
 ## 21. 执行日志
 
 ### 2026-08-30 - 规划与交接文档

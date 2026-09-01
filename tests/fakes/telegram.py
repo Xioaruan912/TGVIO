@@ -104,6 +104,10 @@ class FakeCallbackEvent:
         self.responses: list[FakeStatusMessage] = []
         self.delete_calls = 0
 
+    @property
+    def is_private(self) -> bool:
+        return self.chat_id == self.sender_id
+
     async def answer(self, text: str = "") -> None:
         self.answers.append(text)
 
@@ -135,6 +139,10 @@ class FakeNewMessageEvent:
         self.message = message or FakeMessage(1, raw_text=raw_text)
         self.responses: list[FakeStatusMessage] = []
         self.replies: list[FakeStatusMessage] = []
+
+    @property
+    def is_private(self) -> bool:
+        return self.chat_id == self.sender_id
 
     async def respond(self, text: str, **kwargs: Any) -> FakeStatusMessage:
         message = await self.client.send_message(self.chat_id, text, **kwargs)
