@@ -1553,7 +1553,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 - 发布过程中发现生产 `.env` 仍残留 `APP_COMMIT=0511b58`，会覆盖镜像内正确的 `APP_COMMIT=d3f9a4a`；已将生产 `.env` 同步为 `APP_COMMIT=d3f9a4a`，并补齐 `DASHBOARD_PUBLIC_URL=http://199.47.242.40:8787` 后重新创建 bot。最终容器 `running`、`healthy`、`restart=0`、`APP_COMMIT=d3f9a4a`。
 - 生产后验：容器内完整 **291 tests** 在 23.467s 全绿，`compileall src tests` 通过；SQLite `integrity=ok`、schema `1..10`、`active_jobs=0`、`active_backups=0`。Dashboard 根页面公网 `200`，公网匿名 `/api/v1/health` 为 `401`；本机匿名 `/api/v1/overview`、`/api/v1/health`、`/metrics` 均为 `401`，Bearer 认证后均为 `200`。`src/config.py`、`src/handlers/settings.py`、`src/views/dashboard.py`、`src/bot.py` 的本地/生产 SHA-256 一致；近 10 分钟生产日志未发现 traceback/fatal/uncaught/exception。
 
-### 2026-09-01 - S1 自动来源生产缺陷、连续视频两分钟聚合与全量验收（进行中）
+### 2026-09-01 - S1 自动来源生产缺陷、连续视频两分钟聚合与全量验收（代码与发布完成；来源 E2E 待外部权限）
 
 - 用户决策：来源频道逐条发布的视频按“最后一条后连续 **120 秒**没有新视频再提交；达到 Telegram 上限 **10 个**立即提交”聚合为一个媒体组任务。这里的“文件夹”按 Telegram 原生媒体组/相册实现，不创建压缩包；原生已有相同 `grouped_id` 的媒体组继续按短窗口聚合，不额外等待 120 秒。
 - 接手基线：另一位 AI 已完成 Dashboard 生产发布与文档收尾；本地/GitHub `main=07a65ed`、工作树干净，生产容器 `APP_COMMIT=d3f9a4a`、healthy/restart=0，宿主与容器自动来源相关源码哈希一致。本工作包不得回退或重复提交 `996e7b7`/`07a65ed`。
@@ -1579,7 +1579,11 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 - Bot UI 与只读 Dashboard 已显示“原生相册 2 秒 / 连续视频 120 秒 / 满 10 条提交”；README 已补来源管理员前置、边界、重启恢复与排障。当前目的地 `cover_mode=true` 的发布语义保持不变。
 - 专项与完整回归：source access/runtime/handler/repository/dashboard 全部通过；第一次 source-mounted 依赖镜像 **304 tests** 在 24.257s 全绿。补 schema10→11 与 pipeline close 回归后，干净候选镜像内最终 **305 tests** 在 27.936s 全绿；`compileall src tests`、`git diff --check`、Compose config、0001～0010 migration immutability、关键文件 image/local SHA-256 均通过。候选镜像确认不含 `.env/.git/session/downloads/.agents/skills-lock.json`，通用 Telegram token 模式扫描无命中。
 - 构建环境记录：标准 Dockerfile 两次均在读取 Docker Hub `python:3.11-slim` manifest 时网络超时，尚未进入任何代码构建步骤；因本轮 `Dockerfile`/`requirements.txt` 零变更，发布前门禁改用当前 d3f9a4a 标准生产依赖镜像为 base，在隔离 layer 中先清空 `/app` 再 `COPY` 当前 context，得到 `telegram-video-forwarder-bot:source-batching-preflight`。发布端仍先尝试标准缓存构建；若 registry 继续不可达，只能使用同样的 clean-app 离线构建，并必须记录 base image digest。
-- 尚未执行：GitHub push、生产 migration11/发布后验。生产来源真实发帖验收仍等待用户把 Bot 加为来源频道管理员；在此前只可确认代码门禁与生产只读状态，不能标记外部 E2E 完成。
+- GitHub/发布：实现提交 `51b871d87519111dfd43fcba09e890a8132c1340` 已推送 `origin/main`。HostDZire 发布前 active job/claim/backup/received-source 均为 0；标准远端镜像 `telegram-video-forwarder-bot:51b871d` 内 **305 tests** 在 23.795s 全绿。生产 DB 副本先演练 migration `[11]`，得到 schema1..11、integrity ok、既有 1 个来源默认 120 秒。
+- 回滚点：UTC `20260901T094049Z`；`env-pre-51b871d-20260901T094049Z.bak`、`state-pre-51b871d-20260901T094049Z.sqlite3`、`source-pre-51b871d-20260901T094049Z.tar.gz`、镜像 `telegram-video-forwarder:rollback-pre-51b871d-20260901T094049Z`。另保留迁移演练副本 `state-migration-dryrun-51b871d-20260901T094049Z.sqlite3`；release archive SHA-256 为 `2f834291551c1f8468301ddfc1574c80b137300e6970f80e4ee0931007511932`。
+- 生产结果：标准镜像 digest `sha256:8ab9b27d33f341cb58412a6325967ece4ffae670b423ef78b1dc3c1e54bfdfa9`，`APP_COMMIT=51b871d`，running/healthy/restart=0；生产 migration11 已应用，schema1..11、integrity ok、foreign-key check 空、received index 存在，来源为 native=2 秒/sequential=120 秒。容器内最终 **305 tests** 在 23.432s 全绿，宿主/容器/本地关键源码哈希一致，近 15 分钟主进程日志 error markers=0。
+- 全量生产后验：Telegram connected/live/ready/database 均 true；Dashboard 公网 shell=200、匿名 health=401，六个 Bearer 端点均 200；仅 2 个历史 succeeded job 与 2 个 succeeded backup attempt，active job/claim/backup=0，59 个 active published refs、58 个 dedup entry；WebDAV enabled/configured/retry5，代理 auto=true/4 candidates/current=-1（直连），Webhook=false，磁盘剩余约 31.1GB。
+- **唯一未完成的真实验收**：新运行时启动即得到 `Source access unavailable profile=1 code=bot_not_member pending=0`，证明旧 verified 是假阳性且 Bot 目前仍不是来源成员；`source_events_total=0`。代码、迁移、镜像与只读生产面已全部验收，但不能声称自动来源 Telegram E2E 正常。用户需把 Bot 加为来源频道管理员，私聊 `/sources` → “检查访问”，再让来源连续发 2～3 个新视频；最后一条后等待 120 秒，应只产生一个 album job（满 10 个会立即提交）。当前 destination `cover_mode=true`，视频媒体组会进关联讨论组；若要直接进目标频道，需另行明确关闭该 Profile 的封面模式。
 
 ## 21. 执行日志
 
