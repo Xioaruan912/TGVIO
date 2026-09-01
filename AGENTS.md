@@ -1320,7 +1320,7 @@ Web retry/cancel/delete/profile update、邮件通知均不属于本次 O1 交�
 
 ### 17.6 仍需记录但不进入当前开发队列的需求
 
-- 超过 2GB：先明确真实需求，再选择安全分割、用户账号上传或 Local Bot API；不能通过简单改常量绕过平台限制。
+- 超过 2GB：已选择并实现 `LARGE_FILE_POLICY=split`；视频生成经 ffprobe 验证的可独立播放 MP4 分段，非视频生成 SHA-256 manifest + 可重组分卷。生产 2.1GB 实测记录见第 20.6 节。
 - 多帧封面选择、媒体手工排序、批量 caption 模板：等 U1/U2 预览稳定后再排期。
 - 多用户速率限制：当前 allowlist 足够；若允许多个用户，增加每用户并发/每日字节配额和公平队列，而不是仅按全局 FIFO。
 - 国际化：当前以中文为主；所有文案集中到 views 后再考虑语言资源文件。
@@ -1508,17 +1508,17 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 当前没有可无歧义自动开始的代码包。下列需求均需要用户先选择产品方向，收到明确授权前只能保持记录、不得猜测实现：
 
 - **Web mutation**：只读 Dashboard 已交付；若要 retry/cancel/delete/profile update，先定义哪些动作开放给谁、是否需要二次确认和审计保留期。实现必须先在 service 层补 command/owner/revision/confirmation/audit 测试，再设计 Web route。
-- **大于 2GB 的媒体**：需在安全分割、用户账号上传、Local Bot API 三种路线中选定；不同路线的权限、成本、上传语义和失败恢复完全不同，不能通过调大常量开始。
+- **大于 2GB 的媒体**：安全分割路线已在 `0511b58` 完成并通过 2.1GB 生产实测；只有未来切换用户账号上传/Local Bot API 才需重新立项。
 - **多用户/国际化/批量内容编辑**：分别依赖访问控制与公平配额、文案资源模型、U1/U2 预览确认语义；只有对应真实用户场景确定后再拆分工作包。
-- **启用现有 O1 能力**：这不是代码开发。Dashboard 要在 VPS `.env` 设置强 token 后用 Unix socket + SSH forwarding 访问；Webhook 要提供 HTTPS endpoint 和独立强 token。不得为方便而开放公网监听。
+- **启用现有 O1 能力**：Dashboard 已按用户明确授权公开 `8787/TCP`，仍使用强 token；Webhook 仍需 HTTPS endpoint 和独立强 token 后才能启用。
 
-### 2026-09-01 - 用户授权的下一批：只读面启用与超限媒体安全分卷（进行中）
+### 2026-09-01 - 用户授权的下一批：只读面启用与超限媒体安全分卷（已完成）
 
 用户决策：先完成/启用只读操作；超过 2GB 采用分割；多用户、国际化与批量编辑可以后续评估；启动已交付的 O1 能力。以下是本轮唯一授权范围：
 
 1. **只读 Dashboard 启用**：在 HostDZire 的既有 `.env` 中生成并写入仅用于 `DASHBOARD_TOKEN` 的高熵随机值，设置 `DASHBOARD_ENABLED=true`，保留 `DASHBOARD_SOCKET=session/dashboard.sock`，不设置 Docker port、不启用 Webhook（尚未提供 HTTPS 接收 URL）。先备份 `.env`/当前镜像，重建一个 bot 容器；验收 socket 为 0600、容器 healthy/restart=0、匿名 API 为 401、Bearer API/metrics 可用。token 不写入 Git、AGENTS、日志或聊天；用户通过其 VPS root 会话读取/轮换。
-2. **超限分卷策略**：新增明确 opt-in 的静态配置（默认 `LARGE_FILE_POLICY=reject`，启用值 `split`；`SPLIT_PART_BYTES` 必须小于 `MAX_FILE_SIZE` 并保留 Telegram/multipart 余量）。不增加 `MAX_FILE_SIZE`，不使用无校验的“改后缀”或截断。超限文件在发布前使用流式读写生成顺序分卷与最小 manifest（原始安全文件名、总大小、SHA-256、part count/size/hash）；每个分卷独立小于上传护栏，按顺序作为 document 发布，caption 明确这是可复原分卷且给出标准重组命令。原文件和已生成分卷只在整个任务成功后交由既有 cleanup；失败/取消时保留，避免不可恢复的数据状态。
-3. **发布一致性**：分卷发送逐条 checkpoint 到既有 `published_messages`；任何已发送 part 后的异常必须沿用 `PublishPartialError`，禁止自动重发造成重复。封面/讨论组模式对分卷不伪装成可播放视频，统一走直发 document，避免错误的 cover/comment 语义。Dedup 不把临时分卷误写为原始媒体索引。
+2. **超限分割策略**：新增明确 opt-in 的静态配置（默认 `LARGE_FILE_POLICY=reject`，启用值 `split`；`SPLIT_PART_BYTES` 必须小于 `MAX_FILE_SIZE` 并保留 Telegram/multipart 余量）。不增加 `MAX_FILE_SIZE`，不使用无校验截断。视频用 FFmpeg 生成可独立播放分段，非视频流式生成可重组分卷；两者 manifest 都记录原始安全文件名、总大小、SHA-256、part count/size/hash。原文件和输出只在整个任务成功后交由既有 cleanup；失败/取消时保留。
+3. **发布一致性**：分段/分卷发送逐条 checkpoint 到既有 `published_messages`；任何已发送 part 后的异常必须沿用 `PublishPartialError`，禁止自动重发造成重复。封面/讨论组模式统一走直发，避免错误的 cover/comment 语义；可播放视频段按 video document 发布，binary volume 不伪装成视频。Dedup 不把临时输出误写为原始媒体索引。
 4. **测试/文档/发布**：补 Settings 边界、streaming split/manifest/hash/清理、publisher 顺序/partial checkpoint/默认拒绝和 UI 错误提示测试；跑完整镜像测试、静态/镜像秘密检查。先推 GitHub，再按 O1 同等三重回滚流程发布 VPS 并记录 commit、schema（预期不迁移）、health、hash、测试及 Dashboard socket 验收。多用户/国际化/批量编辑不在本轮实现；等真实使用场景和权限模型确定后单独立项。
 
 ### 2026-09-01 - Dashboard 启用与安全分卷发布完成
@@ -1526,15 +1526,21 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 - Dashboard：HostDZire `.env` 已生成独立随机 `DASHBOARD_TOKEN`（未回显/未入库）、`DASHBOARD_ENABLED=true`、Unix socket `session/dashboard.sock`；匿名 API=401、认证 API/metrics=200、socket mode=0600、Docker published ports=0、Webhook 仍为 false。启用前 `.env` 与镜像备份为 `env-pre-dashboard-20260901T013000Z.bak` 和 `telegram-video-forwarder:rollback-pre-dashboard-20260901T013000Z`。
 - 分卷：`69a03e1679ed5a4d3f9b4f0dcb8a6a5514655d3e` 已推送并发布。`LARGE_FILE_POLICY=split`、`SPLIT_PART_BYTES=1992294400`；采用 SHA-256 manifest + 有界 document volumes，不伪装视频。镜像内全量 **284 tests** 通过。发布前验证无活动 job；回滚点为 `env-pre-split-20260901T014000Z.bak`、`source-pre-split-20260901T014000Z.tar.gz`、`telegram-video-forwarder:rollback-pre-split-20260901T014000Z`。发布后 `APP_COMMIT=69a03e1`、Dashboard=true、socket=0600、health=healthy、restart=0，未做 SQLite migration。
 
-### 2026-09-01 - 用户授权公开 Dashboard TCP 端口（进行中）
+### 2026-09-01 - 用户授权公开 Dashboard TCP 端口（已完成）
 
 用户明确要求不使用 Caddy/域名，仅开放端口以供移动端访问。实施：新增默认关闭的 `DASHBOARD_PUBLIC_BIND`；只有它与 `DASHBOARD_ENABLED` 同时为 true，才允许空 socket + `DASHBOARD_HOST=0.0.0.0`，Compose 才把 `8787/TCP` 映射为公网端口。仍强制强 Bearer token、无 mutation、无 Webhook；文档显式说明 HTTP 明文风险。补 config/compose 测试，先推送再备份并发布 VPS，最后从外部地址验证 401/200。
 
-### 2026-09-01 - 用户授权收口审计项 1～5（进行中）
+完成记录：`74c26a1` 增加显式公网配置，`bb50a19` 补齐 DashboardServer 运行时授权并发布。首次发布因 server 仍保留 loopback-only guard 导致容器重启，已定位修复；最终外部 shell=200、匿名 API=401、认证 API/metrics=200，`0.0.0.0:8787`、healthy/restart=0。`0511b58` 又加入正反向 runtime/main 回归，防止配置层与运行层再次不一致。
+
+### 2026-09-01 - 用户授权收口审计项 1～5（已完成）
 
 用户明确要求完成审计报告第 1～5 项，不处理第 6（明文 HTTP/TLS）和第 7（多用户/国际化等规划功能）。当前事实：生产 `bb50a19` healthy、restart=0、公开页面 200、匿名 API 401、认证 API/metrics 200、schema 10/integrity ok、源码哈希一致；但 285 tests 中 main O1 fixture 有 2 个 error，公网启动路径缺专门测试，本节/17.6 状态过期，分卷尚非可播放视频，也没有真实 2GB+ 生产验收。
 
 执行方案：先修 main fixture 并新增 `DashboardServer(public_bind=True)`/显式拒绝未授权公网 bind 回归；视频分割改为 FFmpeg segment muxer，stream-copy + 关键帧边界优先，按输出大小迭代缩短 segment time，必要时闭 GOP 转码兜底，每段必须小于上限且经 ffprobe 验证为独立可播放文件。非视频继续使用 SHA-256 可恢复二进制分卷。manifest 区分 `playable_video_segments` 与 `binary_volumes`，不得声称视频分段可字节重组原文件。完成全量门禁后推送/部署；再在无活动任务窗口使用单一 Telegram bot session 做一次 >2GB 受控上传，记录耗时/磁盘/消息 refs，验收后删除测试消息和临时文件并恢复生产容器。所有结果与回滚点写回本节。
+
+完成结果：实现提交 `0511b583a210e5923fa09c3f2ead041351a0469e` 已推送并发布；main fixture、public bind 正/反向授权、可播放 MP4 分段、binary manifest/reassembly 均有回归。视频采用 stream-copy 优先、输出大小迭代、闭 GOP 转码兜底和逐段 ffprobe；README/.env.example 已同步。VPS 回滚点：`env-pre-playable-20260901T020000Z.bak`、`source-pre-playable-20260901T020000Z.tar.gz`、`telegram-video-forwarder:rollback-pre-playable-20260901T020000Z`。
+
+真实超限验收：active jobs=0 后停止生产 bot，使用同一 Telethon session（无双 bot）上传 2,100,000,000-byte 合成文件；生成 2 个不超过 1,992,294,400 bytes 的 binary volumes + 1 个 manifest，共 3 条消息，150.5s 成功。manifest mode/原始大小/part count/max size 断言通过，随后 3 条消息全部撤回、明确测试文件/目录全部删除并恢复生产。最终 VPS 镜像 **288 tests**（23.058s）全绿，`APP_COMMIT=0511b58`、源码哈希一致、schema 10/integrity ok、Dashboard 200、容器 healthy/restart=0。审计报告第 1～5 项全部收口；按用户要求不处理第 6 和第 7。
 
 ## 21. 执行日志
 
