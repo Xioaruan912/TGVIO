@@ -1530,6 +1530,12 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 
 用户明确要求不使用 Caddy/域名，仅开放端口以供移动端访问。实施：新增默认关闭的 `DASHBOARD_PUBLIC_BIND`；只有它与 `DASHBOARD_ENABLED` 同时为 true，才允许空 socket + `DASHBOARD_HOST=0.0.0.0`，Compose 才把 `8787/TCP` 映射为公网端口。仍强制强 Bearer token、无 mutation、无 Webhook；文档显式说明 HTTP 明文风险。补 config/compose 测试，先推送再备份并发布 VPS，最后从外部地址验证 401/200。
 
+### 2026-09-01 - 用户授权收口审计项 1～5（进行中）
+
+用户明确要求完成审计报告第 1～5 项，不处理第 6（明文 HTTP/TLS）和第 7（多用户/国际化等规划功能）。当前事实：生产 `bb50a19` healthy、restart=0、公开页面 200、匿名 API 401、认证 API/metrics 200、schema 10/integrity ok、源码哈希一致；但 285 tests 中 main O1 fixture 有 2 个 error，公网启动路径缺专门测试，本节/17.6 状态过期，分卷尚非可播放视频，也没有真实 2GB+ 生产验收。
+
+执行方案：先修 main fixture 并新增 `DashboardServer(public_bind=True)`/显式拒绝未授权公网 bind 回归；视频分割改为 FFmpeg segment muxer，stream-copy + 关键帧边界优先，按输出大小迭代缩短 segment time，必要时闭 GOP 转码兜底，每段必须小于上限且经 ffprobe 验证为独立可播放文件。非视频继续使用 SHA-256 可恢复二进制分卷。manifest 区分 `playable_video_segments` 与 `binary_volumes`，不得声称视频分段可字节重组原文件。完成全量门禁后推送/部署；再在无活动任务窗口使用单一 Telegram bot session 做一次 >2GB 受控上传，记录耗时/磁盘/消息 refs，验收后删除测试消息和临时文件并恢复生产容器。所有结果与回滚点写回本节。
+
 ## 21. 执行日志
 
 ### 2026-08-30 - 规划与交接文档
