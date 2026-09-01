@@ -1,66 +1,236 @@
-# 视频转发机器人
+# Telegram Video Forwarder
 
-Telegram 机器人：把转发的视频/图片发布到你的频道；或下载链接（抖音/B站/YouTube 等）后发布到频道。
+[![Python 3.11](https://img.shields.io/badge/python-3.11%2B-3776AB?logo=python&logoColor=white)](https://www.python.org/)
+[![Docker](https://img.shields.io/badge/deploy-Docker-2496ED?logo=docker&logoColor=white)](https://www.docker.com/)
+[![License: MIT](https://img.shields.io/badge/license-MIT-green?style=flat)](./LICENSE)
 
-## 功能
+> English summary: A self-hosted Telegram media relay built on Telethon/MTProto. Forward videos or images to a bot, or submit an HTTP(S) URL, then download, optionally back up, and republish the media to a destination channel.
 
-- **转发**：你转发含视频/图片的消息给机器人 → 弹窗确认是否 18+ → 下载后重新上传到目标频道（独立副本，源频道关闭/删除不影响已发布内容）
-- **相册**：一次转发的一批图片合并为一个任务、只询问一次 18+，发布为单个相册消息
-- **纯媒体转发**：默认不转发原消息文字（caption），只发布视频/图片本身；可用 `FORWARD_CAPTION=true` 保留文字
-- **雪花遮挡**：确认「是」则用 Telegram 内置雪花（spoiler）效果遮挡发布，文件内容不被修改、画质无损；确认弹窗 60 秒未操作时自动按正常（非 18+）模式处理
-- **取消按钮**：确认弹窗上「❌ 取消」可随时丢弃误转发的任务（不入队、不下载）
-- **18+ 模式偏好**：**默认「总是正常」**——首次使用不询问、不暂存，直接按正常（非18+）处理；需要雪花遮挡时用 `/mode` 设置（每次询问 / 总是雪花遮挡 / 总是正常，持久保存）
-- **消息自动撤回**：命令回复/提示类消息 `AUTO_DELETE_SECONDS`（默认 10 秒）后自动删除；**18+ 确认、mode 设置引导（提示用户操作类）保留**；`/queue` 管理视图 10 秒后自动撤回；发布成功状态消息 10 秒后撤回（频道视频保留）；**用户取消/确认超时对应消息即时撤回**；**点「↩️ 撤销」立即删除频道视频与状态消息**；失败消息保留（带重试按钮）
-- **确认超时自动处理**：18+ 确认弹窗 `CONFIRM_TIMEOUT`（默认 60 秒）内未回复 → **自动按"总是正常（非18+）"处理该视频**（不丢弃），并撤回确认消息
-- **撤销发布**：发布成功后状态消息带「↩️ 撤销」按钮，一键删除刚发到频道的消息
-- **失败重试**：下载/上传失败或超时时状态消息带「🔄 重试」按钮，一键重新入队（无需重新转发）；上传队列看门狗超时同样提供重试
-- **队列管理**：`/queue` 管理队列（逐项取消/暂停/恢复，带控制按钮）
-- **URL 下载**：你发送链接给机器人 → yt-dlp 下载 → 通过 Telethon/MTProto 上传到频道；超过单文件护栏时可选择可播放视频分段/可恢复文件分卷
-- **视频预览**：上传时自动截取真实画面帧作为缩略图并填充真实宽高/时长，避免黑色预览
-- **队列**：下载优先（3 路并行，全部缓存到本地后才开始上传；上传中新到内容先下载再续传），按发送顺序依次上传
-- **上传控制**：等待上传/上传中可**暂停（逐文件）**、**跳过（保留缓存可删除或重传）**、**取消（删除缓存）**；失败可**重试（从缓存直接重传，不重新下载）**
-- **传输加速**：并发分片下载（8 路）× 并发分片上传（16 路）× 512KB 分片 + `cryptg`（C 级加解密），单文件传输接近带宽上限
-- **缓存管理**：上传成功后自动删除本地缓存；失败保留供重试；跳过/取消清理缓存；下载/上传超时自动恢复（自动重试 1 次）
-- **进度条**：下载/上传时状态消息实时显示进度条（`████░░░░░░ 50%`），相册按整体聚合（`下载 3/10`）
-- **进度开关**：状态消息上「🔕 关闭进度」按钮可全局关闭/开启进度条显示（偏好持久化，重启保留）；下载时另有「⏹ 停止下载」按钮可取消该任务
-- **封面模式（COVER_MODE=true）**：频道只发封面图，视频进频道**关联讨论组的评论区**——观看者点频道帖子的 💬 评论图标即可看到视频；相册里图片进频道、视频**以媒体组（10 条一组）进评论区**；18+ 雪花只盖评论区视频（封面保持美观）；撤销一键同时删除封面帖与评论视频
-- **合集会话（SESSION_COLLECT，默认开启）**：转发会自动开始合集会话（相当于自动 `/begin`），**后续所有转发都汇总为一个合集**——图片进频道封面相册（超过 10 张按序丢弃），**全部视频整合进同一个评论区**（不再每次转发各开一个评论区）；合集进行中**只显示一条状态消息**（带「🛑 结束并发布」按钮，不会随每次转发反复弹出），随时发 `/end` 或点按钮结束并发布
-- **常驻按钮**：`/start` 或 `/begin` 后，**打字框上方常驻「📥 开始合集 / 🛑 结束合集」按钮**（回复键盘，persistent），点按钮即开始/结束合集，无需手动输入命令
-- **会话评论（文字随封面发布）**：合集会话期间发送的**文字消息会作为评论收集**，每条评论按行拆分（自动补换行），`/end` 时**整合为一条文本作为封面 caption 与封面一起发送到频道**（不是发到评论区）；多条评论按发送顺序排列
-- **白名单**：仅 `ALLOWED_USERS` 中的用户可以操作
-- **本机只读控制台**：可选 O1 Dashboard 通过私有 Unix Socket 提供任务、统计、磁盘、路由和健康快照；API 与 `/metrics` 统一使用 Bearer Token，页面不提供写操作
-- **指标导出**：提供低基数 Prometheus 文本指标，不使用 job/user/URL/error message 作为 label
-- **外部通知**：可选 HTTPS Webhook 使用 SQLite outbox、HMAC-SHA256 签名、租约恢复和有限指数退避；payload 默认只含脱敏状态与错误码
+Telegram Video Forwarder 是一个面向个人或小型受控部署的 Telegram 媒体中转机器人：把视频、图片转发给机器人，或发送一个 HTTP(S) 链接，机器人会将媒体下载到本地，再重新上传到指定频道。
 
-## 前置准备
+项目使用 **Telethon / MTProto**，不依赖官方 Bot API 的小文件上传路径；下载、发布、备份、队列和状态反馈均在同一个可审计的 asyncio 进程中完成。
 
-1. 在 Telegram 创建目标频道
-2. 通过 [@BotFather](https://t.me/BotFather) 创建机器人，获取 `BOT_TOKEN`
-3. 到 [my.telegram.org](https://my.telegram.org) 获取 `API_ID` / `API_HASH`
-4. 将机器人设为频道**管理员**（勾选"发消息"权限）
-5. 到 [@userinfobot](https://t.me/userinfobot) 查询你的用户 ID
+## 当前范围
 
-## 部署
+- 支持：授权用户的私聊媒体转发、相册、合集会话、URL 下载、目标频道发布、可选 WebDAV 备份和只读 Dashboard。
+- 自动来源频道监听已经退役：当前版本不提供 `/sources`，不监听第三方频道，不回扫来源历史，也不使用 Telegram 个人账号 session。
+- Dashboard 是只读管理面，不提供 Web 重试、取消、删除或配置修改接口。
+- 这是一个自托管项目。请在部署前阅读安全和数据持久化章节，不要把生产凭据、Telegram session 或真实媒体提交到 Git。
 
-```bash
-cd telegram-video-forwarder
-cp .env.example .env          # 填入 API_ID/API_HASH/BOT_TOKEN/DEST_CHANNEL/ALLOWED_USERS
-docker compose up -d
-docker compose logs -f        # 查看运行日志
+## 核心能力
+
+### 媒体接收与发布
+
+- 转发单个视频/图片或一批 Telegram 相册媒体。
+- `SESSION_COLLECT=true`（默认）时，连续转发会自动进入合集会话；发送 `/end` 或点击按钮后统一按到达顺序发布。
+- 合集期间的纯文字会按顺序收集；封面模式下会作为封面说明文字发布。
+- 默认只发布媒体，不复制原消息 caption；设置 `FORWARD_CAPTION=true` 才保留原文字。
+- 通过 `/mode` 选择每次询问、总是雪花遮挡或总是正常。未设置时默认总是正常。
+- 自动生成视频缩略图并读取真实时长、尺寸；可选执行无损 MP4 faststart 检查/remux。
+
+### 队列与可靠性
+
+- SQLite 持久化任务、状态、事件、发布消息引用和重试信息。
+- 下载可并发，Telegram 发布按接受顺序处理，避免后来的任务越过前面的任务。
+- 单文件分片并发下载/上传；默认 8 路下载、16 路上传、512 KiB 分片，并使用 `cryptg` 加速加解密。
+- 支持暂停、继续、取消、跳过、缓存重传和失败后的阶段级处理。
+- 下载、发布、WebDAV 备份相互隔离；超时、网络失败、磁盘不足和部分发布都有明确的终态或恢复路径。
+- 受保护缓存、磁盘水位、历史保留期和安全清理均由磁盘管理器控制。
+
+### 可选发布与备份模式
+
+- **直接发布**：视频和图片直接发送到目标频道（默认）。
+- **封面模式**：频道只保留封面图，视频发送到频道关联讨论组的评论线程；媒体组按 Telegram 的 10 项上限拆分。
+- WebDAV 备份默认是 best-effort：备份失败不会阻止 Telegram 发布，但缓存会保留以便重试。也可以在 Bot 内显式切换为 required 策略。
+- 超过单文件上限时默认拒绝；显式启用 `LARGE_FILE_POLICY=split` 后，视频生成可独立播放的 MP4 分段，其他文件生成带 SHA-256 manifest 的可重组二进制分卷。
+
+### 只读运维面
+
+- 可选只读 Dashboard：任务、统计、磁盘、路由和健康快照。
+- Prometheus 文本指标使用固定低基数标签，不暴露用户、URL、caption 或错误正文。
+- 可选 HTTPS Webhook：使用 SQLite outbox、HMAC-SHA256 签名、租约恢复和有限重试发送运行事件摘要。
+
+## 工作流
+
+```text
+Telegram 私聊 / HTTP(S) URL
+          │
+          ▼
+  allowlist + 输入解析 + 合集聚合
+          │
+          ▼
+  SQLite JobQueue / 状态机 / 磁盘预检
+          │
+          ▼
+  本地缓存 → 媒体兼容性处理 → Telegram 发布
+          │                 │
+          │                 └── 可选：WebDAV 备份
+          └── Dashboard / metrics / Webhook（均可选）
 ```
 
-## O1 只读控制台与指标（可选）
+下载可以并行，但发布遵循接受顺序。Telegram 发布成功的消息引用会立即 checkpoint；因此网络异常不会简单地把“可能已经发出的消息”当成从未发布过。
 
-控制台默认关闭，也不会新增公网端口。生成随机 token 后在 `.env` 设置：
+## 前置要求
+
+1. Linux 主机或其他支持 Docker Compose v2 的环境。
+2. 一个由 [@BotFather](https://t.me/BotFather) 创建的 Telegram Bot，并保存 `BOT_TOKEN`。
+3. 在 [my.telegram.org](https://my.telegram.org) 获取 `API_ID` 和 `API_HASH`，供 Telethon 连接 MTProto 使用。
+4. 一个目标频道，并把 Bot 设置为管理员，至少授予发消息和发送媒体所需权限。
+5. 你的 Telegram 数字用户 ID，用于 `ALLOWED_USERS` 白名单。
+6. 足够的本地磁盘空间：下载和可选媒体处理可能会暂时同时保留原文件与输出文件。
+
+不要在同一个 Bot token/session 上同时运行两个实例。本地调试请使用 fake transport、独立测试 Bot 或隔离 session。
+
+## 快速开始
 
 ```bash
+git clone https://github.com/Xioaruan912/TG_Upload_bot.git telegram-video-forwarder
+cd telegram-video-forwarder
+
+cp .env.example .env
+chmod 600 .env
+# 编辑 .env，至少填写 API_ID、API_HASH、BOT_TOKEN、DEST_CHANNEL、ALLOWED_USERS
+
+docker compose up -d --build
+docker compose logs -f bot
+```
+
+机器人启动后，私聊发送 `/start`。首次运行会创建 `session/`、`downloads/` 和 SQLite 状态库；这些目录是运行时数据，不属于源码发布包。
+
+常用运维命令：
+
+```bash
+docker compose ps
+docker compose logs --tail=200 bot
+docker compose restart bot
+docker compose stop bot
+```
+
+## 必填配置
+
+将以下内容填入 `.env`。不要把真实值提交到 GitHub：
+
+```dotenv
+API_ID=123456
+API_HASH=replace-with-your-api-hash
+BOT_TOKEN=replace-with-your-bot-token
+DEST_CHANNEL=@your_destination_channel
+ALLOWED_USERS=123456789
+```
+
+- `DEST_CHANNEL` 支持公开频道用户名或类似 `-1001234567890` 的数值 ID。
+- `ALLOWED_USERS` 是逗号分隔的数字用户 ID；没有白名单用户时应用会拒绝启动。
+- 可选的 `CHANNEL_AT`、`GROUP_AT` 用于 footer/封面说明；不填写时会使用安全默认值。
+- 静态环境变量在启动时读取，修改后需要重启或重新创建容器。
+- WebDAV、代理、用户偏好和发布目的地 Profile 可在 Bot 内管理；Profile 修改只影响之后接受的新任务。
+
+完整配置模板见 [`.env.example`](./.env.example)。常用静态配置如下：
+
+| 变量 | 默认值 | 作用 |
+| --- | ---: | --- |
+| `MAX_FILE_SIZE` | `2097152000` | 单文件大小护栏（字节） |
+| `LARGE_FILE_POLICY` | `reject` | 超限处理：`reject` 或 `split` |
+| `SPLIT_PART_BYTES` | `1992294400` | 分段/分卷上限，必须小于 `MAX_FILE_SIZE` |
+| `DOWNLOAD_CONCURRENCY` | `3` | 并行下载任务数 |
+| `DOWNLOAD_TIMEOUT` | `1200` | 单任务下载超时（秒） |
+| `UPLOAD_TIMEOUT` | `1800` | 单任务发布超时（秒） |
+| `DOWNLOAD_AUTO_RETRY` | `2` | 下载网络失败自动重试次数 |
+| `DOWNLOAD_WORKERS` | `8` | 单文件并发下载分片数 |
+| `UPLOAD_WORKERS` | `16` | 单文件并发上传分片数 |
+| `PART_SIZE_KB` | `512` | 分片大小，支持 `64/128/256/512` |
+| `FORWARD_CAPTION` | `false` | 是否保留原消息文字 |
+| `COVER_MODE` | `false` | 是否使用频道封面 + 讨论组评论模式 |
+| `SESSION_COLLECT` | `true` | 是否自动聚合合集会话 |
+| `COLLECTION_GATHER_SECONDS` | `10` | 相册拆分批次的聚合等待时间 |
+| `DISK_ENFORCE` | `false` | 磁盘不足时是否阻止新任务 |
+| `MEDIA_COMPAT_MODE` | `analyze` | 媒体兼容性：`off/analyze/remux` |
+| `URL_PRIVATE_NETWORK_POLICY` | `warn` | URL 私网地址策略：`allow/warn/block` |
+
+生产环境建议至少设置 `DISK_ENFORCE=true`，并根据磁盘大小调整 `MIN_FREE_BYTES`、`MIN_FREE_PERCENT` 和缓存保留时间。公开、多用户部署 URL 下载时应使用 `URL_PRIVATE_NETWORK_POLICY=block`，并额外实施网络层 SSRF 防护。
+
+## Bot 命令
+
+所有命令只对 `ALLOWED_USERS` 中的用户生效。顶层导航以按钮为主，命令是稳定的快捷入口。
+
+| 命令 | 说明 |
+| --- | --- |
+| `/start` | 打开首页控制台和合集快捷按钮 |
+| `/queue` | 查看队列、暂停/继续、取消和失败任务 |
+| `/begin` | 手动开始合集会话 |
+| `/end` | 结束当前合集并按顺序发布 |
+| `/mode` | 设置 18+ / 雪花处理偏好 |
+| `/profiles` | 管理发布目的地和发布策略 |
+| `/webdav` | 配置、启用、测试 WebDAV 备份 |
+| `/webdavlogs` | 查看备份记录和待处理缓存 |
+| `/proxy` | 管理 URL 下载使用的 HTTP 代理 |
+| `/dashboard` | 在私聊中查看只读 Dashboard 访问信息 |
+| `/stats` | 查看任务、吞吐和缓存统计 |
+| `/health` | 查看本地心跳、数据库和磁盘健康状态 |
+| `/diag` | 查看脱敏诊断摘要 |
+| `/about` | 查看完整命令说明 |
+
+`/开始` 和 `/结束` 是 `/begin`、`/end` 的中文别名。合集会话期间发送的纯文字会按顺序收集；点击 `/end` 后，封面模式会把整理后的文字放在封面 caption 中。
+
+## 封面模式
+
+封面模式需要先在 Telegram 中完成一次设置：
+
+1. 创建一个讨论群组。
+2. 在目标频道的“设置 → 讨论”中关联该群组。
+3. 把 Bot 加入讨论群组并设置为管理员。
+4. 在 `.env` 设置：
+
+```dotenv
+COVER_MODE=true
+COVER_WIDTH=1280
+MAX_COVER_IMAGES=10
+```
+
+行为：
+
+- 单视频：频道发布视频帧封面，视频本体进入该帖的讨论线程。
+- 图片 + 视频合集：图片在频道作为封面，视频进入同一个讨论线程。
+- 纯视频合集：使用首个视频生成封面，视频按最多 10 条一组发布到同一讨论线程。
+- 封面生成失败、讨论关联不可用或评论发布失败时，会回退到频道直发，不静默丢弃媒体。
+- `/queue` 或状态消息中的撤销操作会按 peer 分别删除频道封面和讨论消息。
+
+关闭 `COVER_MODE` 后，视频和图片直接发布到目标频道。
+
+## 超限媒体处理
+
+默认 `LARGE_FILE_POLICY=reject`，不会截断或偷偷压缩文件。显式设置为 `split` 后：
+
+- 视频使用 FFmpeg 生成每段都可以独立播放的 MP4，并逐段校验大小和可播放性。
+- 非视频文件以流式方式生成二进制分卷和 manifest；只有 `binary_volumes` 可以按 manifest 中的顺序使用 `cat` 重组原文件。
+- 视频分段不是原始文件的字节切片，不能用 `cat` 重组；manifest 会明确记录模式、原始大小、原始 SHA-256、分段数量和每段校验和。
+- 分割需要额外磁盘空间。任务完全成功前不会清理原文件；失败或取消时保留缓存供检查/重试。
+
+## WebDAV 备份
+
+WebDAV 配置通过 Bot 的 `/webdav` 页面管理，配置会保存到 `session/webdav.json`，不会写入源码或 Git。支持：
+
+- 启用/停用、地址、账号、路径和重试次数。
+- PUT 后远端大小确认，兼容延迟落盘和 `423 Locked` 的 WebDAV 服务。
+- 失败文件的单独重试、批量重试、缓存补传和自动退避。
+- 上传记录、远端逐文件删除和本地缓存保护。
+
+默认策略是 `best_effort`：WebDAV 失败会提示并保留缓存，但不阻止 Telegram 发布。只有明确选择 `required` 后，任务才会等待备份结果再进入最终成功态。不要在日志、Issue 或截图中暴露 WebDAV 密码、Authorization header 或完整凭证 URL。
+
+## 只读 Dashboard 与指标
+
+Dashboard 默认关闭。推荐使用私有 Unix socket：
+
+```bash
+# 生成高熵 token；不要把 token 写入 URL 或提交到 Git
 openssl rand -hex 32
-# 将结果写入 DASHBOARD_TOKEN，并设置：
+
+# 在 .env 中设置
 DASHBOARD_ENABLED=true
+DASHBOARD_TOKEN=<上一步生成的值>
 DASHBOARD_SOCKET=session/dashboard.sock
 ```
 
-重建容器后，CLI 可直接通过私有 socket 验证（不要把 token 放进 URL）：
+重建容器后，可以通过 socket 调用：
 
 ```bash
 curl --unix-socket session/dashboard.sock \
@@ -72,92 +242,144 @@ curl --unix-socket session/dashboard.sock \
   http://localhost/metrics
 ```
 
-浏览器访问生产 VPS 时，推荐用 SSH 将本地 TCP 端口转发到远端 Unix Socket，再打开 `http://127.0.0.1:8787/`；页面会要求输入 token，并仅保存在当前标签页：
+只读 API：
+
+- `/api/v1/overview`
+- `/api/v1/jobs`
+- `/api/v1/routing`
+- `/api/v1/storage`
+- `/api/v1/health`
+- `/metrics`
+
+HTML shell 可以加载，但数据 API 和指标必须使用 Bearer Token。响应拒绝 query token、请求 body、非 GET/HEAD 和超长 header，并带有 CSP、`nosniff`、`DENY`、`no-store` 等安全头。API 不返回 caption、消息正文、源 URL、本地绝对路径或代理/WebDAV 凭据。
+
+### TCP 访问（谨慎使用）
+
+如果确实需要通过 TCP 访问，必须显式关闭 Unix socket 并启用公网绑定保护：
+
+```dotenv
+DASHBOARD_ENABLED=true
+DASHBOARD_SOCKET=
+DASHBOARD_PUBLIC_BIND=true
+DASHBOARD_HOST=0.0.0.0
+DASHBOARD_BIND=0.0.0.0
+DASHBOARD_PORT=8787
+```
+
+Dashboard 本身不提供 TLS。直接暴露 HTTP 会让 Token 在网络中明文传输；生产环境优先使用 SSH 隧道、VPN 或具备 TLS 的反向代理，并限制防火墙来源。`DASHBOARD_PUBLIC_URL` 仅用于 Bot 私聊展示地址，不改变监听和认证行为。
+
+## Webhook 通知
+
+Webhook 默认关闭。启用时必须使用 HTTPS 和至少 32 字节的随机 token：
+
+```dotenv
+WEBHOOK_ENABLED=true
+WEBHOOK_URL=https://hooks.example.com/telegram-video-forwarder
+WEBHOOK_TOKEN=<至少 32 字节的随机值>
+WEBHOOK_TIMEOUT=10
+WEBHOOK_MAX_ATTEMPTS=8
+```
+
+发送方会使用 SQLite outbox，网络请求不包在数据库事务中；失败会有限退避，进程重启后可恢复未发送记录。请求包含：
+
+- `X-TVF-Event`
+- `X-TVF-Timestamp`
+- `X-TVF-Signature: sha256=<hex digest>`
+
+签名输入为：
+
+```text
+HMAC-SHA256(WEBHOOK_TOKEN, X-TVF-Timestamp + "." + raw_request_body)
+```
+
+接收方应校验时间戳窗口、签名和事件幂等性。Webhook payload 只包含版本化、脱敏的运行事件摘要，不包含文件名、caption、URL、Telegram 标识、本地路径或凭据。
+
+## 数据、恢复与目录
+
+运行时目录默认通过 Docker Compose 挂载：
+
+```text
+session/                 Telegram session、SQLite、偏好和运行配置
+  state.sqlite3          任务/事件/统计/备份状态
+  webdav.json            WebDAV 动态配置（如启用）
+  proxy.json             代理动态配置（如启用）
+downloads/               job-* 本地缓存和媒体处理临时文件
+demo/                    只读 Dashboard HTML 资源
+```
+
+- `session/` 和 `downloads/` 已加入 Git/Docker 发布排除规则，权限应限制为服务账号可读写。
+- 应用启动时会执行前向 SQLite migration，并在 migration 前创建一致性备份。
+- 已完整下载到本地的任务可以在重启后恢复发布；仍依赖 Telegram 原始消息且无法重建描述符的任务会被明确标记为不可恢复，要求重新转发。
+- WebDAV 备份与 Telegram 发布状态分开记录；备份失败不会静默删除受保护缓存。
+- 不要手动删除 SQLite、session 或 downloads 来“解决卡住”。先查看 `/health`、`/queue`、容器日志和磁盘状态。
+
+## 安全模型
+
+- 所有 Bot 命令、回调和私聊输入都执行 allowlist 校验；普通媒体处理以授权私聊为入口。
+- 只能运行一个使用同一 Bot token/session 的生产实例。
+- `.env`、Telegram session、WebDAV/代理凭据、SQLite 运行数据和真实媒体不能进入提交、镜像或 Issue。
+- 日志和 Dashboard 会过滤凭证、Authorization、完整代理 URL 和用户内容；错误页面只展示稳定错误码和安全摘要。
+- URL 下载默认限制为 `http/https`。单用户部署可用 `warn`，公开多用户部署必须评估并启用 `block`，同时防止 DNS rebinding、重定向和内网访问。
+- 删除缓存、撤销发布、删除远端备份等操作按受管理的 job/item/message ID 执行，不接受任意本地路径或远端路径。
+- 自动来源监听、网页抓取、绕过 Telegram 保护内容和个人账号登录均不属于当前项目功能。
+
+## 项目结构
+
+```text
+src/
+├── main.py                 # 配置、生命周期、Telegram client 启停
+├── config.py               # Settings 与静态环境变量校验
+├── bot.py                  # 队列编排、状态机适配和任务生命周期
+├── media.py                # Telegram 媒体下载/发布适配
+├── downloader.py           # yt-dlp URL 下载适配
+├── video.py                # ffprobe、缩略图和媒体兼容性工具
+├── webdav.py               # WebDAV 协议与远端完整性确认
+├── dashboard.py            # 只读 HTTP/Unix-socket Dashboard
+├── domain/                 # 错误模型等纯领域类型
+├── repository/             # SQLite repository 与不可变 migration
+├── services/               # 队列、恢复、备份、磁盘、去重、统计等服务
+├── handlers/               # Telegram command/callback/message handlers
+└── views/                  # Telegram 和 Dashboard 使用的纯展示层
+scripts/
+├── healthcheck.py          # Docker liveness 检查
+└── readiness.py            # 本地 readiness 检查
+tests/                      # fake client、协议 fake 和离线回归测试
+demo/                       # Dashboard 静态 shell
+```
+
+## 本地开发与测试
+
+项目使用标准库 `unittest`，测试不连接真实 Telegram、WebDAV、yt-dlp 网站或生产 session：
 
 ```bash
-ssh -L 8787:/root/telegram-video-forwarder/session/dashboard.sock root@your-vps
+python3 -m venv .venv
+. .venv/bin/activate
+python -m pip install -r requirements.txt
+
+python -m unittest discover -s tests -v
+python -m compileall -q src tests
+git diff --check
+docker compose config --quiet
 ```
 
-若 Bot 仅由可信白名单用户本人使用，可设置 `DASHBOARD_PUBLIC_URL`，随后在 Bot 私聊点击“🔐 Dashboard”或发送 `/dashboard` 获取地址和可复制 Token。该入口拒绝群组访问；打开按钮只带地址，不会把 Token 放进 URL。公网 HTTP 没有 TLS，Token 会以明文链路传输，请仅在明确接受该风险时使用。
+提交前请确认：
 
-只读 API contract：`/api/v1/overview`、`/api/v1/jobs`、`/api/v1/storage`、`/api/v1/routing`、`/api/v1/health`。HTML shell 可在私有 socket 上加载；所有运行数据和 `/metrics` 都必须认证。Dashboard 不暴露 caption、消息正文、源 URL、本地路径、Telegram user/chat/peer id、代理或 WebDAV 凭据。
+- 没有把 `.env`、`session/`、`downloads/`、真实媒体或凭据加入 Git。
+- 新的 SQLite schema 使用新的 forward migration，不修改已应用 migration 文件。
+- 新功能通过 fake transport 和离线测试覆盖，不能依赖第二个真实 Bot 实例。
+- Dashboard/API 仍是只读、脱敏和有界分页；不要在 Web handler 中直接写 SQL。
 
-Webhook 另行设置 `WEBHOOK_ENABLED=true`、HTTPS `WEBHOOK_URL` 和至少 32 字节的 `WEBHOOK_TOKEN`。接收方使用 `HMAC-SHA256(token, X-TVF-Timestamp + "." + raw_body)` 校验 `X-TVF-Signature`，并应拒绝过旧时间戳以防重放。Webhook 失败不会阻塞 Telegram 主流程；事件留在 outbox 按有限次数重试。
+## 贡献
 
-## 封面模式（可选，频道只发封面图）
+欢迎通过 GitHub Issue 或 Pull Request 提交 bug、改进和文档修正。建议在 PR 中说明：
 
-频道里视频太多时，可让**频道只发封面图、视频进评论区**（点 💬 评论图标即可找到视频），频道主页非常规整。
+1. 变更的用户可见行为和兼容性影响。
+2. 新增或更新的离线测试。
+3. 是否涉及 migration、运行目录或配置项。
+4. 回滚方式和潜在的磁盘/网络风险。
 
-Telegram 手动设置（一次性）：
-1. 新建一个群组（如"评论区"）
-2. 频道 `@messFaround` → **设置 → 讨论** → 关联该群组
-3. 把机器人加入该群组并设为**管理员**（否则无法发评论）
+请不要上传 Telegram session、Bot token、WebDAV 密码、代理凭据、用户 caption 或真实媒体样本。涉及安全问题时，请避免在公开 Issue 中披露可利用的凭据或完整日志。
 
-然后在 `.env` 开启：
-```
-COVER_MODE=true
-COVER_WIDTH=1280   # 封面图最大宽/高像素
-```
+## 许可证
 
-效果：
-- 单个视频 → 封面帧发频道（带 caption），视频本体进该帖评论区
-- 相册 → 图片进频道（相册即封面），视频**以媒体组（10 条一组）进评论区，第一组带「合集共 N 个视频」说明**
-- 相册全是视频 → 用第一个视频截帧做封面，全部视频以媒体组进评论区（同一评论区、10 条一组）
-- 18+ 雪花只盖评论区视频；封面不加雪花
-- 「↩️ 撤销」一键同时删除封面帖和评论视频
-
-> 未开启时为默认行为：视频/图片直接发频道。
-
-## 使用
-
-私聊机器人（仅授权用户有效）：
-
-- 转发一个视频/图片消息 → 自动开始合集会话并发布（连续发送多个也按顺序处理）
-- **合集模式（默认开启）**：转发自动开始合集会话，继续转发自动并入（视频整合到一个评论区）；合集进行中只显示一条状态消息，发 `/end` 或点「🛑 结束并发布（/end）」按钮结束；会话期间发的**文字消息会按行收集为评论**，结束时整合为封面文字与封面一起发送
-- 发送链接（如抖音/B站/YouTube）→ 自动下载并发布
-- `/start` → 使用说明（同时开启**打字框上方常驻的「开始合集/结束合集」按钮**）
-- `/about` → 关于/全部命令说明
-- `/mode` → 设置 18+ 处理方式（每次询问/总是雪花/总是正常；默认总是正常）
-- `/profiles` → 管理发布目的地 Profile；可新建/测试/切换默认目的地，已排队任务继续使用接受时保存的 Profile 快照
-- `/queue` → 管理队列（逐项取消/暂停/恢复，带控制按钮）
-- `/begin`（或 `/开始`）→ 开始合集会话（转发会自动开始，一般无需手动）
-- `/end`（或 `/结束`）→ 结束当前合集并发布（begin 以来所有视频进同一个评论区）
-
-## 可选配置（.env）
-
-| 变量 | 默认 | 说明 |
-|------|------|------|
-| `MAX_FILE_SIZE` | `2097152000` | 单文件上传大小上限（字节，默认 2GB 平台上限） |
-| `LARGE_FILE_POLICY` | `reject` | `reject` 拒绝超限文件；`split` 对视频生成可独立播放 MP4 分段，对其它文件生成 SHA-256 可重组分卷 |
-| `SPLIT_PART_BYTES` | `1992294400` | 每个视频分段/文件分卷的最大字节数，必须小于 `MAX_FILE_SIZE` |
-| `DOWNLOAD_DIR` | `/app/downloads` | 下载临时目录（容器内） |
-| `DOWNLOAD_CONCURRENCY` | `3` | 并行下载路数 |
-| `DOWNLOAD_TIMEOUT` | `1200` | 单任务下载超时（秒，20 分钟） |
-| `CONFIRM_TIMEOUT` | `60` | 18+ 确认弹窗超时（秒），超时自动按"正常"处理 |
-| `COLLECTION_GATHER_SECONDS` | `10` | 合集聚合等待秒数：同一用户连续到达的多个相册合并为一个合集（只发一个封面） |
-| `UPLOAD_TIMEOUT` | `1800` | 单任务上传超时（秒，30 分钟） |
-| `FORWARD_CAPTION` | `false` | 是否转发原消息文字（false=纯媒体转发） |
-| `PROGRESS_MIN_INTERVAL` | `2.0` | 进度条编辑全局最小间隔（秒，防限流） |
-| `AUTO_DELETE_SECONDS` | `10` | 命令回复/提示消息自动撤回秒数（0=关闭） |
-| `DOWNLOAD_AUTO_RETRY` | `1` | 下载超时自动重试次数（0=关闭） |
-| `COVER_MODE` | `false` | 封面模式：频道只发封面图，视频进讨论组评论区 |
-| `COVER_WIDTH` | `1280` | 封面图最大宽/高像素 |
-| `MAX_COVER_IMAGES` | `10` | 封面相册最多图片数（超出丢弃） |
-| `SESSION_COLLECT` | `true` | 合集会话：转发自动开始，多次转发汇总为一个合集（视频进同一评论区） |
-| `SESSION_END_TIMEOUT` | `5` | （v13.7 起已废弃）合集「结束并发布」按钮曾 5 秒后自动隐藏；现按钮常驻不隐藏 |
-| `DASHBOARD_ENABLED` | `false` | 启用 localhost/Unix-Socket 只读控制台 |
-| `DASHBOARD_SOCKET` | `session/dashboard.sock` | 私有 Unix Socket；留空才使用 loopback TCP |
-| `DASHBOARD_HOST` | `127.0.0.1` | TCP 监听地址；公网模式须同时显式设置 `DASHBOARD_PUBLIC_BIND=true` |
-| `DASHBOARD_PORT` | `8787` | TCP 模式端口 |
-| `DASHBOARD_PUBLIC_BIND` | `false` | 显式允许 Dashboard 监听公网地址；不提供 TLS |
-| `DASHBOARD_BIND` | `127.0.0.1` | Docker 发布地址；公网开放时设为 `0.0.0.0` |
-| `DASHBOARD_PUBLIC_URL` | 空 | 仅供 Bot 私聊显示的 Dashboard 根地址；不得包含凭据/query/fragment |
-| `WEBHOOK_ENABLED` | `false` | 启用脱敏 HTTPS Webhook outbox dispatcher |
-| `WEBHOOK_TIMEOUT` | `10` | 单次 Webhook 超时秒数 |
-| `WEBHOOK_MAX_ATTEMPTS` | `8` | Webhook 最大尝试次数（1～20） |
-
-## 常见问题
-
-- **上传失败 / 文件过大**：默认拒绝超过 `MAX_FILE_SIZE` 的文件；设置 `LARGE_FILE_POLICY=split` 后，视频发布为可独立播放的 MP4 分段，非视频发布为带 manifest/SHA-256 的可重组分卷。分割期间需要额外接近原文件大小的磁盘空间。
-- **发送到频道失败**：确认机器人是频道管理员且有发消息权限。
-- **下载失败**：站点可能需要更新 yt-dlp（`docker compose build --pull` 重新构建），或链接需登录/受限。
+本项目采用 [MIT License](./LICENSE)。
