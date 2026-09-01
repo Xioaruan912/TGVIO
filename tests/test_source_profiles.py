@@ -33,6 +33,7 @@ class SourceProfileTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertFalse(profile.enabled)
         self.assertIsNotNone(profile.verified_at)
+        self.assertEqual(profile.sequential_video_gather_seconds, 120.0)
         self.assertEqual(await self.manager.set_enabled(profile.id, True), "ok")
         enabled = await self.manager.get_enabled_by_peer(-100123)
         self.assertIsNotNone(enabled)
@@ -85,8 +86,13 @@ class SourceProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.manager.update(profile.id, spoiler_policy="spoiler"), "ok")
         self.assertEqual(await self.manager.update(profile.id, caption_policy="strip"), "ok")
         self.assertEqual(await self.manager.update(profile.id, backup_policy="required"), "ok")
+        self.assertEqual(
+            await self.manager.update(profile.id, sequential_video_gather_seconds=180),
+            "ok",
+        )
         current = await self.manager.get(profile.id)
         self.assertEqual((current.spoiler_policy, current.caption_policy, current.backup_policy), ("spoiler", "strip", "required"))
+        self.assertEqual(current.sequential_video_gather_seconds, 180.0)
 
     async def test_enabled_source_protects_destination_from_disable(self) -> None:
         custom = await self.repo.create_destination_profile(
@@ -105,7 +111,7 @@ class SourceProfileTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.manager.set_enabled(source.id, False), "ok")
         self.assertEqual(await self.repo.disable_destination_profile(custom.id), "ok")
 
-    async def test_received_source_events_close_as_interrupted_on_restart(self) -> None:
+    async def test_received_source_events_remain_available_for_exact_restart_recovery(self) -> None:
         profile = await self.manager.create_verified(
             name="重启来源",
             source_peer="@restart-source",
@@ -118,10 +124,9 @@ class SourceProfileTests(unittest.IsolatedAsyncioTestCase):
             source_message_id=88,
             grouped_id=901,
         )
-        self.assertEqual(await self.repo.interrupt_received_source_events(), 1)
-        conn = self.repo._require_conn()
-        row = await (await conn.execute("SELECT state,error_code FROM source_events WHERE id=?", (record.id,))).fetchone()
-        self.assertEqual((row["state"], row["error_code"]), ("interrupted", "process_restart"))
+        pending = await self.manager.received_events()
+        self.assertEqual([item.id for item in pending], [record.id])
+        self.assertEqual(pending[0].state, "received")
 
 
 if __name__ == "__main__":

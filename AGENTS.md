@@ -1553,6 +1553,34 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 - 发布过程中发现生产 `.env` 仍残留 `APP_COMMIT=0511b58`，会覆盖镜像内正确的 `APP_COMMIT=d3f9a4a`；已将生产 `.env` 同步为 `APP_COMMIT=d3f9a4a`，并补齐 `DASHBOARD_PUBLIC_URL=http://199.47.242.40:8787` 后重新创建 bot。最终容器 `running`、`healthy`、`restart=0`、`APP_COMMIT=d3f9a4a`。
 - 生产后验：容器内完整 **291 tests** 在 23.467s 全绿，`compileall src tests` 通过；SQLite `integrity=ok`、schema `1..10`、`active_jobs=0`、`active_backups=0`。Dashboard 根页面公网 `200`，公网匿名 `/api/v1/health` 为 `401`；本机匿名 `/api/v1/overview`、`/api/v1/health`、`/metrics` 均为 `401`，Bearer 认证后均为 `200`。`src/config.py`、`src/handlers/settings.py`、`src/views/dashboard.py`、`src/bot.py` 的本地/生产 SHA-256 一致；近 10 分钟生产日志未发现 traceback/fatal/uncaught/exception。
 
+### 2026-09-01 - S1 自动来源生产缺陷、连续视频两分钟聚合与全量验收（进行中）
+
+- 用户决策：来源频道逐条发布的视频按“最后一条后连续 **120 秒**没有新视频再提交；达到 Telegram 上限 **10 个**立即提交”聚合为一个媒体组任务。这里的“文件夹”按 Telegram 原生媒体组/相册实现，不创建压缩包；原生已有相同 `grouped_id` 的媒体组继续按短窗口聚合，不额外等待 120 秒。
+- 接手基线：另一位 AI 已完成 Dashboard 生产发布与文档收尾；本地/GitHub `main=07a65ed`、工作树干净，生产容器 `APP_COMMIT=d3f9a4a`、healthy/restart=0，宿主与容器自动来源相关源码哈希一致。本工作包不得回退或重复提交 `996e7b7`/`07a65ed`。
+- 已确认的生产事实：唯一来源 Profile 为 enabled/verified、原生媒体组等待 2 秒、目的地 enabled 且 `cover_mode=true`；但 `source_events` 从创建至今为 **0**，没有任何自动任务进入接收/下载/发布阶段。运行日志也没有 source enqueue/failure，Telethon session 没有该来源的 channel update state；只读 Bot API 成员查询归类为 `chat_not_found_for_bot`，说明 Bot 当前看不到来源频道。真实验收前用户必须先把 Bot 加为来源频道管理员；系统仍只处理加入后的新消息，不擅自补整个历史。
+- 根因：`src/handlers/source_profiles.py` 创建 Profile 时调用 `get_permissions(entity)`，Telethon 未传 `user` 时读取的是频道默认限制，并未验证 Bot 自身成员身份，因此公开频道可被错误标记为 verified；启用 callback 也只检查目的地，没有重新验证来源访问。该缺口没有对应测试。
+- 全量只读审计基线：当前源码 **291 tests**（23.465s）全绿，`compileall`、diff check、Compose config 通过；0001～0010 migration 本地/生产 SHA-256 一致。生产 health/readiness/SQLite integrity 均正常，schema1..10、active job/claim=0、2 个历史 collection 与对应 WebDAV attempt 均 succeeded，磁盘尚余约 30GB，Dashboard shell=200/匿名 API=401/六个认证端点=200；WebDAV 已配置且有成功记录，代理为直连 + 4 个自动候选（`current=-1` 是设计内的直连状态），Webhook 明确关闭。除 S1 来源访问假验证与连续单视频不聚合外，没有发现新的代码/数据库/容器 blocker；`todo.md` 未勾选项均为历史实机操作或明确延期体验项，不能在无用户 Telegram 操作时伪造完成。
+
+实施与验收方案：
+
+1. **先做全量只读审计**：以 291 tests、schema10、当前生产配置为基线，复核 roadmap/todo、所有命令与 callback、接收/下载/发布/合集/WebDAV/代理/磁盘/恢复/去重/媒体兼容/profile/source/Dashboard/Webhook、migration checksum、日志与运行状态。区分自动化可验、只读生产可验和必须显式外部副作用才能验的项目；发现真实缺口先写入本节，不把“测试通过”等同于外部服务实际可用。
+2. **来源访问验证**：抽取只读 source access probe，使用 Bot 自身 input peer 调 `get_permissions(entity, me)`，要求来源为 bot 可接收 update 的频道/群且 Bot 是有效成员（频道部署按管理员加入）；创建前验证，disabled→enabled 时重新验证，详情页增加显式“检查访问”并显示安全摘要。失败只输出错误类别，不输出 peer id/access hash；不自动修改其它 Profile。
+3. **两类聚合保持分离**：保留原生 `grouped_id` 的 `album_gather_seconds`（当前 2 秒）；新增持久化 `sequential_video_gather_seconds`，默认/生产为 120 秒。未分组视频按 source profile 使用可重置 idle timer，收到每条视频后重新计时；第 10 条立即 flush。文本、图片、非视频文档或新的原生媒体组作为边界，先 flush 已缓存视频以保持顺序，再按原语义处理。
+4. **崩溃/部署安全**：媒体 update 一到即先写 `source_events(state=received)`；120 秒内重启不得无声丢失。移除启动时一刀切 interrupted 的行为，改为仅恢复这些已经接收的精确 message ids，不扫描来源历史；按原 created_at 计算剩余窗口，消息已不可取则以安全 error code 标 failed。pipeline shutdown 取消 timer 并保留 received，下一次启动恢复；enqueue 成功后仍幂等标 enqueued。
+5. **发布语义**：聚合结果使用现有 `kind=album` 下载/发布/checkpoint/dedup/WebDAV 路径，最多 10 个；不新建第二套发布器。当前生产目的地 `cover_mode=true` 会形成“频道封面 + 讨论组视频媒体组”；若用户要求视频媒体组直接出现在目标频道，须另行将该 destination 的 cover mode 关闭，不在本轮偷偷改生产偏好。
+6. **门禁**：补错误 verified、启用重验、访问 probe、未分组 120 秒 debounce/reset、10 条立即 flush、非视频边界、profile 隔离、原生 grouped 快速聚合、restart 精确恢复/缺失消息 fail-safe、shutdown 不丢 event、顺序/caption/spoiler/destination snapshot 测试。随后跑专项、全量 unittest、compileall、diff/Compose、migration immutability、标准镜像、秘密路径/日志脱敏和只读生产检查。
+7. **发布边界**：所有门禁通过后才提交并推送 GitHub；VPS 发布前再次确认无活动 job/claim/backup，创建 DB/env/source/image 回滚点，以 Git archive 保留 `.env/session/downloads` 发布。生产后验必须包含 commit/hash/schema/integrity/health/restart/全量 tests/Dashboard 401/200。自动来源真实端到端只有在 Bot 已被加入来源频道后才能标完成；未满足时必须明确记录为外部阻塞，不伪称“所有功能正常”。
+
+阶段执行记录（发布前）：
+
+- 已实现 migration `0011_source_sequential_batching`：既有来源默认补 `sequential_video_gather_seconds=120`，范围 1～600 秒，并为 received event 的精确恢复增加 `(state,created_at,id)` 索引；新增 schema10→11 升级回归，确认 Profile、received event 与迁移前备份都保留。
+- 已实现 `SourceProfileRuntime`：原生 `grouped_id` 固定短窗口、未分组视频 120 秒 debounce、每条重置、10 条立即 flush、文本/图片/非视频/新原生组边界、Profile 隔离、精确 ID 分页恢复、按原时间计算剩余窗口、缺失消息 fail-safe、shutdown 只取消 timer 不改 received。旧的启动全量 `process_restart` 中断路径和仓储方法已删除。
+- 已修复来源假验证：probe 先取 Bot 自身 `InputPeerUser`，再调用 `get_permissions(entity, me)`；创建、disabled→enabled 与详情“检查访问”都走同一路径，错误只显示稳定 code/中文摘要。启动会检查 enabled 或存在 received event 的来源；不可访问时不回扫、不丢 event，并向 owner 发一次不含 peer/access hash 的提示。
+- Bot UI 与只读 Dashboard 已显示“原生相册 2 秒 / 连续视频 120 秒 / 满 10 条提交”；README 已补来源管理员前置、边界、重启恢复与排障。当前目的地 `cover_mode=true` 的发布语义保持不变。
+- 专项与完整回归：source access/runtime/handler/repository/dashboard 全部通过；第一次 source-mounted 依赖镜像 **304 tests** 在 24.257s 全绿。补 schema10→11 与 pipeline close 回归后，干净候选镜像内最终 **305 tests** 在 27.936s 全绿；`compileall src tests`、`git diff --check`、Compose config、0001～0010 migration immutability、关键文件 image/local SHA-256 均通过。候选镜像确认不含 `.env/.git/session/downloads/.agents/skills-lock.json`，通用 Telegram token 模式扫描无命中。
+- 构建环境记录：标准 Dockerfile 两次均在读取 Docker Hub `python:3.11-slim` manifest 时网络超时，尚未进入任何代码构建步骤；因本轮 `Dockerfile`/`requirements.txt` 零变更，发布前门禁改用当前 d3f9a4a 标准生产依赖镜像为 base，在隔离 layer 中先清空 `/app` 再 `COPY` 当前 context，得到 `telegram-video-forwarder-bot:source-batching-preflight`。发布端仍先尝试标准缓存构建；若 registry 继续不可达，只能使用同样的 clean-app 离线构建，并必须记录 base image digest。
+- 尚未执行：GitHub push、生产 migration11/发布后验。生产来源真实发帖验收仍等待用户把 Bot 加为来源频道管理员；在此前只可确认代码门禁与生产只读状态，不能标记外部 E2E 完成。
+
 ## 21. 执行日志
 
 ### 2026-08-30 - 规划与交接文档

@@ -2,27 +2,24 @@
 
 from __future__ import annotations
 
-import asyncio
 import logging
-from dataclasses import dataclass, field
+import time
 from typing import Any
 
 from telethon import Button, events
 from telethon.utils import get_peer_id
 
 from ..repository import RepositoryError
+from ..services.source_runtime import (
+    SourceProfileRuntime,
+    is_supported_source_media,
+    probe_source_access,
+)
 from ..views.source_profiles import SourceProfileView, source_profile_detail_view, source_profiles_view
 from .common import HandlerContext
 
 
 logger = logging.getLogger(__name__)
-
-
-@dataclass
-class _SourceAlbum:
-    profile: Any
-    messages: list[Any] = field(default_factory=list)
-    event_ids: list[int] = field(default_factory=list)
 
 
 async def _view(ctx: HandlerContext, profile: Any) -> SourceProfileView:
@@ -37,6 +34,7 @@ async def _view(ctx: HandlerContext, profile: Any) -> SourceProfileView:
         caption_policy=profile.caption_policy,
         backup_policy=profile.backup_policy,
         album_gather_seconds=profile.album_gather_seconds,
+        sequential_video_gather_seconds=profile.sequential_video_gather_seconds,
     )
 
 
@@ -75,19 +73,20 @@ async def handle_source_profile_input(ctx: HandlerContext, event: Any, session: 
         await ctx.respond(event, "名称和来源都不能为空")
         return True
     try:
-        entity = await ctx.client.get_input_entity(source_peer)
-        await ctx.client.get_permissions(entity)
-        source_peer_id = int(get_peer_id(entity))
+        access = await probe_source_access(ctx.client, source_peer)
+        if not access.ok or access.source_peer_id is None:
+            await ctx.respond(event, f"来源验证失败：{access.message}（{access.code}）")
+            return True
         profile = await ctx.sources.create_verified(
             name=name,
             source_peer=source_peer,
-            source_peer_id=source_peer_id,
+            source_peer_id=access.source_peer_id,
             destination_profile_id=destination_id,
             owner_user_id=event.sender_id,
         )
     except Exception as exc:
-        logger.warning("Source profile verification failed: %s", exc.__class__.__name__)
-        await ctx.respond(event, f"来源验证失败：{exc.__class__.__name__}")
+        logger.warning("Source profile creation failed: %s", exc.__class__.__name__)
+        await ctx.respond(event, "来源保存失败：名称、来源或目的地配置冲突")
         return True
     ctx.interactions.cancel(event.sender_id, "source_profile")
     await ctx.respond(
@@ -105,9 +104,6 @@ def register_source_profile_handlers(ctx: HandlerContext) -> None:
             return
         text, buttons = await _list_view(ctx)
         await ctx.respond(event, text, buttons=buttons, auto_delete=False)
-
-    albums: dict[tuple[int, int], _SourceAlbum] = {}
-    tasks: set[asyncio.Task] = set()
 
     async def enqueue_source(profile: Any, messages: list[Any], event_ids: list[int]) -> None:
         if ctx.sources is None or ctx.destinations is None:
@@ -153,24 +149,26 @@ def register_source_profile_handlers(ctx: HandlerContext) -> None:
             except Exception:
                 pass
 
-    async def flush_album(key: tuple[int, int], delay: float) -> None:
-        await asyncio.sleep(delay)
-        bundle = albums.pop(key, None)
-        if bundle is None:
-            return
-        bundle.messages.sort(key=lambda item: int(getattr(item, "id", 0)))
-        await enqueue_source(bundle.profile, bundle.messages, bundle.event_ids)
+    runtime = None
+    if ctx.sources is not None and ctx.destinations is not None:
+        runtime = SourceProfileRuntime(
+            client=ctx.client,
+            sources=ctx.sources,
+            enqueue=enqueue_source,
+        )
+    ctx.pipeline.source_runtime = runtime
 
     @ctx.client.on(events.NewMessage(incoming=True, func=lambda event: not event.is_private))
     async def on_source_message(event: events.NewMessage.Event) -> None:
-        if ctx.sources is None or ctx.destinations is None:
+        if ctx.sources is None or ctx.destinations is None or runtime is None:
             return
         message = event.message
-        if not isinstance(getattr(message, "media", None), ctx.media_types):
-            return
         peer_id = int(event.chat_id or get_peer_id(getattr(message, "peer_id", 0)))
         profile = await ctx.sources.get_enabled_by_peer(peer_id)
         if profile is None:
+            return
+        if not is_supported_source_media(message):
+            await runtime.boundary(profile)
             return
         source_message_id = int(getattr(message, "id", 0) or 0)
         if not source_message_id:
@@ -183,19 +181,13 @@ def register_source_profile_handlers(ctx: HandlerContext) -> None:
         )
         if not inserted:
             return
-        if grouped_id is None:
-            await enqueue_source(profile, [message], [record.id])
-            return
-        key = (profile.id, int(grouped_id))
-        bundle = albums.get(key)
-        if bundle is None:
-            bundle = _SourceAlbum(profile=profile)
-            albums[key] = bundle
-            task = asyncio.create_task(flush_album(key, profile.album_gather_seconds))
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-        bundle.messages.append(message)
-        bundle.event_ids.append(record.id)
+        await runtime.accept(
+            profile,
+            message,
+            record.id,
+            grouped_id=int(grouped_id) if grouped_id is not None else None,
+            received_at=record.created_at,
+        )
 
 
 async def callback_source_profile(ctx: HandlerContext, event: Any, data: str) -> None:
@@ -224,7 +216,10 @@ async def callback_source_profile(ctx: HandlerContext, event: Any, data: str) ->
         ctx.interactions.start(event.sender_id, "source_profile", f"add:{destination_id}", ttl=300)
         await ctx.edit(
             event,
-            "请发送：名称 | 来源频道\n例如：资讯源 | @source\n\n创建时只验证 bot 当前可访问该来源；创建后仍保持禁用。",
+            "请发送：名称 | 来源频道\n"
+            "例如：资讯源 | @source\n\n"
+            "创建时会验证 Bot 自身确实是来源成员；频道请先把 Bot 设为管理员。"
+            "创建后仍保持禁用。",
             buttons=[Button.inline("⬅️ 返回", "sp:r")],
         )
         return
@@ -241,8 +236,49 @@ async def callback_source_profile(ctx: HandlerContext, event: Any, data: str) ->
             await ctx.edit(event, view[0], buttons=view[1])
         return
     if action == "tg":
-        result = await ctx.sources.set_enabled(profile_id, not profile.enabled)
-        await ctx.answer(event, "已更新" if result == "ok" else result)
+        if profile.enabled:
+            result = await ctx.sources.set_enabled(profile_id, False)
+            await ctx.answer(event, "已禁用" if result == "ok" else result)
+        else:
+            access = await probe_source_access(
+                ctx.client,
+                profile.source_peer,
+                expected_peer_id=profile.source_peer_id,
+            )
+            if not access.ok:
+                await ctx.answer(event, access.message)
+                view = await _detail_view(ctx, profile_id)
+                if view:
+                    await ctx.edit(
+                        event,
+                        f"{view[0]}\n\n访问检查：❌ {access.message}（{access.code}）",
+                        buttons=view[1],
+                    )
+                return
+            result = await ctx.sources.update(
+                profile_id,
+                verified_at=time.time(),
+                enabled=True,
+            )
+            await ctx.answer(event, "访问检查通过，已启用" if result == "ok" else result)
+    elif action == "chk":
+        access = await probe_source_access(
+            ctx.client,
+            profile.source_peer,
+            expected_peer_id=profile.source_peer_id,
+        )
+        if access.ok:
+            await ctx.sources.update(profile_id, verified_at=time.time())
+        await ctx.answer(event, access.message)
+        view = await _detail_view(ctx, profile_id)
+        if view:
+            icon = "✅" if access.ok else "❌"
+            await ctx.edit(
+                event,
+                f"{view[0]}\n\n访问检查：{icon} {access.message}（{access.code}）",
+                buttons=view[1],
+            )
+        return
     elif action == "spo":
         values = ["normal", "spoiler", "rule"]
         value = values[(values.index(profile.spoiler_policy) + 1) % len(values)]

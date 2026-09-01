@@ -285,6 +285,10 @@ class DashboardService:
                         "spoiler_policy": _code(profile.spoiler_policy),
                         "caption_policy": _code(profile.caption_policy),
                         "backup_policy": _code(profile.backup_policy),
+                        "native_album_wait_seconds": float(profile.album_gather_seconds),
+                        "sequential_video_wait_seconds": float(
+                            profile.sequential_video_gather_seconds
+                        ),
                     }
                 )
         return {

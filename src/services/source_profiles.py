@@ -5,7 +5,7 @@ from __future__ import annotations
 import time
 from typing import Any
 
-from ..repository.sqlite import SourceProfileRecord, SQLiteRepository
+from ..repository.sqlite import SourceEventRecord, SourceProfileRecord, SQLiteRepository
 
 
 class SourceProfileManager:
@@ -64,3 +64,16 @@ class SourceProfileManager:
 
     async def mark_failed(self, event_ids: list[int], code: str) -> None:
         await self.repository.mark_source_events_failed(event_ids, error_code=code)
+
+    async def received_events(
+        self,
+        *,
+        limit: int = 1000,
+        after_created_at: float | None = None,
+        after_id: int = 0,
+    ) -> list[SourceEventRecord]:
+        return await self.repository.list_received_source_events(
+            limit=limit,
+            after_created_at=after_created_at,
+            after_id=after_id,
+        )

@@ -33,7 +33,7 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.close()
 
     async def test_initial_migration_is_idempotent_and_pragmas_are_enforced(self) -> None:
-        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10])
+        self.assertEqual(await self.repo.schema_versions(), [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11])
         self.assertEqual(await self.repo.migrate(), [])
         check = await self.repo.self_check()
         self.assertEqual(check["integrity"], "ok")
@@ -1047,6 +1047,96 @@ class SQLiteRepositoryTests(unittest.IsolatedAsyncioTestCase):
             snapshot = await second.stats_snapshot()
             self.assertEqual(snapshot["totals"]["accepted_jobs"], 1)
             self.assertEqual(await second.reconcile_daily_stats(), 0)
+        finally:
+            await second.close()
+
+        self.repo = SQLiteRepository(
+            self.db_path,
+            backup_dir=self.backup_dir,
+            download_root=self.download_root,
+        )
+        await self.repo.open()
+        await self.repo.migrate()
+
+    async def test_upgrade_from_schema_ten_preserves_received_source_events(self) -> None:
+        await self.repo.close()
+        root = Path(self.tempdir.name)
+        migration_dir = root / "upgrade-source-batching-migrations"
+        migration_dir.mkdir()
+        source_dir = Path(__file__).parents[1] / "src" / "repository" / "migrations"
+        for version in range(1, 11):
+            source = next(source_dir.glob(f"{version:04d}_*.sql"))
+            (migration_dir / source.name).write_bytes(source.read_bytes())
+
+        db = root / "upgrade-source-batching.sqlite3"
+        first = SQLiteRepository(
+            db,
+            migrations_dir=migration_dir,
+            backup_dir=self.backup_dir,
+            download_root=self.download_root,
+        )
+        await first.open()
+        await first.migrate()
+        destination = await first.ensure_env_destination_profile(
+            destination_peer="@dest",
+            channel_at="@dest",
+        )
+        await first.close()
+
+        raw = sqlite3.connect(db)
+        try:
+            raw.execute("PRAGMA foreign_keys=ON")
+            cursor = raw.execute(
+                """INSERT INTO source_profiles(
+                       name,source_peer,source_peer_id,destination_profile_id,owner_user_id,
+                       enabled,album_gather_seconds,spoiler_policy,caption_policy,backup_policy,
+                       verified_at,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                (
+                    "升级来源",
+                    "@source",
+                    -100123,
+                    destination.id,
+                    42,
+                    1,
+                    2.0,
+                    "normal",
+                    "preserve",
+                    "inherit",
+                    50.0,
+                    100.0,
+                    100.0,
+                ),
+            )
+            profile_id = int(cursor.lastrowid)
+            raw.execute(
+                """INSERT INTO source_events(
+                       source_profile_id,source_peer_id,source_message_id,grouped_id,
+                       state,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?)""",
+                (profile_id, -100123, 77, None, "received", 101.0, 101.0),
+            )
+            raw.commit()
+        finally:
+            raw.close()
+
+        migration = source_dir / "0011_source_sequential_batching.sql"
+        (migration_dir / migration.name).write_bytes(migration.read_bytes())
+        second = SQLiteRepository(
+            db,
+            migrations_dir=migration_dir,
+            backup_dir=self.backup_dir,
+            download_root=self.download_root,
+        )
+        await second.open()
+        try:
+            self.assertEqual(await second.migrate(), [11])
+            self.assertIsNotNone(second.last_backup_path)
+            profile = await second.get_source_profile(profile_id)
+            self.assertEqual(profile.sequential_video_gather_seconds, 120.0)
+            pending = await second.list_received_source_events()
+            self.assertEqual([event.source_message_id for event in pending], [77])
+            self.assertEqual(await second.schema_versions(), list(range(1, 12)))
         finally:
             await second.close()
 

@@ -163,12 +163,6 @@ async def main() -> None:
             await repository.get_default_destination_profile()
             or env_destination_profile
         )
-        interrupted_sources = await repository.interrupt_received_source_events()
-        if interrupted_sources:
-            logger.warning(
-                "Marked %d in-flight source event(s) interrupted after restart; no history replay",
-                interrupted_sources,
-            )
         reconciled = await repository.reconcile_daily_stats()
         if reconciled:
             logger.info("Daily stats reconciled: %d metrics", reconciled)

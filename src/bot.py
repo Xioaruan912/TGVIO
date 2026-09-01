@@ -260,6 +260,7 @@ class _Pipeline:
         self._repo_publish_claimed: set[int] = set()
         self._repo_claim_owners: dict[tuple[str, int], str] = {}
         self._worker_tasks: set[asyncio.Task] = set()
+        self.source_runtime = None
         self._stopping = False
         self._shutdown_complete = False
         self.prefs: dict[int, dict] = {}
@@ -658,6 +659,9 @@ class _Pipeline:
         """Stop claims first, durably interrupt active work, then stop tasks."""
         if self._shutdown_complete:
             return
+        source_runtime = getattr(self, "source_runtime", None)
+        if source_runtime is not None:
+            await source_runtime.close()
         self._stopping = True
 
         # Persist claim settlement before any transport task is cancelled.
@@ -988,6 +992,17 @@ class _Pipeline:
             self._counter = max(self._counter, seq + 1)
         if actions:
             logger.info("Startup recovery scanned %d durable jobs", len(actions))
+        source_runtime = getattr(self, "source_runtime", None)
+        if source_runtime is not None:
+            report = await source_runtime.startup()
+            logger.info(
+                "Source startup checked=%d inaccessible=%d restored=%d failed=%d deferred=%d",
+                report.checked_profiles,
+                report.inaccessible_profiles,
+                report.restored_events,
+                report.failed_events,
+                report.deferred_events,
+            )
         return actions
 
     def _queue_position(self, seq: int) -> int:

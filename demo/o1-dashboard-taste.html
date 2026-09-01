@@ -690,7 +690,7 @@
               <div class="panel-head"><strong>运行健康</strong><span>本地快照</span></div>
               <div class="health-list">
                 <div class="health-row"><div><b>容器</b><small>重启 0 次 / 心跳 2.1 秒</small></div><span class="tag ok" id="containerHealth">健康</span></div>
-                <div class="health-row"><div><b>SQLite</b><small>架构版本 1-9 / 完整性正常</small></div><span class="tag ok">就绪</span></div>
+                <div class="health-row"><div><b>SQLite</b><small>架构版本以实时健康接口为准 / 完整性正常</small></div><span class="tag ok">就绪</span></div>
                 <div class="health-row"><div><b>Telegram</b><small>本地客户端连接状态</small></div><span class="tag info" id="telegramHealth">已连接</span></div>
                 <div class="health-row"><div><b>WebDAV</b><small>最近缓存的验证结果</small></div><span class="tag ok" id="webdavHealth">缓存正常</span></div>
                 <div class="health-row"><div><b>磁盘门禁</b><small>可用 47.5 GB / 强制模式开启</small></div><span class="tag ok">允许</span></div>
@@ -880,9 +880,9 @@
         schema_version: 1,
         generated_at: nowSeconds,
         destinations: [{ id: 1, name: '默认发布', enabled: true, default: true, verified: true, cover_mode: true, forward_caption: true, spoiler_mode: 'always_normal', backup_policy: 'best_effort', read_only: true }],
-        sources: [{ id: 1, name: '新闻来源', destination_profile_id: 1, enabled: false, verified: true, spoiler_policy: 'normal', caption_policy: 'preserve', backup_policy: 'inherit' }]
+        sources: [{ id: 1, name: '新闻来源', destination_profile_id: 1, enabled: false, verified: true, spoiler_policy: 'normal', caption_policy: 'preserve', backup_policy: 'inherit', native_album_wait_seconds: 2, sequential_video_wait_seconds: 120 }]
       },
-      health: { schema_version: 1, generated_at: nowSeconds, live: true, ready: true, heartbeat_age_seconds: 2.1, database_ok: true, schema_versions: [1,2,3,4,5,6,7,8,9,10], telegram_connected: true, webdav_enabled: true, webdav_health: 'normal', disk_healthy: true, app_commit: 'demo' }
+      health: { schema_version: 1, generated_at: nowSeconds, live: true, ready: true, heartbeat_age_seconds: 2.1, database_ok: true, schema_versions: [1,2,3,4,5,6,7,8,9,10,11], telegram_connected: true, webdav_enabled: true, webdav_health: 'normal', disk_healthy: true, app_commit: 'demo' }
     };
 
     function formatBytes(value) {
@@ -1008,7 +1008,7 @@
         ? routing.destinations.map(profile => `<div class="health-row"><div><b>${escapeHtml(profile.name)}</b><small>${profile.cover_mode ? '封面开启' : '封面关闭'} / ${profile.backup_policy}</small></div><span class="tag ${profile.verified && profile.enabled ? 'ok' : 'neutral'}">${profile.default ? '默认' : profile.enabled ? '启用' : '停用'}</span></div>`).join('')
         : emptyRows('没有发布目标', '当前仓储层没有可展示的目标配置。');
       document.getElementById('sourceProfilesPanel').innerHTML = routing.sources.length
-        ? routing.sources.map(profile => `<div class="health-row"><div><b>${escapeHtml(profile.name)}</b><small>${profile.caption_policy} / ${profile.spoiler_policy}</small></div><span class="tag ${profile.enabled ? 'ok' : 'neutral'}">${profile.enabled ? '启用' : '停用'}</span></div>`).join('')
+        ? routing.sources.map(profile => `<div class="health-row"><div><b>${escapeHtml(profile.name)}</b><small>${profile.caption_policy} / ${profile.spoiler_policy} / 连续视频 ${Number(profile.sequential_video_wait_seconds || 120)} 秒</small></div><span class="tag ${profile.enabled ? 'ok' : 'neutral'}">${profile.enabled ? '启用' : '停用'}</span></div>`).join('')
         : emptyRows('没有自动来源', '自动来源仅处理启用后的新消息。');
 
       document.getElementById('containerHealth').className = `tag ${health.live ? 'ok' : 'fail'}`;

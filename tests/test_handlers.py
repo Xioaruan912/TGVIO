@@ -3,8 +3,15 @@ from dataclasses import replace
 import os
 import tempfile
 import unittest
+from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
-from telethon.tl.types import MessageMediaPhoto
+from telethon.tl.types import (
+    InputPeerChannel,
+    InputPeerUser,
+    MessageMediaDocument,
+    MessageMediaPhoto,
+)
+from telethon.utils import get_peer_id
 
 from src import bot
 from src.webdav import WebDavProbeResult, WebDavWriteProbeResult
@@ -369,6 +376,157 @@ class HandlerBoundaryTests(unittest.IsolatedAsyncioTestCase):
         seq = int(rows[0]["job_legacy_seq"])
         self.assertEqual(pipeline._runtime_jobs[seq].kind, "album")
         self.assertEqual([item.id for item in pipeline._runtime_jobs[seq].album], [10, 11])
+
+    async def test_source_sequential_videos_form_one_album_on_text_boundary(self) -> None:
+        repo = SQLiteRepository(
+            os.path.join(self.tempdir.name, "source-sequential.sqlite3"),
+            download_root=os.path.join(self.tempdir.name, "downloads"),
+        )
+        await repo.open()
+        await repo.migrate()
+        self.addAsyncCleanup(repo.close)
+        default = await repo.ensure_env_destination_profile(
+            destination_peer="@default",
+            channel_at="@default",
+        )
+        client = FakeClient()
+        with patch.object(bot._Pipeline, "start", autospec=True):
+            pipeline = bot.register_handlers(
+                client,
+                repository=repo,
+                default_destination_profile=default,
+            )
+        source = await pipeline.source_profiles.create_verified(
+            name="连续视频来源",
+            source_peer="@sequential-source",
+            source_peer_id=-10032345,
+            destination_profile_id=default.id,
+            owner_user_id=42,
+        )
+        await pipeline.source_profiles.set_enabled(source.id, True)
+        source_handler = client.handlers["on_source_message"]
+
+        for message_id in (20, 21):
+            await source_handler(
+                FakeNewMessageEvent(
+                    client,
+                    "",
+                    sender_id=999,
+                    chat_id=-10032345,
+                    message=FakeMessage(
+                        message_id,
+                        media=MessageMediaDocument(
+                            document=SimpleNamespace(mime_type="video/mp4", attributes=[])
+                        ),
+                    ),
+                )
+            )
+        self.assertEqual(pipeline.active_seqs, set())
+
+        await source_handler(
+            FakeNewMessageEvent(
+                client,
+                "分隔文字",
+                sender_id=999,
+                chat_id=-10032345,
+                message=FakeMessage(22, raw_text="分隔文字"),
+            )
+        )
+        await pipeline.job_queue.drain_shadow()
+
+        self.assertEqual(len(pipeline.active_seqs), 1)
+        seq = next(iter(pipeline.active_seqs))
+        self.assertEqual(pipeline._runtime_jobs[seq].kind, "album")
+        self.assertEqual([item.id for item in pipeline._runtime_jobs[seq].album], [20, 21])
+        rows = await (
+            await repo._require_conn().execute(
+                "SELECT state,job_legacy_seq FROM source_events ORDER BY id"
+            )
+        ).fetchall()
+        self.assertEqual(len(rows), 2)
+        self.assertTrue(all(row["state"] == "enqueued" for row in rows))
+        self.assertEqual({row["job_legacy_seq"] for row in rows}, {seq})
+
+    async def test_source_creation_rejects_channel_when_bot_is_not_a_member(self) -> None:
+        repo = SQLiteRepository(
+            os.path.join(self.tempdir.name, "source-access.sqlite3"),
+            download_root=os.path.join(self.tempdir.name, "downloads"),
+        )
+        await repo.open()
+        await repo.migrate()
+        self.addAsyncCleanup(repo.close)
+        default = await repo.ensure_env_destination_profile(
+            destination_peer="@default",
+            channel_at="@default",
+        )
+        client = FakeClient()
+        with patch.object(bot._Pipeline, "start", autospec=True):
+            pipeline = bot.register_handlers(
+                client,
+                repository=repo,
+                default_destination_profile=default,
+            )
+        entity = InputPeerChannel(channel_id=123, access_hash=456)
+        me = InputPeerUser(user_id=7, access_hash=8)
+        error_type = type("UserNotParticipantError", (Exception,), {})
+        client.get_input_entity = AsyncMock(return_value=entity)
+        client.get_me = AsyncMock(return_value=me)
+        client.get_permissions = AsyncMock(side_effect=error_type("private details"))
+        pipeline.interactions.start(42, "source_profile", f"add:{default.id}", ttl=300)
+
+        event = FakeNewMessageEvent(client, "资讯源 | @source")
+        await client.handlers["on_private_message"](event)
+
+        self.assertEqual(await pipeline.source_profiles.list_profiles(), [])
+        self.assertIn("Bot 不是该来源的有效成员", event.responses[-1].text)
+        self.assertNotIn("private details", event.responses[-1].text)
+        client.get_permissions.assert_awaited_once_with(entity, me)
+
+    async def test_disabled_source_is_rechecked_before_enable(self) -> None:
+        repo = SQLiteRepository(
+            os.path.join(self.tempdir.name, "source-recheck.sqlite3"),
+            download_root=os.path.join(self.tempdir.name, "downloads"),
+        )
+        await repo.open()
+        await repo.migrate()
+        self.addAsyncCleanup(repo.close)
+        default = await repo.ensure_env_destination_profile(
+            destination_peer="@default",
+            channel_at="@default",
+        )
+        client = FakeClient()
+        with patch.object(bot._Pipeline, "start", autospec=True):
+            pipeline = bot.register_handlers(
+                client,
+                repository=repo,
+                default_destination_profile=default,
+            )
+        entity = InputPeerChannel(channel_id=321, access_hash=654)
+        me = InputPeerUser(user_id=7, access_hash=8)
+        source = await pipeline.source_profiles.create_verified(
+            name="待复核来源",
+            source_peer="@source",
+            source_peer_id=get_peer_id(entity),
+            destination_profile_id=default.id,
+            owner_user_id=42,
+        )
+        error_type = type("UserNotParticipantError", (Exception,), {})
+        client.get_input_entity = AsyncMock(return_value=entity)
+        client.get_me = AsyncMock(return_value=me)
+        client.get_permissions = AsyncMock(side_effect=error_type())
+        callback = client.handlers["on_callback"]
+
+        rejected = FakeCallbackEvent(client, f"sp:tg:{source.id}".encode())
+        await callback(rejected)
+        self.assertFalse((await pipeline.source_profiles.get(source.id)).enabled)
+        self.assertTrue(any("有效成员" in answer for answer in rejected.answers))
+
+        client.get_permissions = AsyncMock(return_value=SimpleNamespace(is_admin=True))
+        accepted = FakeCallbackEvent(client, f"sp:tg:{source.id}".encode())
+        await callback(accepted)
+        current = await pipeline.source_profiles.get(source.id)
+        self.assertTrue(current.enabled)
+        client.get_permissions.assert_awaited_once_with(entity, me)
 
     async def test_webdav_input_uses_explicit_interaction_session(self) -> None:
         callback = self.client.handlers["on_callback"]

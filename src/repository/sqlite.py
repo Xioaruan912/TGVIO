@@ -181,6 +181,7 @@ class SourceProfileRecord:
     owner_user_id: int
     enabled: bool
     album_gather_seconds: float
+    sequential_video_gather_seconds: float
     spoiler_policy: str
     caption_policy: str
     backup_policy: str
@@ -3649,6 +3650,7 @@ class SQLiteRepository:
             owner_user_id=int(row["owner_user_id"]),
             enabled=bool(row["enabled"]),
             album_gather_seconds=float(row["album_gather_seconds"]),
+            sequential_video_gather_seconds=float(row["sequential_video_gather_seconds"]),
             spoiler_policy=str(row["spoiler_policy"]),
             caption_policy=str(row["caption_policy"]),
             backup_policy=str(row["backup_policy"]),
@@ -3683,6 +3685,7 @@ class SQLiteRepository:
         destination_profile_id: int,
         owner_user_id: int,
         album_gather_seconds: float = 2.0,
+        sequential_video_gather_seconds: float = 120.0,
         spoiler_policy: str = "normal",
         caption_policy: str = "preserve",
         backup_policy: str = "inherit",
@@ -3700,6 +3703,7 @@ class SQLiteRepository:
         if backup_policy not in {"inherit", "best_effort", "required"}:
             raise RepositoryError("invalid source backup policy")
         gather = min(30.0, max(0.5, float(album_gather_seconds)))
+        sequential_gather = min(600.0, max(1.0, float(sequential_video_gather_seconds)))
         destination = await self.get_destination_profile(int(destination_profile_id))
         if destination is None or not destination.enabled:
             raise RepositoryError("destination profile is unavailable")
@@ -3709,13 +3713,13 @@ class SQLiteRepository:
             cursor = await conn.execute(
                 """INSERT INTO source_profiles(
                        name,source_peer,source_peer_id,destination_profile_id,owner_user_id,
-                       enabled,album_gather_seconds,spoiler_policy,caption_policy,backup_policy,
-                       verified_at,created_at,updated_at
-                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)""",
+                       enabled,album_gather_seconds,sequential_video_gather_seconds,
+                       spoiler_policy,caption_policy,backup_policy,verified_at,created_at,updated_at
+                   ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)""",
                 (
                     clean_name, peer, int(source_peer_id), int(destination_profile_id),
-                    int(owner_user_id), 0, gather, spoiler_policy, caption_policy,
-                    backup_policy, verified_at, timestamp, timestamp,
+                    int(owner_user_id), 0, gather, sequential_gather, spoiler_policy,
+                    caption_policy, backup_policy, verified_at, timestamp, timestamp,
                 ),
             )
             profile_id = int(cursor.lastrowid)
@@ -3756,8 +3760,9 @@ class SQLiteRepository:
 
     async def update_source_profile(self, profile_id: int, **changes: Any) -> str:
         allowed = {
-            "enabled", "destination_profile_id", "album_gather_seconds", "spoiler_policy",
-            "caption_policy", "backup_policy", "verified_at", "name",
+            "enabled", "destination_profile_id", "album_gather_seconds",
+            "sequential_video_gather_seconds", "spoiler_policy", "caption_policy",
+            "backup_policy", "verified_at", "name",
         }
         if set(changes) - allowed:
             raise RepositoryError("unsupported source profile field")
@@ -3774,6 +3779,8 @@ class SQLiteRepository:
                 normalized[key] = int(value)
             elif key == "album_gather_seconds":
                 normalized[key] = min(30.0, max(0.5, float(value)))
+            elif key == "sequential_video_gather_seconds":
+                normalized[key] = min(600.0, max(1.0, float(value)))
             elif key == "spoiler_policy":
                 if str(value) not in {"normal", "spoiler", "rule"}:
                     raise RepositoryError("invalid source spoiler policy")
@@ -3883,27 +3890,40 @@ class SQLiteRepository:
             )
             await conn.commit()
 
-    async def interrupt_received_source_events(self) -> int:
-        """Close the audit state after restart without replaying historical source updates."""
+    async def list_received_source_events(
+        self,
+        *,
+        limit: int = 1000,
+        after_created_at: float | None = None,
+        after_id: int = 0,
+    ) -> list[SourceEventRecord]:
         conn = self._require_conn()
-        cursor = await conn.execute(
-            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='source_events'"
-        )
-        exists = await cursor.fetchone()
-        await cursor.close()
-        if exists is None:
-            return 0
-        async with self._write_lock:
+        page_limit = min(5000, max(1, int(limit)))
+        if after_created_at is None:
             cursor = await conn.execute(
-                """UPDATE source_events
-                   SET state='interrupted',error_code='process_restart',updated_at=?
-                   WHERE state='received'""",
-                (time.time(),),
+                """SELECT * FROM source_events
+                   WHERE state='received'
+                   ORDER BY created_at,id
+                   LIMIT ?""",
+                (page_limit,),
             )
-            changed = max(0, int(cursor.rowcount or 0))
-            await cursor.close()
-            await conn.commit()
-        return changed
+        else:
+            cursor = await conn.execute(
+                """SELECT * FROM source_events
+                   WHERE state='received'
+                     AND (created_at>? OR (created_at=? AND id>?))
+                   ORDER BY created_at,id
+                   LIMIT ?""",
+                (
+                    float(after_created_at),
+                    float(after_created_at),
+                    int(after_id),
+                    page_limit,
+                ),
+            )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [self._source_event_from_row(row) for row in rows]
 
     @staticmethod
     def _job_from_row(row: aiosqlite.Row) -> JobRecord:

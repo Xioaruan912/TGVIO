@@ -96,6 +96,7 @@ class _Sources:
                 owner_user_id=99887766,
                 enabled=True,
                 album_gather_seconds=2.0,
+                sequential_video_gather_seconds=120.0,
                 spoiler_policy="normal",
                 caption_policy="strip",
                 backup_policy="inherit",
@@ -162,6 +163,8 @@ class DashboardReadModelTests(unittest.IsolatedAsyncioTestCase):
         rendered = json.dumps(dto, ensure_ascii=False)
         self.assertIn("默认 ‹目标›", rendered)
         self.assertIn("来源 ‹一›", rendered)
+        self.assertEqual(dto["sources"][0]["native_album_wait_seconds"], 2.0)
+        self.assertEqual(dto["sources"][0]["sequential_video_wait_seconds"], 120.0)
         for secret in (
             "private_destination",
             "private_source",
