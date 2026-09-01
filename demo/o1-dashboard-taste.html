@@ -612,7 +612,7 @@
     <aside class="sidebar">
       <div class="brand">
         <div class="brand-name"><span class="brand-mark">TG</span><span>媒体中转控制台</span></div>
-        <div class="brand-sub">O1 只读控制台<br>单节点模拟工作区</div>
+        <div class="brand-sub">O1 只读控制台<br><span id="runtimeModeLabel">单节点模拟工作区</span></div>
       </div>
 
       <div class="workspace">
@@ -630,7 +630,7 @@
       </nav>
 
       <div class="sidebar-foot">
-        <strong>仅模拟界面</strong><br>
+        <strong id="readOnlyModeLabel">仅模拟界面</strong><br>
         不执行 Telegram / WebDAV 写操作<br>
         优先遵守仓储层与服务层边界
       </div>
@@ -673,16 +673,16 @@
           </div>
 
           <div class="metric-grid reveal">
-            <div class="metric"><div class="metric-label">今日接受</div><div><div class="metric-value">128</div><div class="metric-foot">按 UTC 日期统计</div></div></div>
-            <div class="metric"><div class="metric-label">今日成功</div><div><div class="metric-value">119</div><div class="metric-foot">完成率 92.9%</div></div></div>
-            <div class="metric"><div class="metric-label">需要处理</div><div><div class="metric-value">02</div><div class="metric-foot">待处理失败</div></div></div>
-            <div class="metric"><div class="metric-label">Telegram 发布</div><div><div class="metric-value">38.4<small>GB</small></div><div class="metric-foot">已发布字节</div></div></div>
-            <div class="metric"><div class="metric-label">WebDAV 已确认</div><div><div class="metric-value">34.1<small>GB</small></div><div class="metric-foot">远端大小已校验</div></div></div>
-            <div class="metric"><div class="metric-label">去重节省</div><div><div class="metric-value">7.8<small>GB</small></div><div class="metric-foot">媒体复用节省</div></div></div>
+            <div class="metric"><div class="metric-label">今日接受</div><div><div class="metric-value" id="metricAccepted">128</div><div class="metric-foot">按 UTC 日期统计</div></div></div>
+            <div class="metric"><div class="metric-label">今日成功</div><div><div class="metric-value" id="metricSucceeded">119</div><div class="metric-foot" id="metricSuccessRate">完成率 92.9%</div></div></div>
+            <div class="metric"><div class="metric-label">需要处理</div><div><div class="metric-value" id="metricFailed">02</div><div class="metric-foot">待处理失败</div></div></div>
+            <div class="metric"><div class="metric-label">Telegram 发布</div><div><div class="metric-value" id="metricPublished">38.4<small>GB</small></div><div class="metric-foot">已发布字节</div></div></div>
+            <div class="metric"><div class="metric-label">WebDAV 已确认</div><div><div class="metric-value" id="metricBackedUp">34.1<small>GB</small></div><div class="metric-foot">远端大小已校验</div></div></div>
+            <div class="metric"><div class="metric-label">去重节省</div><div><div class="metric-value" id="metricSaved">7.8<small>GB</small></div><div class="metric-foot">媒体复用节省</div></div></div>
           </div>
 
           <div class="overview-grid reveal">
-            <div class="panel">
+            <div class="panel" id="throughputPanel">
               <div class="panel-head"><strong>过去 24 小时吞吐</strong><span>5 分钟聚合 / 模拟</span></div>
               <div class="chart-wrap"><canvas id="throughputChart"></canvas></div>
             </div>
@@ -753,7 +753,7 @@
           <div class="two-col reveal">
             <div class="panel">
               <div class="panel-head"><strong>本地缓存</strong><span>磁盘强制门禁：开启</span></div>
-              <div class="panel-body">
+              <div class="panel-body" id="storageDiskPanel">
                 <div class="storage-number">47.5<small> GB 可用</small></div>
                 <div class="storage-bar"><i></i></div>
                 <div class="mono">已使用 50.4 GB / 总计 97.9 GB</div>
@@ -767,7 +767,7 @@
             </div>
             <div class="panel">
               <div class="panel-head"><strong>WebDAV 归档</strong><span>仅缓存状态</span></div>
-              <div class="health-list">
+              <div class="health-list" id="storageBackupPanel">
                 <div class="health-row"><div><b>主归档</b><small>不含凭证的地址标签</small></div><span class="tag ok">就绪</span></div>
                 <div class="health-row"><div><b>最近验证</b><small>远端文件大小一致</small></div><span class="tag info">3 分钟前</span></div>
                 <div class="health-row"><div><b>待重试</b><small>远端服务错误 / 缓存受保护</small></div><span class="tag warn">1 个文件</span></div>
@@ -782,14 +782,14 @@
           <div class="two-col reveal">
             <div class="panel">
               <div class="panel-head"><strong>发布目标配置</strong><span>已验证 2 个</span></div>
-              <div class="health-list">
+              <div class="health-list" id="destinationProfilesPanel">
                 <div class="health-row"><div><b>默认发布</b><small>封面开启 / 保留说明文字</small></div><span class="tag ok">已验证</span></div>
                 <div class="health-row"><div><b>归档发布</b><small>必须备份 / 关闭封面</small></div><span class="tag ok">已验证</span></div>
               </div>
             </div>
             <div class="panel">
               <div class="panel-head"><strong>来源配置</strong><span>仅处理新消息</span></div>
-              <div class="health-list">
+              <div class="health-list" id="sourceProfilesPanel">
                 <div class="health-row"><div><b>新闻来源</b><small>保留说明文字 / 普通剧透模式</small></div><span class="tag neutral">已停用</span></div>
                 <div class="health-row"><div><b>媒体来源</b><small>去除说明文字 / 普通剧透模式</small></div><span class="tag neutral">已停用</span></div>
               </div>
@@ -807,7 +807,7 @@
             <div class="panel">
               <div class="panel-head"><strong>诊断快照</strong><span>不含用户内容</span></div>
               <div class="panel-body">
-                <div class="mini-grid" style="margin-top:0">
+                <div class="mini-grid" id="healthDiagnostics" style="margin-top:0">
                   <dl class="mini-cell"><dt>应用提交</dt><dd>9cf433f</dd></dl>
                   <dl class="mini-cell"><dt>数据库架构</dt><dd>1-9</dd></dl>
                   <dl class="mini-cell"><dt>心跳</dt><dd>2.1 秒</dd></dl>
@@ -834,24 +834,93 @@
   <div class="toast" id="toast">模拟操作</div>
 
   <script>
-    const tasks = [
-      { id: 4812, state: 'running', stage: 'download', title: '来源媒体-4812.mp4', source: 'telegram', progress: 68, size: '1.42 GB', backup: 'waiting', updated: '14:18:42', speed: '11.8 MB/s', eta: '00:42', revision: 7 },
-      { id: 4811, state: 'running', stage: 'publish', title: '合集 / 8 个媒体', source: 'collection', progress: 87, size: '2.08 GB', backup: 'succeeded', updated: '14:18:36', speed: '7.2 MB/s', eta: '00:19', revision: 11 },
-      { id: 4810, state: 'running', stage: 'backup', title: '公开示例视频', source: 'url', progress: 52, size: '840 MB', backup: 'running', updated: '14:18:22', speed: '6.4 MB/s', eta: '01:03', revision: 9 },
-      { id: 4809, state: 'queued', stage: 'queued', title: '相册 / 6 个媒体', source: 'album', progress: 0, size: '--', backup: 'pending', updated: '14:17:56', speed: '--', eta: '--', revision: 2 },
-      { id: 4808, state: 'failed', stage: 'download', title: '链接解析请求', source: 'url', progress: 31, size: '390 MB', backup: 'disabled', updated: '14:15:07', speed: '0', eta: '--', revision: 6, error: 'network_timeout', summary: '远端读取超时；有限重试已用尽。' },
-      { id: 4807, state: 'failed', stage: 'backup', title: '归档候选', source: 'telegram', progress: 100, size: '1.10 GB', backup: 'failed', updated: '14:12:33', speed: '--', eta: '--', revision: 13, error: 'webdav_server', summary: '远端服务暂不可用；本地缓存仍受保护。' },
-      { id: 4806, state: 'succeeded', stage: 'done', title: '已完成中转', source: 'telegram', progress: 100, size: '612 MB', backup: 'succeeded', updated: '14:08:18', speed: '--', eta: '--', revision: 15 }
-    ];
+    const isLiveDashboard = location.protocol === 'http:' || location.protocol === 'https:';
+    const nowSeconds = Date.now() / 1000;
+    // This mock uses the exact O1 v1 DTO shape returned by DashboardService.
+    const dashboardMockDto = {
+      overview: {
+        schema_version: 1,
+        generated_at: nowSeconds,
+        stats: {
+          today: { accepted: 128, succeeded: 119, failed: 2, cancelled: 1 },
+          totals: { published_bytes: 41231686041, backed_up_bytes: 36614522470, saved_upload_bytes: 8375186227 },
+          queue: { running: 3, waiting: 1, failed: 2 },
+          process: { uptime_seconds: 86421, cpu_percent: 12.4, memory_bytes: 268435456 }
+        },
+        services: { telegram_connected: true, database_ok: true, webdav_enabled: true, webdav_health: 'normal', disk_healthy: true },
+        recent_errors: [{ code: 'network_timeout', count: 1 }, { code: 'webdav_server', count: 1 }],
+        recent_events: [{ type: 'published', count: 119 }, { type: 'download_completed', count: 121 }],
+        notification_outbox: { pending: 0, delivering: 0, retry_wait: 0, sent: 12, dead: 0 }
+      },
+      jobs: {
+        schema_version: 1,
+        generated_at: nowSeconds,
+        page: 0,
+        page_size: 20,
+        total: 7,
+        pages: 1,
+        filter: 'all',
+        items: [
+          { id: 4812, kind: 'telegram', title: 'Telegram 媒体任务', state: 'downloading', status_group: 'running', stage: 'download', source_kind: 'telegram', progress_percent: 68, bytes_done: 1030792151, bytes_total: 1513975972, current_item: 1, total_items: 1, backup_state: 'pending', error_code: null, revision: 7, accepted_at: nowSeconds - 220, updated_at: nowSeconds - 2, finished_at: null },
+          { id: 4811, kind: 'collection', title: '合集任务 / 8 项', state: 'publishing', status_group: 'running', stage: 'publish', source_kind: 'collection', progress_percent: 87, bytes_done: 1946157056, bytes_total: 2233382994, current_item: 7, total_items: 8, backup_state: 'succeeded', error_code: null, revision: 11, accepted_at: nowSeconds - 400, updated_at: nowSeconds - 8, finished_at: null },
+          { id: 4810, kind: 'url', title: '链接任务', state: 'publishing', status_group: 'running', stage: 'backup', source_kind: 'url', progress_percent: 52, bytes_done: 457703014, bytes_total: 880803840, current_item: 1, total_items: 1, backup_state: 'running', error_code: null, revision: 9, accepted_at: nowSeconds - 500, updated_at: nowSeconds - 22, finished_at: null },
+          { id: 4809, kind: 'album', title: '相册任务 / 6 项', state: 'queued', status_group: 'waiting', stage: 'queued', source_kind: 'telegram', progress_percent: 0, bytes_done: 0, bytes_total: 0, current_item: 0, total_items: 6, backup_state: 'pending', error_code: null, revision: 2, accepted_at: nowSeconds - 70, updated_at: nowSeconds - 48, finished_at: null },
+          { id: 4808, kind: 'url', title: '链接任务', state: 'failed', status_group: 'failed', stage: 'download', source_kind: 'url', progress_percent: 31, bytes_done: 126772838, bytes_total: 408944640, current_item: 0, total_items: 1, backup_state: 'disabled', error_code: 'network_timeout', revision: 6, accepted_at: nowSeconds - 600, updated_at: nowSeconds - 215, finished_at: nowSeconds - 215 },
+          { id: 4807, kind: 'telegram', title: 'Telegram 媒体任务', state: 'failed', status_group: 'failed', stage: 'backup', source_kind: 'telegram', progress_percent: 100, bytes_done: 1181116006, bytes_total: 1181116006, current_item: 1, total_items: 1, backup_state: 'failed', error_code: 'webdav_server', revision: 13, accepted_at: nowSeconds - 900, updated_at: nowSeconds - 389, finished_at: nowSeconds - 389 },
+          { id: 4806, kind: 'telegram', title: 'Telegram 媒体任务', state: 'succeeded', status_group: 'succeeded', stage: 'done', source_kind: 'telegram', progress_percent: 100, bytes_done: 641728512, bytes_total: 641728512, current_item: 1, total_items: 1, backup_state: 'succeeded', error_code: null, revision: 15, accepted_at: nowSeconds - 1200, updated_at: nowSeconds - 624, finished_at: nowSeconds - 624 }
+        ]
+      },
+      storage: {
+        schema_version: 1,
+        generated_at: nowSeconds,
+        disk: { total_bytes: 105119744000, used_bytes: 54116587930, free_bytes: 51003156070, reserved_bytes: 2147483648, protected_cache_bytes: 9234179686, reclaimable_cache_bytes: 5583457485, enforce: true, healthy: true, min_free_bytes: 5368709120, min_free_percent: 10 },
+        backup: { enabled: true, health: 'normal', cached_age_seconds: 180 }
+      },
+      routing: {
+        schema_version: 1,
+        generated_at: nowSeconds,
+        destinations: [{ id: 1, name: '默认发布', enabled: true, default: true, verified: true, cover_mode: true, forward_caption: true, spoiler_mode: 'always_normal', backup_policy: 'best_effort', read_only: true }],
+        sources: [{ id: 1, name: '新闻来源', destination_profile_id: 1, enabled: false, verified: true, spoiler_policy: 'normal', caption_policy: 'preserve', backup_policy: 'inherit' }]
+      },
+      health: { schema_version: 1, generated_at: nowSeconds, live: true, ready: true, heartbeat_age_seconds: 2.1, database_ok: true, schema_versions: [1,2,3,4,5,6,7,8,9,10], telegram_connected: true, webdav_enabled: true, webdav_health: 'normal', disk_healthy: true, app_commit: 'demo' }
+    };
 
-    const events = [
-      ['14:18:44', 'job.progress', '任务 #4812 的进度检查点已持久化'],
-      ['14:18:42', 'publish.commit', '任务 #4811 的发布检查点已提交'],
-      ['14:18:39', 'backup.verify', '持久备份文件的远端大小已验证'],
-      ['14:18:33', 'retry.exhausted', '任务 #4808 的重试预算已用尽 / network_timeout'],
-      ['14:17:58', 'disk.capacity', '容量门禁健康 / 预留空间已计入'],
-      ['14:17:50', 'db.health', 'SQLite 完整性正常 / 架构版本 1-9']
-    ];
+    function formatBytes(value) {
+      const bytes = Number(value || 0);
+      if (!bytes) return '--';
+      const units = ['B', 'KB', 'MB', 'GB', 'TB'];
+      const index = Math.min(units.length - 1, Math.floor(Math.log(bytes) / Math.log(1024)));
+      return `${(bytes / (1024 ** index)).toFixed(index > 1 ? 1 : 0)} ${units[index]}`;
+    }
+
+    function formatTime(value) {
+      if (!value) return '--';
+      return new Intl.DateTimeFormat('zh-CN', { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date(Number(value) * 1000));
+    }
+
+    function uiTaskFromDto(item) {
+      return {
+        id: Number(item.id),
+        state: item.status_group === 'waiting' ? 'queued' : item.status_group,
+        stage: item.stage,
+        title: item.title,
+        source: item.source_kind,
+        progress: Number(item.progress_percent || 0),
+        size: formatBytes(item.bytes_total || item.bytes_done),
+        backup: item.backup_state,
+        updated: formatTime(item.updated_at),
+        speed: '--',
+        eta: '--',
+        revision: Number(item.revision || 1),
+        error: item.error_code,
+        summary: item.error_code ? `错误码 ${item.error_code}；请在 Telegram 失败中心执行经确认的处理。` : ''
+      };
+    }
+
+    let tasks = dashboardMockDto.jobs.items.map(uiTaskFromDto);
+    let events = dashboardMockDto.overview.recent_events.map(item => [
+      formatTime(dashboardMockDto.overview.generated_at), item.type, `${item.type} × ${item.count}`
+    ]);
 
     const viewTitles = {
       overview: ['运行总览', '只读 / 模拟遥测 / 每 5 秒刷新'],
@@ -863,9 +932,128 @@
     };
 
     let activeFilter = 'all';
-    let frozen = false;
+    let frozen = isLiveDashboard;
     let scenario = 'live';
     let toastTimer = null;
+    let dashboardToken = isLiveDashboard ? (sessionStorage.getItem('tvf-dashboard-token') || '') : '';
+    let tokenPromptDismissed = false;
+
+    function escapeHtml(value) {
+      return String(value ?? '').replace(/[&<>"']/g, character => ({
+        '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;'
+      })[character]);
+    }
+
+    async function apiRequest(path, retry = true) {
+      if (!dashboardToken) {
+        if (tokenPromptDismissed) throw new Error('missing_token');
+        dashboardToken = window.prompt('输入 O1 Dashboard Token（仅保存在当前标签页）') || '';
+        if (!dashboardToken) {
+          tokenPromptDismissed = true;
+          throw new Error('missing_token');
+        }
+        sessionStorage.setItem('tvf-dashboard-token', dashboardToken);
+      }
+      const response = await fetch(path, {
+        cache: 'no-store',
+        headers: { Authorization: `Bearer ${dashboardToken}` }
+      });
+      if (response.status === 401 && retry) {
+        dashboardToken = '';
+        tokenPromptDismissed = false;
+        sessionStorage.removeItem('tvf-dashboard-token');
+        return apiRequest(path, false);
+      }
+      if (!response.ok) throw new Error(`api_${response.status}`);
+      return response.json();
+    }
+
+    function setMetric(id, value) {
+      document.getElementById(id).textContent = String(value);
+    }
+
+    function renderLiveData({ overview, jobs, storage, routing, health }) {
+      tasks = jobs.items.map(uiTaskFromDto);
+      events = overview.recent_events.map(item => [
+        formatTime(overview.generated_at), item.type, `${item.type} × ${item.count}`
+      ]);
+      const today = overview.stats.today;
+      const totals = overview.stats.totals;
+      setMetric('metricAccepted', today.accepted);
+      setMetric('metricSucceeded', today.succeeded);
+      setMetric('metricFailed', overview.stats.queue.failed);
+      setMetric('metricPublished', formatBytes(totals.published_bytes));
+      setMetric('metricBackedUp', formatBytes(totals.backed_up_bytes));
+      setMetric('metricSaved', formatBytes(totals.saved_upload_bytes));
+      const successRate = today.accepted ? (today.succeeded / today.accepted * 100).toFixed(1) : '0.0';
+      document.getElementById('metricSuccessRate').textContent = `完成率 ${successRate}%`;
+
+      const disk = storage.disk;
+      const diskPercent = disk.total_bytes ? Math.min(100, Number(disk.used_bytes || 0) / disk.total_bytes * 100) : 0;
+      document.getElementById('storageDiskPanel').innerHTML = `
+        <div class="storage-number">${escapeHtml(formatBytes(disk.free_bytes))}<small> 可用</small></div>
+        <div class="storage-bar"><i style="width:${diskPercent.toFixed(1)}%"></i></div>
+        <div class="mono">已使用 ${escapeHtml(formatBytes(disk.used_bytes))} / 总计 ${escapeHtml(formatBytes(disk.total_bytes))}</div>
+        <div class="mini-grid">
+          <dl class="mini-cell"><dt>已预留</dt><dd>${escapeHtml(formatBytes(disk.reserved_bytes))}</dd></dl>
+          <dl class="mini-cell"><dt>已保护</dt><dd>${escapeHtml(formatBytes(disk.protected_cache_bytes))}</dd></dl>
+          <dl class="mini-cell"><dt>可回收</dt><dd>${escapeHtml(formatBytes(disk.reclaimable_cache_bytes))}</dd></dl>
+          <dl class="mini-cell"><dt>硬下限</dt><dd>${escapeHtml(formatBytes(disk.min_free_bytes))} / ${Number(disk.min_free_percent || 0)}%</dd></dl>
+        </div>`;
+      document.getElementById('storageBackupPanel').innerHTML = `
+        <div class="health-row"><div><b>WebDAV</b><small>只读缓存状态，不发起远端探测</small></div><span class="tag ${storage.backup.enabled ? 'ok' : 'neutral'}">${storage.backup.enabled ? '已启用' : '已关闭'}</span></div>
+        <div class="health-row"><div><b>缓存健康</b><small>最近状态年龄 ${storage.backup.cached_age_seconds == null ? '--' : Math.round(storage.backup.cached_age_seconds) + ' 秒'}</small></div><span class="tag ${storage.backup.health === 'normal' ? 'ok' : 'warn'}">${escapeHtml(storage.backup.health)}</span></div>`;
+
+      document.getElementById('destinationProfilesPanel').innerHTML = routing.destinations.length
+        ? routing.destinations.map(profile => `<div class="health-row"><div><b>${escapeHtml(profile.name)}</b><small>${profile.cover_mode ? '封面开启' : '封面关闭'} / ${profile.backup_policy}</small></div><span class="tag ${profile.verified && profile.enabled ? 'ok' : 'neutral'}">${profile.default ? '默认' : profile.enabled ? '启用' : '停用'}</span></div>`).join('')
+        : emptyRows('没有发布目标', '当前仓储层没有可展示的目标配置。');
+      document.getElementById('sourceProfilesPanel').innerHTML = routing.sources.length
+        ? routing.sources.map(profile => `<div class="health-row"><div><b>${escapeHtml(profile.name)}</b><small>${profile.caption_policy} / ${profile.spoiler_policy}</small></div><span class="tag ${profile.enabled ? 'ok' : 'neutral'}">${profile.enabled ? '启用' : '停用'}</span></div>`).join('')
+        : emptyRows('没有自动来源', '自动来源仅处理启用后的新消息。');
+
+      document.getElementById('containerHealth').className = `tag ${health.live ? 'ok' : 'fail'}`;
+      document.getElementById('containerHealth').textContent = health.live ? '健康' : '异常';
+      document.getElementById('telegramHealth').className = `tag ${health.telegram_connected ? 'info' : 'fail'}`;
+      document.getElementById('telegramHealth').textContent = health.telegram_connected ? '已连接' : '未连接';
+      document.getElementById('webdavHealth').className = `tag ${health.webdav_enabled ? 'ok' : 'neutral'}`;
+      document.getElementById('webdavHealth').textContent = health.webdav_enabled ? escapeHtml(health.webdav_health) : '未启用';
+      document.getElementById('healthDiagnostics').innerHTML = `
+        <dl class="mini-cell"><dt>应用提交</dt><dd>${escapeHtml(health.app_commit)}</dd></dl>
+        <dl class="mini-cell"><dt>数据库架构</dt><dd>${escapeHtml(health.schema_versions.join(','))}</dd></dl>
+        <dl class="mini-cell"><dt>心跳</dt><dd>${health.heartbeat_age_seconds == null ? '--' : Number(health.heartbeat_age_seconds).toFixed(1) + ' 秒'}</dd></dl>
+        <dl class="mini-cell"><dt>Readiness</dt><dd>${health.ready ? '就绪' : '未就绪'}</dd></dl>
+        <dl class="mini-cell"><dt>磁盘门禁</dt><dd>${health.disk_healthy === false ? '异常' : '正常'}</dd></dl>
+        <dl class="mini-cell"><dt>通知待处理</dt><dd>${Number(overview.notification_outbox.pending || 0) + Number(overview.notification_outbox.retry_wait || 0)}</dd></dl>`;
+      document.getElementById('throughputPanel').innerHTML = `
+        <div class="panel-head"><strong>指标采集入口</strong><span>低基数 / Prometheus 文本格式</span></div>
+        <div class="panel-body"><div class="storage-number">/metrics</div><div class="mono">当前页面不伪造 24 小时时序；由采集器保存并绘制真实趋势。</div></div>`;
+      renderOverview();
+      renderQueue();
+      renderFailures();
+      renderEvents();
+    }
+
+    async function loadDashboard(showSuccess = false) {
+      if (!isLiveDashboard) return;
+      const banner = document.getElementById('scenarioBanner');
+      try {
+        const [overview, jobs, storage, routing, health] = await Promise.all([
+          apiRequest('/api/v1/overview'),
+          apiRequest('/api/v1/jobs?page=0&page_size=100'),
+          apiRequest('/api/v1/storage'),
+          apiRequest('/api/v1/routing'),
+          apiRequest('/api/v1/health')
+        ]);
+        renderLiveData({ overview, jobs, storage, routing, health });
+        banner.classList.remove('show');
+        if (showSuccess) showToast('只读遥测已刷新');
+      } catch (error) {
+        banner.textContent = error.message === 'missing_token'
+          ? '未提供 Dashboard Token；页面不会请求任何运行数据。点击“刷新”重新输入。'
+          : '只读接口暂不可用。已保留上一次成功快照，不会触发任何写操作。';
+        banner.classList.add('show');
+      }
+    }
 
     function scenarioTasks() {
       return scenario === 'empty' ? [] : tasks;
@@ -954,9 +1142,9 @@
       const body = list.map(task => `
         <div class="task-row">
           <div class="task-id">#${task.id}</div>
-          <div class="task-title"><strong>${task.title}</strong><small>${sourceLabel(task.source)} / ${stageLabel(task.stage)} / 版本 ${task.revision}</small></div>
+          <div class="task-title"><strong>${escapeHtml(task.title)}</strong><small>${escapeHtml(sourceLabel(task.source))} / ${escapeHtml(stageLabel(task.stage))} / 版本 ${Number(task.revision)}</small></div>
           <div>${stateTag(task)}</div>
-          <div class="progress"><div class="progress-track"><i style="width:${task.progress}%"></i></div><small>${task.progress}% / ${task.size}</small></div>
+          <div class="progress"><div class="progress-track"><i style="width:${Math.max(0, Math.min(100, Number(task.progress)))}%"></i></div><small>${Number(task.progress)}% / ${escapeHtml(task.size)}</small></div>
           <div>${backupTag(task.backup)}</div>
           <div><button class="text-button" onclick="openTask(${task.id})">详情</button></div>
         </div>`).join('');
@@ -990,9 +1178,9 @@
         ${list.map(task => `
           <div class="task-row">
             <div class="task-id">#${task.id}</div>
-            <div class="task-title"><strong>${task.summary}</strong><small>${task.title}</small></div>
+            <div class="task-title"><strong>${escapeHtml(task.summary)}</strong><small>${escapeHtml(task.title)}</small></div>
             <div><span class="tag fail">${stageLabel(task.stage)}</span></div>
-            <div class="mono">${task.error}</div>
+            <div class="mono">${escapeHtml(task.error)}</div>
             <div>${task.backup === 'failed' ? '<span class="tag warn">已保护</span>' : '<span class="tag neutral">无</span>'}</div>
             <div><button class="text-button" onclick="mockRetry(${task.id})">模拟重试</button></div>
           </div>`).join('')}` : emptyRows('没有需要处理的失败', '当前场景下没有待处理失败。');
@@ -1038,7 +1226,7 @@
 
     function renderEvents() {
       document.getElementById('eventList').innerHTML = events.map(([time, code, text]) => `
-        <div class="event"><time>${time}</time><code>${code}</code><p>${text}</p></div>`).join('');
+        <div class="event"><time>${escapeHtml(time)}</time><code>${escapeHtml(code)}</code><p>${escapeHtml(text)}</p></div>`).join('');
     }
 
     function openTask(id) {
@@ -1047,19 +1235,19 @@
       document.getElementById('drawerHeading').textContent = `任务 #${task.id}`;
       document.getElementById('drawerBody').innerHTML = `
         <div class="drawer-kicker">持久任务 / 模拟记录</div>
-        <div class="drawer-title">${task.title}</div>
+        <div class="drawer-title">${escapeHtml(task.title)}</div>
         <div style="margin-top:12px">${stateTag(task)}</div>
         <div class="drawer-grid">
           <div class="drawer-cell"><span>阶段</span><strong>${stageLabel(task.stage)}</strong></div>
           <div class="drawer-cell"><span>版本</span><strong>${task.revision}</strong></div>
           <div class="drawer-cell"><span>进度</span><strong>${task.progress}%</strong></div>
-          <div class="drawer-cell"><span>大小</span><strong>${task.size}</strong></div>
-          <div class="drawer-cell"><span>速率</span><strong>${task.speed}</strong></div>
-          <div class="drawer-cell"><span>预计剩余</span><strong>${task.eta}</strong></div>
+          <div class="drawer-cell"><span>大小</span><strong>${escapeHtml(task.size)}</strong></div>
+          <div class="drawer-cell"><span>速率</span><strong>${escapeHtml(task.speed)}</strong></div>
+          <div class="drawer-cell"><span>预计剩余</span><strong>${escapeHtml(task.eta)}</strong></div>
           <div class="drawer-cell"><span>备份</span><strong>${backupText(task.backup)}</strong></div>
-          <div class="drawer-cell"><span>更新时间</span><strong>${task.updated}</strong></div>
+          <div class="drawer-cell"><span>更新时间</span><strong>${escapeHtml(task.updated)}</strong></div>
         </div>
-        ${task.error ? `<div class="drawer-note"><strong style="display:block;color:var(--red-text);margin-bottom:6px">${task.error}</strong>${task.summary}</div>` : ''}
+        ${task.error ? `<div class="drawer-note"><strong style="display:block;color:var(--red-text);margin-bottom:6px">${escapeHtml(task.error)}</strong>${escapeHtml(task.summary)}</div>` : ''}
         <div class="drawer-note">真实 O1 的删除、重试、取消等写操作不应直接写数据库；需要校验所有者、版本号和确认令牌，并通过现有服务命令写入审计事件。</div>`;
       const backdrop = document.getElementById('drawerBackdrop');
       backdrop.classList.add('open');
@@ -1083,6 +1271,11 @@
     function mockRetry(id) {
       const task = tasks.find(item => item.id === id);
       if (!task) return;
+      if (isLiveDashboard) {
+        openTask(id);
+        showToast('真实控制台保持只读；请在 Telegram 失败中心重试');
+        return;
+      }
       task.state = 'queued';
       task.stage = 'queued';
       task.progress = 0;
@@ -1173,9 +1366,19 @@
     document.getElementById('scenarioSelect').addEventListener('change', event => applyScenario(event.currentTarget.value));
     document.getElementById('drawerClose').addEventListener('click', closeDrawer);
     document.getElementById('drawerBackdrop').addEventListener('click', event => { if (event.target.id === 'drawerBackdrop') closeDrawer(); });
-    document.getElementById('refreshButton').addEventListener('click', () => { renderOverview(); renderQueue(); renderFailures(); drawChart(); showToast('模拟遥测已刷新'); });
+    document.getElementById('refreshButton').addEventListener('click', () => {
+      if (isLiveDashboard) {
+        tokenPromptDismissed = false;
+        loadDashboard(true);
+        return;
+      }
+      renderOverview(); renderQueue(); renderFailures(); drawChart(); showToast('模拟遥测已刷新');
+    });
     document.getElementById('freezeButton').addEventListener('click', event => { frozen = !frozen; event.currentTarget.textContent = frozen ? '继续模拟' : '暂停模拟'; showToast(frozen ? '模拟更新已暂停' : '模拟更新已继续'); });
-    document.querySelectorAll('[data-mock]').forEach(button => button.addEventListener('click', () => showToast(`仅模拟操作：${mockActionLabel(button.dataset.mock)}`)));
+    document.querySelectorAll('[data-mock]').forEach(button => {
+      if (isLiveDashboard) button.hidden = true;
+      button.addEventListener('click', () => showToast(`仅模拟操作：${mockActionLabel(button.dataset.mock)}`));
+    });
 
     const observer = new IntersectionObserver(entries => entries.forEach(entry => { if (entry.isIntersecting) entry.target.classList.add('visible'); }), { threshold: .08 });
     document.querySelectorAll('.reveal').forEach(el => observer.observe(el));
@@ -1186,8 +1389,17 @@
     renderEvents();
     updateClock();
     drawChart();
+    if (isLiveDashboard) {
+      document.getElementById('runtimeModeLabel').textContent = '本机只读运行数据';
+      document.getElementById('readOnlyModeLabel').textContent = '真实只读界面';
+      document.getElementById('topMeta').textContent = '只读 / 已认证 API / 每 5 秒刷新';
+      document.getElementById('scenarioSelect').hidden = true;
+      document.getElementById('freezeButton').hidden = true;
+      loadDashboard(false);
+    }
     setInterval(updateClock, 1000);
     setInterval(tickMock, 5000);
+    if (isLiveDashboard) setInterval(() => loadDashboard(false), 5000);
     window.addEventListener('resize', () => { if (document.getElementById('view-overview').classList.contains('active')) drawChart(); });
   </script>
 </body>

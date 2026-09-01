@@ -28,6 +28,9 @@ Telegram 机器人：把转发的视频/图片发布到你的频道；或下载�
 - **常驻按钮**：`/start` 或 `/begin` 后，**打字框上方常驻「📥 开始合集 / 🛑 结束合集」按钮**（回复键盘，persistent），点按钮即开始/结束合集，无需手动输入命令
 - **会话评论（文字随封面发布）**：合集会话期间发送的**文字消息会作为评论收集**，每条评论按行拆分（自动补换行），`/end` 时**整合为一条文本作为封面 caption 与封面一起发送到频道**（不是发到评论区）；多条评论按发送顺序排列
 - **白名单**：仅 `ALLOWED_USERS` 中的用户可以操作
+- **本机只读控制台**：可选 O1 Dashboard 通过私有 Unix Socket 提供任务、统计、磁盘、路由和健康快照；API 与 `/metrics` 统一使用 Bearer Token，页面不提供写操作
+- **指标导出**：提供低基数 Prometheus 文本指标，不使用 job/user/URL/error message 作为 label
+- **外部通知**：可选 HTTPS Webhook 使用 SQLite outbox、HMAC-SHA256 签名、租约恢复和有限指数退避；payload 默认只含脱敏状态与错误码
 
 ## 前置准备
 
@@ -45,6 +48,39 @@ cp .env.example .env          # 填入 API_ID/API_HASH/BOT_TOKEN/DEST_CHANNEL/AL
 docker compose up -d
 docker compose logs -f        # 查看运行日志
 ```
+
+## O1 只读控制台与指标（可选）
+
+控制台默认关闭，也不会新增公网端口。生成随机 token 后在 `.env` 设置：
+
+```bash
+openssl rand -hex 32
+# 将结果写入 DASHBOARD_TOKEN，并设置：
+DASHBOARD_ENABLED=true
+DASHBOARD_SOCKET=session/dashboard.sock
+```
+
+重建容器后，CLI 可直接通过私有 socket 验证（不要把 token 放进 URL）：
+
+```bash
+curl --unix-socket session/dashboard.sock \
+  -H "Authorization: Bearer $DASHBOARD_TOKEN" \
+  http://localhost/api/v1/health
+
+curl --unix-socket session/dashboard.sock \
+  -H "Authorization: Bearer $DASHBOARD_TOKEN" \
+  http://localhost/metrics
+```
+
+浏览器访问生产 VPS 时，推荐用 SSH 将本地 TCP 端口转发到远端 Unix Socket，再打开 `http://127.0.0.1:8787/`；页面会要求输入 token，并仅保存在当前标签页：
+
+```bash
+ssh -L 8787:/root/telegram-video-forwarder/session/dashboard.sock root@your-vps
+```
+
+只读 API contract：`/api/v1/overview`、`/api/v1/jobs`、`/api/v1/storage`、`/api/v1/routing`、`/api/v1/health`。HTML shell 可在私有 socket 上加载；所有运行数据和 `/metrics` 都必须认证。Dashboard 不暴露 caption、消息正文、源 URL、本地路径、Telegram user/chat/peer id、代理或 WebDAV 凭据。
+
+Webhook 另行设置 `WEBHOOK_ENABLED=true`、HTTPS `WEBHOOK_URL` 和至少 32 字节的 `WEBHOOK_TOKEN`。接收方使用 `HMAC-SHA256(token, X-TVF-Timestamp + "." + raw_body)` 校验 `X-TVF-Signature`，并应拒绝过旧时间戳以防重放。Webhook 失败不会阻塞 Telegram 主流程；事件留在 outbox 按有限次数重试。
 
 ## 封面模式（可选，频道只发封面图）
 
@@ -106,6 +142,13 @@ COVER_WIDTH=1280   # 封面图最大宽/高像素
 | `MAX_COVER_IMAGES` | `10` | 封面相册最多图片数（超出丢弃） |
 | `SESSION_COLLECT` | `true` | 合集会话：转发自动开始，多次转发汇总为一个合集（视频进同一评论区） |
 | `SESSION_END_TIMEOUT` | `5` | （v13.7 起已废弃）合集「结束并发布」按钮曾 5 秒后自动隐藏；现按钮常驻不隐藏 |
+| `DASHBOARD_ENABLED` | `false` | 启用 localhost/Unix-Socket 只读控制台 |
+| `DASHBOARD_SOCKET` | `session/dashboard.sock` | 私有 Unix Socket；留空才使用 loopback TCP |
+| `DASHBOARD_HOST` | `127.0.0.1` | TCP 模式只允许 `127.0.0.1` 或 `::1` |
+| `DASHBOARD_PORT` | `8787` | TCP 模式端口 |
+| `WEBHOOK_ENABLED` | `false` | 启用脱敏 HTTPS Webhook outbox dispatcher |
+| `WEBHOOK_TIMEOUT` | `10` | 单次 Webhook 超时秒数 |
+| `WEBHOOK_MAX_ATTEMPTS` | `8` | Webhook 最大尝试次数（1～20） |
 
 ## 常见问题
 

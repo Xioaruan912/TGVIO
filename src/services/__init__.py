@@ -15,6 +15,13 @@ from .dedup import ContentHash, DedupManager, sha256_file
 from .media_compat import MediaCompatibilityManager
 from .destination_profiles import DestinationProfileManager
 from .source_profiles import SourceProfileManager
+from .dashboard import DashboardService
+from .notifications import (
+    UrllibWebhookTransport,
+    WebhookNotifier,
+    WebhookResponse,
+    WebhookTransportError,
+)
 
 __all__ = [
     "BackupManager",
@@ -43,4 +50,9 @@ __all__ = [
     "MediaCompatibilityManager",
     "DestinationProfileManager",
     "SourceProfileManager",
+    "DashboardService",
+    "UrllibWebhookTransport",
+    "WebhookNotifier",
+    "WebhookResponse",
+    "WebhookTransportError",
 ]

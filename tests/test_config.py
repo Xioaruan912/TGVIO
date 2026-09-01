@@ -72,6 +72,44 @@ class SettingsTests(unittest.TestCase):
             with self.subTest(key=key), self.assertRaises(SettingsError):
                 Settings.from_env(invalid, strict=True)
 
+    def test_dashboard_requires_private_bind_and_strong_token(self) -> None:
+        env = base_env()
+        env.update(DASHBOARD_ENABLED="true", DASHBOARD_TOKEN="x" * 32)
+        settings = Settings.from_env(env, strict=True)
+        self.assertTrue(settings.dashboard_enabled)
+        self.assertEqual(settings.dashboard_socket, "session/dashboard.sock")
+        rendered = repr(settings.safe_summary())
+        self.assertNotIn("x" * 32, rendered)
+
+        invalid = dict(env, DASHBOARD_HOST="0.0.0.0")
+        with self.assertRaises(SettingsError):
+            Settings.from_env(invalid, strict=True)
+        invalid = dict(env, DASHBOARD_TOKEN="too-short")
+        with self.assertRaises(SettingsError):
+            Settings.from_env(invalid, strict=True)
+
+    def test_webhook_requires_https_and_hides_endpoint_and_token(self) -> None:
+        env = base_env()
+        env.update(
+            WEBHOOK_ENABLED="true",
+            WEBHOOK_URL="https://hooks.example.invalid/private",
+            WEBHOOK_TOKEN="s" * 32,
+        )
+        settings = Settings.from_env(env, strict=True)
+        rendered = repr(settings.safe_summary())
+        self.assertTrue(settings.webhook_enabled)
+        self.assertNotIn("hooks.example.invalid", rendered)
+        self.assertNotIn("s" * 32, rendered)
+
+        for url in (
+            "http://hooks.example.invalid/private",
+            "https://user:pass@hooks.example.invalid/private",
+            "https://hooks.example.invalid/private#secret",
+        ):
+            invalid = dict(env, WEBHOOK_URL=url)
+            with self.subTest(url=url), self.assertRaises(SettingsError):
+                Settings.from_env(invalid, strict=True)
+
 
 if __name__ == "__main__":
     unittest.main()

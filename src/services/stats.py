@@ -70,6 +70,11 @@ class StatsService:
         except Exception:
             return False, False, None
 
+    @classmethod
+    def heartbeat_snapshot(cls) -> tuple[bool, bool, float | None]:
+        """Expose the local heartbeat read model to other read-only services."""
+        return cls._read_heartbeat()
+
     def _cpu_percent(self) -> float | None:
         now_wall = time.monotonic()
         now_cpu = time.process_time()

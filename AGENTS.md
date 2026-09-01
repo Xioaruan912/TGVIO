@@ -432,7 +432,7 @@ docker compose config --quiet
 | M1 | P2 | 视频兼容性检查、faststart remux、缩略图增强 | F3 | [x] `2535264`（2026-08-31；生产默认 analyze） |
 | DP1 | P2 | 多目的地发布配置档案 | R3、U2 | [x] `b8191ff`（2026-08-31；schema 7→8） |
 | S1 | P2 | 指定源频道自动中转（仅新消息） | DP1 | [x] `5d5f2aa`（2026-08-31；schema 8→9） |
-| O1 | Later→Active | Web Dashboard/外部通知/指标导出 | F4 且用户确认 | [ ] 用户已于 2026-08-31 明确授权开始；当前仅完成单 HTML mock Demo，真实 Web 服务/API/认证尚未实现 |
+| O1 | Later→Active | Web Dashboard/外部通知/指标导出 | F4 且用户确认 | [x] 2026-09-01：私有只读 Dashboard、认证指标与默认关闭的 HMAC Webhook outbox 已实现；提交/生产验收记录见第 21 节 |
 
 所有阶段共同 Definition of Done：
 
@@ -1305,25 +1305,18 @@ backup_policy
 - 失败发送给管理员的失败中心，不在源频道刷错误。
 - 编辑/删除源消息默认不反向修改已发布内容；如以后增加同步删除，必须单独授权并有审计事件。
 
-### 17.5 O1 Web Dashboard（已获用户授权，当前 Demo 阶段）
+### 17.5 O1 Web Dashboard（已完成：私有只读管理面）
 
-用户已于 2026-08-31 明确允许开始 O1。当前先用 `demo/o1-dashboard-taste.html` 验证信息架构与视觉方向，**单 HTML 只使用模拟数据，不连接生产、不开放端口、不产生 mutation**。从 Demo 进入真实服务时仍遵守：
+用户已于 2026-08-31 明确允许开始 O1。`demo/o1-dashboard-taste.html` 现在既可作为 `file://` mock 预览，也可在私有 listener 上以 sessionStorage 中的 Bearer token 拉取真实只读 DTO；它不含业务 mutation。
 
 **Telegram Bot 与 Web Dashboard 的交互边界**：Bot 保持按钮优先的原生 Telegram UI；slash commands 继续作为 BotFather 菜单/快捷入口存在，但不得再次用命令文字替代首页、设置、帮助和返回按钮。Web Dashboard 是独立管理面，不以修改 Bot 导航作为前置条件。
 
-- 只读 dashboard 先行，复用同一 repository/service，不直接操作数据库。
-- 单独监听 localhost，通过反向代理、TLS、强认证和 CSRF 防护；不得把管理端口直接暴露公网。
-- 删除/重试等 mutation 仍走 service command 和审计事件。
-- 不在 bot 容器内临时拼一个无认证 Flask 页面。
+- `DashboardService` 复用 repository/StatsService/pipeline read model；Web 层不执行 SQL。`/api/v1/overview`、`/jobs`、`/routing`、`/storage`、`/health` 均只给出脱敏、有限分页的 DTO。
+- 默认关闭；启用后优先监听私有 Unix socket（0600），仅在显式禁用 socket 时允许 loopback TCP。数据 API 与 `/metrics` 均要求恒定时间比较的 Bearer token；拒绝 query token、非 GET/HEAD、请求 body、超长 header，并返回 CSP/`no-store`/`nosniff`/`DENY` 等响应头。
+- Prometheus 指标只使用固定低基数状态标签，覆盖 readiness、Telegram/DB/WebDAV/disk、队列、当天作业、字节、uptime/memory/outbox；绝不把 job/user/URL/error 文本作为 label。
+- `notification_outbox`（schema 10）实现白名单脱敏事件、dedupe、claim lease、重启恢复、指数退避+jitter、最多尝试次数与 HMAC-SHA256 Webhook。默认关闭，只允许 HTTPS，日志不记录 endpoint/token/body。
 
-当前 O1 未完成项：
-
-- 选择 Web 服务边界与只读 API contract，复用 repository/service，不让页面直接执行 SQL。
-- 明确认证和暴露方式；默认 localhost-only，反向代理/TLS/强认证完成前不得公网监听。
-- 将 jobs/stats/storage/routing/health 的 mock 数据替换为脱敏只读 service DTO。
-- mutation（retry/cancel/delete/profile update）后续单独分期，必须复用 owner/revision/confirmation/audit 语义，不能直接从 Web handler 改数据库。
-
-外部通知（Webhook/邮件）同样后置；实现时使用 outbox table + 重试，默认关闭并严格隐藏用户媒体内容。
+Web retry/cancel/delete/profile update、邮件通知均不属于本次 O1 交付，仍须另行授权；任何未来 Web mutation 必须调用既有 service command，继承 owner/revision/confirmation/audit，禁止 handler 直接写业务表。
 
 ### 17.6 仍需记录但不进入当前开发队列的需求
 
@@ -1512,7 +1505,7 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-下一位代理直接进入 O1-A：定义 localhost-only、只读 Web service/API contract，并让 `demo/o1-dashboard-taste.html` 的 mock DTO 与真实 service DTO 对齐。O1-A 不实现 mutation，不改 Telegram Bot 导航，不开放公网端口。若需要确认生产基线，只读检查 `APP_COMMIT=f144a13`、health/schema/hash 即可；不要因 GitHub 的 test-only `85e61e9` 重建生产。
+O1 已进入交付验收：执行第 21 节的发布后核对。后续产品工作须单独排期，不应把 Web mutation 作为 O1 的隐含补项；默认配置下 Dashboard/Webhook 必须保持关闭，不开放公网端口。
 
 ## 21. 执行日志
 
@@ -1978,3 +1971,23 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - 生产：部署前 `fe59b1e` 容器 `running`/`restart=0`/health=`healthy`，schema9/integrity ok，incomplete/claims/active-backup 均为 0。回滚时间戳 `20260901-002023`：DB `state-pre-f144a13-20260901-002023.sqlite3`、镜像 `telegram-video-forwarder:rollback-pre-f144a13`、源码 `pre-f144a13-20260901-002023.tar.gz`。发布后 `APP_COMMIT=f144a13`、镜像 `sha256:1c0fac469a9fe8455e4980d22c08a9bc8bb0f606e742ffcfa6691454f9d1d5e2`、health=`healthy`、restart=0、schema9/integrity ok，关键 UI 源码 hash 与本地一致。
 - 测试隔离：生产全量测试第一次只有 100-jobs fake load test 超时，定位为 fake pipeline 继承真实 `DISK_ENFORCE=true` 后按 2GiB unknown reserve 触发真实磁盘 gate，并非 UI/runtime 回归。`85e61e9 test(runtime): isolate disk policy in pipeline load test` 在测试 setup 显式关闭 disk enforcement；使用等价的 `docker exec -e DISK_ENFORCE=false` 重新跑生产 **259/259 全通过**，同时确认真实 bot 进程 `DISK_ENFORCE=true` 未改变。该提交仅改测试，无需重建生产。
 - O1 边界：Web Dashboard 与 Telegram Bot UI 解耦。下一步 O1-A 只做 localhost-only、read-only service/API contract，复用 repository/service DTO；不得再次以“命令优先”为由改 Bot 首页/设置/帮助按钮，也不得直接公网监听或在 Web handler 中写 SQL/mutation。
+
+### 2026-09-01 - 全功能复核与 O1 实现完成（待生产发布）
+
+- 当前基线：本地 `main` 与 `origin/main` 均为 `baf920d`。开始前工作区仅有用户/其他代理留下的 `demo/o1-dashboard-demo.html` 删除，本轮保留该删除，不恢复、不纳入 O1 提交。
+- 功能审计结论：第 6、17～19 节中 R0、R1、R2、R3、F1、F2、F3、F4、U1、U2、S1 及安全/性能/测试矩阵均已完成；全文件唯一有效的路线图未完成复选框是 O1。历史执行日志中提到的旧 F2 未完成状态已被后续提交完成，不是当前缺口。
+- O1 完成定义：交付真实的 localhost-only 只读 Web 控制台、版本化只读 JSON API、受认证保护的 Prometheus 文本指标，以及默认关闭、持久化 outbox、有限重试且只发送脱敏运行事件的 Webhook 通知。单 HTML mock 不再作为“已实现”依据。
+- 明确不在本批伪实现的范围：Web retry/cancel/delete/profile update 等 mutation。它们不是当前 O1 标题中的必交付能力；未来若获单独授权，必须调用现有 service command，继承 owner/revision/confirmation/audit，不允许 Web handler 直接写业务表。邮件通知也不与 Webhook 同时引入；先用通用 outbox/dispatcher 边界完成一个可验证的外部通道。
+
+实施顺序与技术方案：
+
+1. **O1-A 配置与安全边界**：在不可变 `Settings` 中加入 `DASHBOARD_ENABLED/HOST/PORT/TOKEN` 与 `WEBHOOK_ENABLED/URL/TOKEN/TIMEOUT/MAX_ATTEMPTS`。Dashboard 默认关闭；启用时 host 必须是 loopback literal/`localhost`，token 必须有足够熵，禁止 `0.0.0.0` 或公网地址。Webhook 默认关闭，启用时只允许 HTTPS（测试可显式注入 transport，不放宽生产校验）。`safe_summary()` 只显示开关/端口，不显示 token、完整 URL 或凭据；同步更新 `.env.example`、README 与 compose 的 loopback 发布方式。
+2. **O1-A read model**：新增 `DashboardService`，只从 repository、`StatsService`、`DiskManager`、destination/source profile service 取得数据并组装 JSON-safe DTO；Web 层不出现 SQL。repository 新增有上限的全局管理列表/聚合 query，字段只包含 job id、状态、阶段、进度、项目数、字节数、错误码和时间，明确排除 user/chat/peer id、caption、消息正文、源 URL、本地绝对路径、代理/WebDAV 凭据。
+3. **O1-A HTTP 服务/UI**：使用标准库 asyncio server，避免为一个本机管理面增加大型 Web 框架。仅支持有长度上限的 HTTP/1.1 `GET/HEAD`；HTML shell 可在 loopback 匿名加载，但所有数据 API 和 `/metrics` 必须使用恒定时间比较的 Bearer token；拒绝 query token、非 GET、超长 header/body。响应带 CSP、`nosniff`、`DENY`、`no-referrer`、`no-store`。实现 `/api/v1/overview`、`/jobs`、`/routing`、`/storage`、`/health`，并让 `demo/o1-dashboard-taste.html` 的 mock DTO/真实页面绑定与该 contract 对齐。
+4. **O1-B 指标导出**：新增低基数 Prometheus exposition，至少覆盖 readiness、Telegram/DB/WebDAV/disk 状态、队列状态、今日成功/失败/取消、发布/备份/去重字节、进程 uptime/内存。不得以 job id、user id、URL 或 error message 作为 label；与 JSON API 使用相同认证和 localhost-only listener。
+5. **O1-C 外部通知**：新增独立 migration/outbox repository API 与 `WebhookNotifier` dispatcher。业务只 enqueue 白名单事件摘要；HTTP I/O 永不包在 SQLite transaction 内。dispatcher 使用 claim lease、成功确认、指数退避+jitter、最大尝试次数、重启恢复和有限并发；payload 不含媒体名、caption、URL、peer/user/chat id、路径和凭据。Webhook 签名采用 HMAC-SHA256，日志只记录 outbox id/event type/status class，不记录 URL/token/body。
+6. **生命周期集成**：在 `main` 完成 migration/recovery 后启动 dashboard 和 notifier，在 SIGTERM/finally 中先停止 listener/dispatcher，再关闭 pipeline/repository；dashboard 失败若已显式启用则启动失败，Webhook 短暂失败只进入 outbox retry，不拖垮 Telegram 主循环。不得启动第二个 Telegram client/bot。
+7. **测试与验收**：先补 config、DTO 脱敏、repository 分页、HTTP auth/method/header-limit/security-header、metrics 低基数、outbox migration/claim/retry/recovery/HMAC、main 生命周期测试；再跑 `unittest discover`、`compileall`、`git diff --check`、compose config/build、镜像秘密路径扫描和本地容器 HTTP smoke。必须确认 Telegram 按钮 UI 专项测试继续通过。
+8. **提交与发布**：仅提交 O1 相关文件和本条文档，不夹带既有 Demo 删除；推送 `origin/main`。VPS 发布前只读核对容器 health/restart、`APP_COMMIT`、schema/integrity、无活动 claim/backup，并创建 SQLite/source/image 三重回滚点；从已推送 commit 的 Git archive 发布，保留 `.env/session/downloads`。默认保持 Dashboard/Webhook 关闭，先在一次性测试容器完成启用态 smoke；生产重建后核对 commit/hash/schema/integrity/health/restart/全量测试/脱敏日志，最后把结果和精确 commit 写回本节。
+
+本地验收已完成：`python -m unittest discover -s tests -q`（镜像内 **280 tests**）全绿；`compileall`、`git diff --check`、`docker compose config --quiet`、嵌入式前端 JS syntax check、镜像构建及镜像内 `.env/session/downloads/.git` 缺失检查均通过。O1 三项标题能力已有自动化测试；默认配置不会新增 listener 或外部请求。下一步仅剩按第 8 项进行 Git 推送和 VPS 三重回滚发布验收。

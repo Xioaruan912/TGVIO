@@ -8,13 +8,14 @@ from telethon.tl import types
 
 from . import bot, config
 from .commands import command_menu_pairs
+from .dashboard import DashboardServer
 from .repository import SQLiteRepository
 from .security import (
     install_redacting_logging,
     secure_private_directory,
     secure_private_file,
 )
-from .services import RuntimeHeartbeat
+from .services import DashboardService, RuntimeHeartbeat, WebhookNotifier
 from .storage import JsonStore
 
 _LOG_FORMAT = "%(asctime)s %(levelname)s %(name)s: %(message)s"
@@ -65,6 +66,51 @@ def _install_sigterm_handler(client: TelegramClient) -> None:
         logger.warning("SIGTERM handler unavailable on this event loop")
 
 
+async def _start_o1_services(settings, pipeline, repository):
+    dashboard_server = None
+    webhook_notifier = None
+    try:
+        if settings.dashboard_enabled:
+            dashboard_service = DashboardService(
+                pipeline,
+                repository,
+                pipeline.stats_service,
+            )
+            dashboard_server = DashboardServer(
+                dashboard_service,
+                token=settings.dashboard_token,
+                host=settings.dashboard_host,
+                port=settings.dashboard_port,
+                socket_path=settings.dashboard_socket,
+            )
+            await dashboard_server.start()
+        if settings.webhook_enabled:
+            webhook_notifier = WebhookNotifier(
+                repository,
+                url=settings.webhook_url,
+                token=settings.webhook_token,
+                timeout=settings.webhook_timeout,
+                max_attempts=settings.webhook_max_attempts,
+                poll_interval=settings.webhook_poll_interval,
+            )
+            await webhook_notifier.start()
+            await webhook_notifier.enqueue_runtime_event("started")
+        return dashboard_server, webhook_notifier
+    except Exception:
+        if webhook_notifier is not None:
+            await webhook_notifier.stop()
+        if dashboard_server is not None:
+            await dashboard_server.stop()
+        raise
+
+
+async def _stop_o1_services(dashboard_server, webhook_notifier) -> None:
+    if webhook_notifier is not None:
+        await webhook_notifier.stop()
+    if dashboard_server is not None:
+        await dashboard_server.stop()
+
+
 async def main() -> None:
     settings = config.Settings.from_env(strict=True)
     logger.info("Static settings loaded: %s", settings.safe_summary())
@@ -77,8 +123,11 @@ async def main() -> None:
     repository = SQLiteRepository(
         "session/state.sqlite3",
         download_root=settings.download_dir,
+        notifications_enabled=settings.webhook_enabled,
     )
     pipeline = None
+    dashboard_server = None
+    webhook_notifier = None
     heartbeat = RuntimeHeartbeat("session/runtime-health.json")
     await repository.open()
     heartbeat.start()
@@ -144,11 +193,17 @@ async def main() -> None:
         await pipeline.recover_from_repository()
         pipeline.start()
         await pipeline.apply_proxy_on_start()
+        dashboard_server, webhook_notifier = await _start_o1_services(
+            settings,
+            pipeline,
+            repository,
+        )
         heartbeat.set_ready(True)
         logger.info("Bot started. settings=%s", settings.safe_summary())
         await client.run_until_disconnected()
     finally:
         heartbeat.set_ready(False)
+        await _stop_o1_services(dashboard_server, webhook_notifier)
         if pipeline is not None:
             await pipeline.shutdown()
         await repository.close()

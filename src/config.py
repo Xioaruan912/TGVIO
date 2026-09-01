@@ -10,6 +10,7 @@ from __future__ import annotations
 import os
 from dataclasses import dataclass
 from typing import Mapping
+from urllib.parse import urlsplit
 
 from dotenv import load_dotenv
 
@@ -69,6 +70,12 @@ def _bounded(key: str, value: int | float, low: int | float, high: int | float) 
         raise SettingsError(f"invalid configuration range: {key}")
 
 
+def _strong_secret(key: str, value: str) -> None:
+    encoded = str(value).encode("utf-8")
+    if len(encoded) < 32 or len(encoded) > 512 or any(byte < 33 or byte > 126 for byte in encoded):
+        raise SettingsError(f"invalid configuration: {key}")
+
+
 @dataclass(frozen=True)
 class Settings:
     api_id: int
@@ -114,6 +121,17 @@ class Settings:
     transcode_enabled: bool
     thumbnail_position: str
     url_private_network_policy: str
+    dashboard_enabled: bool
+    dashboard_host: str
+    dashboard_port: int
+    dashboard_socket: str
+    dashboard_token: str
+    webhook_enabled: bool
+    webhook_url: str
+    webhook_token: str
+    webhook_timeout: float
+    webhook_max_attempts: int
+    webhook_poll_interval: float
 
     @classmethod
     def from_env(
@@ -215,6 +233,17 @@ class Settings:
             transcode_enabled=_bool(env, "TRANSCODE_ENABLED", False, strict=strict),
             thumbnail_position=thumbnail_position,
             url_private_network_policy=url_private_network_policy,
+            dashboard_enabled=_bool(env, "DASHBOARD_ENABLED", False, strict=strict),
+            dashboard_host=str(env.get("DASHBOARD_HOST", "127.0.0.1")).strip() or "127.0.0.1",
+            dashboard_port=_int(env, "DASHBOARD_PORT", 8787, strict=strict),
+            dashboard_socket=str(env.get("DASHBOARD_SOCKET", "session/dashboard.sock")).strip(),
+            dashboard_token=str(env.get("DASHBOARD_TOKEN", "")).strip(),
+            webhook_enabled=_bool(env, "WEBHOOK_ENABLED", False, strict=strict),
+            webhook_url=str(env.get("WEBHOOK_URL", "")).strip(),
+            webhook_token=str(env.get("WEBHOOK_TOKEN", "")).strip(),
+            webhook_timeout=_float(env, "WEBHOOK_TIMEOUT", 10.0, strict=strict),
+            webhook_max_attempts=_int(env, "WEBHOOK_MAX_ATTEMPTS", 8, strict=strict),
+            webhook_poll_interval=_float(env, "WEBHOOK_POLL_INTERVAL", 2.0, strict=strict),
         )
         if strict:
             settings.validate()
@@ -249,6 +278,35 @@ class Settings:
         _bounded("HEALTH_HEARTBEAT_MAX_AGE", self.health_heartbeat_max_age, 5, 3600)
         _bounded("HEALTH_MIN_FREE_BYTES", self.health_min_free_bytes, 0, 1024**5)
         _bounded("FASTSTART_MAX_BYTES", self.faststart_max_bytes, 0, 4 * 1024**3)
+        _bounded("DASHBOARD_PORT", self.dashboard_port, 1024, 65535)
+        _bounded("WEBHOOK_TIMEOUT", self.webhook_timeout, 1.0, 60.0)
+        _bounded("WEBHOOK_MAX_ATTEMPTS", self.webhook_max_attempts, 1, 20)
+        _bounded("WEBHOOK_POLL_INTERVAL", self.webhook_poll_interval, 0.2, 60.0)
+        if self.dashboard_enabled:
+            if self.dashboard_host not in {"127.0.0.1", "::1", "localhost"}:
+                raise SettingsError("invalid configuration: DASHBOARD_HOST")
+            if not self.dashboard_socket and self.dashboard_host == "localhost":
+                # Avoid DNS-dependent bind behavior; TCP listeners use a literal loopback.
+                raise SettingsError("invalid configuration: DASHBOARD_HOST")
+            if "\x00" in self.dashboard_socket:
+                raise SettingsError("invalid configuration: DASHBOARD_SOCKET")
+            _strong_secret("DASHBOARD_TOKEN", self.dashboard_token)
+        if self.webhook_enabled:
+            try:
+                webhook = urlsplit(self.webhook_url)
+                webhook_port = webhook.port
+            except ValueError as exc:
+                raise SettingsError("invalid configuration: WEBHOOK_URL") from exc
+            if (
+                webhook.scheme.lower() != "https"
+                or not webhook.hostname
+                or webhook.username is not None
+                or webhook.password is not None
+                or webhook.fragment
+                or webhook_port == 0
+            ):
+                raise SettingsError("invalid configuration: WEBHOOK_URL")
+            _strong_secret("WEBHOOK_TOKEN", self.webhook_token)
 
     def safe_summary(self) -> dict[str, object]:
         """Return diagnostic-safe static configuration without identities/secrets."""
@@ -271,6 +329,11 @@ class Settings:
             "transcode_enabled": self.transcode_enabled,
             "url_private_network_policy": self.url_private_network_policy,
             "download_dir_configured": bool(self.download_dir),
+            "dashboard_enabled": self.dashboard_enabled,
+            "dashboard_transport": "unix" if self.dashboard_socket else "tcp-loopback",
+            "dashboard_port": self.dashboard_port,
+            "webhook_enabled": self.webhook_enabled,
+            "webhook_max_attempts": self.webhook_max_attempts,
         }
 
 
@@ -343,6 +406,14 @@ FASTSTART_MAX_BYTES = SETTINGS.faststart_max_bytes
 TRANSCODE_ENABLED = SETTINGS.transcode_enabled
 THUMBNAIL_POSITION = SETTINGS.thumbnail_position
 URL_PRIVATE_NETWORK_POLICY = SETTINGS.url_private_network_policy
+DASHBOARD_ENABLED = SETTINGS.dashboard_enabled
+DASHBOARD_HOST = SETTINGS.dashboard_host
+DASHBOARD_PORT = SETTINGS.dashboard_port
+DASHBOARD_SOCKET = SETTINGS.dashboard_socket
+WEBHOOK_ENABLED = SETTINGS.webhook_enabled
+WEBHOOK_TIMEOUT = SETTINGS.webhook_timeout
+WEBHOOK_MAX_ATTEMPTS = SETTINGS.webhook_max_attempts
+WEBHOOK_POLL_INTERVAL = SETTINGS.webhook_poll_interval
 
 WEBDAV_ENABLED = WEBDAV_BOOTSTRAP.enabled
 WEBDAV_URL = WEBDAV_BOOTSTRAP.url

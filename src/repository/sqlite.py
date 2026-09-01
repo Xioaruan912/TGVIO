@@ -240,6 +240,21 @@ class JobClaim:
 
 
 @dataclass(frozen=True)
+class NotificationOutboxRecord:
+    id: int
+    event_type: str
+    aggregate_type: str
+    aggregate_id: int | None
+    payload: dict[str, Any]
+    state: str
+    attempt_count: int
+    next_attempt_at: float
+    claim_owner: str | None
+    lease_until: float | None
+    created_at: float
+
+
+@dataclass(frozen=True)
 class _Migration:
     version: int
     name: str
@@ -267,6 +282,30 @@ class SQLiteRepository:
             "destination_profiles",
             "source_profiles",
             "source_events",
+            "notification_outbox",
+        }
+    )
+
+    _NOTIFICATION_EVENT_TYPES = frozenset(
+        {
+            "job.succeeded",
+            "job.failed",
+            "job.cancelled",
+            "runtime.started",
+            "runtime.stopping",
+            "health.degraded",
+        }
+    )
+    _NOTIFICATION_PAYLOAD_KEYS = frozenset(
+        {
+            "schema_version",
+            "job_id",
+            "state",
+            "kind",
+            "error_code",
+            "occurred_at",
+            "service",
+            "reason_code",
         }
     )
 
@@ -326,6 +365,96 @@ class SQLiteRepository:
         )
         return True
 
+    @classmethod
+    def _encode_notification_payload(cls, payload: dict[str, Any]) -> str:
+        if not isinstance(payload, dict):
+            raise RepositoryError("notification payload must be an object")
+        unknown = set(payload) - cls._NOTIFICATION_PAYLOAD_KEYS
+        if unknown:
+            raise RepositoryError("notification payload contains unsupported fields")
+        version = payload.get("schema_version")
+        if not isinstance(version, int) or isinstance(version, bool) or version != 1:
+            raise RepositoryError("notification payload requires schema_version=1")
+        normalized: dict[str, Any] = {"schema_version": 1}
+        if "job_id" in payload:
+            normalized["job_id"] = max(1, int(payload["job_id"]))
+        for key in ("state", "kind", "error_code", "service", "reason_code"):
+            if key in payload and payload[key] is not None:
+                value = re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(payload[key]))[:64]
+                normalized[key] = value or "unknown"
+        if "occurred_at" in payload:
+            normalized["occurred_at"] = float(payload["occurred_at"])
+        return json.dumps(normalized, ensure_ascii=True, separators=(",", ":"), sort_keys=True)
+
+    async def _enqueue_notification_tx(
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+        dedupe_key: str,
+        aggregate_type: str = "runtime",
+        aggregate_id: int | None = None,
+        timestamp: float,
+    ) -> bool:
+        if event_type not in self._NOTIFICATION_EVENT_TYPES:
+            raise RepositoryError("unsupported notification event type")
+        safe_dedupe = str(dedupe_key).strip()
+        if not safe_dedupe or len(safe_dedupe) > 160:
+            raise RepositoryError("invalid notification dedupe key")
+        payload_json = self._encode_notification_payload(payload)
+        cursor = await conn.execute(
+            """INSERT OR IGNORE INTO notification_outbox(
+                   event_type,aggregate_type,aggregate_id,dedupe_key,payload_json,state,
+                   attempt_count,next_attempt_at,created_at,updated_at
+               ) VALUES (?,?,?,?,?,'pending',0,?,?,?)""",
+            (
+                event_type,
+                re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(aggregate_type))[:32] or "runtime",
+                int(aggregate_id) if aggregate_id is not None else None,
+                safe_dedupe,
+                payload_json,
+                float(timestamp),
+                float(timestamp),
+                float(timestamp),
+            ),
+        )
+        inserted = int(cursor.rowcount or 0) == 1
+        await cursor.close()
+        return inserted
+
+    async def _enqueue_terminal_job_notification_tx(
+        self,
+        conn: aiosqlite.Connection,
+        *,
+        job_id: int,
+        kind: str,
+        state: str,
+        revision: int,
+        error_code: str | None,
+        timestamp: float,
+    ) -> bool:
+        if not self.notifications_enabled or state not in {"succeeded", "failed", "cancelled"}:
+            return False
+        payload: dict[str, Any] = {
+            "schema_version": 1,
+            "job_id": int(job_id),
+            "kind": str(kind or "unknown"),
+            "state": state,
+            "occurred_at": float(timestamp),
+        }
+        if state == "failed":
+            payload["error_code"] = str(error_code or "unknown")
+        return await self._enqueue_notification_tx(
+            conn,
+            event_type=f"job.{state}",
+            payload=payload,
+            dedupe_key=f"job:{int(job_id)}:{state}:r{int(revision)}",
+            aggregate_type="job",
+            aggregate_id=int(job_id),
+            timestamp=float(timestamp),
+        )
+
     def __init__(
         self,
         path: str | os.PathLike[str] = "session/state.sqlite3",
@@ -333,6 +462,7 @@ class SQLiteRepository:
         migrations_dir: str | os.PathLike[str] | None = None,
         backup_dir: str | os.PathLike[str] | None = None,
         download_root: str | os.PathLike[str] = "downloads",
+        notifications_enabled: bool = False,
     ) -> None:
         self.path = Path(path)
         self.migrations_dir = (
@@ -346,6 +476,7 @@ class SQLiteRepository:
             else self.path.parent / "db_backups"
         )
         self.download_root = Path(download_root).resolve()
+        self.notifications_enabled = bool(notifications_enabled)
         self._conn: aiosqlite.Connection | None = None
         self._write_lock = asyncio.Lock()
         self._preexisting = False
@@ -843,7 +974,7 @@ class SQLiteRepository:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
                 cursor = await conn.execute(
-                    "SELECT state,resume_state,revision FROM jobs WHERE id=?",
+                    "SELECT state,resume_state,revision,kind FROM jobs WHERE id=?",
                     (job_id,),
                 )
                 row = await cursor.fetchone()
@@ -935,6 +1066,15 @@ class SQLiteRepository:
                         value=1,
                         timestamp=timestamp,
                     )
+                await self._enqueue_terminal_job_notification_tx(
+                    conn,
+                    job_id=int(job_id),
+                    kind=str(row["kind"] or "unknown"),
+                    state=plan.to_state,
+                    revision=current_revision + 1,
+                    error_code=error_code,
+                    timestamp=timestamp,
+                )
                 await conn.commit()
             except InvalidTransition:
                 await conn.rollback()
@@ -1195,7 +1335,7 @@ class SQLiteRepository:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
                 cursor = await conn.execute(
-                    "SELECT state,resume_state,revision FROM jobs WHERE id=?", (job_id,)
+                    "SELECT state,resume_state,revision,kind FROM jobs WHERE id=?", (job_id,)
                 )
                 row = await cursor.fetchone()
                 await cursor.close()
@@ -1745,7 +1885,7 @@ class SQLiteRepository:
             try:
                 await conn.execute("BEGIN IMMEDIATE")
                 cursor = await conn.execute(
-                    "SELECT state,resume_state,revision FROM jobs WHERE id=?", (job_id,)
+                    "SELECT state,resume_state,revision,kind FROM jobs WHERE id=?", (job_id,)
                 )
                 row = await cursor.fetchone()
                 await cursor.close()
@@ -1807,6 +1947,15 @@ class SQLiteRepository:
                     scope_key=f"job:{job_id}",
                     metric="published_bytes",
                     value=published_bytes,
+                    timestamp=timestamp,
+                )
+                await self._enqueue_terminal_job_notification_tx(
+                    conn,
+                    job_id=int(job_id),
+                    kind=str(row["kind"] or "unknown"),
+                    state="succeeded",
+                    revision=int(row["revision"]) + 1,
+                    error_code=None,
                     timestamp=timestamp,
                 )
                 await conn.commit()
@@ -2364,6 +2513,291 @@ class SQLiteRepository:
             }
             for row in rows
         ]
+
+    async def dashboard_job_page(
+        self,
+        *,
+        filter_name: str = "all",
+        page: int = 0,
+        page_size: int = 20,
+    ) -> tuple[list[dict[str, Any]], int]:
+        """Return a bounded, identity-free admin page for the read-only dashboard."""
+        conn = self._require_conn()
+        filters: dict[str, tuple[str, ...] | None] = {
+            "all": None,
+            "running": ("downloading", "publishing"),
+            "waiting": (
+                "collecting",
+                "awaiting_confirmation",
+                "queued",
+                "ready",
+                "interrupted",
+                "paused",
+            ),
+            "failed": ("failed",),
+            "succeeded": ("succeeded",),
+            "cancelled": ("cancelled",),
+            "completed": ("succeeded", "cancelled"),
+        }
+        if filter_name not in filters:
+            raise RepositoryError("unsupported dashboard filter")
+        page = max(0, min(int(page), 10000))
+        page_size = max(1, min(int(page_size), 100))
+        states = filters[filter_name]
+        where = ""
+        params: list[Any] = []
+        if states:
+            marks = ",".join("?" for _ in states)
+            where = f" WHERE state IN ({marks})"
+            params.extend(states)
+        cursor = await conn.execute(f"SELECT COUNT(*) AS n FROM jobs{where}", tuple(params))
+        count_row = await cursor.fetchone()
+        await cursor.close()
+        total = int(count_row["n"] if count_row is not None else 0)
+        cursor = await conn.execute(
+            f"""SELECT id,kind,state,source_kind,download_state,publish_state,backup_state,
+                       bytes_done,bytes_total,current_item,total_items,error_code,revision,
+                       accepted_at,updated_at,finished_at
+                FROM jobs{where}
+                ORDER BY updated_at DESC,id DESC
+                LIMIT ? OFFSET ?""",
+            (*params, page_size, page * page_size),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [dict(row) for row in rows], total
+
+    @staticmethod
+    def _notification_from_row(row: aiosqlite.Row) -> NotificationOutboxRecord:
+        try:
+            payload = json.loads(str(row["payload_json"]))
+        except (TypeError, ValueError, json.JSONDecodeError):
+            payload = {"schema_version": 1, "reason_code": "invalid_payload"}
+        if not isinstance(payload, dict):
+            payload = {"schema_version": 1, "reason_code": "invalid_payload"}
+        return NotificationOutboxRecord(
+            id=int(row["id"]),
+            event_type=str(row["event_type"]),
+            aggregate_type=str(row["aggregate_type"]),
+            aggregate_id=(int(row["aggregate_id"]) if row["aggregate_id"] is not None else None),
+            payload=payload,
+            state=str(row["state"]),
+            attempt_count=int(row["attempt_count"]),
+            next_attempt_at=float(row["next_attempt_at"]),
+            claim_owner=(str(row["claim_owner"]) if row["claim_owner"] is not None else None),
+            lease_until=(float(row["lease_until"]) if row["lease_until"] is not None else None),
+            created_at=float(row["created_at"]),
+        )
+
+    async def enqueue_notification(
+        self,
+        *,
+        event_type: str,
+        payload: dict[str, Any],
+        dedupe_key: str,
+        aggregate_type: str = "runtime",
+        aggregate_id: int | None = None,
+        now: float | None = None,
+    ) -> NotificationOutboxRecord:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                await self._enqueue_notification_tx(
+                    conn,
+                    event_type=event_type,
+                    payload=payload,
+                    dedupe_key=dedupe_key,
+                    aggregate_type=aggregate_type,
+                    aggregate_id=aggregate_id,
+                    timestamp=timestamp,
+                )
+                cursor = await conn.execute(
+                    "SELECT * FROM notification_outbox WHERE dedupe_key=?",
+                    (str(dedupe_key),),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        if row is None:
+            raise RepositoryError("notification outbox row could not be read back")
+        return self._notification_from_row(row)
+
+    async def claim_notification(
+        self,
+        *,
+        owner: str,
+        lease_seconds: float = 30.0,
+        now: float | None = None,
+    ) -> NotificationOutboxRecord | None:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        lease = max(5.0, min(float(lease_seconds), 300.0))
+        safe_owner = re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(owner))[:96]
+        if not safe_owner:
+            raise RepositoryError("notification claim owner is required")
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                await conn.execute(
+                    """UPDATE notification_outbox
+                       SET state='retry_wait',claim_owner=NULL,claimed_at=NULL,lease_until=NULL,
+                           next_attempt_at=?,error_code='lease_expired',updated_at=?
+                       WHERE state='delivering' AND lease_until IS NOT NULL AND lease_until<=?""",
+                    (timestamp, timestamp, timestamp),
+                )
+                cursor = await conn.execute(
+                    """SELECT id FROM notification_outbox
+                       WHERE state IN ('pending','retry_wait') AND next_attempt_at<=?
+                       ORDER BY next_attempt_at,id LIMIT 1""",
+                    (timestamp,),
+                )
+                target = await cursor.fetchone()
+                await cursor.close()
+                if target is None:
+                    await conn.commit()
+                    return None
+                outbox_id = int(target["id"])
+                cursor = await conn.execute(
+                    """UPDATE notification_outbox
+                       SET state='delivering',attempt_count=attempt_count+1,claim_owner=?,
+                           claimed_at=?,lease_until=?,updated_at=?
+                       WHERE id=? AND state IN ('pending','retry_wait') AND next_attempt_at<=?""",
+                    (safe_owner, timestamp, timestamp + lease, timestamp, outbox_id, timestamp),
+                )
+                claimed = int(cursor.rowcount or 0) == 1
+                await cursor.close()
+                if not claimed:
+                    await conn.rollback()
+                    return None
+                cursor = await conn.execute(
+                    "SELECT * FROM notification_outbox WHERE id=?", (outbox_id,)
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return self._notification_from_row(row) if row is not None else None
+
+    async def complete_notification(
+        self,
+        outbox_id: int,
+        *,
+        owner: str,
+        status: int,
+        now: float | None = None,
+    ) -> bool:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """UPDATE notification_outbox
+                   SET state='sent',last_status=?,error_code=NULL,sent_at=?,updated_at=?,
+                       claim_owner=NULL,claimed_at=NULL,lease_until=NULL
+                   WHERE id=? AND state='delivering' AND claim_owner=?""",
+                (int(status), timestamp, timestamp, int(outbox_id), str(owner)),
+            )
+            changed = int(cursor.rowcount or 0) == 1
+            await cursor.close()
+            await conn.commit()
+        return changed
+
+    async def fail_notification(
+        self,
+        outbox_id: int,
+        *,
+        owner: str,
+        error_code: str,
+        status: int | None,
+        retryable: bool,
+        max_attempts: int,
+        next_attempt_at: float,
+        now: float | None = None,
+    ) -> str:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        safe_code = re.sub(r"[^a-zA-Z0-9_.:-]", "_", str(error_code))[:64] or "unknown"
+        async with self._write_lock:
+            try:
+                await conn.execute("BEGIN IMMEDIATE")
+                cursor = await conn.execute(
+                    "SELECT attempt_count FROM notification_outbox WHERE id=? AND state='delivering' AND claim_owner=?",
+                    (int(outbox_id), str(owner)),
+                )
+                row = await cursor.fetchone()
+                await cursor.close()
+                if row is None:
+                    await conn.rollback()
+                    return "stale"
+                attempts = int(row["attempt_count"])
+                state = "retry_wait" if retryable and attempts < max(1, int(max_attempts)) else "dead"
+                retry_at = max(timestamp, float(next_attempt_at)) if state == "retry_wait" else timestamp
+                cursor = await conn.execute(
+                    """UPDATE notification_outbox
+                       SET state=?,next_attempt_at=?,last_status=?,error_code=?,updated_at=?,
+                           claim_owner=NULL,claimed_at=NULL,lease_until=NULL
+                       WHERE id=? AND state='delivering' AND claim_owner=?""",
+                    (state, retry_at, status, safe_code, timestamp, int(outbox_id), str(owner)),
+                )
+                changed = int(cursor.rowcount or 0) == 1
+                await cursor.close()
+                await conn.commit()
+            except Exception:
+                await conn.rollback()
+                raise
+        return state if changed else "stale"
+
+    async def release_notification_claims(
+        self, *, owner: str, now: float | None = None
+    ) -> int:
+        conn = self._require_conn()
+        timestamp = time.time() if now is None else float(now)
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """UPDATE notification_outbox
+                   SET state='retry_wait',next_attempt_at=?,error_code='dispatcher_stopped',
+                       claim_owner=NULL,claimed_at=NULL,lease_until=NULL,updated_at=?
+                   WHERE state='delivering' AND claim_owner=?""",
+                (timestamp, timestamp, str(owner)),
+            )
+            changed = max(0, int(cursor.rowcount or 0))
+            await cursor.close()
+            await conn.commit()
+        return changed
+
+    async def notification_outbox_counts(self) -> dict[str, int]:
+        conn = self._require_conn()
+        cursor = await conn.execute(
+            "SELECT state,COUNT(*) AS n FROM notification_outbox GROUP BY state"
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {str(row["state"]): int(row["n"]) for row in rows}
+
+    async def prune_notification_outbox(
+        self, *, before: float, limit: int = 500
+    ) -> int:
+        conn = self._require_conn()
+        limit = max(1, min(int(limit), 5000))
+        async with self._write_lock:
+            cursor = await conn.execute(
+                """DELETE FROM notification_outbox WHERE id IN (
+                       SELECT id FROM notification_outbox
+                       WHERE state IN ('sent','dead') AND updated_at<?
+                       ORDER BY id LIMIT ?
+                   )""",
+                (float(before), limit),
+            )
+            changed = max(0, int(cursor.rowcount or 0))
+            await cursor.close()
+            await conn.commit()
+        return changed
 
     async def cleanup_inventory(self, *, limit: int = 1000) -> list[dict[str, Any]]:
         """Return durable facts needed to build a safe disk-cleanup dry run.
