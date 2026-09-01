@@ -1521,6 +1521,11 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 3. **发布一致性**：分卷发送逐条 checkpoint 到既有 `published_messages`；任何已发送 part 后的异常必须沿用 `PublishPartialError`，禁止自动重发造成重复。封面/讨论组模式对分卷不伪装成可播放视频，统一走直发 document，避免错误的 cover/comment 语义。Dedup 不把临时分卷误写为原始媒体索引。
 4. **测试/文档/发布**：补 Settings 边界、streaming split/manifest/hash/清理、publisher 顺序/partial checkpoint/默认拒绝和 UI 错误提示测试；跑完整镜像测试、静态/镜像秘密检查。先推 GitHub，再按 O1 同等三重回滚流程发布 VPS 并记录 commit、schema（预期不迁移）、health、hash、测试及 Dashboard socket 验收。多用户/国际化/批量编辑不在本轮实现；等真实使用场景和权限模型确定后单独立项。
 
+### 2026-09-01 - Dashboard 启用与安全分卷发布完成
+
+- Dashboard：HostDZire `.env` 已生成独立随机 `DASHBOARD_TOKEN`（未回显/未入库）、`DASHBOARD_ENABLED=true`、Unix socket `session/dashboard.sock`；匿名 API=401、认证 API/metrics=200、socket mode=0600、Docker published ports=0、Webhook 仍为 false。启用前 `.env` 与镜像备份为 `env-pre-dashboard-20260901T013000Z.bak` 和 `telegram-video-forwarder:rollback-pre-dashboard-20260901T013000Z`。
+- 分卷：`69a03e1679ed5a4d3f9b4f0dcb8a6a5514655d3e` 已推送并发布。`LARGE_FILE_POLICY=split`、`SPLIT_PART_BYTES=1992294400`；采用 SHA-256 manifest + 有界 document volumes，不伪装视频。镜像内全量 **284 tests** 通过。发布前验证无活动 job；回滚点为 `env-pre-split-20260901T014000Z.bak`、`source-pre-split-20260901T014000Z.tar.gz`、`telegram-video-forwarder:rollback-pre-split-20260901T014000Z`。发布后 `APP_COMMIT=69a03e1`、Dashboard=true、socket=0600、health=healthy、restart=0，未做 SQLite migration。
+
 ## 21. 执行日志
 
 ### 2026-08-30 - 规划与交接文档
