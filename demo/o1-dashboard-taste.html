@@ -625,7 +625,7 @@
         <button class="nav-item" data-view="queue"><span class="nav-code">02</span><span>任务</span><span class="nav-count" id="navQueue">07</span></button>
         <button class="nav-item" data-view="failures"><span class="nav-code">03</span><span>失败中心</span><span class="nav-count" id="navFail">02</span></button>
         <button class="nav-item" data-view="storage"><span class="nav-code">04</span><span>存储与备份</span><span class="nav-count">正常</span></button>
-        <button class="nav-item" data-view="routing"><span class="nav-code">05</span><span>路由配置</span><span class="nav-count">04</span></button>
+        <button class="nav-item" data-view="routing"><span class="nav-code">05</span><span>路由配置</span><span class="nav-count">01</span></button>
         <button class="nav-item" data-view="health"><span class="nav-code">06</span><span>诊断</span><span class="nav-count">100</span></button>
       </nav>
 
@@ -710,7 +710,6 @@
             <div class="command-group">
               <h3>配置</h3>
               <div class="command-line"><code>/profiles</code><span>管理发布目标</span></div>
-              <div class="command-line"><code>/sources</code><span>管理自动来源</span></div>
               <div class="command-line"><code>/webdav</code><span>配置和测试 WebDAV</span></div>
               <div class="command-line"><code>/proxy</code><span>管理下载代理</span></div>
             </div>
@@ -778,21 +777,11 @@
         </section>
 
         <section class="view" id="view-routing">
-          <div class="page-head reveal"><h1>发布目标与自动来源保持独立。</h1><p>DP1 与 S1 配置在同一控制台展示，但保持独立生命周期。真实页面只显示脱敏后的目标与配置标签，不显示完整凭证或用户内容。</p></div>
-          <div class="two-col reveal">
-            <div class="panel">
-              <div class="panel-head"><strong>发布目标配置</strong><span>已验证 2 个</span></div>
-              <div class="health-list" id="destinationProfilesPanel">
-                <div class="health-row"><div><b>默认发布</b><small>封面开启 / 保留说明文字</small></div><span class="tag ok">已验证</span></div>
-                <div class="health-row"><div><b>归档发布</b><small>必须备份 / 关闭封面</small></div><span class="tag ok">已验证</span></div>
-              </div>
-            </div>
-            <div class="panel">
-              <div class="panel-head"><strong>来源配置</strong><span>仅处理新消息</span></div>
-              <div class="health-list" id="sourceProfilesPanel">
-                <div class="health-row"><div><b>新闻来源</b><small>保留说明文字 / 普通剧透模式</small></div><span class="tag neutral">已停用</span></div>
-                <div class="health-row"><div><b>媒体来源</b><small>去除说明文字 / 普通剧透模式</small></div><span class="tag neutral">已停用</span></div>
-              </div>
+          <div class="page-head reveal"><h1>发布目标配置独立可查。</h1><p>当前控制台只展示可用发布目的地与策略标签。真实页面只显示脱敏后的目标配置，不显示完整凭证或用户内容。</p></div>
+          <div class="panel reveal">
+            <div class="panel-head"><strong>发布目标配置</strong><span>已验证 1 个</span></div>
+            <div class="health-list" id="destinationProfilesPanel">
+              <div class="health-row"><div><b>默认发布</b><small>封面开启 / best_effort</small></div><span class="tag ok">默认</span></div>
             </div>
           </div>
         </section>
@@ -880,7 +869,7 @@
         schema_version: 1,
         generated_at: nowSeconds,
         destinations: [{ id: 1, name: '默认发布', enabled: true, default: true, verified: true, cover_mode: true, forward_caption: true, spoiler_mode: 'always_normal', backup_policy: 'best_effort', read_only: true }],
-        sources: [{ id: 1, name: '新闻来源', destination_profile_id: 1, enabled: false, verified: true, spoiler_policy: 'normal', caption_policy: 'preserve', backup_policy: 'inherit', native_album_wait_seconds: 2, sequential_video_wait_seconds: 120 }]
+        sources: []
       },
       health: { schema_version: 1, generated_at: nowSeconds, live: true, ready: true, heartbeat_age_seconds: 2.1, database_ok: true, schema_versions: [1,2,3,4,5,6,7,8,9,10,11], telegram_connected: true, webdav_enabled: true, webdav_health: 'normal', disk_healthy: true, app_commit: 'demo' }
     };
@@ -927,7 +916,7 @@
       queue: ['持久任务', '仓储层查询 / 模拟数据'],
       failures: ['失败中心', '错误码 / 可执行处理建议'],
       storage: ['存储与备份', '磁盘快照 / WebDAV 缓存状态'],
-      routing: ['路由配置', 'DP1 + S1 / 脱敏标签'],
+      routing: ['路由配置', 'DP1 / 脱敏目标标签'],
       health: ['诊断', '本地健康 / 脱敏事件']
     };
 
@@ -1007,9 +996,6 @@
       document.getElementById('destinationProfilesPanel').innerHTML = routing.destinations.length
         ? routing.destinations.map(profile => `<div class="health-row"><div><b>${escapeHtml(profile.name)}</b><small>${profile.cover_mode ? '封面开启' : '封面关闭'} / ${profile.backup_policy}</small></div><span class="tag ${profile.verified && profile.enabled ? 'ok' : 'neutral'}">${profile.default ? '默认' : profile.enabled ? '启用' : '停用'}</span></div>`).join('')
         : emptyRows('没有发布目标', '当前仓储层没有可展示的目标配置。');
-      document.getElementById('sourceProfilesPanel').innerHTML = routing.sources.length
-        ? routing.sources.map(profile => `<div class="health-row"><div><b>${escapeHtml(profile.name)}</b><small>${profile.caption_policy} / ${profile.spoiler_policy} / 连续视频 ${Number(profile.sequential_video_wait_seconds || 120)} 秒</small></div><span class="tag ${profile.enabled ? 'ok' : 'neutral'}">${profile.enabled ? '启用' : '停用'}</span></div>`).join('')
-        : emptyRows('没有自动来源', '自动来源仅处理启用后的新消息。');
 
       document.getElementById('containerHealth').className = `tag ${health.live ? 'ok' : 'fail'}`;
       document.getElementById('containerHealth').textContent = health.live ? '健康' : '异常';
