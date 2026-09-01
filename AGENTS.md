@@ -1990,4 +1990,12 @@ O1 已进入交付验收：执行第 21 节的发布后核对。后续产品工�
 7. **测试与验收**：先补 config、DTO 脱敏、repository 分页、HTTP auth/method/header-limit/security-header、metrics 低基数、outbox migration/claim/retry/recovery/HMAC、main 生命周期测试；再跑 `unittest discover`、`compileall`、`git diff --check`、compose config/build、镜像秘密路径扫描和本地容器 HTTP smoke。必须确认 Telegram 按钮 UI 专项测试继续通过。
 8. **提交与发布**：仅提交 O1 相关文件和本条文档，不夹带既有 Demo 删除；推送 `origin/main`。VPS 发布前只读核对容器 health/restart、`APP_COMMIT`、schema/integrity、无活动 claim/backup，并创建 SQLite/source/image 三重回滚点；从已推送 commit 的 Git archive 发布，保留 `.env/session/downloads`。默认保持 Dashboard/Webhook 关闭，先在一次性测试容器完成启用态 smoke；生产重建后核对 commit/hash/schema/integrity/health/restart/全量测试/脱敏日志，最后把结果和精确 commit 写回本节。
 
-本地验收已完成：`python -m unittest discover -s tests -q`（镜像内 **280 tests**）全绿；`compileall`、`git diff --check`、`docker compose config --quiet`、嵌入式前端 JS syntax check、镜像构建及镜像内 `.env/session/downloads/.git` 缺失检查均通过。O1 三项标题能力已有自动化测试；默认配置不会新增 listener 或外部请求。下一步仅剩按第 8 项进行 Git 推送和 VPS 三重回滚发布验收。
+本地验收已完成：`python -m unittest discover -s tests -q`（镜像内 **280 tests**）全绿；`compileall`、`git diff --check`、`docker compose config --quiet`、嵌入式前端 JS syntax check、镜像构建及镜像内 `.env/session/downloads/.git` 缺失检查均通过。O1 三项标题能力已有自动化测试；默认配置不会新增 listener 或外部请求。
+
+### 2026-09-01 - O1 GitHub 与生产发布验收完成
+
+- 实现提交：`3cfae7bb684f72cb67ae875722da84830dafc3bf`（`feat(o1): add private dashboard metrics and webhook outbox`），已推送 `origin/main`。提交精确包含 Dashboard/metrics/outbox、schema 10、配置/文档和测试；未包含用户/其他代理已有的 `demo/o1-dashboard-demo.html` 删除，该删除仍留在本地工作区。
+- 发布前：HostDZire `/root/telegram-video-forwarder` 的运行容器为 healthy、restart=0、`APP_COMMIT=f144a13`；SQLite integrity=ok、schema 1..9、只有 2 个 `succeeded` job、无活动任务。远端源码目录本就是 archive 覆盖后的非干净 Git 工作树，未使用 reset/clean。
+- 三重回滚点：`/root/telegram-video-forwarder/session/state.sqlite3.pre-3cfae7b-20260901T012300Z.bak`（SQLite online backup）、`/root/telegram-video-forwarder-releases/source-pre-3cfae7b-20260901T012300Z.tar.gz` 与 `env-pre-3cfae7b-20260901T012300Z.bak`，以及 Docker tag `telegram-video-forwarder:rollback-pre-3cfae7b-20260901T012300Z`。发布 archive 为 `/root/telegram-video-forwarder-releases/tvf-3cfae7b.tar.gz`；`.env`、`session`、`downloads` 均未覆盖。
+- 发布后：容器 `running/healthy`、restart=0、`APP_COMMIT=3cfae7b`；SQLite integrity=ok、schema 1..10，`notification_outbox` 存在且初始 0 行；四个 O1 关键源码文件 SHA-256 与本地一致。`DASHBOARD_ENABLED=false`、`WEBHOOK_ENABLED=false`，没有 Docker published port 或额外 Telegram client。镜像内再次运行 **280 tests**（21.950s）全绿；最近容器日志未见 traceback/fatal/unhandled 或 Webhook 秘密输出。
+- 后续入口：O1 已完成。若另行授权 Web mutation，先新增 service-level command/owner/revision/confirmation/audit 测试，再设计 Web route；不得直接写 repository 或公开监听。若仅启用当前只读面，先在 VPS `.env` 设置强 `DASHBOARD_TOKEN` 和 `DASHBOARD_ENABLED=true`，保持 Unix socket，通过 SSH socket forwarding 访问；Webhook 仅在配置 HTTPS endpoint 和强 `WEBHOOK_TOKEN` 后启用。
