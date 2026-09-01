@@ -15,7 +15,7 @@ Telegram 机器人：把转发的视频/图片发布到你的频道；或下载�
 - **撤销发布**：发布成功后状态消息带「↩️ 撤销」按钮，一键删除刚发到频道的消息
 - **失败重试**：下载/上传失败或超时时状态消息带「🔄 重试」按钮，一键重新入队（无需重新转发）；上传队列看门狗超时同样提供重试
 - **队列管理**：`/queue` 管理队列（逐项取消/暂停/恢复，带控制按钮）
-- **URL 下载**：你发送链接给机器人 → yt-dlp 下载 → 通过 Telethon/MTProto 上传到频道（受项目 2GB 护栏限制）
+- **URL 下载**：你发送链接给机器人 → yt-dlp 下载 → 通过 Telethon/MTProto 上传到频道；超过单文件护栏时可选择可播放视频分段/可恢复文件分卷
 - **视频预览**：上传时自动截取真实画面帧作为缩略图并填充真实宽高/时长，避免黑色预览
 - **队列**：下载优先（3 路并行，全部缓存到本地后才开始上传；上传中新到内容先下载再续传），按发送顺序依次上传
 - **上传控制**：等待上传/上传中可**暂停（逐文件）**、**跳过（保留缓存可删除或重传）**、**取消（删除缓存）**；失败可**重试（从缓存直接重传，不重新下载）**
@@ -127,6 +127,8 @@ COVER_WIDTH=1280   # 封面图最大宽/高像素
 | 变量 | 默认 | 说明 |
 |------|------|------|
 | `MAX_FILE_SIZE` | `2097152000` | 单文件上传大小上限（字节，默认 2GB 平台上限） |
+| `LARGE_FILE_POLICY` | `reject` | `reject` 拒绝超限文件；`split` 对视频生成可独立播放 MP4 分段，对其它文件生成 SHA-256 可重组分卷 |
+| `SPLIT_PART_BYTES` | `1992294400` | 每个视频分段/文件分卷的最大字节数，必须小于 `MAX_FILE_SIZE` |
 | `DOWNLOAD_DIR` | `/app/downloads` | 下载临时目录（容器内） |
 | `DOWNLOAD_CONCURRENCY` | `3` | 并行下载路数 |
 | `DOWNLOAD_TIMEOUT` | `1200` | 单任务下载超时（秒，20 分钟） |
@@ -144,14 +146,16 @@ COVER_WIDTH=1280   # 封面图最大宽/高像素
 | `SESSION_END_TIMEOUT` | `5` | （v13.7 起已废弃）合集「结束并发布」按钮曾 5 秒后自动隐藏；现按钮常驻不隐藏 |
 | `DASHBOARD_ENABLED` | `false` | 启用 localhost/Unix-Socket 只读控制台 |
 | `DASHBOARD_SOCKET` | `session/dashboard.sock` | 私有 Unix Socket；留空才使用 loopback TCP |
-| `DASHBOARD_HOST` | `127.0.0.1` | TCP 模式只允许 `127.0.0.1` 或 `::1` |
+| `DASHBOARD_HOST` | `127.0.0.1` | TCP 监听地址；公网模式须同时显式设置 `DASHBOARD_PUBLIC_BIND=true` |
 | `DASHBOARD_PORT` | `8787` | TCP 模式端口 |
+| `DASHBOARD_PUBLIC_BIND` | `false` | 显式允许 Dashboard 监听公网地址；不提供 TLS |
+| `DASHBOARD_BIND` | `127.0.0.1` | Docker 发布地址；公网开放时设为 `0.0.0.0` |
 | `WEBHOOK_ENABLED` | `false` | 启用脱敏 HTTPS Webhook outbox dispatcher |
 | `WEBHOOK_TIMEOUT` | `10` | 单次 Webhook 超时秒数 |
 | `WEBHOOK_MAX_ATTEMPTS` | `8` | Webhook 最大尝试次数（1～20） |
 
 ## 常见问题
 
-- **上传失败 / 文件过大**：MTProto 直连上传上限约 2GB，超过 `MAX_FILE_SIZE` 的文件会被拒绝并提示。大文件需注意 `downloads/` 卷磁盘空间。
+- **上传失败 / 文件过大**：默认拒绝超过 `MAX_FILE_SIZE` 的文件；设置 `LARGE_FILE_POLICY=split` 后，视频发布为可独立播放的 MP4 分段，非视频发布为带 manifest/SHA-256 的可重组分卷。分割期间需要额外接近原文件大小的磁盘空间。
 - **发送到频道失败**：确认机器人是频道管理员且有发消息权限。
 - **下载失败**：站点可能需要更新 yt-dlp（`docker compose build --pull` 重新构建），或链接需登录/受限。

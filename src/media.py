@@ -481,11 +481,11 @@ class MediaPublisher:
                 bundle = await asyncio.to_thread(
                     create_split_bundle, path, self._workdir(job.seq), self.split_part_bytes
                 )
-                note = (
-                    f"📦 可校验分卷：{bundle.original_name}\n"
-                    f"共 {len(bundle.parts)} 卷；请先下载 manifest 和全部 part，再按 SHA-256 校验后重组。\n"
-                    f"{caption}"
-                )[:1024]
+                if bundle.mode == "playable_video_segments":
+                    note = f"🎞 可独立播放视频分段：{bundle.original_name}\n共 {len(bundle.parts)} 段；manifest 含每段 SHA-256。\n{caption}"
+                else:
+                    note = f"📦 可校验分卷：{bundle.original_name}\n共 {len(bundle.parts)} 卷；请下载 manifest 和全部 part，校验后重组。\n{caption}"
+                note = note[:1024]
                 manifest_media = await self._upload_media_input(bundle.manifest_path, False, job.seq, 1, len(bundle.parts) + 1)
                 self._begin_send(job)
                 manifest_message = await self.client.send_file(self.dest, manifest_media, caption=self._with_footer(note) or None)

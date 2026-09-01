@@ -90,6 +90,7 @@ class MainO1LifecycleTests(unittest.IsolatedAsyncioTestCase):
     def _settings(**changes):
         values = dict(
             dashboard_enabled=True,
+            dashboard_public_bind=False,
             dashboard_token="d" * 32,
             dashboard_host="127.0.0.1",
             dashboard_port=8787,
@@ -116,6 +117,7 @@ class MainO1LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 self._settings(), pipeline, repository
             )
             self.assertTrue(dashboard.started)
+            self.assertFalse(dashboard.kwargs["public_bind"])
             self.assertTrue(notifier.started)
             self.assertEqual(notifier.events, ["started"])
             await main._stop_o1_services(dashboard, notifier)
@@ -137,3 +139,21 @@ class MainO1LifecycleTests(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertTrue(_FakeDashboardServer.instances[0].stopped)
         self.assertTrue(_FakeNotifier.instances[0].stopped)
+
+    async def test_public_bind_is_forwarded_to_dashboard_server(self) -> None:
+        with (
+            patch.object(main, "DashboardService", _FakeDashboardService),
+            patch.object(main, "DashboardServer", _FakeDashboardServer),
+        ):
+            dashboard, _ = await main._start_o1_services(
+                self._settings(
+                    dashboard_public_bind=True,
+                    dashboard_host="0.0.0.0",
+                    dashboard_socket="",
+                    webhook_enabled=False,
+                ),
+                SimpleNamespace(stats_service=object()),
+                object(),
+            )
+        self.assertTrue(dashboard.kwargs["public_bind"])
+        self.assertEqual(dashboard.kwargs["host"], "0.0.0.0")

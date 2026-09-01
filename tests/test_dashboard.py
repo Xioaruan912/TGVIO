@@ -290,6 +290,23 @@ class DashboardHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"200 OK", response)
         self.assertEqual(response.split(b"\r\n\r\n", 1)[1], b"")
 
+    async def test_non_loopback_bind_requires_explicit_runtime_authorization(self) -> None:
+        server = DashboardServer(
+            _HttpService(), token=self.token, host="0.0.0.0", port=0,
+            socket_path="", html_path=self.html,
+        )
+        with self.assertRaises(RuntimeError):
+            await server.start()
+        authorized = DashboardServer(
+            _HttpService(), token=self.token, host="0.0.0.0", port=0,
+            socket_path="", public_bind=True, html_path=self.html,
+        )
+        await authorized.start()
+        try:
+            self.assertTrue(authorized.serving)
+        finally:
+            await authorized.stop()
+
 
 class DashboardAssetContractTests(unittest.TestCase):
     def test_demo_and_live_page_share_o1_v1_contract(self) -> None:

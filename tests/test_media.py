@@ -1,4 +1,5 @@
 import os
+import subprocess
 import tempfile
 import unittest
 from types import SimpleNamespace
@@ -53,7 +54,7 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         return path
 
     def test_split_bundle_is_streamed_bounded_and_verifiable(self) -> None:
-        source = self.make_file("very large.mp4", b"abcdefghijk")
+        source = self.make_file("very large.bin", b"abcdefghijk")
         bundle = create_split_bundle(source, self.tempdir.name, 4)
         self.assertEqual(len(bundle.parts), 3)
         self.assertTrue(all(os.path.getsize(part) <= 4 for part in bundle.parts))
@@ -61,6 +62,7 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
             manifest = __import__("json").load(manifest_file)
         self.assertEqual(manifest["original_size_bytes"], 11)
         self.assertEqual(manifest["part_count"], 3)
+        self.assertEqual(manifest["mode"], "binary_volumes")
         from pathlib import Path
         self.assertEqual(b"".join(Path(part).read_bytes() for part in bundle.parts), b"abcdefghijk")
 
@@ -69,7 +71,7 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.publisher.large_file_policy = "split"
         self.publisher.split_part_bytes = 5
         self.publisher.cover_mode = True
-        path = self.make_file("large.mp4", b"0123456789AB")
+        path = self.make_file("large.bin", b"0123456789AB")
         job = Job(seq=77, kind="media", status=FakeStatusMessage(), message=SimpleNamespace(message="caption"))
         self.publisher._get_dest_input = AsyncMock(return_value="dest-input")
         self.publisher._upload_media_input = AsyncMock(side_effect=lambda path, *_args, **_kwargs: os.path.basename(path))
@@ -86,6 +88,26 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("parts.json", self.client.sent_files[0]["file"])
         self.assertTrue(all("part" in sent["file"] for sent in self.client.sent_files[1:]))
         self.assertIn("可校验分卷", self.client.sent_files[0]["caption"])
+
+    def test_video_split_outputs_independently_probeable_mp4_segments(self) -> None:
+        source = os.path.join(self.tempdir.name, "playable.mp4")
+        generated = subprocess.run(
+            ["ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i", "testsrc=size=160x90:rate=10",
+             "-t", "4", "-c:v", "libx264", "-b:v", "800k", "-g", "10", "-pix_fmt", "yuv420p", source],
+            check=False,
+        )
+        self.assertEqual(generated.returncode, 0)
+        bundle = create_split_bundle(source, self.tempdir.name, 180_000)
+        self.assertEqual(bundle.mode, "playable_video_segments")
+        self.assertGreaterEqual(len(bundle.parts), 2)
+        for part in bundle.parts:
+            self.assertLessEqual(os.path.getsize(part), 180_000)
+            probe = subprocess.run(
+                ["ffprobe", "-v", "error", "-select_streams", "v:0", "-show_entries", "stream=codec_name", "-of", "csv=p=0", part],
+                capture_output=True, text=True, check=False,
+            )
+            self.assertEqual(probe.returncode, 0)
+            self.assertTrue(probe.stdout.strip())
 
     async def test_oversize_remains_rejected_without_opt_in(self) -> None:
         self.publisher.max_file_size = 8
