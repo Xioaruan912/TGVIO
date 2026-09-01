@@ -1488,9 +1488,9 @@ fix(webdav): preserve cache across interrupted verify
 
 如果尚未完成，不得把工作包主复选框标 `[x]`；应标出已经完成的子项，让下一位代理从具体测试/函数继续，而不是重新调研。
 
-### 20.6 当前下一步（2026-08-31）
+### 20.6 当前下一步（2026-09-01）
 
-R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第 18.1/18.2/18.3 节代码工作均已完成；第 19 节测试矩阵已补强到 **259 tests** 并全绿。用户现已明确授权 O1，因此下一产品阶段切到 O1。Telegram Bot 已恢复并固定为按钮优先导航；单 HTML mock Demo 已存在，真实 Dashboard service/API/auth 尚未开始。
+R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1/18.2/18.3、19 与 O1 均已完成。O1 实现提交为 `3cfae7b`，生产验收记录为 `47237a6`；测试矩阵现为 **280 tests** 全绿，生产为 `APP_COMMIT=3cfae7b`、schema 10。Telegram Bot 继续保持按钮优先导航；Dashboard/Webhook 默认关闭。
 
 - [x] B1-A：显式只读 `[🧪 测试连接]`，仅用户点击时 PROPFIND 配置路径；区分 401/403/404/405/其它 HTTP，解析 DAV `quota-used-bytes` / `quota-available-bytes`，服务端不支持时明确显示“服务器未提供”，不以本地磁盘代替远端容量。（2026-08-31，`77863b4`）
 - [x] B1-B：独立写入测试采用 5 分钟单次 confirmation token；确认后只创建随机 `.tgvf-check-*` 32-byte 文件，执行 PUT → 远端大小 verify → 精确 DELETE，并报告清理结果；未确认时绝不产生远端写副作用。（2026-08-31，`7a147eb`）
@@ -1505,7 +1505,12 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1 与第
 - [x] F3-B：repository-aware 安全清理候选与保留策略（terminal/unclaimed/non-retry-protected、`.part`/active backup 排除），dry-run 已实现并生产只读验证；不直接自动删除。（2026-08-31，`2eb7e8e`）
 - [x] F3-C：安全 cleanup claim/CAS、显式逐文件 unlink/rmdir、清到安全水位、下载前容量 gate 与 cleanup interrupted 恢复；生产已启用 `DISK_ENFORCE=true` 并完成阈值/161 tests 验收。（2026-08-31，`26d5596`）
 
-O1 已进入交付验收：执行第 21 节的发布后核对。后续产品工作须单独排期，不应把 Web mutation 作为 O1 的隐含补项；默认配置下 Dashboard/Webhook 必须保持关闭，不开放公网端口。
+当前没有可无歧义自动开始的代码包。下列需求均需要用户先选择产品方向，收到明确授权前只能保持记录、不得猜测实现：
+
+- **Web mutation**：只读 Dashboard 已交付；若要 retry/cancel/delete/profile update，先定义哪些动作开放给谁、是否需要二次确认和审计保留期。实现必须先在 service 层补 command/owner/revision/confirmation/audit 测试，再设计 Web route。
+- **大于 2GB 的媒体**：需在安全分割、用户账号上传、Local Bot API 三种路线中选定；不同路线的权限、成本、上传语义和失败恢复完全不同，不能通过调大常量开始。
+- **多用户/国际化/批量内容编辑**：分别依赖访问控制与公平配额、文案资源模型、U1/U2 预览确认语义；只有对应真实用户场景确定后再拆分工作包。
+- **启用现有 O1 能力**：这不是代码开发。Dashboard 要在 VPS `.env` 设置强 token 后用 Unix socket + SSH forwarding 访问；Webhook 要提供 HTTPS endpoint 和独立强 token。不得为方便而开放公网监听。
 
 ## 21. 执行日志
 
