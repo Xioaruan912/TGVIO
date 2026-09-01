@@ -2080,11 +2080,14 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 
 ### 2026-09-01 - 自动来源已退役（最终记录）
 
-- 决策：不继续 S1-B 的 Telegram 个人账号会话、双客户端监听或 50 视频批次方案；该方案已作废，后续 Agent 不得按旧“source-user session”方案实现或提交。
-- 实现：`b60f859 refactor: retire automatic sources` 已位于 `main` / `origin/main`。该提交移除了 `/sources` 顶层命令、首页/设置入口、source handlers/runtime/service/view、startup/shutdown source runtime 集成，以及目的地禁用时对 enabled source 的阻塞检查；README 和 `todo.md` 已同步为“不提供自动监听来源频道功能”。
-- 本轮收尾：`demo/o1-dashboard-taste.html` 已清理残留 `/sources` 命令、来源配置面板、mock 来源数据和 `DP1 + S1` 展示文案；demo 现在与只读 Dashboard 契约一致，只保留发布目标路由展示，`/api/v1/routing` 兼容字段 `sources` 仍为空数组。
+- 决策：不继续 Telegram 个人账号会话、双客户端监听或 50 视频批次方案；该方案已作废，后续 Agent 不得按旧个人账号会话方案实现或提交。
+- 基础退役：`b60f859 refactor: retire automatic sources` 已位于 `main` / `origin/main`。该提交移除了 `/sources` 顶层命令、首页/设置入口、source handlers/runtime/service/view、startup/shutdown source runtime 集成，以及目的地禁用时对 enabled source 的阻塞检查；README 和 `todo.md` 已同步为“不提供自动监听来源频道功能”。
+- Demo/文档收口：`55baaad297bcd8b32383fe739bb1b05f42d90ddc`（`docs: finalize automatic source retirement`）已推送 `origin/main`，清理 `demo/o1-dashboard-taste.html` 残留 `/sources` 命令、来源配置面板、mock 来源数据和 `DP1 + S1` 展示文案；demo 现在与只读 Dashboard 契约一致，只保留发布目标路由展示，`/api/v1/routing` 兼容字段 `sources` 仍为空数组。
+- 本地验证：抽取出的 dashboard inline script 通过 `node --check`；`git diff --check` 通过；demo 已对退役入口、旧来源面板、旧 mock 来源和旧路由副标题做无命中检查；AGENTS 已对旧方案标题、文件清单和门禁段落做无命中检查；使用项目依赖镜像运行 targeted 21 tests 通过，离线 clean-app 候选镜像内完整 **284 tests** 通过，镜像 runtime/secret path 检查 clean。
+- 构建：本地标准 build 两次在 Docker Hub `python:3.11-slim` manifest 解析阶段被拒绝，未进入项目代码构建步骤；本地按既有降级方式用已验证应用镜像作为离线 base 构建 `telegram-video-forwarder-bot:55baaad` 并完成验证。VPS 标准 build 成功，生产镜像 `telegram-video-forwarder-bot:latest` image id `sha256:03e09682e66b2ece22ecd324fc0ea87b46cca0255e2d7ce8f355f9bb09988ac6`，镜像 `APP_COMMIT=55baaad297bcd8b32383fe739bb1b05f42d90ddc`。
+- 生产发布：发布前只读确认旧容器 `APP_COMMIT=b60f859`、running/healthy、restart=0、SQLite integrity ok、schema `1..11`、active jobs/claims/backups/source-open 均为 0、source profile enabled=0。发布包 `/root/telegram-video-forwarder-releases/tvf-55baaad-20260901T143854Z.tar.gz`，SHA-256 `7bef01ca1a48d9ff8a58a497c9f3c105bc4490b807be7a74896b476ce6ddbaea`，不含 `.env/session/downloads/.git`。生产 `.env` 仅同步非敏感 `APP_COMMIT`。
+- 回滚点：SQLite online backup `/root/telegram-video-forwarder/session/state.sqlite3.pre-55baaad-20260901T143854Z.bak`；source backup `/root/telegram-video-forwarder-releases/source-pre-55baaad-20260901T143854Z.tar.gz`；env backup `/root/telegram-video-forwarder-releases/env-pre-55baaad-20260901T143854Z.bak`（600 权限，未输出内容）；image tag `telegram-video-forwarder:rollback-pre-55baaad-20260901T143854Z`。
+- 生产后验：单次 `docker compose up -d --force-recreate --no-build bot` 后容器 running/healthy、restart=0、`APP_COMMIT=55baaad297bcd8b32383fe739bb1b05f42d90ddc`；SQLite integrity ok、schema `1..11`、active jobs/claims/backups=0、source profile enabled=0、source open events=0。Dashboard shell=200、匿名 health=401、Bearer health/metrics=200；宿主/容器 `AGENTS.md` 与 `demo/o1-dashboard-taste.html` SHA-256 一致；近 10 分钟日志 error markers=0、启动标记正常；容器内 `py_compile`、targeted 21 tests 和完整 **284 tests** 均通过。
 - 兼容策略：不修改、删除或重写既有 migration；`source_profiles` / `source_events` 历史表和 repository 兼容 DAO 保留给已部署 schema、迁移自检和旧记录读取使用，但运行时不再注册来源监听，也不会从这些表恢复或创建自动来源任务。
 - 影响范围：手动私聊转发、合集会话、URL 下载、发布目的地 Profiles、WebDAV、去重、超限分卷、Dashboard、metrics 与 Webhook 均保持原语义，不因自动来源退役而改变。
-- 本轮验证：抽取出的 dashboard inline script 通过 `node --check`；`git diff --check` 通过；demo 已对退役入口、旧来源面板、旧 mock 来源和旧路由副标题做无命中检查；AGENTS 已对旧 S1-B 方案标题、文件清单和门禁段落做无命中检查；使用项目依赖镜像运行 `tests.test_dashboard tests.test_commands tests.test_views` 共 21 项通过。
-- 发布状态：本条是本地文档与 demo 收口记录；未在本轮执行 Git 提交、构建镜像或 VPS 部署。若要发布本轮文档/demo 收口，仍按第 10 节安全发布协议执行。
-- 后续入口：若未来重新需要来源监听，必须作为全新功能重新立项，先确认权限模型、合规边界和测试/迁移方案；不得复活已删除的旧 S1 runtime，也不得在无明确授权时新增 Telegram 个人账号会话。
+- 后续入口：本条记录作为部署后的 docs-only follow-up 提交并推送，不为记录本身再次重建或重启生产；生产运行 commit 仍是 `55baaad`。若未来重新需要来源监听，必须作为全新功能重新立项，先确认权限模型、合规边界和测试/迁移方案；不得复活已删除的旧 S1 runtime，也不得在无明确授权时新增 Telegram 个人账号会话。
