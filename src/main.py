@@ -82,6 +82,7 @@ async def _start_o1_services(settings, pipeline, repository):
                 host=settings.dashboard_host,
                 port=settings.dashboard_port,
                 socket_path=settings.dashboard_socket,
+                public_bind=settings.dashboard_public_bind,
             )
             await dashboard_server.start()
         if settings.webhook_enabled:

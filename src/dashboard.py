@@ -56,6 +56,7 @@ class DashboardServer:
         host: str = "127.0.0.1",
         port: int = 8787,
         socket_path: str = "session/dashboard.sock",
+        public_bind: bool = False,
         html_path: str | os.PathLike[str] | None = None,
     ) -> None:
         encoded_token = str(token).encode("utf-8")
@@ -70,6 +71,7 @@ class DashboardServer:
         self._host = str(host)
         self._port = int(port)
         self._socket_path = Path(socket_path) if socket_path else None
+        self._public_bind = bool(public_bind)
         self._html_path = (
             Path(html_path)
             if html_path is not None
@@ -107,7 +109,10 @@ class DashboardServer:
             os.chmod(path, 0o600)
             logger.info("Dashboard listening on a private Unix socket")
             return
-        if self._host not in {"127.0.0.1", "::1"}:
+        allowed = {"127.0.0.1", "::1"}
+        if self._public_bind:
+            allowed |= {"0.0.0.0", "::"}
+        if self._host not in allowed:
             raise RuntimeError("dashboard TCP listener must use a literal loopback address")
         self._server = await asyncio.start_server(
             self._handle_connection,
@@ -115,7 +120,7 @@ class DashboardServer:
             port=self._port,
             limit=_MAX_HEADERS + 1,
         )
-        logger.info("Dashboard listening on loopback TCP port %d", self._port)
+        logger.info("Dashboard listening on TCP port %d", self._port)
 
     async def stop(self) -> None:
         server, self._server = self._server, None
