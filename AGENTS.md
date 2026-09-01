@@ -1526,6 +1526,10 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 - Dashboard：HostDZire `.env` 已生成独立随机 `DASHBOARD_TOKEN`（未回显/未入库）、`DASHBOARD_ENABLED=true`、Unix socket `session/dashboard.sock`；匿名 API=401、认证 API/metrics=200、socket mode=0600、Docker published ports=0、Webhook 仍为 false。启用前 `.env` 与镜像备份为 `env-pre-dashboard-20260901T013000Z.bak` 和 `telegram-video-forwarder:rollback-pre-dashboard-20260901T013000Z`。
 - 分卷：`69a03e1679ed5a4d3f9b4f0dcb8a6a5514655d3e` 已推送并发布。`LARGE_FILE_POLICY=split`、`SPLIT_PART_BYTES=1992294400`；采用 SHA-256 manifest + 有界 document volumes，不伪装视频。镜像内全量 **284 tests** 通过。发布前验证无活动 job；回滚点为 `env-pre-split-20260901T014000Z.bak`、`source-pre-split-20260901T014000Z.tar.gz`、`telegram-video-forwarder:rollback-pre-split-20260901T014000Z`。发布后 `APP_COMMIT=69a03e1`、Dashboard=true、socket=0600、health=healthy、restart=0，未做 SQLite migration。
 
+### 2026-09-01 - 用户授权公开 Dashboard TCP 端口（进行中）
+
+用户明确要求不使用 Caddy/域名，仅开放端口以供移动端访问。实施：新增默认关闭的 `DASHBOARD_PUBLIC_BIND`；只有它与 `DASHBOARD_ENABLED` 同时为 true，才允许空 socket + `DASHBOARD_HOST=0.0.0.0`，Compose 才把 `8787/TCP` 映射为公网端口。仍强制强 Bearer token、无 mutation、无 Webhook；文档显式说明 HTTP 明文风险。补 config/compose 测试，先推送再备份并发布 VPS，最后从外部地址验证 401/200。
+
 ## 21. 执行日志
 
 ### 2026-08-30 - 规划与交接文档

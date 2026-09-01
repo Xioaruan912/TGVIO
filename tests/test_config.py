@@ -84,6 +84,13 @@ class SettingsTests(unittest.TestCase):
         invalid = dict(env, DASHBOARD_HOST="0.0.0.0")
         with self.assertRaises(SettingsError):
             Settings.from_env(invalid, strict=True)
+
+    def test_dashboard_public_bind_requires_explicit_flag_and_tcp(self) -> None:
+        env = base_env()
+        env.update(DASHBOARD_ENABLED="true", DASHBOARD_PUBLIC_BIND="true", DASHBOARD_HOST="0.0.0.0", DASHBOARD_SOCKET="", DASHBOARD_TOKEN="x" * 32)
+        self.assertEqual(Settings.from_env(env, strict=True).safe_summary()["dashboard_transport"], "tcp-public")
+        with self.assertRaises(SettingsError):
+            Settings.from_env(dict(env, DASHBOARD_SOCKET="session/dashboard.sock"), strict=True)
         invalid = dict(env, DASHBOARD_TOKEN="too-short")
         with self.assertRaises(SettingsError):
             Settings.from_env(invalid, strict=True)

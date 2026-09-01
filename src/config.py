@@ -124,6 +124,7 @@ class Settings:
     thumbnail_position: str
     url_private_network_policy: str
     dashboard_enabled: bool
+    dashboard_public_bind: bool
     dashboard_host: str
     dashboard_port: int
     dashboard_socket: str
@@ -240,6 +241,7 @@ class Settings:
             thumbnail_position=thumbnail_position,
             url_private_network_policy=url_private_network_policy,
             dashboard_enabled=_bool(env, "DASHBOARD_ENABLED", False, strict=strict),
+            dashboard_public_bind=_bool(env, "DASHBOARD_PUBLIC_BIND", False, strict=strict),
             dashboard_host=str(env.get("DASHBOARD_HOST", "127.0.0.1")).strip() or "127.0.0.1",
             dashboard_port=_int(env, "DASHBOARD_PORT", 8787, strict=strict),
             dashboard_socket=str(env.get("DASHBOARD_SOCKET", "session/dashboard.sock")).strip(),
@@ -293,7 +295,12 @@ class Settings:
         _bounded("WEBHOOK_MAX_ATTEMPTS", self.webhook_max_attempts, 1, 20)
         _bounded("WEBHOOK_POLL_INTERVAL", self.webhook_poll_interval, 0.2, 60.0)
         if self.dashboard_enabled:
-            if self.dashboard_host not in {"127.0.0.1", "::1", "localhost"}:
+            allowed_hosts = {"127.0.0.1", "::1", "localhost"}
+            if self.dashboard_public_bind:
+                allowed_hosts |= {"0.0.0.0", "::"}
+                if self.dashboard_socket:
+                    raise SettingsError("invalid configuration: DASHBOARD_SOCKET")
+            if self.dashboard_host not in allowed_hosts:
                 raise SettingsError("invalid configuration: DASHBOARD_HOST")
             if not self.dashboard_socket and self.dashboard_host == "localhost":
                 # Avoid DNS-dependent bind behavior; TCP listeners use a literal loopback.
@@ -340,7 +347,7 @@ class Settings:
             "url_private_network_policy": self.url_private_network_policy,
             "download_dir_configured": bool(self.download_dir),
             "dashboard_enabled": self.dashboard_enabled,
-            "dashboard_transport": "unix" if self.dashboard_socket else "tcp-loopback",
+            "dashboard_transport": "unix" if self.dashboard_socket else ("tcp-public" if self.dashboard_public_bind else "tcp-loopback"),
             "dashboard_port": self.dashboard_port,
             "webhook_enabled": self.webhook_enabled,
             "webhook_max_attempts": self.webhook_max_attempts,
