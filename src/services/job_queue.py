@@ -715,7 +715,8 @@ class JobQueue:
         self._pipeline.jobs[int(seq)] = job
         self._pipeline.active_seqs.add(int(seq))
         self._pipeline._remember_seq_owner(int(seq), int(record.user_id))
-        self._pipeline._set_result(int(seq), paths[0] if len(paths) == 1 else paths)
+        payload = paths if record.kind in {"album", "collection"} else (paths[0] if len(paths) == 1 else paths)
+        self._pipeline._set_result(int(seq), payload)
         self._pipeline._counter = max(self._pipeline._counter, int(seq) + 1)
         return "ok", job
 

@@ -230,6 +230,52 @@ class U2RepositoryTests(unittest.IsolatedAsyncioTestCase):
         refreshed = await self.repo.get_job(record.id)
         self.assertEqual(refreshed.state, "failed")
 
+    async def test_single_item_collection_retry_keeps_list_payload(self) -> None:
+        job_dir = self.download_root / "job-79"
+        job_dir.mkdir()
+        path = job_dir / "only.mp4"
+        path.write_bytes(b"video")
+        await self.repo.accept_job(
+            kind="collection",
+            user_id=42,
+            state="failed",
+            source_kind="telegram",
+            legacy_seq=79,
+            items=[{"local_path": str(path), "size_bytes": 5, "metadata": {"schema_version": 1}}],
+            event_payload={"schema_version": 1},
+        )
+
+        class RestartedPipeline:
+            def __init__(self):
+                self.repository = self_repo
+                self.download_dir = str(download_root)
+                self.retryable = {}
+                self._runtime_jobs = {}
+                self.jobs = {}
+                self.active_seqs = set()
+                self.results = {}
+                self._counter = 1
+                self._seq_owners = {}
+
+            def _remember_seq_owner(self, seq, user_id):
+                self._seq_owners[int(seq)] = int(user_id)
+
+            def _set_result(self, seq, value):
+                fut = asyncio.get_running_loop().create_future()
+                fut.set_result(value)
+                self.results[int(seq)] = fut
+
+        self_repo = self.repo
+        download_root = self.download_root
+        pipeline = RestartedPipeline()
+        queue = JobQueue(pipeline)
+        result, _runtime = await queue.retry_failed_durable(
+            79, user_id=42, status=SimpleNamespace(id=902)
+        )
+
+        self.assertEqual(result, "ok")
+        self.assertEqual(pipeline.results[79].result(), [str(path)])
+
     async def test_failure_message_is_sanitized(self) -> None:
         job = await self.repo.accept_job(
             kind="url", user_id=42, state="queued", source_kind="url",

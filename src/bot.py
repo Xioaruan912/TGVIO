@@ -983,7 +983,10 @@ class _Pipeline:
             else:
                 self.jobs[seq] = job
                 payload = list(action.paths)
-                self._set_result(seq, payload[0] if len(payload) == 1 else payload)
+                if record.kind in {"album", "collection"}:
+                    self._set_result(seq, payload)
+                else:
+                    self._set_result(seq, payload[0] if len(payload) == 1 else payload)
             self._counter = max(self._counter, seq + 1)
         if actions:
             logger.info("Startup recovery scanned %d durable jobs", len(actions))
