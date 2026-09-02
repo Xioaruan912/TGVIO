@@ -647,7 +647,7 @@ class MediaPublisher:
         self._thread_root = (cover_id, root)
         return root
 
-    async def _post_comment(self, job, media, channel_msg):
+    async def _post_comment(self, job, media, channel_msg, caption=""):
         group = await self._get_discussion_group()
         mid = getattr(channel_msg, "id", channel_msg)
         root = await self._find_thread_root(mid)
@@ -659,7 +659,7 @@ class MediaPublisher:
             functions.messages.SendMediaRequest(
                 peer=group,
                 media=media,
-                message="",
+                message=caption,
                 reply_to=reply_to,
                 random_id=helpers.generate_random_long(),
             )
@@ -677,7 +677,16 @@ class MediaPublisher:
         return group, comment_id
 
     async def _post_album_comment(
-        self, job, paths, root_msg, spoiler, seq, caption="", item_offset=0, total_items=None
+        self,
+        job,
+        paths,
+        root_msg,
+        spoiler,
+        seq,
+        caption="",
+        item_offset=0,
+        total_items=None,
+        forced_captions=None,
     ) -> tuple:
         group = await self._get_discussion_group()
         root_id = getattr(root_msg, "id", root_msg)
@@ -694,7 +703,14 @@ class MediaPublisher:
             reference = await self._album_media_reference(
                 group, fm, spoiler, item_number=index + 1, label="评论相册"
             )
-            msg_text = caption if index == 0 else ""
+            if forced_captions is not None:
+                msg_text = (
+                    forced_captions[index]
+                    if index < len(forced_captions)
+                    else ""
+                )
+            else:
+                msg_text = caption if index == 0 else ""
             single_media.append(types.InputSingleMedia(reference, message=msg_text))
         self._begin_send(job)
         result = await self.client(
@@ -740,23 +756,22 @@ class MediaPublisher:
         photo_idx = [i for i, p in enumerate(paths) if is_photo_path(p)]
         video_idx = [i for i, p in enumerate(paths) if not is_photo_path(p)]
 
-        if self.cover_mode and len(photo_idx) > self.max_cover_images:
-            dropped = len(photo_idx) - self.max_cover_images
-            photo_idx = photo_idx[: self.max_cover_images]
+        if not self.cover_mode:
+            return await self._send_album_media(job, paths, dest_input, job.spoiler)
+
+        cover_photo_idx = photo_idx[: self.max_cover_images]
+        overflow_photo_idx = photo_idx[self.max_cover_images :]
+        if overflow_photo_idx:
             logger.info(
-                "封面相册超过 %s 张，丢弃多余 %s 张图片",
+                "封面展示保留前 %s 张，额外 %s 张图片转入评论区",
                 self.max_cover_images,
-                dropped,
+                len(overflow_photo_idx),
             )
 
-        if not self.cover_mode or not video_idx:
-            limited = [paths[i] for i in photo_idx] if self.cover_mode else paths
-            return await self._send_album_media(job, limited, dest_input, job.spoiler)
-
         refs = []
-        if photo_idx:
-            photo_paths = [paths[i] for i in photo_idx]
-            photo_caps = [captions[i] for i in photo_idx]
+        if cover_photo_idx:
+            photo_paths = [paths[i] for i in cover_photo_idx]
+            photo_caps = [captions[i] for i in cover_photo_idx]
             cover_ids = await self._send_album_media(
                 job, photo_paths, dest_input, None, forced_captions=photo_caps,
                 role="cover",
@@ -781,6 +796,69 @@ class MediaPublisher:
             )
             refs.append((dest_input, cover_msg.id))
             root_msg = cover_msg.id
+
+        if overflow_photo_idx:
+            overflow_paths = [paths[i] for i in overflow_photo_idx]
+            overflow_caps = [captions[i] for i in overflow_photo_idx]
+            for start in range(0, len(overflow_paths), 10):
+                chunk = overflow_paths[start : start + 10]
+                chunk_caps = overflow_caps[start : start + 10]
+                attempts_before = int(getattr(job, "_publish_send_attempts", 0))
+                try:
+                    if len(chunk) == 1:
+                        media = await self._media_input(
+                            job,
+                            chunk[0],
+                            job.spoiler,
+                            job.seq,
+                            item=start + 1,
+                            items=len(overflow_paths),
+                        )
+                        group_peer, comment_id = await self._post_comment(
+                            job,
+                            media,
+                            root_msg,
+                            caption=self._with_footer(chunk_caps[0]),
+                        )
+                        await self._record_dedup_ref(job, chunk[0], group_peer, comment_id)
+                        refs.append((group_peer, comment_id))
+                    else:
+                        group_peer, cids = await self._post_album_comment(
+                            job,
+                            chunk,
+                            root_msg,
+                            job.spoiler,
+                            job.seq,
+                            item_offset=start,
+                            total_items=len(overflow_paths),
+                            forced_captions=[self._with_footer(cap) for cap in chunk_caps],
+                        )
+                        refs.extend((group_peer, cid) for cid in cids)
+                except Exception as exc:
+                    self._raise_partial_if_started(job, attempts_before, exc)
+                    logger.warning(
+                        "Overflow photo comment publish failed (%s), fallback direct", exc
+                    )
+                    for index, path in enumerate(chunk):
+                        media = await self._media_input(
+                            job,
+                            path,
+                            job.spoiler,
+                            job.seq,
+                            item=start + index + 1,
+                            items=len(overflow_paths),
+                        )
+                        self._begin_send(job)
+                        msg = await self.client.send_file(
+                            self.dest,
+                            media,
+                            caption=self._with_footer(chunk_caps[index]) or None,
+                        )
+                        await self._record_dedup_message(job, path, msg)
+                        refs.append((dest_input, msg.id))
+
+        if not video_idx:
+            return refs
 
         video_paths = [paths[i] for i in video_idx]
         first_chunk = True
@@ -856,7 +934,7 @@ class MediaPublisher:
     async def _publish_collection(self, job, paths: list) -> list:
         """合集发布：整个会话整合为「1 个封面 + 1 个评论区」。
 
-        - 图片（按序取前 MAX_COVER_IMAGES 张）→ 频道封面相册，超出按序丢弃
+        - 图片前 MAX_COVER_IMAGES 张 → 频道封面相册；超出图片继续上传到同一评论区
         - 全部视频 → 按 10 条一组媒体组，进同一个讨论组评论线程
         - 纯图片合集 → 只发封面相册；纯视频合集 → 首视频截帧做封面
         - 会话期间收集的文字评论（job.texts）按行整合为封面 caption
@@ -878,17 +956,18 @@ class MediaPublisher:
 
         refs = []
         root_msg = None
-        if photo_idx:
-            dropped = len(photo_idx) - self.max_cover_images
-            if dropped > 0:
-                logger.info(
-                    "合集图片超过 %s 张，按序丢弃 %s 张",
-                    self.max_cover_images,
-                    dropped,
-                )
-            photo_idx = photo_idx[: self.max_cover_images]
-            photo_paths = [paths[i] for i in photo_idx]
-            photo_caps = [captions[i] for i in photo_idx]
+        cover_photo_idx = photo_idx[: self.max_cover_images]
+        overflow_photo_idx = photo_idx[self.max_cover_images :]
+        if overflow_photo_idx:
+            logger.info(
+                "合集封面展示保留前 %s 张，额外 %s 张图片转入评论区",
+                self.max_cover_images,
+                len(overflow_photo_idx),
+            )
+
+        if cover_photo_idx:
+            photo_paths = [paths[i] for i in cover_photo_idx]
+            photo_caps = [captions[i] for i in cover_photo_idx]
             if comment:
                 photo_caps[0] = self._merge_caption(comment, photo_caps[0])
             cover_ids = await self._send_album_media(
@@ -916,6 +995,66 @@ class MediaPublisher:
             )
             refs.append((dest_input, cover_msg.id))
             root_msg = cover_msg.id
+
+        if overflow_photo_idx:
+            overflow_paths = [paths[i] for i in overflow_photo_idx]
+            overflow_caps = [captions[i] for i in overflow_photo_idx]
+            for start in range(0, len(overflow_paths), 10):
+                chunk = overflow_paths[start : start + 10]
+                chunk_caps = overflow_caps[start : start + 10]
+                attempts_before = int(getattr(job, "_publish_send_attempts", 0))
+                try:
+                    if len(chunk) == 1:
+                        media = await self._media_input(
+                            job,
+                            chunk[0],
+                            job.spoiler,
+                            job.seq,
+                            item=start + 1,
+                            items=len(overflow_paths),
+                        )
+                        group_peer, comment_id = await self._post_comment(
+                            job,
+                            media,
+                            root_msg,
+                            caption=self._with_footer(chunk_caps[0]),
+                        )
+                        await self._record_dedup_ref(job, chunk[0], group_peer, comment_id)
+                        refs.append((group_peer, comment_id))
+                    else:
+                        group_peer, cids = await self._post_album_comment(
+                            job,
+                            chunk,
+                            root_msg,
+                            job.spoiler,
+                            job.seq,
+                            item_offset=start,
+                            total_items=len(overflow_paths),
+                            forced_captions=[self._with_footer(cap) for cap in chunk_caps],
+                        )
+                        refs.extend((group_peer, cid) for cid in cids)
+                except Exception as exc:
+                    self._raise_partial_if_started(job, attempts_before, exc)
+                    logger.warning(
+                        "Collection overflow photo publish failed (%s), fallback direct", exc
+                    )
+                    for index, path in enumerate(chunk):
+                        media = await self._media_input(
+                            job,
+                            path,
+                            job.spoiler,
+                            job.seq,
+                            item=start + index + 1,
+                            items=len(overflow_paths),
+                        )
+                        self._begin_send(job)
+                        msg = await self.client.send_file(
+                            self.dest,
+                            media,
+                            caption=self._with_footer(chunk_caps[index]) or None,
+                        )
+                        await self._record_dedup_message(job, path, msg)
+                        refs.append((dest_input, msg.id))
 
         if video_idx:
             video_paths = [paths[i] for i in video_idx]

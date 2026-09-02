@@ -226,6 +226,76 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         )
         self.publisher._post_comment.assert_awaited_once_with(job, "video-input", 101)
 
+    async def test_collection_more_than_ten_photos_keeps_overflow_in_comments(self) -> None:
+        paths = [self.make_file(f"collection-{index}.jpg") for index in range(12)]
+        job = Job(
+            seq=14,
+            kind="collection",
+            status=FakeStatusMessage(),
+            album=[SimpleNamespace(message=f"caption-{index}") for index in range(12)],
+            spoiler=False,
+        )
+        self.publisher.max_cover_images = 10
+        self.publisher._get_dest_input = AsyncMock(return_value="dest-input")
+        self.publisher._send_album_media = AsyncMock(return_value=list(range(101, 111)))
+        self.publisher._post_album_comment = AsyncMock(
+            return_value=("discussion-input", [201, 202])
+        )
+
+        result = await self.publisher._publish_collection(job, paths)
+
+        cover_call = self.publisher._send_album_media.await_args
+        self.assertEqual(list(cover_call.args[1]), paths[:10])
+        overflow_call = self.publisher._post_album_comment.await_args
+        self.assertEqual(list(overflow_call.args[1]), paths[10:])
+        self.assertEqual(
+            overflow_call.kwargs["forced_captions"],
+            [
+                self.publisher._with_footer("caption-10"),
+                self.publisher._with_footer("caption-11"),
+            ],
+        )
+        self.assertEqual(
+            result,
+            [("dest-input", mid) for mid in range(101, 111)]
+            + [("discussion-input", 201), ("discussion-input", 202)],
+        )
+
+    async def test_album_more_than_ten_photos_keeps_overflow_in_comments(self) -> None:
+        paths = [self.make_file(f"album-{index}.jpg") for index in range(12)]
+        job = Job(
+            seq=15,
+            kind="album",
+            status=FakeStatusMessage(),
+            album=[SimpleNamespace(message=f"album-caption-{index}") for index in range(12)],
+            spoiler=True,
+        )
+        self.publisher.max_cover_images = 10
+        self.publisher._get_dest_input = AsyncMock(return_value="dest-input")
+        self.publisher._send_album_media = AsyncMock(return_value=list(range(301, 311)))
+        self.publisher._post_album_comment = AsyncMock(
+            return_value=("discussion-input", [401, 402])
+        )
+
+        result = await self.publisher._publish_album(job, paths)
+
+        cover_call = self.publisher._send_album_media.await_args
+        self.assertEqual(list(cover_call.args[1]), paths[:10])
+        overflow_call = self.publisher._post_album_comment.await_args
+        self.assertEqual(list(overflow_call.args[1]), paths[10:])
+        self.assertEqual(
+            overflow_call.kwargs["forced_captions"],
+            [
+                self.publisher._with_footer("album-caption-10"),
+                self.publisher._with_footer("album-caption-11"),
+            ],
+        )
+        self.assertEqual(
+            result,
+            [("dest-input", mid) for mid in range(301, 311)]
+            + [("discussion-input", 401), ("discussion-input", 402)],
+        )
+
     async def test_ordered_photo_collection_splits_media_groups_at_ten(self) -> None:
         paths = [self.make_file(f"photo-{index}.jpg") for index in range(23)]
         captions = [f"caption-{index}" for index in range(23)]

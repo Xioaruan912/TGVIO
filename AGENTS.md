@@ -87,7 +87,7 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 - **封面模式（v10.6）**：`COVER_MODE=true`（默认 false）时频道只发封面图，视频发进频道关联**讨论组**的评论区线程（观看者点帖子 💬 图标看视频）：
   - 单视频：`make_cover`（ffmpeg 截帧，`COVER_WIDTH` 默认 1280）发频道（带 caption，**无雪花**）→ 视频（`job.spoiler` 雪花）发评论。
   - 相册：拆分图片/视频——有图片→图片组发频道做封面（无雪花，各自 caption）；全视频→首视频截帧发频道做封面；**视频按 10 条一组 `SendMultiMediaRequest` 合并成媒体组评论**（`_post_album_comment`，全部进**同一线程根**；第一组首条带 `合集共 N 个视频` caption；单条时走 `_post_comment`；雪花=job.spoiler）。
-  - **⚠️ 频道封面相册 ≤10 张（v10.8 修复）**：`MAX_COVER_IMAGES`（默认 10）限制封面相册图片数，超出的**整批丢弃**（不发布）；`_send_album_media` 仍按 10 条一组分块兜底。`root_msg = cover_ids[0]`（首图）仍是评论线程根。
+  - **频道封面展示 ≤10 张**：`MAX_COVER_IMAGES`（默认 10）只限制频道封面展示数；超出的图片**不丢弃**，继续按 10 张一组上传到同一帖子评论区。`root_msg = cover_ids[0]`（首图）仍是评论线程根。
   - **⚠️ 图片文件名覆盖（v10.8 修复）**：`_media_filename(media, item)` 对图片返回 `photo_{item}.jpg`（旧代码固定 `photo.jpg` → 相册多张图片下载互相覆盖 → 同一张图被上传 N 次）。`_download_media_concurrent` 传入 `item` 序号。
   - 发布器返回值：直发=`[msg_id]`；封面模式=`[(peer, msg_id), ...]`（封面在频道、评论在讨论组）。`_publish` 不再二次包 list。
   - **撤销适配**：`_remember_published` 直接存发布器返回；`undo:` 回调检测 `ids[0]` 是否为 tuple——是则逐对 `delete_messages(peer, mid)`（评论在讨论组、封面在频道，必须分开删），否则照旧 `delete_messages(DEST_CHANNEL, ids)`。
@@ -106,7 +106,7 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
   - **收集入口**：`_finalize_album`（相册，10s 窗口后）与 `on_private_message` 单条媒体，在 18+ 模式检查通过后先走 `_session_add_batch`——追加批次 → `_session_touch`（**v13.7 起：状态消息仅在首次创建时发送一次 `session.status is None`，后续转发/评论不再编辑、不再弹出**，避免刷屏；按钮「🛑 结束并发布（/end）」常驻 `session_end:{user_id}`，点击即结束，等价 /end。原 5s 按钮隐藏逻辑 `_session_button_timeout` 已删除，`SESSION_END_TIMEOUT` 废弃不再使用）。
   - **结束**：按钮回调或 `/end` → `_session_finalize`：**先收拢仍在 10s 聚合中的相册缓冲**（`albums.pop` + 取消任务）→ 平铺全部消息 → mode=ask 时统一 `_show_ask(kind="collection")`（整个合集只问一次 18+，超时自动正常），否则 `_auto_enqueue(kind="collection")`。入队失败时**恢复会话与缓冲**（不丢媒体），用户可重试 /end。
   - **下载**（media.py `_download`）：`kind="collection"` 按 `job.album`（平铺消息列表）顺序下载全部 → paths 列表。重名文件加 `_{item}` 后缀防覆盖（会话媒体多，重名概率高）。
-  - **发布**（media.py `_publish_collection`，封面模式下）：图片按序取前 `MAX_COVER_IMAGES`（10）张 → 频道封面相册（**超出按序丢弃**）；**全部视频按 10 条一组媒体组进同一个评论线程**（首组带 `合集共 N 个视频`）；纯图片→只发封面；纯视频→首视频截帧做封面。非封面模式走 `_publish_ordered`（按到达顺序：连续图片 10 张一组相册、视频单发）。
+  - **发布**（media.py `_publish_collection`，封面模式下）：图片按序取前 `MAX_COVER_IMAGES`（10）张 → 频道封面相册；超出图片继续按 10 张一组进同一个评论线程；**全部视频也按 10 条一组媒体组进同一个评论线程**（首组带 `合集共 N 个视频`）；纯图片超过展示上限时，多出的图片也进入评论区；纯视频→首视频截帧做封面。非封面模式走 `_publish_ordered`（按到达顺序：连续图片 10 张一组相册、视频单发）。
   - **撤销**：collection 返回值同为 `[(peer, mid)...]`（封面模式），`undo:` 逻辑天然兼容。
   - **URL 下载不参与会话**（仍即时处理）；会话在内存中，bot 重启即清空（与队列一致）。
   - `/begin`、`/end`（含 `/开始`/`/结束` 别名）已注册命令菜单。
@@ -199,7 +199,7 @@ input_q → _download_worker ×N → MediaDownloader.run(job) ──▶ results[
 | `PART_SIZE_KB` | `512` | 传输分片大小（KB，Telegram 上限 512） |
 | `COVER_MODE` | `false` | 封面模式：频道只发封面图，视频进讨论组评论区 |
 | `COVER_WIDTH` | `1280` | 封面图最大宽/高像素 |
-| `MAX_COVER_IMAGES` | `10` | 封面相册最多图片数（超出按序丢弃） |
+| `MAX_COVER_IMAGES` | `10` | 频道封面最多展示图片数；超出图片继续上传到同一评论区 |
 | `SESSION_COLLECT` | `true` | 合集会话：转发自动开始，多次转发汇总为一个合集（视频进同一评论区） |
 | `SESSION_END_TIMEOUT` | `5` | 合集「结束并发布」按钮显示秒数（超时隐藏，继续等待转发） |
 

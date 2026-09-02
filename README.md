@@ -183,7 +183,7 @@ ALLOWED_USERS=123456789
 ```dotenv
 COVER_MODE=true
 COVER_WIDTH=1280
-MAX_COVER_IMAGES=10
+MAX_COVER_IMAGES=10   # 频道最多展示 10 张；更多图片继续上传到同一评论区
 ```
 
 行为：
