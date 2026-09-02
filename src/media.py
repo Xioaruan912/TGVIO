@@ -691,20 +691,9 @@ class MediaPublisher:
             fm = await self._media_input(
                 job, path, spoiler, seq, item=item_offset + index + 1, items=total
             )
-            result = await self.client(
-                functions.messages.UploadMediaRequest(group, fm)
+            reference = await self._album_media_reference(
+                group, fm, spoiler, item_number=index + 1, label="评论相册"
             )
-            if isinstance(result, types.MessageMediaPhoto):
-                reference = types.InputMediaPhoto(
-                    id=get_input_photo(result.photo), spoiler=spoiler or None
-                )
-            elif isinstance(result, types.MessageMediaDocument):
-                reference = types.InputMediaDocument(
-                    id=get_input_document(result.document),
-                    spoiler=spoiler or None,
-                )
-            else:
-                raise RuntimeError(f"无法为评论相册媒体 #{(index + 1)} 构建引用")
             msg_text = caption if index == 0 else ""
             single_media.append(types.InputSingleMedia(reference, message=msg_text))
         self._begin_send(job)
@@ -1037,20 +1026,13 @@ class MediaPublisher:
                 fm = await self._media_input(
                     job, path, spoiler, job.seq, item=item_index + 1, items=total
                 )
-                result = await self.client(
-                    functions.messages.UploadMediaRequest(dest_input, fm)
+                reference = await self._album_media_reference(
+                    dest_input,
+                    fm,
+                    spoiler,
+                    item_number=item_index + 1,
+                    label="相册",
                 )
-                if isinstance(result, types.MessageMediaPhoto):
-                    reference = types.InputMediaPhoto(
-                        id=get_input_photo(result.photo), spoiler=spoiler or None
-                    )
-                elif isinstance(result, types.MessageMediaDocument):
-                    reference = types.InputMediaDocument(
-                        id=get_input_document(result.document),
-                        spoiler=spoiler or None,
-                    )
-                else:
-                    raise RuntimeError(f"无法为相册媒体 #{(item_index + 1)} 构建引用")
                 caption = captions[item_index] if item_index < len(captions) else ""
                 single_media.append(
                     types.InputSingleMedia(reference, message=self._with_footer(caption))
@@ -1077,6 +1059,34 @@ class MediaPublisher:
                 await self._record_dedup_message(job, path, message)
             await self._checkpoint(job, dest_input, chunk_ids, role)
         return ids
+
+    async def _album_media_reference(
+        self,
+        peer,
+        media,
+        spoiler,
+        *,
+        item_number: int,
+        label: str,
+    ):
+        """Return a media reference suitable for SendMultiMediaRequest.
+
+        D1 dedup hits are already-existing Telegram media references and must
+        not be sent through UploadMediaRequest again. Only freshly uploaded
+        media needs the uploadMedia conversion step.
+        """
+        if isinstance(media, (types.InputMediaPhoto, types.InputMediaDocument)):
+            return media
+        result = await self.client(functions.messages.UploadMediaRequest(peer, media))
+        if isinstance(result, types.MessageMediaPhoto):
+            return types.InputMediaPhoto(
+                id=get_input_photo(result.photo), spoiler=spoiler or None
+            )
+        if isinstance(result, types.MessageMediaDocument):
+            return types.InputMediaDocument(
+                id=get_input_document(result.document), spoiler=spoiler or None
+            )
+        raise RuntimeError(f"无法为{label}媒体 #{item_number} 构建引用")
 
     async def _media_input(self, job, path, spoiler, seq, item=1, items=1):
         manager = self.dedup_manager

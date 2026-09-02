@@ -168,6 +168,24 @@ class MediaPublisherBehaviorTests(unittest.IsolatedAsyncioTestCase):
         self.publisher._upload_media_input.assert_awaited_once()
         self.assertEqual(self.client.sent_files[0]["file"], "uploaded-media")
 
+    async def test_album_dedup_reference_skips_upload_media_request(self) -> None:
+        existing = types.InputMediaPhoto(
+            id=types.InputPhoto(id=1, access_hash=2, file_reference=b"ref")
+        )
+        client = AsyncMock()
+        self.publisher.client = client
+
+        reference = await self.publisher._album_media_reference(
+            "dest-input",
+            existing,
+            False,
+            item_number=1,
+            label="相册",
+        )
+
+        self.assertIs(reference, existing)
+        client.assert_not_awaited()
+
     async def test_collection_cover_preserves_text_order_and_returns_peer_pairs(self) -> None:
         photo = self.make_file("cover.jpg")
         video = self.make_file("video.mp4")
