@@ -891,10 +891,15 @@ class JobQueue:
         job_id = self._shadow.job_ids.get(seq)
         if not job_id:
             return None
+        record = await repository.get_job(job_id)
+        if record is None:
+            return None
         items = await repository.list_job_items(job_id)
         paths = [item.local_path for item in items if item.local_path]
         if not paths or len(paths) != len(items):
             return None
+        if record.kind in {"album", "collection"}:
+            return paths
         return paths[0] if len(paths) == 1 else paths
 
     async def set_status_reference(self, seq: int, status: object, *, chat_id: int | None = None) -> None:

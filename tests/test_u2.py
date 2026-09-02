@@ -276,6 +276,28 @@ class U2RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result, "ok")
         self.assertEqual(pipeline.results[79].result(), [str(path)])
 
+    async def test_single_item_collection_durable_payload_stays_list(self) -> None:
+        job_dir = self.download_root / "job-80"
+        job_dir.mkdir()
+        path = job_dir / "only.mp4"
+        path.write_bytes(b"video")
+        record = await self.repo.accept_job(
+            kind="collection",
+            user_id=42,
+            state="ready",
+            source_kind="telegram",
+            legacy_seq=80,
+            items=[{"local_path": str(path), "size_bytes": 5, "metadata": {"schema_version": 1}}],
+            event_payload={"schema_version": 1},
+        )
+        shadow = SimpleNamespace(job_ids={80: record.id})
+        pipeline = SimpleNamespace(repository=self.repo)
+        queue = JobQueue(pipeline, shadow)
+
+        payload = await queue.durable_payload(80)
+
+        self.assertEqual(payload, [str(path)])
+
     async def test_failure_message_is_sanitized(self) -> None:
         job = await self.repo.accept_job(
             kind="url", user_id=42, state="queued", source_kind="url",
