@@ -539,7 +539,32 @@ async def callback_retry(ctx: HandlerContext, event: Any, data: str) -> None:
         return
     ticket = ctx.queue.claim_retry(seq, user_id=event.sender_id)
     if ticket is None:
-        await ctx.answer(event, "该任务已失效（可能已重试）")
+        try:
+            new_status = await event.client.send_message(
+                event.chat_id,
+                f"🔄 {ctx.queue.task_label(seq)} 正在恢复失败任务",
+            )
+        except Exception:
+            new_status = getattr(event, "message", None)
+        result, _job = await ctx.queue.retry_failed_durable(
+            seq,
+            user_id=event.sender_id,
+            status=new_status,
+        )
+        if result == "ok":
+            if new_status is not None:
+                await ctx.queue.set_status_reference(seq, new_status, chat_id=event.chat_id)
+            await ctx.edit(event, "🔄 已重新入队")
+            await ctx.answer(event, "已重新入队")
+            logger.info("Durable failed job #%s requeued from retained cache", seq)
+            return
+        messages = {
+            "partial": "该任务已有部分内容发布，为避免重复发送不能自动重试",
+            "cache_missing": "该任务缓存不完整，无法直接重试",
+            "stale": "任务状态已变化，请刷新后重试",
+            "terminal": "该任务当前状态不能重试",
+        }
+        await ctx.answer(event, messages.get(result, "该任务已失效（可能已重试）"))
         return
     try:
         new_status = await event.client.send_message(

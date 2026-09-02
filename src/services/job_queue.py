@@ -7,6 +7,7 @@ import asyncio
 import json
 import os
 import time
+from types import SimpleNamespace
 from typing import Any
 
 from ..models import Job, PendingJob, RetryInfo, Session
@@ -621,6 +622,102 @@ class JobQueue:
             cached_path=cached,
             cleanup_extra=cleanup,
         )
+
+    async def retry_failed_durable(
+        self,
+        seq: int,
+        *,
+        user_id: int,
+        status: object,
+    ) -> tuple[str, Job | None]:
+        """Retry a failed durable job after in-memory retry state was lost.
+
+        This is intentionally conservative: every cached item must still be
+        present with the recorded size, and there must be no persisted publish
+        side effects. The original durable job is moved back to ``ready`` and
+        reattached to the runtime queue without re-downloading Telegram media.
+        """
+        repository = getattr(self._pipeline, "repository", None)
+        if repository is None:
+            return "unavailable", None
+
+        record = None
+        for candidate in await repository.list_jobs(user_id=int(user_id), limit=500):
+            if candidate.legacy_seq is not None and int(candidate.legacy_seq) == int(seq):
+                record = candidate
+                break
+        if record is None:
+            return "missing", None
+        if record.state != "failed":
+            return "terminal", None
+
+        refs = await repository.list_published_messages(record.id)
+        if refs:
+            return "partial", None
+
+        items = await repository.list_job_items(record.id)
+        if not items:
+            return "cache_missing", None
+        paths: list[str] = []
+        placeholders: list[object] = []
+        for item in items:
+            path = str(item.local_path or "")
+            if not path or not os.path.isfile(path):
+                return "cache_missing", None
+            try:
+                if int(item.size_bytes or 0) > 0 and os.path.getsize(path) != int(item.size_bytes):
+                    return "cache_missing", None
+            except OSError:
+                return "cache_missing", None
+            paths.append(path)
+            caption = ""
+            if item.metadata_json:
+                try:
+                    caption = str(json.loads(item.metadata_json).get("caption") or "")
+                except Exception:
+                    caption = ""
+            placeholders.append(SimpleNamespace(message=caption))
+
+        transition = await repository.transition_job(
+            record.id,
+            expected_revision=record.revision,
+            to_state="ready",
+            event_type="retry_requested",
+            payload={"schema_version": 1, "source": "durable_retry", "legacy_seq": int(seq)},
+        )
+        if not transition.applied:
+            return "stale", None
+        record = transition.job
+
+        texts = await repository.list_job_texts(record.id)
+        snapshot = None
+        if record.destination_profile_snapshot_json:
+            try:
+                snapshot = json.loads(record.destination_profile_snapshot_json)
+            except Exception:
+                snapshot = None
+        job = Job(
+            seq=int(seq),
+            kind=record.kind,
+            status=status,
+            message=(placeholders[0] if placeholders else SimpleNamespace(message="")),
+            album=(placeholders if record.kind in {"album", "collection"} else None),
+            url=record.source_url or "",
+            spoiler=record.spoiler,
+            user_id=record.user_id,
+            texts=texts or None,
+            destination_profile_id=record.destination_profile_id,
+            destination_profile_snapshot=snapshot,
+        )
+        if self._shadow is not None:
+            self.bind_recovered(int(seq), record.id)
+        self._pipeline._runtime_jobs[int(seq)] = job
+        self._pipeline.jobs[int(seq)] = job
+        self._pipeline.active_seqs.add(int(seq))
+        self._pipeline._remember_seq_owner(int(seq), int(record.user_id))
+        self._pipeline._set_result(int(seq), paths[0] if len(paths) == 1 else paths)
+        self._pipeline._counter = max(self._pipeline._counter, int(seq) + 1)
+        return "ok", job
 
     def commit_retry(self, ticket: RetryTicket, status: object) -> Job:
         old_job = ticket.info.job

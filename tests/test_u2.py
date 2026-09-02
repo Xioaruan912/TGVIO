@@ -1,4 +1,5 @@
 import os
+import asyncio
 from pathlib import Path
 from types import SimpleNamespace
 import tempfile
@@ -131,6 +132,103 @@ class U2RepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(path.exists())
         refreshed = await self.repo.job_detail(job.id, user_id=42)
         self.assertIsNone(refreshed["items"][0]["local_path"])
+
+    async def test_durable_retry_rehydrates_failed_job_after_runtime_state_loss(self) -> None:
+        job_dir = self.download_root / "job-77"
+        job_dir.mkdir()
+        first = job_dir / "photo.jpg"
+        second = job_dir / "video.mp4"
+        first.write_bytes(b"photo")
+        second.write_bytes(b"video")
+        record = await self.repo.accept_job(
+            kind="collection",
+            user_id=42,
+            state="failed",
+            source_kind="telegram",
+            legacy_seq=77,
+            spoiler=False,
+            items=[
+                {
+                    "local_path": str(first),
+                    "size_bytes": 5,
+                    "metadata": {"schema_version": 1, "caption": "封面"},
+                },
+                {
+                    "local_path": str(second),
+                    "size_bytes": 5,
+                    "metadata": {"schema_version": 1, "caption": "视频"},
+                },
+            ],
+            texts=["合集说明"],
+            event_payload={"schema_version": 1},
+        )
+
+        class RestartedPipeline:
+            def __init__(self, repository, download_dir):
+                self.repository = repository
+                self.download_dir = str(download_dir)
+                self.retryable = {}
+                self._runtime_jobs = {}
+                self.jobs = {}
+                self.active_seqs = set()
+                self.results = {}
+                self._counter = 1
+                self._seq_owners = {}
+
+            def _remember_seq_owner(self, seq, user_id):
+                self._seq_owners[int(seq)] = int(user_id)
+
+            def _set_result(self, seq, value):
+                fut = asyncio.get_running_loop().create_future()
+                fut.set_result(value)
+                self.results[int(seq)] = fut
+
+        pipeline = RestartedPipeline(self.repo, self.download_root)
+        queue = JobQueue(pipeline)
+        status = SimpleNamespace(id=900)
+
+        result, runtime = await queue.retry_failed_durable(77, user_id=42, status=status)
+
+        self.assertEqual(result, "ok")
+        self.assertIsNotNone(runtime)
+        self.assertEqual(runtime.kind, "collection")
+        self.assertEqual([item.message for item in runtime.album], ["封面", "视频"])
+        self.assertEqual(runtime.texts, ["合集说明"])
+        self.assertEqual(pipeline.results[77].result(), [str(first), str(second)])
+        self.assertIn(77, pipeline.active_seqs)
+        self.assertEqual(pipeline._seq_owners[77], 42)
+        refreshed = await self.repo.get_job(record.id)
+        self.assertEqual(refreshed.state, "ready")
+
+    async def test_durable_retry_refuses_partial_publish_side_effects(self) -> None:
+        job_dir = self.download_root / "job-78"
+        job_dir.mkdir()
+        path = job_dir / "video.mp4"
+        path.write_bytes(b"video")
+        record = await self.repo.accept_job(
+            kind="media",
+            user_id=42,
+            state="failed",
+            source_kind="telegram",
+            legacy_seq=78,
+            items=[{"local_path": str(path), "size_bytes": 5, "metadata": {"schema_version": 1}}],
+            event_payload={"schema_version": 1},
+        )
+        await self.repo.checkpoint_published_messages(
+            record.id,
+            [(-100123, 456, "cover")],
+        )
+        pipeline = SimpleNamespace(repository=self.repo, download_dir=str(self.download_root), retryable={})
+        queue = JobQueue(pipeline)
+
+        result, runtime = await queue.retry_failed_durable(
+            78, user_id=42, status=SimpleNamespace(id=901)
+        )
+
+        self.assertEqual(result, "partial")
+        self.assertIsNone(runtime)
+        refreshed = await self.repo.get_job(record.id)
+        self.assertEqual(refreshed.state, "failed")
 
     async def test_failure_message_is_sanitized(self) -> None:
         job = await self.repo.accept_job(
