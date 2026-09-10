@@ -25,7 +25,7 @@ characterization -> implementation -> offline gates -> Git push
 
 | 阶段 | 状态 | 交付结果 | 主要合同 |
 |---|---|---|---|
-| R2-00 | IN PROGRESS | 现状、功能合同、目标架构、路线图、部署协议 | 文档基线 |
+| R2-00 | DELIVERED | 现状、功能合同、目标架构、路线图、部署协议 | 文档基线 |
 | R2-01 | NOT STARTED | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
 | R2-02 | NOT STARTED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
 | R2-03 | NOT STARTED | 不可变 migration ledger 与 repository 拆分 | DB-02 |
@@ -57,7 +57,7 @@ characterization -> implementation -> offline gates -> Git push
 
 ### 当前说明
 
-文档已在本地起草；在 GitHub 认证恢复并成功 push 前保持 `IN PROGRESS`，不得标为已交付。
+规划提交 `bdf6a943e2c183843248e9974d3fb34a5c08eb2c` 已于 2026-09-10 推送 `origin/main`。本阶段是 docs-only，没有产生 release build，因此没有重建或重启 HostDZire。
 
 ## 4. R2-01：生产源码回收与 Git 权威恢复
 

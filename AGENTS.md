@@ -2097,12 +2097,12 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 
 ### 2026-09-10 - V2 规划与生产只读审计
 
-- 状态：R2-00 文档已在本地起草；在 GitHub 认证恢复并成功 push 前保持 `IN PROGRESS`，不得标为已交付。本轮没有 release build，因此不重建或重启生产。
+- 状态：R2-00 已交付。规划提交 `bdf6a943e2c183843248e9974d3fb34a5c08eb2c` 于 2026-09-10 推送 `origin/main`；本轮没有 release build，因此没有重建或重启生产。
 - 基线：本地 `main=origin/main=750b3c1` 是旧 `src/` 架构；HostDZire 实际生产位于 `/root/TGVIO`，容器/Compose service 为 `tgvio`，包名 `src/tgvio`。两者不是同一源码基线。
 - 生产证据：审计时容器 `running`、health=`healthy`、历史 restart=1；`.release-commit` 与 `APP_COMMIT` 均为本地 Git 不存在的短值 `03c84cd`。宿主/容器规范化源码 manifest 都是 `1da1d3d0a20d656af44eb2919d779a3eaa4a17996df62feeea6ba649d2a86cc2`。
 - 数据证据：`/root/TGVIO/data/state.sqlite3` 的 `quick_check=ok`；13 个 Job（8 succeeded、4 cancelled、1 failed），审计时无运行中 progress。当前无 migration ledger，`PRAGMA user_version=0`。
 - 测试：用当前生产镜像、只读挂载宿主源码与测试、`--network none` 启动临时测试容器，137 项测试全部通过，且未启动 Telegram Bot。domain 边界静态检查未发现 Telethon/SQLite/HTTP 反向 import。
 - 功能结论：生产 TGVIO 已有 durable Job/PublishPlan/effect journal、Telegram 发布、Archive V2、URL、恢复、诊断等能力；但旧合集会话/文字、spoiler 偏好、严格 FIFO、分片并发上传、pause/hold、undo、分页失败中心、动态 Archive、多目的地、代理和 Dashboard 等仍需按功能合同逐项恢复。
 - 文档：新增 `docs/refactor-v2/` 的现状、功能合同、目标架构、R2-00～R2-10 路线图和 HostDZire 发布协议；旧入口已显式降级为历史资料。
-- 安全：未读取或修改 `.env`、Telegram session、运行媒体或 WebDAV/代理凭据，未把用户提供的 SSH 密码写入代码、Git 或文档。后续应改用专用 SSH key，并轮换已在对话中暴露的密码。
+- 安全：未读取或修改 `.env`、Telegram session、运行媒体或 WebDAV/代理凭据，未把用户提供的 SSH/GitHub 凭据写入代码、Git、remote URL 或文档。GitHub 仅使用禁用 credential helper 的一次性交互认证；后续应改用专用 key，并轮换已在对话中暴露的凭据。
 - 下一步：R2-01 只做生产源码脱敏回收、Git full commit、source/image 可追溯与行为等价部署；不得顺手更改功能或 schema。

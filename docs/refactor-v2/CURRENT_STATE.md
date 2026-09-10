@@ -7,8 +7,8 @@
 
 | 范围 | 观测事实 | 结论 |
 |---|---|---|
-| 本地 Git | `main=origin/main=750b3c1`，旧包位于 `src/` | 这是退役架构及其后续修复，不是当前生产源码 |
-| GitHub 可见引用 | 本机没有可用 HTTPS 凭据，无法在线确认其它 branch/tag | 在认证恢复前不能声称生产源码已上 GitHub |
+| 本地 Git 审计起点 | `main=origin/main=750b3c1`，旧包位于 `src/` | 这是退役架构及其后续修复，不是当前生产源码 |
+| GitHub 交付 | R2-00 规划提交 `bdf6a943e2c183843248e9974d3fb34a5c08eb2c` 已通过一次性交互认证推送 | 未持久化 GitHub 凭据；生产源码仍未进入 Git，须在 R2-01 回收 |
 | HostDZire | 项目 `/root/TGVIO`，容器/Compose service `tgvio` | 这是当前生产运行真相 |
 | 生产 release 标签 | `.release-commit` 与容器 `APP_COMMIT` 均为短值 `03c84cd` | 本地 Git 没有该对象，标签不足以证明源码来源 |
 | 生产源码 | 宿主与容器均为 44 个 Python 源文件，规范化源码 manifest `1da1d3d0a20d656af44eb2919d779a3eaa4a17996df62feeea6ba649d2a86cc2` | 宿主/容器代码一致，可作为 R2-01 回收基线 |
@@ -89,7 +89,7 @@
 3. **文档漂移**：生产开关已经全开，但生产 README/AGENTS 仍写“发布关闭”。
 4. **数据库无 migration ledger**：schema 变更只有 `IF NOT EXISTS`，无法验证历史 checksum 或安全升级。
 5. **部署工具失效**：`deploy_preview.sh` 仍声明 Phase 0 不部署；`vps_check.sh` 假定的 SSH key 当前 BatchMode 认证失败。
-6. **本地不可复现**：缺依赖、无 Docker daemon、无 GitHub 认证；不能把 VPS 同时当唯一开发机、构建机和生产机而没有 staging 隔离。
+6. **本地不可复现**：缺依赖、无 Docker daemon、无持久 GitHub 认证；不能把 VPS 同时当唯一开发机、构建机和生产机而没有 staging 隔离。
 7. **兼容性仍有缺口**：当前 137 tests 没有锁住全局 FIFO、旧合集会话、18+ 偏好、hold/resume、undo、多目的地、代理和 Dashboard 等语义。
 8. **单文件再次膨胀**：repository、Bot UI 和 Telegram publish adapter 已成为新的热点，需要按端口/用例拆分而非再加 facade。
 
