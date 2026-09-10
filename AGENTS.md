@@ -1,32 +1,35 @@
 # 视频转发机器人 — 项目说明（供 Agent 参考）
 
-> 本文件面向后续接手该项目的开发/运维 Agent，说明已实现功能、架构、关键技术点与已知问题、以及未来方向。
-> 最后更新：2026-09-01（当前生产基线 + 完整重构/功能/UI 技术方案）
+> 本文件面向后续接手该项目的开发/运维 Agent，说明生产事实、强制规则和历史背景。
+> 最后更新：2026-09-10（TGVIO V2 重构重新基线）
 >
-> **阅读顺序**：第 0 节和第 11 节以后是当前权威执行说明；第 1～9 节保留大量已实现功能与历史踩坑，若与权威章节冲突，以权威章节为准。
+> **阅读顺序**：先完整阅读第 0 节和 [`docs/refactor-v2/`](docs/refactor-v2/README.md)。第 1～21 节是旧 `telegram-video-forwarder` 架构及其执行历史，仅用于追溯；其中任何“当前”“下一步”“已部署”表述都不得覆盖 V2 文档与实时只读审计结果。
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- 当前分支：`main`。2026-09-01 00:20 CST 生产已部署 `f144a13 fix(ui): restore button navigation`，修复 `7fde66b` 将 Telegram 顶层/设置/帮助/子页改为 command-first 的 UI 回归；`fe59b1e` 仅恢复首页按钮，`f144a13` 才完整恢复 command-first 之前的按钮式 Bot 导航。生产容器 `APP_COMMIT=f144a13`、`running`、`restart=0`、Docker health=`healthy`；GitHub 后续 `85e61e9` 仅修复测试隔离，不含运行代码，因此无需为该 commit 重建生产。
-- 生产项目目录：`/root/telegram-video-forwarder`；容器：`telegram-video-forwarder`。当前 schema `[1..9]`、`integrity=ok`、incomplete/claims 均为 0；宿主/容器关键 UI 源码 hash 与 `f144a13` 一致，启动日志正常。生产容器完整测试在隔离 fake pipeline 的 test-only `DISK_ENFORCE=false` 下 **259 tests 全通过**，真实 bot 进程仍确认 `DISK_ENFORCE=true`。本轮未修改 `.env`、`session/`、`downloads/` 内容。
-- 生产 VPS 上的 Git 元数据可能仍显示旧提交 `651b48e`，**不能只依据远端 `git log` 判断实际部署版本**；应对比实际源码哈希、容器镜像和启动日志。
-- 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`downloads/`、数据库及运行数据以 VPS 为准；代码发生差异时先只读比对并保留生产新增逻辑，再合并回本地/GitHub，禁止直接用旧本地版本覆盖生产。
+- V2 权威入口：[`docs/refactor-v2/README.md`](docs/refactor-v2/README.md)。功能保证以 [`FEATURE_CONTRACT.md`](docs/refactor-v2/FEATURE_CONTRACT.md) 为验收合同；实施顺序以 [`ROADMAP.md`](docs/refactor-v2/ROADMAP.md) 为准；发布遵守 [`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md)。
+- 2026-09-10 V2 审计起点的本地 `main` 与 tracking `origin/main` 都是 `750b3c1`，源码包仍是旧 `src/` 架构。HostDZire 当前实际生产是独立的 clean-room rewrite：项目 `/root/TGVIO`，Compose service/容器 `tgvio`，包名 `src/tgvio`。**两者不是同一源码基线。**
+- 2026-09-10 只读审计时，生产容器 `running`、Docker health=`healthy`、历史重启计数为 1；`.release-commit` 与 `APP_COMMIT` 都是本地 Git 不存在的短值 `03c84cd`。宿主/容器规范化源码 manifest 均为 `1da1d3d0a20d656af44eb2919d779a3eaa4a17996df62feeea6ba649d2a86cc2`。
+- 当前生产 SQLite 是 `/root/TGVIO/data/state.sqlite3`：`quick_check=ok`，13 个 Job（8 succeeded、4 cancelled、1 failed），审计时无运行中 progress。当前没有 migration ledger，`PRAGMA user_version=0`；禁止未经生产副本演练直接改变 schema。
+- 生产 TGVIO 的离线无网络临时测试容器 **137 tests 全通过**；测试容器未启动 Bot。当前生产 Bot、发布、受控 fixture、URL 和 Archive 非敏感开关均为 enabled，但生产旧文档对此有漂移。
+- **R2-01 前禁止修改本地旧 runtime 后覆盖 `/root/TGVIO`。** 下一步必须先把生产源码脱敏回收进 Git、建立 full commit/source manifest/image digest 的可追溯链，再做任何功能或结构变化。
+- 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`data/`、`downloads/`、`logs/`、数据库及运行数据以 VPS 为准；代码差异先只读比对并保留生产新增逻辑，再合并回本地/GitHub。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
 - **严禁同时启动两个使用同一 BOT_TOKEN/session 的实例**。本地测试必须使用 fake client 或独立测试 Bot；不能复制正在运行的生产 Telethon session 后连接。
 - 重构必须渐进进行，不做一次性重写。每个阶段都要保持可部署、可回滚，并且不得改变封面模式、合集、雪花、评论区线程、WebDAV 可靠性、顺序发布等现有语义，除非任务明确要求。
-- 每完成一个可独立交付的阶段：运行测试与语法检查 → 提交并推送 GitHub → 安全部署 VPS → 检查容器、日志、重启次数、源码哈希和核心流程。文档-only 修改无需重建容器。
+- 每完成一个可独立交付的代码阶段：characterization/测试与语法检查 → 提交并推送 GitHub → 构建唯一 release → 安全部署 HostDZire → 检查容器、日志、重启次数、full commit、源码 manifest、SQLite 和核心流程。**每个 release build 必须同阶段传到 VPS；实验/失败 build 不算 release。** 文档-only 修改无需构建或重启容器。
 - 本文中的复选框：`[ ]` 表示未实现；完成后改为 `[x]`，并在条目后写提交哈希、日期和必要迁移说明。不要把“写了代码但没测试/没部署”标为完成。
 - `.gitignore` 虽保留了 `AGENTS.md` 规则，但该文件已被 Git 跟踪，因此修改会正常进入提交。提交前必须持续脱敏；不得因文件已跟踪而写入 VPS 密码、token、session 或服务凭证。
 
-## 1. 项目概述
+## 1. 历史项目概述（非当前生产基线）
 
 Telegram 机器人（Python / Telethon / MTProto 直连，Docker 部署）。用户把视频/图片**转发给机器人**，机器人**下载到本地后重新上传**到目标频道（独立副本，源频道删除不影响已发布内容）。也可发送 **URL**（抖音/B站/YouTube 等，yt-dlp 下载）后发布。
 
-- 项目目录：`/root/telegram-video-forwarder`
-- 容器：`telegram-video-forwarder`（生产环境当前运行；任何变更前仍需重新只读确认）
+- 历史项目目录：`/root/telegram-video-forwarder`（已不是当前生产目录）
+- 历史容器：`telegram-video-forwarder`（已不是当前生产容器）
 - 机器人：`@messAround_bot`（id 8915753494），目标频道 `@messFaround`（「瞎几把整」）
 
-## 2. 目录结构
+## 2. 历史目录结构
 
 ```
 telegram-video-forwarder/
@@ -2091,3 +2094,15 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 - 兼容策略：不修改、删除或重写既有 migration；`source_profiles` / `source_events` 历史表和 repository 兼容 DAO 保留给已部署 schema、迁移自检和旧记录读取使用，但运行时不再注册来源监听，也不会从这些表恢复或创建自动来源任务。
 - 影响范围：手动私聊转发、合集会话、URL 下载、发布目的地 Profiles、WebDAV、去重、超限分卷、Dashboard、metrics 与 Webhook 均保持原语义，不因自动来源退役而改变。
 - 后续入口：本条记录作为部署后的 docs-only follow-up 提交并推送，不为记录本身再次重建或重启生产；生产运行 commit 仍是 `55baaad`。若未来重新需要来源监听，必须作为全新功能重新立项，先确认权限模型、合规边界和测试/迁移方案；不得复活已删除的旧 S1 runtime，也不得在无明确授权时新增 Telegram 个人账号会话。
+
+### 2026-09-10 - V2 规划与生产只读审计
+
+- 状态：R2-00 文档已在本地起草；在 GitHub 认证恢复并成功 push 前保持 `IN PROGRESS`，不得标为已交付。本轮没有 release build，因此不重建或重启生产。
+- 基线：本地 `main=origin/main=750b3c1` 是旧 `src/` 架构；HostDZire 实际生产位于 `/root/TGVIO`，容器/Compose service 为 `tgvio`，包名 `src/tgvio`。两者不是同一源码基线。
+- 生产证据：审计时容器 `running`、health=`healthy`、历史 restart=1；`.release-commit` 与 `APP_COMMIT` 均为本地 Git 不存在的短值 `03c84cd`。宿主/容器规范化源码 manifest 都是 `1da1d3d0a20d656af44eb2919d779a3eaa4a17996df62feeea6ba649d2a86cc2`。
+- 数据证据：`/root/TGVIO/data/state.sqlite3` 的 `quick_check=ok`；13 个 Job（8 succeeded、4 cancelled、1 failed），审计时无运行中 progress。当前无 migration ledger，`PRAGMA user_version=0`。
+- 测试：用当前生产镜像、只读挂载宿主源码与测试、`--network none` 启动临时测试容器，137 项测试全部通过，且未启动 Telegram Bot。domain 边界静态检查未发现 Telethon/SQLite/HTTP 反向 import。
+- 功能结论：生产 TGVIO 已有 durable Job/PublishPlan/effect journal、Telegram 发布、Archive V2、URL、恢复、诊断等能力；但旧合集会话/文字、spoiler 偏好、严格 FIFO、分片并发上传、pause/hold、undo、分页失败中心、动态 Archive、多目的地、代理和 Dashboard 等仍需按功能合同逐项恢复。
+- 文档：新增 `docs/refactor-v2/` 的现状、功能合同、目标架构、R2-00～R2-10 路线图和 HostDZire 发布协议；旧入口已显式降级为历史资料。
+- 安全：未读取或修改 `.env`、Telegram session、运行媒体或 WebDAV/代理凭据，未把用户提供的 SSH 密码写入代码、Git 或文档。后续应改用专用 SSH key，并轮换已在对话中暴露的密码。
+- 下一步：R2-01 只做生产源码脱敏回收、Git full commit、source/image 可追溯与行为等价部署；不得顺手更改功能或 schema。

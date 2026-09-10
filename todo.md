@@ -1,34 +1,20 @@
-# 项目 TODO / 历史交接清单
+# 项目 TODO / 历史交接清单（归档）
 
-> 面向后续接手本项目的 Agent / 开发者。
-> 最后更新：2026-09-01。
-> **状态说明：本文件是 2026-08-15 时点遗留清单，不再作为当前 roadmap 的权威来源。当前架构、完成状态、生产验收和下一步以 `AGENTS.md` 为准。下面已把截至 2026-09-01 可以明确映射的旧待办同步为现状，避免重复开发。**
-
----
-
-## 0. 版本基线（重要，2026-08-15）
-
-- **GitHub 仓库**：`https://github.com/Xioaruan912/TG_Upload_bot.git`（remote `origin`，main 分支，凭据在 `~/.git-credentials`）
-- **生产 VPS**：HostDZire（root/密码见用户提供；容器 `telegram-video-forwarder`，`docker compose up -d --build` 部署）
-- **本机/生产基线一致**：本机工作区 = VPS 生产版本（含 v13 webdav 功能 + caption 水印 footer + `/webdav` 命令 v13.1）
-- **注意**：`~/deploy_vps.sh` 部署目标是**旧 VPS**；新生产是 HostDZire，需手动 tar+scp 部署（见下方工作流）
-- **WebDAV 配置不再写 .env**：运行中 `/webdav` 命令配置，持久化 `session/webdav.json`（gitignore）
-
-## 0.1 部署到新生产 VPS 的工作流（HostDZire）
-
-```bash
-cd /root
-tar czf /tmp/tg_deploy.tgz --exclude=.git --exclude=session --exclude=downloads --exclude=__pycache__ telegram-video-forwarder
-sshpass -p '<PASS>' scp -P 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null /tmp/tg_deploy.tgz root@<VPS_IP>:/tmp/
-sshpass -p '<PASS>' ssh -p 22 -o StrictHostKeyChecking=no -o UserKnownHostsFile=/dev/null root@<VPS_IP> \
-  'cd /root && tar xzf /tmp/tg_deploy.tgz && cd telegram-video-forwarder && docker compose up -d --build'
-```
-- 验证：`docker ps` 容器 `Up`；日志出现 `Bot commands registered` + `Bot started`
-- `session/webdav.json` 是运行时配置，需单独同步或直接在 VPS 上生成
+> 最后更新：2026-09-10。
+> **本文件不再是 roadmap，也不得作为部署手册执行。** 当前权威入口是 [`docs/refactor-v2/README.md`](docs/refactor-v2/README.md)，阶段任务见 [`docs/refactor-v2/ROADMAP.md`](docs/refactor-v2/ROADMAP.md)，功能保证见 [`docs/refactor-v2/FEATURE_CONTRACT.md`](docs/refactor-v2/FEATURE_CONTRACT.md)。下文仅保存旧架构功能与历史决策，避免重构时遗忘语义。
 
 ---
 
-## 1. 做了什么（已完成）
+## 0. 当前替代基线
+
+- V2 审计起点 `750b3c1` 是旧架构；HostDZire 实际生产位于 `/root/TGVIO`，容器为 `tgvio`，两者不一致。
+- 禁止使用旧 tar/`sshpass`/关闭 host-key 校验的部署示例；新发布协议见 [`docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md)。
+- 当前下一步是 R2-01 生产源码回收，不是从下方旧 TODO 任取功能实现。
+- `.env`、session、SQLite、媒体、日志及任何密码都不进入 Git 或发布包。
+
+---
+
+## 1. 历史旧架构做过什么（不代表当前 TGVIO 已等价）
 
 ### 核心功能
 - [x] **转发重传**：用户转发视频/图片给 bot → 下载到本地 → 重新上传到目标频道 `@messFaround`（独立副本，源频道删除不影响）

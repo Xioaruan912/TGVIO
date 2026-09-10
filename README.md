@@ -6,11 +6,15 @@
 
 > English summary: A self-hosted Telegram media relay built on Telethon/MTProto. Forward videos or images to a bot, or submit an HTTP(S) URL, then download, optionally back up, and republish the media to a destination channel.
 
+> **Development baseline notice (2026-09-10):** this checkout's pre-V2 baseline (`750b3c1`) is the legacy implementation and is not the source currently running on HostDZire. Production runs the separate TGVIO rewrite under `/root/TGVIO`. Do not deploy the legacy runtime over production. The evidence-backed V2 recovery and refactoring plan starts at [`docs/refactor-v2/README.md`](docs/refactor-v2/README.md).
+
 Telegram Video Forwarder 是一个面向个人或小型受控部署的 Telegram 媒体中转机器人：把视频、图片转发给机器人，或发送一个 HTTP(S) 链接，机器人会将媒体下载到本地，再重新上传到指定频道。
 
 项目使用 **Telethon / MTProto**，不依赖官方 Bot API 的小文件上传路径；下载、发布、备份、队列和状态反馈均在同一个可审计的 asyncio 进程中完成。
 
-## 当前范围
+## 历史实现范围
+
+本节及后续能力说明描述的是本地旧实现及 V2 必须审查的兼容语义，不是对当前生产 TGVIO 功能等价的声明。生产现状与逐项状态见 [`CURRENT_STATE.md`](docs/refactor-v2/CURRENT_STATE.md) 和 [`FEATURE_CONTRACT.md`](docs/refactor-v2/FEATURE_CONTRACT.md)。
 
 - 支持：授权用户的私聊媒体转发、相册、合集会话、URL 下载、目标频道发布、可选 WebDAV 备份和只读 Dashboard。
 - 自动来源频道监听已经退役：当前版本不提供 `/sources`，不监听第三方频道，不回扫来源历史，也不使用 Telegram 个人账号 session。
