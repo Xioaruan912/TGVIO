@@ -252,6 +252,8 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("--network none", scripts)
         self.assertIn("database backup hash mismatch", scripts)
         self.assertIn("rollback image tag mismatch", scripts)
+        self.assertIn("GIT_ASKPASS", scripts)
+        self.assertIn("getpass.getpass", scripts)
 
     def test_known_hosts_contains_only_the_pinned_alias(self) -> None:
         lines = [

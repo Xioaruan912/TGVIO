@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import argparse
 from datetime import datetime, timezone
+import getpass
 import json
 import os
 from pathlib import Path
@@ -45,6 +46,7 @@ def _run(
     cwd: Path | None = None,
     capture: bool = False,
     input_text: str | None = None,
+    env: dict[str, str] | None = None,
 ) -> subprocess.CompletedProcess[str]:
     return subprocess.run(
         args,
@@ -53,6 +55,7 @@ def _run(
         text=True,
         input=input_text,
         capture_output=capture,
+        env=env,
     )
 
 
@@ -148,6 +151,65 @@ def _remote_json(command: list[str], remote_command: str) -> dict[str, object]:
     return value
 
 
+def _read_origin_main(repo: Path, env: dict[str, str]) -> str:
+    completed = _run(
+        ["git", "ls-remote", "origin", "refs/heads/main"],
+        cwd=repo,
+        capture=True,
+        env=env,
+    )
+    fields = completed.stdout.strip().split()
+    if len(fields) != 2 or fields[1] != "refs/heads/main":
+        raise DeployError("unable to resolve live origin/main")
+    commit = fields[0]
+    if not re.fullmatch(r"[0-9a-f]{40}", commit):
+        raise DeployError("live origin/main is not a full Git commit")
+    return commit
+
+
+def _verify_live_origin(repo: Path, head: str, github_user: str) -> None:
+    base_env = dict(os.environ)
+    base_env["GIT_TERMINAL_PROMPT"] = "0"
+    try:
+        remote_commit = _read_origin_main(repo, base_env)
+    except subprocess.CalledProcessError:
+        token = os.getenv("TGVIO_GITHUB_TOKEN", "")
+        if not token:
+            if not sys.stdin.isatty():
+                raise DeployError(
+                    "private origin requires a protected TGVIO_GITHUB_TOKEN or an interactive terminal"
+                )
+            token = getpass.getpass("GitHub token for read-only origin verification: ")
+        if not token:
+            raise DeployError("GitHub token was not supplied")
+        if not github_user or any(character.isspace() for character in github_user):
+            raise DeployError("GitHub username is invalid")
+        with tempfile.TemporaryDirectory(prefix="tgvio-git-askpass-") as temporary:
+            askpass = Path(temporary) / "askpass.sh"
+            askpass.write_text(
+                "#!/bin/sh\n"
+                "case \"$1\" in\n"
+                "  *Username*) printf '%s\\n' \"$TGVIO_GIT_USERNAME\" ;;\n"
+                "  *Password*) printf '%s\\n' \"$TGVIO_GIT_TOKEN\" ;;\n"
+                "  *) exit 1 ;;\n"
+                "esac\n",
+                encoding="utf-8",
+            )
+            askpass.chmod(0o700)
+            authenticated_env = dict(base_env)
+            authenticated_env.update(
+                {
+                    "GIT_ASKPASS": str(askpass),
+                    "TGVIO_GIT_USERNAME": github_user,
+                    "TGVIO_GIT_TOKEN": token,
+                }
+            )
+            remote_commit = _read_origin_main(repo, authenticated_env)
+        del token
+    if remote_commit != head:
+        raise DeployError("HEAD is not the current live origin/main commit")
+
+
 def _verify_control_preflight(repo: Path, report: dict[str, object], head: str) -> tuple[str, str]:
     if not report.get("safe_to_deploy"):
         blockers = report.get("blockers")
@@ -189,12 +251,13 @@ def deploy(args: argparse.Namespace) -> int:
         repo,
         require_clean=True,
         require_pushed=True,
-        verify_remote=True,
+        verify_remote=False,
     )
     if repository["branch"] != "main" or repository["upstream"] != "origin/main":
         raise DeployError("production release must come from local main tracking origin/main")
     _run(["git", "diff", "--check", "HEAD^", "HEAD"], cwd=repo)
     head = str(repository["head"])
+    _verify_live_origin(repo, head, args.github_user)
     expected_source_manifest = source_manifest(repo)
     if git_source_manifest(repo, head) != expected_source_manifest:
         raise DeployError("working source manifest differs from the pushed commit")
@@ -264,6 +327,11 @@ def deploy(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--phase", default="R2-02", help="release phase, e.g. R2-02")
+    result.add_argument(
+        "--github-user",
+        default=os.getenv("TGVIO_GITHUB_USER", "Xioaruan912"),
+        help="non-secret GitHub username used only when private-origin verification prompts",
+    )
     result.add_argument(
         "--key",
         type=Path,

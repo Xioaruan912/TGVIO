@@ -62,6 +62,8 @@ python3 scripts/deploy_hostdzire.py --phase R2-02
 - 当前生产 commit 是候选 commit 的祖先，生产 source 与其 Git object 一致；
 - 控制端和 VPS 时钟偏差不超过五分钟。
 
+私有 GitHub origin 的 live ref 校验会先使用现有 credential helper；无可用凭据时在 TTY 隐藏提示中读取一次 token。受控 CI 也可注入 protected `TGVIO_GITHUB_TOKEN`。该值只进入短生命周期 Git 子进程环境；askpass 文件本身不含秘密，结束后自动删除，且不会修改 Git credential 配置。
+
 发布只从 `git archive <full-commit>` 生成源码包，不会打包 dirty worktree。控制端和 VPS 会分别检查 archive hash、危险成员、凭据模式、源码 manifest、lock 与 Dockerfile hash。
 
 ## 5. 远端状态机
