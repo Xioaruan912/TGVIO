@@ -248,9 +248,18 @@ src/tgvio/
 ## Local checks
 
 ```bash
-python -m tgvio.main --check
-python -m unittest discover -s tests -v
+sh scripts/check_foundation.sh
 ```
+
+For a clean, pushed checkout, the isolated Docker diagnostic build is:
+
+```bash
+sh scripts/build_check.sh
+```
+
+It runs the test image with `--network none`, inspects the minimal runtime
+image, never reads production configuration and never starts the Bot. It is a
+test build, not a production release.
 
 ## Deployment
 
@@ -259,3 +268,15 @@ Deployment credentials are never copied into Git. The production target is
 release must follow the backup, single-instance cutover, verification and
 rollback protocol in
 [`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md).
+
+The only formal release entrypoint is:
+
+```bash
+python3 scripts/deploy_hostdzire.py --phase R2-02
+```
+
+It accepts only a clean full commit already present at live `origin/main`,
+builds and tests the candidate on HostDZire without production mounts or
+network, creates three rollback points, recreates the sole service once, and
+writes a non-secret release manifest. Operational details are in
+[`RELEASE_TOOLING.md`](docs/refactor-v2/RELEASE_TOOLING.md).

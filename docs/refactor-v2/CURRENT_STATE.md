@@ -2,6 +2,7 @@
 
 > 审计时间：2026-09-11（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
+> 阶段说明：本文件的生产事实仍是 R2-01；R2-02 构建/交付工具正在提交前验收，只有正式 release 后验完成后才更新生产基线。
 
 ## 1. 源码权威已经对齐
 
@@ -53,6 +54,7 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 当前依赖集合与部署前生产 image 完全一致。由于标准 Dockerfile 的无网络 apt 层没有缓存，本阶段用已验证生产 image 作为固定基底做等价 overlay；依赖锁和标准多阶段构建是 R2-02 的首要事项。
+- R2-02 提交前诊断构建（不是 release）已在 `--network none` 下通过 156 项测试；runtime 内容检查为 44 个源码文件加 2 个运行脚本、7 个锁定 Python 包，且无 tests、bytecode 或编译工具。生产仍保持上一条 R2-01 image，直到正式 release 后验完成。
 
 ## 3. 当前 TGVIO 已证明的能力
 
@@ -76,17 +78,16 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ## 5. 剩余优先风险
 
-1. **构建尚未完全可复现**：requirements 是范围而非 lock；无独立 test target，本机没有 Docker daemon。R2-02 必须首先处理。
-2. **发布工具失效**：`deploy_preview.sh` 仍只做 preview，`vps_check.sh` 仍含不安全/无效 SSH 假设；R2-02 前不得运行。
-3. **数据库无 migration ledger**：schema 变更仍只有 `CREATE TABLE IF NOT EXISTS`，R2-03 前禁止修改生产 schema。
-4. **认证仍是人工临时路径**：需要专用 SSH key、pinned known_hosts 和凭据轮换。
-5. **功能兼容仍有缺口**：严格 FIFO、合集会话/文字、spoiler 偏好、并发分片上传、hold/resume、undo、分页失败中心、动态 Archive、多目的地、代理和 Dashboard 仍为合同项。
-6. **热点再次膨胀**：repository、Bot UI、Telegram publish 与 WebDAV adapter 需要在行为锁定后渐进拆分。
+1. **R2-02 尚未完成生产闭环**：hashed lock、多阶段 image 和 fail-closed 发布工具已经实现，但在 full commit 推送、唯一 release 与 HostDZire 后验前仍不能视为生产交付链。
+2. **数据库无 migration ledger**：schema 变更仍只有 `CREATE TABLE IF NOT EXISTS`，R2-03 前禁止修改生产 schema；R2-02 对未知 schema 直接阻断。
+3. **凭据仍需轮换**：专用 SSH key 与 pinned known_hosts 已可用，但此前在会话中暴露的 SSH/GitHub 凭据仍需在不影响发布链后轮换。
+4. **功能兼容仍有缺口**：严格 FIFO、合集会话/文字、spoiler 偏好、并发分片上传、hold/resume、undo、分页失败中心、动态 Archive、多目的地、代理和 Dashboard 仍为合同项。
+5. **热点再次膨胀**：repository、Bot UI、Telegram publish 与 WebDAV adapter 需要在行为锁定后渐进拆分。
 
 ## 6. 当前禁止事项
 
 - 禁止把 legacy tag 的旧 `src/` 与当前 `src/tgvio` 混合成双入口。
-- 禁止直接运行回收进来的 preview/旧 SSH 部署脚本。
+- 正式发布只能在代码提交并推送后运行新的 fail-closed 入口；dirty/unpushed 工作树只能做无网络诊断构建。
 - 禁止在生产 DB 副本演练和 checksum runner 完成前引入 migration。
 - 禁止为测试启动第二个使用生产 Bot token/session 的实例。
 - 禁止把 SSH/GitHub/Telegram/WebDAV/代理凭据写入脚本、示例、Git、命令输出或发布记录。

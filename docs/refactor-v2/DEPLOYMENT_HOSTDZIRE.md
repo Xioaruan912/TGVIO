@@ -14,9 +14,9 @@
 | 当前项目目录 | `/root/TGVIO` |
 | 当前 Compose service / container | `tgvio` |
 | 当前 SQLite | `/root/TGVIO/data/state.sqlite3` |
-| 建议发布归档目录 | `/root/TGVIO-releases` |
+| 版本化发布目录 | `/root/TGVIO-releases` |
 
-2026-09-10 审计时密码认证可用，但 BatchMode key 认证不可用。用户提供的密码不得固化；R2-02 应安装专用 SSH public key、固定 host key，并在确认 key 登录后轮换已经在会话中暴露的密码。旧脚本中的 `sshpass` 和 `StrictHostKeyChecking=no` 不得继续使用。
+2026-09-11 已生成 HostDZire 专用 key、把受限 public key 安装到 VPS、固定 ED25519 host key，并验证 `BatchMode=yes` 登录。私钥只位于控制端 `/root/.ssh/tgvio_hostdzire_ed25519`，不进入仓库或发布包。已在会话中暴露的旧密码仍应轮换；旧脚本中的 `sshpass` 和 `StrictHostKeyChecking=no` 已禁止。
 
 推荐本机 SSH 配置只引用私钥路径，不保存秘密：
 
@@ -127,7 +127,11 @@ cutover 前创建并验证：
 5. 只有 migration/recovery/singleton lease 成功后才连接 Telegram。
 6. 将 `.release-commit` 更新为 full commit；短 hash 只用于显示，不能作为唯一证据。
 
-R2-02 后建议用原子 `current` symlink 指向版本化 release，并让 Compose 显式引用批准的 image digest；在此之前不得假定这些机制已经存在。
+R2-02 发布工具使用原子 `current` symlink 指向版本化 release，并让 Compose 显式引用批准 image 的本地 immutable repository digest。首个 R2-02 release 完成后，以生产后验和 manifest 作为该机制已经接管的证据。
+
+## 8.1 自动化入口
+
+构建、正式发布、只读检查与回滚的唯一命令及 fail-closed 语义见 [RELEASE_TOOLING.md](RELEASE_TOOLING.md)。其中 `deploy_hostdzire.py` 不提供 release-only 模式：一旦构建通过并取得正式 release 身份，同一调用必须继续完成 HostDZire 交付和后验。
 
 ## 9. 强制后验
 

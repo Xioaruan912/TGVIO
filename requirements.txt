@@ -1,5 +1,6 @@
-aiosqlite>=0.20,<1
-telethon>=1.40,<2
-cryptg>=0.4,<1
-yt-dlp>=2025.1,<2027
-
+# Direct application dependencies. Keep these versions aligned with
+# requirements.lock; production/release installs must use the hashed lock.
+aiosqlite==0.22.1
+telethon==1.44.0
+cryptg==0.6.0
+yt-dlp==2026.8.19

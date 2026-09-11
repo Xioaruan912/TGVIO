@@ -1,18 +1,18 @@
 # 视频转发机器人 — 项目说明（供 Agent 参考）
 
 > 本文件面向后续接手该项目的开发/运维 Agent，说明生产事实、强制规则和历史背景。
-> 最后更新：2026-09-11（R2-01 生产源码收权完成）
+> 最后更新：2026-09-11（R2-02 可复现交付链实施中）
 >
 > **阅读顺序**：先完整阅读第 0 节和 [`docs/refactor-v2/`](docs/refactor-v2/README.md)。第 1～21 节是旧 `telegram-video-forwarder` 架构及其执行历史，仅用于追溯；其中任何“当前”“下一步”“已部署”表述都不得覆盖 V2 文档与实时只读审计结果。
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
-- V2 权威入口：[`docs/refactor-v2/README.md`](docs/refactor-v2/README.md)。功能保证以 [`FEATURE_CONTRACT.md`](docs/refactor-v2/FEATURE_CONTRACT.md) 为验收合同；实施顺序以 [`ROADMAP.md`](docs/refactor-v2/ROADMAP.md) 为准；发布遵守 [`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md)。
+- V2 权威入口：[`docs/refactor-v2/README.md`](docs/refactor-v2/README.md)。功能保证以 [`FEATURE_CONTRACT.md`](docs/refactor-v2/FEATURE_CONTRACT.md) 为验收合同；实施顺序以 [`ROADMAP.md`](docs/refactor-v2/ROADMAP.md) 为准；发布遵守 [`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md)，构建/交付入口见 [`RELEASE_TOOLING.md`](docs/refactor-v2/RELEASE_TOOLING.md)。
 - R2-01 已于 2026-09-11 交付：生产 clean-room runtime 已由 full commit `40a8cde65bc196d880336995dbea61fbe3388b2f` 接管并推送 GitHub；退役旧树由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留。后续 docs-only closure commit 可以领先生产 runtime commit，但不因此构建或重启。
 - HostDZire 当前项目 `/root/TGVIO`、Compose service/容器 `tgvio`、包名 `src/tgvio`。生产 `.release-commit` 与容器 `APP_COMMIT` 均为上述 full commit，image ID 为 `sha256:e570bf3b6b8be4977bf3406b4f4ded42d70bf6ec9b3286425fa5cbd218892421`；容器 `running`、health=`healthy`、restart=0、单实例。Git/宿主/容器规范化 Python 源码 manifest 均为 `3274cc070dc4ef76519e4e2efc478385872e36c92f377b3946b70bac2183bddf`。
 - 当前生产 SQLite 是 `/root/TGVIO/data/state.sqlite3`：`quick_check=ok`，13 个 Job（8 succeeded、4 cancelled、1 failed），关联非终态 Job 的 progress 为 0。当前没有 migration ledger，`PRAGMA user_version=0`；禁止未经生产副本演练直接改变 schema。
 - 精确 R2-01 release image 的离线无网络临时测试容器 **137 tests 全通过**（8.634s）；测试容器未启动 Bot。当前生产 Bot、发布、受控 fixture、URL 和 Archive 非敏感开关均为 enabled。
-- R2-01 已恢复源码/Git/image/schema 可追溯链。下一步是 R2-02 可复现构建与强制交付链；在此之前不得直接运行回收进来的 `deploy_preview.sh` 或 `vps_check.sh`，也不得顺手修改功能或 schema。
+- R2-02 正在建立可复现构建与强制交付链。正式发布只能从 clean、已推送的 `origin/main` 运行 `scripts/deploy_hostdzire.py`；dirty worktree 只能做无网络诊断构建。R2-03 前仍不得修改功能或 schema。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`data/`、`downloads/`、`logs/`、数据库及运行数据以 VPS 为准；代码差异先只读比对并保留生产新增逻辑，再合并回本地/GitHub。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
 - **严禁同时启动两个使用同一 BOT_TOKEN/session 的实例**。本地测试必须使用 fake client 或独立测试 Bot；不能复制正在运行的生产 Telethon session 后连接。

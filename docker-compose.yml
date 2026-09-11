@@ -1,23 +1,38 @@
 services:
   tgvio:
+    image: ${TGVIO_IMAGE:?set TGVIO_IMAGE through the release env file}
     build:
       context: .
+      target: runtime
       args:
-        APP_COMMIT: ${APP_COMMIT:-unknown}
+        APP_COMMIT: ${APP_COMMIT:?set APP_COMMIT through the release env file}
+        RELEASE_ID: ${RELEASE_ID:-local}
+        SOURCE_MANIFEST: ${SOURCE_MANIFEST:-unknown}
+        REQUIREMENTS_LOCK_SHA256: ${REQUIREMENTS_LOCK_SHA256:-unknown}
     container_name: tgvio
     restart: unless-stopped
-    env_file: .env
+    env_file:
+      - path: ${TGVIO_ENV_FILE:?set TGVIO_ENV_FILE to the runtime environment file}
+        required: true
     environment:
+      APP_COMMIT: ${APP_COMMIT:?set APP_COMMIT through the release env file}
       TZ: Asia/Shanghai
-      PYTHONPATH: /app/src
+      PYTHONPATH: /app/src:/opt/tgvio/site-packages
     volumes:
-      - ./data:/app/data
-      - ./downloads:/app/downloads
-      - ./session:/app/session
-      - ./logs:/app/logs
+      - type: bind
+        source: ${TGVIO_HOST_DATA_DIR:?set the shared data directory}
+        target: /app/data
+      - type: bind
+        source: ${TGVIO_HOST_DOWNLOAD_DIR:?set the shared download directory}
+        target: /app/downloads
+      - type: bind
+        source: ${TGVIO_HOST_SESSION_DIR:?set the shared session directory}
+        target: /app/session
+      - type: bind
+        source: ${TGVIO_HOST_LOG_DIR:?set the shared log directory}
+        target: /app/logs
     logging:
       driver: json-file
       options:
         max-size: "20m"
         max-file: "3"
-

@@ -1,6 +1,6 @@
 # TGVIO 完全重构 V2
 
-> 状态：R2-00、R2-01 已交付（2026-09-11）；下一阶段 R2-02
+> 状态：R2-00、R2-01 已交付（2026-09-11）；R2-02 实施中
 > 适用范围：`TG_Upload_bot` Git 仓库与 HostDZire 上的 TGVIO 生产实例
 > 权威性：从本文件建立之日起，新重构工作以本目录为准；旧 `docs/REFACTORING.md`、`docs/R0_BASELINE.md`、`todo.md` 和 `AGENTS.md` 的历史阶段记录仅用于追溯。
 
@@ -39,6 +39,7 @@
 - [TARGET_ARCHITECTURE.md](TARGET_ARCHITECTURE.md)：目标模块、依赖、状态机、事务与恢复模型。
 - [ROADMAP.md](ROADMAP.md)：按依赖排序的实施阶段、验收与回滚边界。
 - [DEPLOYMENT_HOSTDZIRE.md](DEPLOYMENT_HOSTDZIRE.md)：每个 release build 到 HostDZire 的强制交付协议。
+- [RELEASE_TOOLING.md](RELEASE_TOOLING.md)：R2-02 的构建分类、唯一发布入口、证据与回滚操作。
 
 ## 5. 完成定义
 
@@ -55,6 +56,6 @@
 ## 6. 当前工作纪律
 
 - R2-00 已完成规划文档交付；R2-01 已把生产 clean-room runtime 回收至 Git，并完成行为等价 release 与 HostDZire 后验。
-- 下一阶段执行 R2-02“可复现构建与强制交付链”，不是直接实现新功能。
+- 当前执行 R2-02“可复现构建与强制交付链”，不是直接实现新功能。
 - 生产 runtime release 为 `40a8cde65bc196d880336995dbea61fbe3388b2f`；后续 docs-only 提交可以领先，但不因此重建容器。
 - 文档中的密码、token、Authorization、代理/WebDAV 凭据一律视为缺陷；主机地址、端口、用户和目录不是秘密，可记录用于自动化。
