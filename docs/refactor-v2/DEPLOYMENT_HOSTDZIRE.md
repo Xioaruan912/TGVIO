@@ -127,7 +127,7 @@ cutover 前创建并验证：
 5. 只有 migration/recovery/singleton lease 成功后才连接 Telegram。
 6. 将 `.release-commit` 更新为 full commit；短 hash 只用于显示，不能作为唯一证据。
 
-R2-02 发布工具使用原子 `current` symlink 指向版本化 release，并让 Compose 显式引用批准 image 的本地 immutable repository digest。首个 R2-02 release 完成后，以生产后验和 manifest 作为该机制已经接管的证据。
+R2-02 发布工具使用原子 `current` symlink 指向版本化 release，并让 Compose 显式引用批准 image 的本地 immutable repository digest。首个 release `r2-02-569926b-20260911T063133Z` 已完成生产后验并证明该机制接管；见 [R2-02_RELEASE.md](evidence/R2-02_RELEASE.md)。
 
 ## 8.1 自动化入口
 

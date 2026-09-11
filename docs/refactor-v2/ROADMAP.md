@@ -27,7 +27,7 @@ characterization -> implementation -> offline gates -> Git push
 |---|---|---|---|
 | R2-00 | DELIVERED | 现状、功能合同、目标架构、路线图、部署协议 | 文档基线 |
 | R2-01 | DELIVERED | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
-| R2-02 | IN PROGRESS | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
+| R2-02 | DELIVERED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
 | R2-03 | NOT STARTED | 不可变 migration ledger 与 repository 拆分 | DB-02 |
 | R2-04 | NOT STARTED | durable scheduler、claim/lease、严格 FIFO | DB-03、PL-09、PL-10 |
 | R2-05 | NOT STARTED | durable intake 幂等、合集会话、文字与 spoiler 偏好 | IN-04～06、PL-06、ST-01 |
@@ -109,7 +109,7 @@ characterization -> implementation -> offline gates -> Git push
 - 配置 HostDZire 专用 SSH key、known_hosts pinning 和最小发布脚本；移除 `sshpass`、明文密码、`StrictHostKeyChecking=no`。
 - 发布包从已推送的 Git commit 生成，不从 dirty worktree 打 tar。
 - 新增 release manifest：full commit、UTC 时间、source manifest、image digest、migration range、测试摘要。
-- 未来采用 `/root/TGVIO-releases/<release-id>/` 版本化源码，运行卷继续由 `/root/TGVIO/{data,downloads,session,logs}` 或明确 shared 目录持有。
+- 采用 `/root/TGVIO-releases/<release-id>/` 版本化源码，运行卷继续由 `/root/TGVIO/{data,downloads,session,logs}` shared 目录持有。
 - 在 build 与 cutover 之间设置唯一性检查；候选容器只能执行离线测试，不能带生产 token 启动 Bot。
 
 ### 验收与回滚
@@ -119,13 +119,14 @@ characterization -> implementation -> offline gates -> Git push
 - 成功 release 自动完成远端备份、单次切换和后验；日志不回显 `.env`。
 - 回滚脚本可把 previous image/source 恢复，并按 migration 标记决定是否恢复 DB backup。
 
-### 当前进度（2026-09-11）
+### 交付结果（2026-09-11）
 
 - 已实现 hashed dependency lock、多阶段 `test`/`runtime` image、占位 Compose 校验、源码/架构/SQLite/image 门禁和 release manifest。
 - HostDZire 专用 key 与 ED25519 host-key pin 已完成独立验证；旧不安全 SSH 入口已改为 fail-closed wrapper。
-- 唯一 release 入口、版本化目录、三重回滚点、单实例 cutover、后验与显式 rollback 已进入提交前验收。
+- 唯一 release 入口、版本化目录、三重回滚点、单实例 cutover、后验与显式 rollback 已完成生产验收。
 - 提交前离线诊断 image 已通过 156 项测试与 46-file runtime 内容检查；它没有生产配置、网络或 release 身份，因此未部署。
-- 本阶段在 full commit 推送、唯一 release 部署和生产后验前保持 `IN PROGRESS`；不得提前把 DP-02 改为 `VERIFIED`。
+- Full commit `569926b53af19539b118daa93f95c58da2001637` 已推送，release `r2-02-569926b-20260911T063133Z` 已部署；正式 156 tests、生产 health/identity/source/schema/SQLite 后验和 rollback-check 全部通过。
+- DP-02 已改为 `VERIFIED`；完整证据见 [R2-02_RELEASE.md](evidence/R2-02_RELEASE.md)。
 
 ## 6. R2-03：Migration 接管与 SQLite 拆分
 

@@ -94,10 +94,10 @@
 | DB-03 | worker 使用 durable claim/lease/heartbeat；意外双进程也不能重复执行一个 Job | REQUIRED | 当前主要依赖单进程 task；需增加 singleton lease 和 claim |
 | OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | COVERED | runtime health/logging/diagnostic tests |
 | OB-02 | JSONL 与 Docker logs 有界轮转，日志不含 URL、caption、peer/user、路径和凭据 | COVERED | logging tests；每次发布继续做 secret scan |
-| DP-01 | 每个 release build 可追溯到 full Git commit、source manifest、image digest 和 DB schema | VERIFIED | R2-01 commit/release manifest/HostDZire 后验已建立完整链路 |
-| DP-02 | 每个通过门禁的 release build 都在同阶段交付 HostDZire，并完成回滚点与后验 | REQUIRED | R2-01 已人工满足一次；现有 deploy 脚本仍是 preview，R2-02 建立强制自动链 |
+| DP-01 | 每个 release build 可追溯到 full Git commit、source manifest、image digest 和 DB schema | VERIFIED | R2-01 建立源码权威；R2-02 machine manifest 与 HostDZire 后验验证完整链路 |
+| DP-02 | 每个通过门禁的 release build 都在同阶段交付 HostDZire，并完成回滚点与后验 | VERIFIED | R2-02 release `r2-02-569926b-20260911T063133Z` 已由唯一入口完成构建、三重回滚点、单实例切换与强制后验；见 [交付记录](evidence/R2-02_RELEASE.md) |
 | SC-01 | `.env/session/data/downloads/logs` 不进入 Git、镜像或发布包；秘密不出现在命令或日志 | COVERED | ignore 边界存在；必须持续扫描 |
-| SC-02 | 永远只有一个生产 Bot/session 实例；测试使用 fake 或 `--network none` | VERIFIED | 本轮 137 tests 在无网络临时容器运行 |
+| SC-02 | 永远只有一个生产 Bot/session 实例；测试使用 fake 或 `--network none` | VERIFIED | R2-02 正式 test image 在 `--network none` 下通过 156 tests，生产切换前后均为单实例 |
 
 ## 8. 明确退役或延后
 

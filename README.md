@@ -18,9 +18,11 @@ of growing behavior inside one large bot runtime.
 
 ## Current phase
 
-TGVIO is now the active production runtime. R2-01 restored source authority at
-full commit `40a8cde65bc196d880336995dbea61fbe3388b2f`; the same release is healthy on
-HostDZire. The current implemented path is:
+TGVIO is now the active production runtime. R2-01 restored source authority and
+R2-02 established the reproducible, fail-closed delivery chain. Production
+release `r2-02-569926b-20260911T063133Z` at full commit
+`569926b53af19539b118daa93f95c58da2001637` is healthy on HostDZire. The current
+implemented path is:
 
 ```text
 Telegram media / album
@@ -254,7 +256,7 @@ sh scripts/check_foundation.sh
 For a clean, pushed checkout, the isolated Docker diagnostic build is:
 
 ```bash
-sh scripts/build_check.sh
+scripts/build_check.sh
 ```
 
 It runs the test image with `--network none`, inspects the minimal runtime
@@ -269,7 +271,7 @@ release must follow the backup, single-instance cutover, verification and
 rollback protocol in
 [`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md).
 
-The only formal release entrypoint is:
+The formal release entrypoint proven by R2-02 is:
 
 ```bash
 python3 scripts/deploy_hostdzire.py --phase R2-02
@@ -279,4 +281,9 @@ It accepts only a clean full commit already present at live `origin/main`,
 builds and tests the candidate on HostDZire without production mounts or
 network, creates three rollback points, recreates the sole service once, and
 writes a non-secret release manifest. Operational details are in
-[`RELEASE_TOOLING.md`](docs/refactor-v2/RELEASE_TOOLING.md).
+[`RELEASE_TOOLING.md`](docs/refactor-v2/RELEASE_TOOLING.md); the first production
+acceptance record is
+[`R2-02_RELEASE.md`](docs/refactor-v2/evidence/R2-02_RELEASE.md). The next planned
+stage is R2-03 migration-ledger takeover; schema changes remain prohibited until
+its production-copy rehearsal passes. Each later code stage must update the
+explicit `--phase` only after its own release gates support that stage.

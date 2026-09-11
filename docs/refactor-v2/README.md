@@ -1,14 +1,14 @@
 # TGVIO 完全重构 V2
 
-> 状态：R2-00、R2-01 已交付（2026-09-11）；R2-02 实施中
+> 状态：R2-00、R2-01、R2-02 已交付（2026-09-11）；下一阶段为 R2-03
 > 适用范围：`TG_Upload_bot` Git 仓库与 HostDZire 上的 TGVIO 生产实例
 > 权威性：从本文件建立之日起，新重构工作以本目录为准；旧 `docs/REFACTORING.md`、`docs/R0_BASELINE.md`、`todo.md` 和 `AGENTS.md` 的历史阶段记录仅用于追溯。
 
 ## 1. 结论
 
-本次不是在旧 `src/bot.py` 上继续拆 facade，也不是再写第三套实现。HostDZire 已运行一套真正的 clean-room rewrite（包名 `tgvio`），它已经具备 durable Job、PublishPlan、side-effect journal、Telegram 发布、Archive V2、恢复、诊断和 137 项离线测试。V2 重构以这套生产源码为唯一代码基线，先把它完整、可验证地恢复进 Git，再按可回滚阶段继续治理。
+本次不是在旧 `src/bot.py` 上继续拆 facade，也不是再写第三套实现。HostDZire 正在运行 clean-room rewrite（包名 `tgvio`），它已经具备 durable Job、PublishPlan、side-effect journal、Telegram 发布、Archive V2、恢复、诊断，以及 156 项离线测试。V2 重构以这套生产源码为唯一代码基线，按可回滚阶段继续治理。
 
-在生产源码进入 Git、来源清单可复现之前，禁止修改本地旧运行代码后直接覆盖 `/root/TGVIO`。
+生产源码与来源清单现已进入 Git；后续仍禁止把本地旧运行代码直接覆盖 `/root/TGVIO`，所有代码交付必须走版本化 release。
 
 ## 2. 总目标
 
@@ -55,7 +55,8 @@
 
 ## 6. 当前工作纪律
 
-- R2-00 已完成规划文档交付；R2-01 已把生产 clean-room runtime 回收至 Git，并完成行为等价 release 与 HostDZire 后验。
-- 当前执行 R2-02“可复现构建与强制交付链”，不是直接实现新功能。
-- 生产 runtime release 为 `40a8cde65bc196d880336995dbea61fbe3388b2f`；后续 docs-only 提交可以领先，但不因此重建容器。
+- R2-00 已完成规划文档交付；R2-01 已把生产 clean-room runtime 回收至 Git；R2-02 已完成可复现构建与强制交付链。
+- 当前生产 release 为 `r2-02-569926b-20260911T063133Z`，runtime commit 为 `569926b53af19539b118daa93f95c58da2001637`；完整证据见 [R2-02_RELEASE.md](evidence/R2-02_RELEASE.md)。
+- 下一阶段是 R2-03“Migration 接管与 SQLite 拆分”；在生产数据库副本演练和 checksum migration runner 完成前不得改变 schema。
+- 后续 docs-only 提交可以领先生产 runtime commit，但不因此构建或重启容器。
 - 文档中的密码、token、Authorization、代理/WebDAV 凭据一律视为缺陷；主机地址、端口、用户和目录不是秘密，可记录用于自动化。

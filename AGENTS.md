@@ -1,18 +1,18 @@
 # 视频转发机器人 — 项目说明（供 Agent 参考）
 
 > 本文件面向后续接手该项目的开发/运维 Agent，说明生产事实、强制规则和历史背景。
-> 最后更新：2026-09-11（R2-02 可复现交付链实施中）
+> 最后更新：2026-09-11（R2-02 可复现交付链已交付）
 >
 > **阅读顺序**：先完整阅读第 0 节和 [`docs/refactor-v2/`](docs/refactor-v2/README.md)。第 1～21 节是旧 `telegram-video-forwarder` 架构及其执行历史，仅用于追溯；其中任何“当前”“下一步”“已部署”表述都不得覆盖 V2 文档与实时只读审计结果。
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
 - V2 权威入口：[`docs/refactor-v2/README.md`](docs/refactor-v2/README.md)。功能保证以 [`FEATURE_CONTRACT.md`](docs/refactor-v2/FEATURE_CONTRACT.md) 为验收合同；实施顺序以 [`ROADMAP.md`](docs/refactor-v2/ROADMAP.md) 为准；发布遵守 [`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md)，构建/交付入口见 [`RELEASE_TOOLING.md`](docs/refactor-v2/RELEASE_TOOLING.md)。
-- R2-01 已于 2026-09-11 交付：生产 clean-room runtime 已由 full commit `40a8cde65bc196d880336995dbea61fbe3388b2f` 接管并推送 GitHub；退役旧树由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留。后续 docs-only closure commit 可以领先生产 runtime commit，但不因此构建或重启。
-- HostDZire 当前项目 `/root/TGVIO`、Compose service/容器 `tgvio`、包名 `src/tgvio`。生产 `.release-commit` 与容器 `APP_COMMIT` 均为上述 full commit，image ID 为 `sha256:e570bf3b6b8be4977bf3406b4f4ded42d70bf6ec9b3286425fa5cbd218892421`；容器 `running`、health=`healthy`、restart=0、单实例。Git/宿主/容器规范化 Python 源码 manifest 均为 `3274cc070dc4ef76519e4e2efc478385872e36c92f377b3946b70bac2183bddf`。
+- R2-01 已恢复生产源码的 Git 权威；R2-02 已于 2026-09-11 交付可复现构建和强制发布链。生产 runtime full commit 为 `569926b53af19539b118daa93f95c58da2001637`，release 为 `r2-02-569926b-20260911T063133Z`；退役旧树仍由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留。完整证据见 [`R2-02_RELEASE.md`](docs/refactor-v2/evidence/R2-02_RELEASE.md)。后续 docs-only closure commit 可以领先生产 runtime commit，但不因此构建或重启。
+- HostDZire shared root 为 `/root/TGVIO`，current symlink 为 `/root/TGVIO-current`，Compose service/容器为 `tgvio`，包名为 `src/tgvio`。生产 `.release-commit` 与容器 `APP_COMMIT` 均为上述 full commit，runtime image ID 为 `sha256:59571703bf505b02fe19db6ba73835c905445ba6b3e23b6e2fa57a5fa87f34b7`；容器 `running`、health=`healthy`、restart=0、单实例。Git/宿主/容器规范化 Python 源码 manifest 均为 `3274cc070dc4ef76519e4e2efc478385872e36c92f377b3946b70bac2183bddf`。
 - 当前生产 SQLite 是 `/root/TGVIO/data/state.sqlite3`：`quick_check=ok`，13 个 Job（8 succeeded、4 cancelled、1 failed），关联非终态 Job 的 progress 为 0。当前没有 migration ledger，`PRAGMA user_version=0`；禁止未经生产副本演练直接改变 schema。
-- 精确 R2-01 release image 的离线无网络临时测试容器 **137 tests 全通过**（8.634s）；测试容器未启动 Bot。当前生产 Bot、发布、受控 fixture、URL 和 Archive 非敏感开关均为 enabled。
-- R2-02 正在建立可复现构建与强制交付链。正式发布只能从 clean、已推送的 `origin/main` 运行 `scripts/deploy_hostdzire.py`；dirty worktree 只能做无网络诊断构建。R2-03 前仍不得修改功能或 schema。
+- 精确 R2-02 正式 test image 在 `--network none` 下 **156 tests 全通过**（9.569s）；测试容器未启动 Bot。runtime image 的 46-file/7-package 离线检查通过，无 tests、bytecode、构建工具、秘密或运行数据。当前生产 Bot、发布、受控 fixture、URL 和 Archive 非敏感开关均为 enabled。
+- 正式发布只能从 clean、已推送的 `origin/main` 运行 `scripts/deploy_hostdzire.py`；dirty worktree 只能做无网络诊断构建。下一阶段是 R2-03 migration ledger 与 repository 拆分；生产副本演练及 checksum runner 完成前不得修改 schema，也不得顺手改变功能语义。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`data/`、`downloads/`、`logs/`、数据库及运行数据以 VPS 为准；代码差异先只读比对并保留生产新增逻辑，再合并回本地/GitHub。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
 - **严禁同时启动两个使用同一 BOT_TOKEN/session 的实例**。本地测试必须使用 fake client 或独立测试 Bot；不能复制正在运行的生产 Telethon session 后连接。
@@ -2117,4 +2117,14 @@ R0、R1、R2、R3、U1、U2、F1、F2、F3、F4、B1、D1、M1、DP1、S1、18.1
 - 生产：final preflight 的 active jobs/progress/archives 均为 0；单次停止/替换后容器 `running/healthy`、restart=0、单实例，full `APP_COMMIT`/`.release-commit` 正确，宿主/容器源码 manifest 都是 `3274cc070dc4ef76519e4e2efc478385872e36c92f377b3946b70bac2183bddf`。SQLite 仍为 `user_version=0`、`quick_check=ok`，Job/PublishStep/ArchivePackage 计数不变，启动日志无错误标记。
 - 外部副作用：本阶段 runtime 与原生产字节一致且无 schema 变化，因此没有制造真实媒体发布 smoke；Telegram readiness、历史持久 effect/archive 事实和精确 image 的全量离线测试作为本阶段验收。
 - 安全：SSH/GitHub 认证只经交互提示符使用，没有写入 Git、remote URL、credential helper、发布包或记录。已在对话中暴露的 SSH 密码和 GitHub token 应尽快轮换。
-- 下一步：R2-02 先锁依赖、增加 test/runtime targets、专用 SSH key、pinned known_hosts 和 fail-closed 一键发布；完成前不运行现有 preview/旧 SSH 脚本。
+- 当时下一步：锁依赖、增加 test/runtime targets、专用 SSH key、pinned known_hosts 和 fail-closed 一键发布；该工作已由下节 R2-02 完成。
+
+### 2026-09-11 - R2-02 可复现构建与强制交付链
+
+- 状态：R2-02 已交付。实现 commits `a7db291f580bac7348f00cef77643643f1d1d343`、`569926b53af19539b118daa93f95c58da2001637` 已推送 `origin/main`；DP-02 已由生产证据改为 `VERIFIED`。
+- 构建：固定 base digest、hashed dependency lock、多阶段 test/runtime targets、Compose placeholder、archive/source/schema/image 门禁和机器可读 manifest 已接管 release。正式 test image 在 `--network none` 下运行 156 tests（9.569s）全绿且未启动 Bot；runtime image 的 46-file/7-package 检查通过。
+- 发布：唯一入口从 pushed Git archive 构建 release `r2-02-569926b-20260911T063133Z`，在三次 fail-closed preflight 与三重回滚点后只 recreate 唯一 `tgvio` service 一次。`/root/TGVIO-current` 指向版本化 source；shared 运行卷未覆盖。
+- 生产后验：容器 `running/healthy`、restart=0、单实例；full `APP_COMMIT`、release metadata、runtime image ID 与 source manifest 精确匹配。启动和 Telegram-ready 标记存在，无 error marker。SQLite `quick_check=ok`，13 个 Job、`user_version=0` 和 schema hash 均未改变，所有 deploy blocker 为 0。
+- 回滚：SQLite backup、脱敏 source archive、远端 0600 `.env` 副本和 previous image tag 已验证；`scripts/rollback_hostdzire.sh --check r2-02-569926b-20260911T063133Z` 通过，未执行真实回滚。证据见 `docs/refactor-v2/evidence/R2-02_RELEASE.md`。
+- 安全：专用受限 SSH key 与 pinned ED25519 known-host 已接管远端访问；GitHub 私有 ref 验证只通过短生命周期隐藏认证。此前在会话中暴露的 SSH 密码和 GitHub tokens 未进入仓库/镜像/记录，仍必须轮换或撤销。
+- 下一步：R2-03 先在生产 SQLite 副本建立精确 schema fixture、backup/checksum migration runner 和 baseline ledger，再拆 repository；在演练通过前禁止修改生产 schema。

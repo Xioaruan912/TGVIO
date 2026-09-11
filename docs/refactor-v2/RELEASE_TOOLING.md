@@ -1,7 +1,9 @@
 # R2-02 构建与 HostDZire 交付工具
 
-> 状态：R2-02 实现中；本文描述本阶段唯一允许的构建、发布和回滚入口。
+> 状态：R2-02 已交付；本文描述后续阶段唯一允许的构建、发布和回滚入口。
 > 安全边界：任何命令都不得接收密码、Bot token、Telegram session、WebDAV/代理凭据或完整生产 `.env` 内容。
+
+首个正式 release `r2-02-569926b-20260911T063133Z` 已通过全部门禁、单实例切换和独立后验，交付证据见 [R2-02_RELEASE.md](evidence/R2-02_RELEASE.md)。后续代码阶段把 `--phase` 更新为对应路线图阶段；不得绕过本入口单独构建“正式镜像”。
 
 ## 1. 构建分类
 
@@ -10,7 +12,7 @@ TGVIO 明确区分三类 Docker 构建：
 | 类型 | 入口 | 是否有生产资格 | 是否传到 HostDZire |
 |---|---|---:|---:|
 | 离线测试 | `sh scripts/check_foundation.sh` 或 Docker `test` target | 否 | 否 |
-| 诊断构建 | `sh scripts/build_check.sh` | 否 | 否 |
+| 诊断构建 | `scripts/build_check.sh` | 否 | 否 |
 | 正式 release | `python3 scripts/deploy_hostdzire.py --phase R2-02` | 全部门禁通过后是 | 是，同一命令完成 |
 
 测试/诊断构建用于发现问题，不会得到 release 标记，也不会启动 Bot。只有来自已推送 `origin/main` full commit 的构建才能成为 release；正式入口不提供“只构建、不部署”开关，因此不会留下已批准但未交付 VPS 的 release image。
@@ -127,19 +129,19 @@ R2-02 是 migration-free release，生产 schema 必须保持 R2-01 指纹；sch
 生产只读检查：
 
 ```bash
-sh scripts/vps_check.sh
+scripts/vps_check.sh
 ```
 
 只验证某个已部署 release 的回滚资产，不切换生产：
 
 ```bash
-sh scripts/rollback_hostdzire.sh --check <release-id>
+scripts/rollback_hostdzire.sh --check <release-id>
 ```
 
 真正回滚是显式 destructive operation：
 
 ```bash
-sh scripts/rollback_hostdzire.sh --execute <release-id>
+scripts/rollback_hostdzire.sh --execute <release-id>
 ```
 
 如果 manifest 表明 schema 发生变化，工具拒绝普通回滚，必须显式增加 `--restore-db`。R2-02 不改变 schema，正常回滚不会恢复数据库，避免丢失 cutover 后的合法状态。脚本不会在失败 trap 中擅自重启或重复启动 Bot；SSH 中断后先只读审计，不重复执行 release。
