@@ -26,7 +26,7 @@ characterization -> implementation -> offline gates -> Git push
 | 阶段 | 状态 | 交付结果 | 主要合同 |
 |---|---|---|---|
 | R2-00 | DELIVERED | 现状、功能合同、目标架构、路线图、部署协议 | 文档基线 |
-| R2-01 | IN PROGRESS | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
+| R2-01 | DELIVERED | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
 | R2-02 | NOT STARTED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
 | R2-03 | NOT STARTED | 不可变 migration ledger 与 repository 拆分 | DB-02 |
 | R2-04 | NOT STARTED | durable scheduler、claim/lease、严格 FIFO | DB-03、PL-09、PL-10 |
@@ -88,6 +88,13 @@ characterization -> implementation -> offline gates -> Git push
 - 宿主、容器、Git full commit 与 image digest 四者可追溯。
 - 生产 health、restart delta、SQLite `quick_check` 和 Job 计数无异常。
 - 回滚到部署前 image/source；本阶段无 migration，数据库通常无需恢复，但备份仍保留。
+
+### 交付结果（2026-09-11）
+
+- 生产源码已由 full commit `40a8cde65bc196d880336995dbea61fbe3388b2f` 接管；旧树由 `legacy-telegram-video-forwarder-750b3c1` 保留。
+- 精确 release image 的 137 项无网络测试、compileall、依赖边界、foundation 和镜像禁入路径门禁通过。
+- Release `r2-01-40a8cde-20260911T004756Z` 已单实例部署 HostDZire；health、full APP_COMMIT、source manifest、SQLite 与启动日志后验通过。
+- 本阶段没有 migration 或功能变更；三重回滚点与构建限制见 [R2-01_RELEASE.md](evidence/R2-01_RELEASE.md)。
 
 ## 5. R2-02：可复现构建与强制交付链
 

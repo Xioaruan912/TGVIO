@@ -1,0 +1,38 @@
+{
+  "schema": "tgvio.release/v1",
+  "release_id": "r2-01-40a8cde-20260911T004756Z",
+  "git_commit": "40a8cde65bc196d880336995dbea61fbe3388b2f",
+  "git_ref_verified": "origin/main",
+  "git_archive_sha256": "a6e2e1b415b261e51a51774ffe91be9a0be555ff2fb87efdd425c3be5fbffdf3",
+  "source_manifest_algorithm": "find src -type f -name '*.py' -print0 | LC_ALL=C sort -z | xargs -0 sha256sum | sha256sum | cut -d' ' -f1",
+  "source_manifest": "3274cc070dc4ef76519e4e2efc478385872e36c92f377b3946b70bac2183bddf",
+  "requirements_sha256": "a2c95ca97f91ef742ebcd7e64b86de74fae94f0191caa62adc945d6cd6b3aae4",
+  "dependency_set_sha256": "f46c4131b71f187c8e1c2850cc3bcaaf9f95f0a6e98c41d93c0ece5342fa4f6d",
+  "build": {
+    "created_at": "2026-09-11T08:45:47.512165706+08:00",
+    "strategy": "verified-production-base-overlay",
+    "base_image_id": "sha256:690e5ff3a62b54e54b701b203884904c5e9e622845c893b081926f93950401a9",
+    "image_id": "sha256:e570bf3b6b8be4977bf3406b4f4ded42d70bf6ec9b3286425fa5cbd218892421",
+    "standard_dockerfile_offline_attempt": "failed_without_image_at_apt_cache_miss"
+  },
+  "gates": {
+    "unittest": {
+      "tests": 137,
+      "seconds": 8.634,
+      "status": "passed",
+      "network": "none",
+      "bot_started": false
+    },
+    "compileall": "passed",
+    "dependency_boundaries": "passed",
+    "foundation_check": "passed",
+    "runtime_forbidden_paths": "passed",
+    "secret_scan": "passed_with_documented_example_fixtures"
+  },
+  "database": {
+    "migration": "none",
+    "user_version_before": 0,
+    "user_version_after": 0,
+    "schema_sql_sha256": "d3ee6adf7d956c5b8e6b672727258aea5d8da28514cf9c5b5ee9f672548d7d7d"
+  }
+}

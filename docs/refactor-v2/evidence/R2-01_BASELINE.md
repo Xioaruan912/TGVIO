@@ -1,6 +1,6 @@
 # R2-01 生产源码回收基线
 
-> 状态：回收与离线门禁完成，等待 Git 推送、release build 和 HostDZire cutover。
+> 状态：`DELIVERED`。发布后证据见 [R2-01_RELEASE.md](R2-01_RELEASE.md)。
 > 证据时间：2026-09-11（UTC）；所有测试容器均未启动 Bot。
 
 ## 1. 回收来源
@@ -63,11 +63,9 @@ R2-00 记录的 `1da1d3d0…` 没有同时记录生成算法，无法由当前�
 - 工作树和生产快照的脱敏扫描只命中历史文档占位 host 与 `example.test` 的凭据 URL 拒绝测试；未发现 GitHub token、Telegram token、私钥或真实 secret assignment。
 - 工作树未发现 `.env`、session、SQLite 或其它运行数据；回收交付树未发现非普通文件。
 
-## 6. 待完成交付
+## 6. 交付完成
 
-本文件只证明回收内容和离线行为基线。R2-01 只有在以下事项全部完成后才能标为 `DELIVERED`：
-
-1. 回收提交与 legacy tag 推送 GitHub。
-2. 从已推送 full commit 生成唯一 release，建立 source/image/schema manifest。
-3. 创建 DB/source/image 三重回滚点并单实例切换 HostDZire。
-4. 核对 full `APP_COMMIT`、宿主/容器源码 manifest、health、restart delta、SQLite 和日志。
+- [x] 回收提交 `40a8cde65bc196d880336995dbea61fbe3388b2f` 与 legacy tag 已于 2026-09-11 推送 GitHub。
+- [x] 已从 pushed full commit 生成并验证唯一 release image；manifest 与 image digest 见发布记录。
+- [x] 已创建 DB/source/image 三重回滚点，并完成 HostDZire 单实例切换。
+- [x] full `APP_COMMIT`、宿主/容器源码 manifest、health、restart、SQLite 与日志后验全部通过。

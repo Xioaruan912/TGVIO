@@ -1,103 +1,93 @@
 # 当前状态审计
 
-> 审计时间：2026-09-10（Asia/Shanghai）
-> 审计方式：本地 Git/源码静态检查；HostDZire 只读 SSH；生产源码脱敏归档到本机临时目录；生产镜像的无网络临时测试容器。未读取 `.env` 内容、Telegram session、媒体文件或任何凭据。
+> 审计时间：2026-09-11（Asia/Shanghai）
+> 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
 
-## 1. 三个事实源并不一致
+## 1. 源码权威已经对齐
 
-| 范围 | 观测事实 | 结论 |
+| 范围 | 当前事实 | 结论 |
 |---|---|---|
-| 本地 Git 审计起点 | `main=origin/main=750b3c1`，旧包位于 `src/` | 这是退役架构及其后续修复，不是当前生产源码 |
-| GitHub 交付 | R2-00 规划提交 `bdf6a943e2c183843248e9974d3fb34a5c08eb2c` 已通过一次性交互认证推送 | 未持久化 GitHub 凭据；生产源码仍未进入 Git，须在 R2-01 回收 |
-| HostDZire | 项目 `/root/TGVIO`，容器/Compose service `tgvio` | 这是当前生产运行真相 |
-| 生产 release 标签 | `.release-commit` 与容器 `APP_COMMIT` 均为短值 `03c84cd` | 本地 Git 没有该对象，标签不足以证明源码来源 |
-| 生产源码 | 宿主与容器均为 44 个 Python 源文件，规范化源码 manifest `1da1d3d0a20d656af44eb2919d779a3eaa4a17996df62feeea6ba649d2a86cc2` | 宿主/容器代码一致，可作为 R2-01 回收基线 |
+| Git runtime 基线 | `40a8cde65bc196d880336995dbea61fbe3388b2f` 已推送 `origin/main` | 这是当前 TGVIO runtime 的完整 Git object |
+| 退役旧树 | annotated tag `legacy-telegram-video-forwarder-750b3c1` 指向 `750b3c1629a0d360df740337671b54b8749e2ce2` | 旧架构可追溯，但不再留在当前可启动树 |
+| HostDZire | 项目 `/root/TGVIO`，Compose service/container `tgvio` | 生产运行真相保持不变 |
+| 生产 release | `.release-commit` 与容器 `APP_COMMIT` 均为 full `40a8cde65bc196d880336995dbea61fbe3388b2f` | release 不再依赖无法解析的短值 |
+| 生产 image | `sha256:e570bf3b6b8be4977bf3406b4f4ded42d70bf6ec9b3286425fa5cbd218892421` | 可由 release manifest 与回滚基底追溯 |
+| Runtime 源码 | Git、生产宿主、运行容器的 44 个 Python 文件 manifest 均为 `3274cc070dc4ef76519e4e2efc478385872e36c92f377b3946b70bac2183bddf` | R2-01 已恢复唯一源码权威 |
 
-因此，V2 的首个技术任务不是改，而是恢复“生产源码 ↔ Git commit ↔ 镜像”的可验证链路。
+R2-00 记录的 `1da1d3d0…` 没有留下生成算法，已由 R2-01 的明确、可重复算法取代。原始 82 文件快照、逐文件 SHA-256、导入边界和发布记录见 [R2-01 evidence](evidence/R2-01_BASELINE.md)。
 
-## 2. 本地旧树基线
+runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMIT`；按照发布协议，它不产生应用 build，也不要求重启容器。
 
-- Python 源文件：57 个，约 20,169 行。
-- 测试文件：29 个，约 8,605 行。
-- 最大热点：
-  - `src/repository/sqlite.py`：4,273 行。
-  - `src/bot.py`：3,478 行。
-  - `src/media.py`：1,392 行。
-  - `src/handlers/settings.py`：1,099 行。
-  - `src/services/job_queue.py`：996 行。
-- 审计开始时，`docs/REFACTORING.md` 仍称下一阶段是 B1、schema 5，旧 `AGENTS.md` 顶部仍把 `/root/telegram-video-forwarder` 当生产目录；R2-00 已把这些入口改为历史提示。旧正文仍只可追溯，不能作为生产事实。
-- 宿主 Python 缺 `telethon`、`yt-dlp`、`python-dotenv`、`aiosqlite`，所以本地直接 unittest 的 import error 是开发环境缺依赖，不是代码回归。
-- 本机 Docker daemon 未运行，`docker compose config` 又因本地没有 `.env` 无法完整执行。这两个环境问题必须在 R2-01/R2-02 建立可复现开发容器后消除。
+## 2. 当前生产基线
 
-## 3. 当前生产基线
+### 2.1 运行状态
 
-### 3.1 运行状态
+- Release：`r2-01-40a8cde-20260911T004756Z`。
+- 容器 ID：`7a5e50354bdeffe4e7ed31023ee038f807262415dc6987d344318f69c393cbc5`。
+- Started-at：`2026-09-11T00:51:02.596876006Z`。
+- 状态：`running`，Docker health=`healthy`，当前容器 restart count=0；替换前容器的历史值为 1。
+- 同一 Compose project/service 下运行实例数为 1。
+- 启动日志有 bootstrap 与 Telegram-ready 标记，无 traceback/fatal/unhandled/exception marker。
+- Bot、自动发布、受控 fixture、URL intake 和 Archive 非敏感开关均为 enabled。
+- 完整构建、回滚和 cutover 证据见 [R2-01_RELEASE.md](evidence/R2-01_RELEASE.md)。
 
-- 地址：HostDZire（连接标识见部署文档）。
-- 项目：`/root/TGVIO`。
-- 容器：`tgvio`。
-- 容器状态：`running`，Docker health=`healthy`。
-- 观测时重启计数：1。需要在后续发布前查明是历史部署重启还是异常退出；不能把它误写成 0。
-- 当前非敏感功能开关：Bot、自动发布、受控发布、URL intake、Archive 均为 enabled。
-- 宿主/容器源码 manifest 一致。
+### 2.2 SQLite
 
-### 3.2 SQLite
+生产数据库仍为 `/root/TGVIO/data/state.sqlite3`（容器内 `/app/data/state.sqlite3`）。
 
-生产数据库为 `/root/TGVIO/data/state.sqlite3`（容器内 `/app/data/state.sqlite3`），不是旧文档的 `session/state.sqlite3`。
-
-- `quick_check=ok`。
-- 约 593,920 bytes。
-- 13 个 Job：8 succeeded、4 cancelled、1 failed。
+- `quick_check=ok`，约 593,920 bytes。
+- 13 个 Job：8 succeeded、4 cancelled、1 failed；非终态 Job 为 0。
 - PublishStep：23 succeeded、1 failed、1 pending。
-- ArchivePackage：10 committed、2 failed。
-- 审计时没有下载/分析/发布中的 progress。
-- 表包括 jobs/items/events、publish plans/steps/effects、archive packages/objects/events、job controls/progress、runtime health 和 Telegram reference cache。
-- `PRAGMA user_version=0`，没有 `schema_migrations`；当前通过一段大型 `CREATE TABLE IF NOT EXISTS` schema 启动。这是生产演进风险，必须由前向 baseline migration 安全接管，不能直接重建数据库。
+- ArchivePackage：10 committed、2 failed；活动 Archive 为 0。
+- `job_progress` 保留 13 条历史投影，但关联非终态 Job 的 progress 为 0。
+- `PRAGMA user_version=0`，仍没有 migration ledger。
+- 规范化 schema SQL SHA-256 为 `d3ee6adf7d956c5b8e6b672727258aea5d8da28514cf9c5b5ee9f672548d7d7d`；R2-01 前后完全一致。
+- R2-01 SQLite backup 使用 backup API，且在旧容器停止后生成并通过 `quick_check`。
 
-### 3.3 代码与测试
+### 2.3 代码、测试与镜像
 
-- 生产 TGVIO：44 个 Python 源文件，约 10,054 行。
-- 测试：23 个文件，约 4,520 行。
-- 最大热点：
-  - `infrastructure/sqlite.py`：1,392 行。
-  - `adapters/telegram/bot_ui.py`：1,099 行。
-  - `adapters/telegram/publish_transport.py`：740 行。
-  - `adapters/webdav_archive.py`：530 行。
-  - `application/archive_executor.py`：506 行。
-- domain 包静态检查未发现 Telethon/SQLite/HTTP 反向依赖。
-- 使用当前生产镜像、只读挂载宿主 `src/tests/scripts`、`--network none` 运行：137 tests，全部通过（约 9.6 秒）。该测试容器没有启动 Telegram Bot。
-- 生产镜像不包含 tests，这是正确的 release 镜像边界；R2-02 应增加独立 test target，而不是把测试塞回生产镜像。
+- TGVIO runtime：44 个 Python 源文件；tests：23 个文件。
+- 最大热点仍是 `infrastructure/sqlite.py`、`adapters/telegram/bot_ui.py`、`adapters/telegram/publish_transport.py`、`adapters/webdav_archive.py` 和 `application/archive_executor.py`。
+- domain/application AST 依赖边界检查通过。
+- 精确 release image、只读 tests、`--network none`：137 tests，8.634 秒，全部通过；没有启动 Telegram Bot。
+- Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
+- 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
+- 当前依赖集合与部署前生产 image 完全一致。由于标准 Dockerfile 的无网络 apt 层没有缓存，本阶段用已验证生产 image 作为固定基底做等价 overlay；依赖锁和标准多阶段构建是 R2-02 的首要事项。
 
-## 4. 当前 TGVIO 已证明的能力
+## 3. 当前 TGVIO 已证明的能力
 
 - allowlist 后的单媒体/相册/文件/URL intake。
-- 相邻 Telegram 批次的 debounce 聚合与最大项数切分，不丢 overflow。
+- 相邻 Telegram 批次 debounce 聚合与最大项数切分，不丢 overflow。
 - 并发分片下载、原子 `.part`、磁盘预留、取消检查和重启恢复。
 - ffprobe 分析、faststart/remux、黑帧缩略图、可播放视频分段、二进制分卷。
 - 持久 PublishPlan、step/effect journal、partial/uncertain fail-closed 恢复。
-- cover/direct 两类计划、评论区根解析、spoiler 保留、caption/footer、媒体引用复用。
-- Archive V2 的计划、能力探测、PUT 校验、MOVE/commit marker、恢复和显式重试。
-- Job cancel/retry、持久进度、缓存保留/清理、stats/health/diag 和脱敏结构化日志。
+- cover/direct 计划、评论区根解析、spoiler、caption/footer 和媒体引用复用。
+- Archive V2 计划、能力探测、PUT 校验、MOVE/commit marker、恢复和显式重试。
+- Job cancel/retry、持久进度、缓存清理、stats/health/diag 和脱敏结构化日志。
 - 实际数据库中存在成功 Telegram 发布和成功 Archive 记录。
 
 完整合同与缺口见 [FEATURE_CONTRACT.md](FEATURE_CONTRACT.md)。
 
-## 5. 必须先解决的风险
+## 4. R2-01 已消除的阻塞
 
-1. **源码失联**：运行源码不属于本地可验证 Git object，不能安全继续开发或回滚。
-2. **release 标识弱**：短 `APP_COMMIT` 不能证明源码；生产文件时间还显示 release 标签之后有修改，必须以源码 manifest 回收并重新建立 full commit。
-3. **文档漂移**：生产开关已经全开，但生产 README/AGENTS 仍写“发布关闭”。
-4. **数据库无 migration ledger**：schema 变更只有 `IF NOT EXISTS`，无法验证历史 checksum 或安全升级。
-5. **部署工具失效**：`deploy_preview.sh` 仍声明 Phase 0 不部署；`vps_check.sh` 假定的 SSH key 当前 BatchMode 认证失败。
-6. **本地不可复现**：缺依赖、无 Docker daemon、无持久 GitHub 认证；不能把 VPS 同时当唯一开发机、构建机和生产机而没有 staging 隔离。
-7. **兼容性仍有缺口**：当前 137 tests 没有锁住全局 FIFO、旧合集会话、18+ 偏好、hold/resume、undo、多目的地、代理和 Dashboard 等语义。
-8. **单文件再次膨胀**：repository、Bot UI 和 Telegram publish adapter 已成为新的热点，需要按端口/用例拆分而非再加 facade。
+1. **源码失联**：生产 clean-room runtime 已成为可验证 Git commit。
+2. **release 标识弱**：full commit、source manifest、image ID、schema hash 与 release artifact 已形成链路。
+3. **文档漂移**：README/架构说明已区分 source-safe 默认值与生产 enabled flags。
+
+## 5. 剩余优先风险
+
+1. **构建尚未完全可复现**：requirements 是范围而非 lock；无独立 test target，本机没有 Docker daemon。R2-02 必须首先处理。
+2. **发布工具失效**：`deploy_preview.sh` 仍只做 preview，`vps_check.sh` 仍含不安全/无效 SSH 假设；R2-02 前不得运行。
+3. **数据库无 migration ledger**：schema 变更仍只有 `CREATE TABLE IF NOT EXISTS`，R2-03 前禁止修改生产 schema。
+4. **认证仍是人工临时路径**：需要专用 SSH key、pinned known_hosts 和凭据轮换。
+5. **功能兼容仍有缺口**：严格 FIFO、合集会话/文字、spoiler 偏好、并发分片上传、hold/resume、undo、分页失败中心、动态 Archive、多目的地、代理和 Dashboard 仍为合同项。
+6. **热点再次膨胀**：repository、Bot UI、Telegram publish 与 WebDAV adapter 需要在行为锁定后渐进拆分。
 
 ## 6. 当前禁止事项
 
-- 禁止从本地 `750b3c1` 直接打包覆盖 `/root/TGVIO`。
-- 禁止仅凭 `APP_COMMIT=03c84cd` 声称镜像来自某 Git commit。
-- 禁止在没有生产 DB 副本演练时引入 migration。
-- 禁止为测试启动第二个使用生产 Bot token/session 的容器。
-- 禁止把用户提供的 SSH 密码写进脚本、环境示例、Git、命令行参数或发布日志。
-- 禁止把“测试存在”当成旧功能已经等价；必须逐条满足功能合同。
+- 禁止把 legacy tag 的旧 `src/` 与当前 `src/tgvio` 混合成双入口。
+- 禁止直接运行回收进来的 preview/旧 SSH 部署脚本。
+- 禁止在生产 DB 副本演练和 checksum runner 完成前引入 migration。
+- 禁止为测试启动第二个使用生产 Bot token/session 的实例。
+- 禁止把 SSH/GitHub/Telegram/WebDAV/代理凭据写入脚本、示例、Git、命令输出或发布记录。
+- 禁止把 137 项现有测试等同于所有旧功能已恢复；必须继续按功能合同逐项验收。

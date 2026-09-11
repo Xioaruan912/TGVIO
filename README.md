@@ -18,7 +18,9 @@ of growing behavior inside one large bot runtime.
 
 ## Current phase
 
-TGVIO is now the active production runtime. The current implemented path is:
+TGVIO is now the active production runtime. R2-01 restored source authority at
+full commit `40a8cde65bc196d880336995dbea61fbe3388b2f`; the same release is healthy on
+HostDZire. The current implemented path is:
 
 ```text
 Telegram media / album

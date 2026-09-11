@@ -78,6 +78,7 @@ offline candidate smoke (--network none, Bot disabled)
 每次发布先记录，不修改状态：
 
 - 当前 container id、image digest、full `APP_COMMIT`、health、started-at、restart count。
+- VPS UTC/NTP 状态及与发布控制端的时钟偏差；身份比较使用 hash，不依赖 mtime。
 - 宿主与容器 source manifest 是否一致。
 - `docker compose ps`，以及最近启动日志是否有 traceback/fatal/unhandled。
 - SQLite 文件位置、权限、`PRAGMA quick_check`、schema/migration ledger。
@@ -91,6 +92,7 @@ offline candidate smoke (--network none, Bot disabled)
 - 有活动 Telegram send、下载、Archive PUT/MOVE 或未过期 claim。
 - SQLite check 失败、schema fingerprint 未知或 migration 演练失败。
 - 备份空间不足、source manifest 不一致或候选 commit 未推送。
+- 时钟偏差已大到影响 TLS、租约或 token expiry，且发布窗口内无法安全纠正。
 - 无法保证切换期间只有一个 Bot 实例。
 
 ## 6. 三重回滚点
