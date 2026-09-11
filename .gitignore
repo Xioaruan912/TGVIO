@@ -1,12 +1,17 @@
-__pycache__/
-*.pyc
 .env
-session/
-downloads/
 .venv/
-.agents/
-skills-lock.json
-AGENTS.md
-todo.md
-# Windows 复制文件产生的元数据垃圾（含全角冒号变体）
-*Zone.Identifier
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+data/
+downloads/
+session/
+logs/
+.release-commit
+*.sqlite3
+*.sqlite3-shm
+*.sqlite3-wal

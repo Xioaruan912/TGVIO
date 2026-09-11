@@ -1,0 +1,289 @@
+from __future__ import annotations
+
+from dataclasses import dataclass
+import os
+from pathlib import Path
+import urllib.parse
+
+
+class ConfigError(RuntimeError):
+    pass
+
+
+def _required(name: str) -> str:
+    value = os.getenv(name, "").strip()
+    if not value:
+        raise ConfigError(f"missing required environment variable: {name}")
+    return value
+
+
+def _bool(name: str, default: bool = False) -> bool:
+    raw = os.getenv(name)
+    if raw is None:
+        return default
+    value = raw.strip().lower()
+    if value in {"1", "true", "yes", "on"}:
+        return True
+    if value in {"0", "false", "no", "off"}:
+        return False
+    raise ConfigError(f"invalid boolean environment variable: {name}")
+
+
+def _int(name: str, default: int | None = None) -> int:
+    raw = os.getenv(name)
+    if raw is None and default is not None:
+        return default
+    if raw is None:
+        raise ConfigError(f"missing required environment variable: {name}")
+    try:
+        return int(raw.strip())
+    except ValueError as exc:
+        raise ConfigError(f"invalid integer environment variable: {name}") from exc
+
+
+def load_dotenv(path: str | Path = ".env") -> None:
+    """Minimal .env loader so configuration does not depend on import-time magic."""
+    env_path = Path(path)
+    if not env_path.is_file():
+        return
+    for line in env_path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line or line.startswith("#") or "=" not in line:
+            continue
+        key, value = line.split("=", 1)
+        key = key.strip()
+        if key and key not in os.environ:
+            os.environ[key] = value.strip()
+
+
+@dataclass(frozen=True)
+class Settings:
+    environment: str
+    run_bot: bool
+    publish_enabled: bool
+    live_fixture_enabled: bool
+    live_fixture_max_bytes: int
+    data_dir: Path
+    download_dir: Path
+    log_level: str
+    log_dir: Path
+    log_file_enabled: bool
+    log_max_bytes: int
+    log_backup_count: int
+    api_id: int
+    api_hash: str
+    bot_token: str
+    destination: str
+    allowed_users: tuple[int, ...]
+    channel_at: str
+    group_at: str
+    cover_mode: bool
+    cover_width: int
+    forward_caption: bool
+    worker_concurrency: int
+    telegram_download_workers: int
+    telegram_part_size_kb: int
+    telegram_shard_retries: int
+    batch_window_ms: int
+    batch_max_wait_ms: int
+    batch_max_items: int
+    disk_reserve_bytes: int
+    upload_part_bytes: int
+    cache_retention_hours: int
+    cache_cleanup_interval_minutes: int
+    url_enabled: bool
+    url_private_network_policy: str
+    archive_enabled: bool
+    archive_url: str
+    archive_remote_root: str
+    archive_user: str
+    archive_password: str
+    archive_poll_seconds: int
+    vps_host: str
+    vps_port: int
+    vps_user: str
+    vps_ssh_key: Path
+    vps_app_dir: str
+    github_repo: str
+    github_branch: str
+
+    @classmethod
+    def from_env(cls) -> "Settings":
+        users_raw = _required("ALLOWED_USERS")
+        try:
+            users = tuple(int(item.strip()) for item in users_raw.split(",") if item.strip())
+        except ValueError as exc:
+            raise ConfigError("invalid ALLOWED_USERS") from exc
+        if not users:
+            raise ConfigError("ALLOWED_USERS must contain at least one user id")
+        api_id = _int("API_ID")
+        if api_id <= 0:
+            raise ConfigError("API_ID must be positive")
+        cover_width = _int("COVER_WIDTH", 1280)
+        if not 128 <= cover_width <= 4096:
+            raise ConfigError("COVER_WIDTH out of range")
+        worker_concurrency = _int("TGVIO_WORKER_CONCURRENCY", 2)
+        if not 1 <= worker_concurrency <= 16:
+            raise ConfigError("TGVIO_WORKER_CONCURRENCY out of range")
+        telegram_download_workers = _int("TGVIO_TELEGRAM_DOWNLOAD_WORKERS", 8)
+        if not 1 <= telegram_download_workers <= 32:
+            raise ConfigError("TGVIO_TELEGRAM_DOWNLOAD_WORKERS out of range")
+        telegram_part_size_kb = _int("TGVIO_TELEGRAM_PART_SIZE_KB", 512)
+        if telegram_part_size_kb not in {64, 128, 256, 512}:
+            raise ConfigError("TGVIO_TELEGRAM_PART_SIZE_KB must be 64/128/256/512")
+        telegram_shard_retries = _int("TGVIO_TELEGRAM_SHARD_RETRIES", 3)
+        if not 0 <= telegram_shard_retries <= 10:
+            raise ConfigError("TGVIO_TELEGRAM_SHARD_RETRIES out of range")
+        batch_window_ms = _int("TGVIO_BATCH_WINDOW_MS", 1500)
+        if not 0 <= batch_window_ms <= 10_000:
+            raise ConfigError("TGVIO_BATCH_WINDOW_MS out of range")
+        batch_max_wait_ms = _int("TGVIO_BATCH_MAX_WAIT_MS", 5000)
+        if not max(1, batch_window_ms) <= batch_max_wait_ms <= 60_000:
+            raise ConfigError("TGVIO_BATCH_MAX_WAIT_MS out of range")
+        batch_max_items = _int("TGVIO_BATCH_MAX_ITEMS", 100)
+        if not 1 <= batch_max_items <= 500:
+            raise ConfigError("TGVIO_BATCH_MAX_ITEMS out of range")
+        disk_reserve_mb = _int("TGVIO_DISK_RESERVE_MB", 5120)
+        if disk_reserve_mb < 0:
+            raise ConfigError("TGVIO_DISK_RESERVE_MB must be >= 0")
+        upload_part_mb = _int("TGVIO_UPLOAD_PART_MB", 1900)
+        if not 16 <= upload_part_mb <= 1900:
+            raise ConfigError("TGVIO_UPLOAD_PART_MB out of range")
+        cache_retention_hours = _int("TGVIO_CACHE_RETENTION_HOURS", 24)
+        if not 1 <= cache_retention_hours <= 24 * 90:
+            raise ConfigError("TGVIO_CACHE_RETENTION_HOURS out of range")
+        cache_cleanup_interval_minutes = _int("TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES", 30)
+        if not 1 <= cache_cleanup_interval_minutes <= 24 * 60:
+            raise ConfigError("TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES out of range")
+        live_fixture_max_mb = _int("TGVIO_LIVE_FIXTURE_MAX_MB", 100)
+        if not 1 <= live_fixture_max_mb <= 512:
+            raise ConfigError("TGVIO_LIVE_FIXTURE_MAX_MB out of range")
+        log_level = os.getenv("TGVIO_LOG_LEVEL", "INFO").strip().upper() or "INFO"
+        if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
+            raise ConfigError("TGVIO_LOG_LEVEL must be DEBUG/INFO/WARNING/ERROR/CRITICAL")
+        log_max_mb = _int("TGVIO_LOG_MAX_MB", 20)
+        if not 1 <= log_max_mb <= 1024:
+            raise ConfigError("TGVIO_LOG_MAX_MB out of range")
+        log_backup_count = _int("TGVIO_LOG_BACKUP_COUNT", 5)
+        if not 1 <= log_backup_count <= 100:
+            raise ConfigError("TGVIO_LOG_BACKUP_COUNT out of range")
+        destination = _required("DEST_CHANNEL")
+        url_private_network_policy = os.getenv(
+            "TGVIO_URL_PRIVATE_NETWORK_POLICY",
+            "block",
+        ).strip().lower() or "block"
+        if url_private_network_policy not in {"allow", "warn", "block"}:
+            raise ConfigError("TGVIO_URL_PRIVATE_NETWORK_POLICY must be allow/warn/block")
+        archive_enabled = _bool("TGVIO_ARCHIVE_ENABLED", False)
+        archive_url = os.getenv("TGVIO_ARCHIVE_WEBDAV_URL", "").strip()
+        archive_user = os.getenv("TGVIO_ARCHIVE_WEBDAV_USER", "").strip()
+        archive_password = os.getenv("TGVIO_ARCHIVE_WEBDAV_PASSWORD", "")
+        archive_remote_root = (
+            os.getenv("TGVIO_ARCHIVE_REMOTE_ROOT", "TGVIO").strip().strip("/") or "TGVIO"
+        )
+        if any(
+            part in {".", ".."} or "\\" in part
+            for part in archive_remote_root.split("/")
+        ):
+            raise ConfigError("TGVIO_ARCHIVE_REMOTE_ROOT contains unsafe path component")
+        archive_poll_seconds = _int("TGVIO_ARCHIVE_POLL_SECONDS", 10)
+        if not 1 <= archive_poll_seconds <= 300:
+            raise ConfigError("TGVIO_ARCHIVE_POLL_SECONDS out of range")
+        if archive_enabled:
+            parsed = urllib.parse.urlsplit(archive_url)
+            if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+                raise ConfigError("TGVIO_ARCHIVE_WEBDAV_URL must be an absolute HTTP(S) URL")
+            if parsed.username or parsed.password:
+                raise ConfigError("TGVIO_ARCHIVE_WEBDAV_URL must not contain embedded credentials")
+            if not archive_user:
+                raise ConfigError(
+                    "TGVIO_ARCHIVE_WEBDAV_USER is required when archive is enabled"
+                )
+        channel_at = os.getenv("CHANNEL_AT", "").strip()
+        if not channel_at and destination.startswith("@"):
+            channel_at = destination
+        return cls(
+            environment=os.getenv("TGVIO_ENV", "development").strip() or "development",
+            run_bot=_bool("TGVIO_RUN_BOT", False),
+            publish_enabled=_bool("TGVIO_PUBLISH_ENABLED", False),
+            live_fixture_enabled=_bool("TGVIO_LIVE_FIXTURE_ENABLED", False),
+            live_fixture_max_bytes=live_fixture_max_mb * 1024 * 1024,
+            data_dir=Path(os.getenv("TGVIO_DATA_DIR", "/app/data")),
+            download_dir=Path(os.getenv("TGVIO_DOWNLOAD_DIR", "/app/downloads")),
+            log_level=log_level,
+            log_dir=Path(os.getenv("TGVIO_LOG_DIR", "/app/logs")),
+            log_file_enabled=_bool("TGVIO_LOG_FILE_ENABLED", True),
+            log_max_bytes=log_max_mb * 1024 * 1024,
+            log_backup_count=log_backup_count,
+            api_id=api_id,
+            api_hash=_required("API_HASH"),
+            bot_token=_required("BOT_TOKEN"),
+            destination=destination,
+            allowed_users=users,
+            channel_at=channel_at,
+            group_at=os.getenv("GROUP_AT", "").strip(),
+            cover_mode=_bool("COVER_MODE", True),
+            cover_width=cover_width,
+            forward_caption=_bool("FORWARD_CAPTION", False),
+            worker_concurrency=worker_concurrency,
+            telegram_download_workers=telegram_download_workers,
+            telegram_part_size_kb=telegram_part_size_kb,
+            telegram_shard_retries=telegram_shard_retries,
+            batch_window_ms=batch_window_ms,
+            batch_max_wait_ms=batch_max_wait_ms,
+            batch_max_items=batch_max_items,
+            disk_reserve_bytes=disk_reserve_mb * 1024 * 1024,
+            upload_part_bytes=upload_part_mb * 1024 * 1024,
+            cache_retention_hours=cache_retention_hours,
+            cache_cleanup_interval_minutes=cache_cleanup_interval_minutes,
+            url_enabled=_bool("TGVIO_URL_ENABLED", False),
+            url_private_network_policy=url_private_network_policy,
+            archive_enabled=archive_enabled,
+            archive_url=archive_url,
+            archive_remote_root=archive_remote_root,
+            archive_user=archive_user,
+            archive_password=archive_password,
+            archive_poll_seconds=archive_poll_seconds,
+            vps_host=os.getenv("VPS_HOST", "199.47.242.40").strip(),
+            vps_port=_int("VPS_PORT", 22),
+            vps_user=os.getenv("VPS_USER", "root").strip() or "root",
+            vps_ssh_key=Path(os.getenv("VPS_SSH_KEY", "/root/.ssh/id_ed25519")),
+            vps_app_dir=os.getenv("VPS_APP_DIR", "/root/TGVIO").strip() or "/root/TGVIO",
+            github_repo=os.getenv("GITHUB_REPO", "").strip(),
+            github_branch=os.getenv("GITHUB_BRANCH", "main").strip() or "main",
+        )
+
+    def safe_summary(self) -> dict[str, object]:
+        return {
+            "environment": self.environment,
+            "run_bot": self.run_bot,
+            "publish_enabled": self.publish_enabled,
+            "live_fixture_enabled": self.live_fixture_enabled,
+            "live_fixture_max_mb": self.live_fixture_max_bytes // (1024 * 1024),
+            "allowed_users_count": len(self.allowed_users),
+            "destination_kind": "username" if self.destination.startswith("@") else "id",
+            "cover_mode": self.cover_mode,
+            "forward_caption": self.forward_caption,
+            "worker_concurrency": self.worker_concurrency,
+            "telegram_download_workers": self.telegram_download_workers,
+            "telegram_part_size_kb": self.telegram_part_size_kb,
+            "telegram_shard_retries": self.telegram_shard_retries,
+            "batch_window_ms": self.batch_window_ms,
+            "batch_max_items": self.batch_max_items,
+            "disk_reserve_mb": self.disk_reserve_bytes // (1024 * 1024),
+            "upload_part_mb": self.upload_part_bytes // (1024 * 1024),
+            "cache_retention_hours": self.cache_retention_hours,
+            "log_level": self.log_level,
+            "log_file_enabled": self.log_file_enabled,
+            "log_max_mb": self.log_max_bytes // (1024 * 1024),
+            "log_backup_count": self.log_backup_count,
+            "url_enabled": self.url_enabled,
+            "url_private_network_policy": self.url_private_network_policy,
+            "archive_enabled": self.archive_enabled,
+            "archive_configured": bool(self.archive_url and self.archive_user),
+            "archive_remote_root_configured": bool(self.archive_remote_root),
+            "vps_host_configured": bool(self.vps_host),
+            "vps_ssh_key_configured": bool(str(self.vps_ssh_key)),
+            "github_repo_configured": bool(self.github_repo),
+        }
+

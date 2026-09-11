@@ -1,17 +1,23 @@
 services:
-  bot:
+  tgvio:
     build:
       context: .
       args:
         APP_COMMIT: ${APP_COMMIT:-unknown}
-    container_name: telegram-video-forwarder
+    container_name: tgvio
     restart: unless-stopped
-    stop_grace_period: 30s
     env_file: .env
     environment:
-      - TZ=Asia/Shanghai
-    ports:
-      - "${DASHBOARD_BIND:-127.0.0.1}:${DASHBOARD_PORT:-8787}:8787"
+      TZ: Asia/Shanghai
+      PYTHONPATH: /app/src
     volumes:
-      - ./session:/app/session
+      - ./data:/app/data
       - ./downloads:/app/downloads
+      - ./session:/app/session
+      - ./logs:/app/logs
+    logging:
+      driver: json-file
+      options:
+        max-size: "20m"
+        max-file: "3"
+

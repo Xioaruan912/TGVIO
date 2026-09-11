@@ -26,7 +26,7 @@ characterization -> implementation -> offline gates -> Git push
 | 阶段 | 状态 | 交付结果 | 主要合同 |
 |---|---|---|---|
 | R2-00 | DELIVERED | 现状、功能合同、目标架构、路线图、部署协议 | 文档基线 |
-| R2-01 | NOT STARTED | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
+| R2-01 | IN PROGRESS | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
 | R2-02 | NOT STARTED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
 | R2-03 | NOT STARTED | 不可变 migration ledger 与 repository 拆分 | DB-02 |
 | R2-04 | NOT STARTED | durable scheduler、claim/lease、严格 FIFO | DB-03、PL-09、PL-10 |

@@ -1,0 +1,129 @@
+from __future__ import annotations
+
+import hashlib
+from pathlib import Path
+from tempfile import TemporaryDirectory
+import unittest
+
+from tgvio.application.archive_planner import ArchivePlanner
+from tgvio.application.cache_cleanup import CacheCleanupService
+from tgvio.application.intake import IncomingMedia, IntakeService
+from tgvio.domain.job import JobState, MediaKind
+from tgvio.infrastructure.sqlite import SQLiteJobRepository
+
+
+class CacheCleanupTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.root = Path(self.tmp.name)
+        self.downloads = self.root / "downloads"
+        self.repo = SQLiteJobRepository(self.root / "state.sqlite3")
+        await self.repo.open()
+
+    async def asyncTearDown(self) -> None:
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _job_with_cache(self, state: JobState, *, payload: bytes = b"payload"):
+        job = await IntakeService(self.repo).accept(
+            owner_id=42,
+            destination="@channel",
+            media=[
+                IncomingMedia(
+                    kind=MediaKind.DOCUMENT,
+                    source="telegram:42:1",
+                    source_chat_id=42,
+                    source_message_id=1,
+                )
+            ],
+        )
+        job_dir = self.downloads / f"job-{job.id}"
+        job_dir.mkdir(parents=True, exist_ok=True)
+        local = job_dir / "000-file.bin"
+        local.write_bytes(payload)
+        job.items[0] = type(job.items[0])(
+            **{
+                field: getattr(job.items[0], field)
+                for field in job.items[0].__dataclass_fields__
+                if field not in {"local_path", "size_bytes", "sha256"}
+            },
+            local_path=str(local),
+            size_bytes=len(payload),
+            sha256=hashlib.sha256(payload).hexdigest(),
+        )
+        job.state = state
+        await self.repo.save(job)
+        return job, local
+
+    async def test_force_cleanup_removes_succeeded_cache_and_clears_local_path(self) -> None:
+        job, local = await self._job_with_cache(JobState.SUCCEEDED)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        result = await service.cleanup(force=True)
+        self.assertEqual(result.removed_jobs, 1)
+        self.assertEqual(result.removed_bytes, len(b"payload"))
+        self.assertFalse(local.exists())
+        loaded = await self.repo.get(job.id)
+        assert loaded is not None
+        self.assertIsNone(loaded.items[0].local_path)
+        self.assertTrue(loaded.items[0].metadata["cache_cleaned"])
+
+    async def test_force_cleanup_removes_cancelled_but_never_planned_or_failed(self) -> None:
+        cancelled, cancelled_path = await self._job_with_cache(JobState.CANCELLED, payload=b"cancel")
+        planned, planned_path = await self._job_with_cache(JobState.PLANNED, payload=b"plan")
+        failed, failed_path = await self._job_with_cache(JobState.FAILED, payload=b"failed")
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        result = await service.cleanup(force=True)
+        self.assertEqual(result.removed_jobs, 1)
+        self.assertFalse(cancelled_path.exists())
+        self.assertTrue(planned_path.exists())
+        self.assertTrue(failed_path.exists())
+        self.assertEqual((await self.repo.get(cancelled.id)).state, JobState.CANCELLED)
+        self.assertEqual((await self.repo.get(planned.id)).state, JobState.PLANNED)
+        self.assertEqual((await self.repo.get(failed.id)).state, JobState.FAILED)
+
+    async def test_uncommitted_archive_package_blocks_cleanup(self) -> None:
+        job, local = await self._job_with_cache(JobState.SUCCEEDED)
+        package = await self.repo.save_archive_plan(ArchivePlanner().plan(job))
+        self.assertEqual(package.state.value, "planned")
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        result = await service.cleanup(force=True)
+        self.assertEqual(result.removed_jobs, 0)
+        self.assertEqual(result.blocked_by_archive, 1)
+        self.assertTrue(local.exists())
+
+    async def test_non_force_cleanup_waits_for_retention_then_cleans(self) -> None:
+        job, local = await self._job_with_cache(JobState.SUCCEEDED)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        first = await service.cleanup(force=False)
+        self.assertEqual(first.removed_jobs, 0)
+        self.assertTrue(local.exists())
+        conn = self.repo._require()
+        await conn.execute(
+            "UPDATE jobs SET updated_at='2000-01-01 00:00:00' WHERE id=?",
+            (job.id,),
+        )
+        await conn.commit()
+        second = await service.cleanup(force=False)
+        self.assertEqual(second.removed_jobs, 1)
+        self.assertFalse(local.exists())
+
+    async def test_stats_reports_usage_eligibility_and_archive_block(self) -> None:
+        eligible, eligible_path = await self._job_with_cache(JobState.SUCCEEDED, payload=b"abc")
+        blocked, blocked_path = await self._job_with_cache(JobState.CANCELLED, payload=b"12345")
+        conn = self.repo._require()
+        await conn.execute(
+            "UPDATE jobs SET updated_at='2000-01-01 00:00:00' WHERE id IN (?,?)",
+            (eligible.id, blocked.id),
+        )
+        await conn.commit()
+        await self.repo.save_archive_plan(ArchivePlanner().plan(blocked))
+        stats = await CacheCleanupService(
+            self.repo,
+            self.downloads,
+            retention_hours=24,
+        ).stats()
+        self.assertEqual(stats.bytes_used, eligible_path.stat().st_size + blocked_path.stat().st_size)
+        self.assertEqual(stats.managed_dirs, 2)
+        self.assertEqual(stats.eligible_jobs, 1)
+        self.assertEqual(stats.blocked_by_archive, 1)
+

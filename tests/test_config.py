@@ -1,155 +1,225 @@
+from __future__ import annotations
+
+import os
+import tempfile
 import unittest
+from unittest.mock import patch
 
-from src.config import Settings, SettingsError
+from tgvio.config import ConfigError, Settings
 
 
-def base_env() -> dict[str, str]:
-    return {
-        "API_ID": "12345",
-        "API_HASH": "hash-value",
-        "BOT_TOKEN": "token-value",
-        "DEST_CHANNEL": "@example",
-        "ALLOWED_USERS": "42,43",
-    }
+BASE_ENV = {
+    "API_ID": "123456",
+    "API_HASH": "hash-value",
+    "BOT_TOKEN": "bot-token",
+    "DEST_CHANNEL": "@destination",
+    "ALLOWED_USERS": "42,43",
+}
 
 
 class SettingsTests(unittest.TestCase):
-    def test_required_values_fail_fast_without_echoing_secret(self) -> None:
-        env = base_env()
-        env.pop("BOT_TOKEN")
-        with self.assertRaises(SettingsError) as caught:
-            Settings.from_env(env, strict=True)
-        text = str(caught.exception)
-        self.assertIn("BOT_TOKEN", text)
-        self.assertNotIn("token-value", text)
-
-    def test_invalid_worker_and_part_size_ranges_fail(self) -> None:
-        env = base_env()
-        env["UPLOAD_WORKERS"] = "999"
-        with self.assertRaises(SettingsError):
-            Settings.from_env(env, strict=True)
-        env = base_env()
-        env["PART_SIZE_KB"] = "300"
-        with self.assertRaises(SettingsError):
-            Settings.from_env(env, strict=True)
-
-    def test_safe_summary_contains_no_identity_or_secret_values(self) -> None:
-        settings = Settings.from_env(base_env(), strict=True)
-        rendered = repr(settings.safe_summary())
-        self.assertNotIn("hash-value", rendered)
-        self.assertNotIn("token-value", rendered)
-        self.assertNotIn("@example", rendered)
-        self.assertNotIn("42", rendered)
-        self.assertEqual(settings.safe_summary()["destination_kind"], "username")
-
-    def test_legacy_compat_defaults_can_remain_non_strict(self) -> None:
-        settings = Settings.from_env({}, strict=False)
-        self.assertEqual(settings.api_id, 0)
-        self.assertEqual(settings.allowed_users, frozenset())
-
-    def test_url_private_network_policy_is_validated_and_safe_to_summarize(self) -> None:
-        env = base_env()
-        env["URL_PRIVATE_NETWORK_POLICY"] = "block"
-        settings = Settings.from_env(env, strict=True)
+    def test_defaults_are_safe_for_parallel_rewrite(self) -> None:
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            settings = Settings.from_env()
+        self.assertFalse(settings.run_bot)
+        self.assertFalse(settings.publish_enabled)
+        self.assertFalse(settings.live_fixture_enabled)
+        self.assertEqual(settings.live_fixture_max_bytes, 100 * 1024 * 1024)
+        self.assertEqual(settings.vps_host, "199.47.242.40")
+        self.assertEqual(settings.allowed_users, (42, 43))
+        self.assertEqual(settings.channel_at, "@destination")
+        self.assertEqual(settings.worker_concurrency, 2)
+        self.assertEqual(settings.batch_window_ms, 1500)
+        self.assertEqual(settings.batch_max_wait_ms, 5000)
+        self.assertEqual(settings.batch_max_items, 100)
+        self.assertEqual(settings.disk_reserve_bytes, 5120 * 1024 * 1024)
+        self.assertEqual(settings.upload_part_bytes, 1900 * 1024 * 1024)
+        self.assertEqual(settings.cache_retention_hours, 24)
+        self.assertEqual(settings.cache_cleanup_interval_minutes, 30)
+        self.assertEqual(settings.log_level, "INFO")
+        self.assertTrue(settings.log_file_enabled)
+        self.assertEqual(settings.log_max_bytes, 20 * 1024 * 1024)
+        self.assertEqual(settings.log_backup_count, 5)
+        self.assertFalse(settings.url_enabled)
         self.assertEqual(settings.url_private_network_policy, "block")
-        self.assertEqual(settings.safe_summary()["url_private_network_policy"], "block")
+        summary = settings.safe_summary()
+        self.assertNotIn("bot-token", repr(summary))
+        self.assertNotIn("hash-value", repr(summary))
+        self.assertTrue(summary["log_file_enabled"])
 
-        env["URL_PRIVATE_NETWORK_POLICY"] = "invalid"
-        with self.assertRaises(SettingsError):
-            Settings.from_env(env, strict=True)
-
-    def test_history_and_event_retention_are_bounded(self) -> None:
-        env = base_env()
-        env.update(HISTORY_RETENTION_DAYS="45", EVENT_RETENTION_DAYS="90")
-        settings = Settings.from_env(env, strict=True)
-        self.assertEqual(settings.history_retention_days, 45)
-        self.assertEqual(settings.event_retention_days, 90)
-        self.assertEqual(settings.safe_summary()["history_retention_days"], 45)
-
-        for key, value in (("HISTORY_RETENTION_DAYS", "0"), ("EVENT_RETENTION_DAYS", "91")):
-            invalid = base_env()
-            invalid[key] = value
-            with self.subTest(key=key), self.assertRaises(SettingsError):
-                Settings.from_env(invalid, strict=True)
-
-    def test_dashboard_requires_private_bind_and_strong_token(self) -> None:
-        env = base_env()
-        env.update(DASHBOARD_ENABLED="true", DASHBOARD_TOKEN="x" * 32)
-        settings = Settings.from_env(env, strict=True)
-        self.assertTrue(settings.dashboard_enabled)
-        self.assertEqual(settings.dashboard_socket, "session/dashboard.sock")
-        rendered = repr(settings.safe_summary())
-        self.assertNotIn("x" * 32, rendered)
-
-        invalid = dict(env, DASHBOARD_HOST="0.0.0.0")
-        with self.assertRaises(SettingsError):
-            Settings.from_env(invalid, strict=True)
-
-    def test_dashboard_public_bind_requires_explicit_flag_and_tcp(self) -> None:
-        env = base_env()
-        env.update(DASHBOARD_ENABLED="true", DASHBOARD_PUBLIC_BIND="true", DASHBOARD_HOST="0.0.0.0", DASHBOARD_SOCKET="", DASHBOARD_TOKEN="x" * 32)
-        self.assertEqual(Settings.from_env(env, strict=True).safe_summary()["dashboard_transport"], "tcp-public")
-        with self.assertRaises(SettingsError):
-            Settings.from_env(dict(env, DASHBOARD_SOCKET="session/dashboard.sock"), strict=True)
-        invalid = dict(env, DASHBOARD_TOKEN="too-short")
-        with self.assertRaises(SettingsError):
-            Settings.from_env(invalid, strict=True)
-
-    def test_dashboard_public_url_is_root_only_and_hidden_from_summary(self) -> None:
-        env = base_env()
-        env.update(
-            DASHBOARD_ENABLED="true",
-            DASHBOARD_TOKEN="x" * 32,
-            DASHBOARD_PUBLIC_URL="http://dashboard.example:8787",
-        )
-        settings = Settings.from_env(env, strict=True)
-        self.assertEqual(settings.dashboard_public_url, "http://dashboard.example:8787")
-        rendered = repr(settings.safe_summary())
-        self.assertTrue(settings.safe_summary()["dashboard_public_url_configured"])
-        self.assertNotIn("dashboard.example", rendered)
-
-        for url in (
-            "ftp://dashboard.example",
-            "http://user:pass@dashboard.example",
-            "http://dashboard.example/private",
-            "http://dashboard.example/?token=secret",
-            "http://dashboard.example/#secret",
+    def test_url_policy_is_explicit_and_validated(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_URL_ENABLED": "true",
+                "TGVIO_URL_PRIVATE_NETWORK_POLICY": "warn",
+            },
+            clear=True,
         ):
-            with self.subTest(url=url), self.assertRaises(SettingsError):
-                Settings.from_env(dict(env, DASHBOARD_PUBLIC_URL=url), strict=True)
-
-    def test_webhook_requires_https_and_hides_endpoint_and_token(self) -> None:
-        env = base_env()
-        env.update(
-            WEBHOOK_ENABLED="true",
-            WEBHOOK_URL="https://hooks.example.invalid/private",
-            WEBHOOK_TOKEN="s" * 32,
-        )
-        settings = Settings.from_env(env, strict=True)
-        rendered = repr(settings.safe_summary())
-        self.assertTrue(settings.webhook_enabled)
-        self.assertNotIn("hooks.example.invalid", rendered)
-        self.assertNotIn("s" * 32, rendered)
-
-        for url in (
-            "http://hooks.example.invalid/private",
-            "https://user:pass@hooks.example.invalid/private",
-            "https://hooks.example.invalid/private#secret",
+            settings = Settings.from_env()
+        self.assertTrue(settings.url_enabled)
+        self.assertEqual(settings.url_private_network_policy, "warn")
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_URL_PRIVATE_NETWORK_POLICY": "maybe"},
+            clear=True,
         ):
-            invalid = dict(env, WEBHOOK_URL=url)
-            with self.subTest(url=url), self.assertRaises(SettingsError):
-                Settings.from_env(invalid, strict=True)
+            with self.assertRaisesRegex(ConfigError, "URL_PRIVATE_NETWORK_POLICY"):
+                Settings.from_env()
 
-    def test_large_file_split_is_opt_in_and_bounded(self) -> None:
-        self.assertEqual(Settings.from_env(base_env(), strict=True).large_file_policy, "reject")
-        env = base_env()
-        env.update(LARGE_FILE_POLICY="split", SPLIT_PART_BYTES=str(64 * 1024 * 1024))
-        self.assertEqual(Settings.from_env(env, strict=True).large_file_policy, "split")
-        for key, value in (("LARGE_FILE_POLICY", "anything"), ("SPLIT_PART_BYTES", "1")):
-            invalid = dict(env, **{key: value})
-            with self.subTest(key=key), self.assertRaises(SettingsError):
-                Settings.from_env(invalid, strict=True)
+    def test_missing_secret_reports_name_not_value(self) -> None:
+        env = dict(BASE_ENV)
+        env.pop("BOT_TOKEN")
+        with patch.dict(os.environ, env, clear=True):
+            with self.assertRaisesRegex(ConfigError, "BOT_TOKEN"):
+                Settings.from_env()
 
+    def test_vps_key_is_a_path_not_secret_material(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp, patch.dict(
+            os.environ,
+            {**BASE_ENV, "VPS_SSH_KEY": f"{tmp}/id_ed25519"},
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        self.assertEqual(settings.vps_ssh_key.name, "id_ed25519")
 
-if __name__ == "__main__":
-    unittest.main()
+    def test_explicit_channel_at_overrides_destination_footer(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "CHANNEL_AT": "@pretty_name"},
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        self.assertEqual(settings.channel_at, "@pretty_name")
+
+    def test_worker_and_disk_guard_ranges_are_validated(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_WORKER_CONCURRENCY": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "WORKER_CONCURRENCY"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_DISK_RESERVE_MB": "-1"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "DISK_RESERVE_MB"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_BATCH_WINDOW_MS": "10001"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "BATCH_WINDOW_MS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_BATCH_WINDOW_MS": "2000",
+                "TGVIO_BATCH_MAX_WAIT_MS": "1000",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "BATCH_MAX_WAIT_MS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_BATCH_MAX_ITEMS": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "BATCH_MAX_ITEMS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_CACHE_RETENTION_HOURS": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "CACHE_RETENTION_HOURS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "CACHE_CLEANUP_INTERVAL_MINUTES"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_LOG_LEVEL": "TRACE"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "TGVIO_LOG_LEVEL"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_LOG_MAX_MB": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "TGVIO_LOG_MAX_MB"):
+                Settings.from_env()
+
+    def test_archive_is_disabled_by_default_and_secrets_are_not_in_summary(self) -> None:
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            settings = Settings.from_env()
+        self.assertFalse(settings.archive_enabled)
+        self.assertEqual(settings.archive_remote_root, "TGVIO")
+        self.assertEqual(settings.archive_poll_seconds, 10)
+        self.assertNotIn("archive_password", settings.safe_summary())
+
+    def test_enabled_archive_requires_safe_absolute_webdav_url_and_user(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_ARCHIVE_ENABLED": "true",
+                "TGVIO_ARCHIVE_WEBDAV_URL": "relative",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "ARCHIVE_WEBDAV_URL"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_ARCHIVE_ENABLED": "true",
+                "TGVIO_ARCHIVE_WEBDAV_URL": "https://dav.example.test/root",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "ARCHIVE_WEBDAV_USER"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_ARCHIVE_ENABLED": "true",
+                "TGVIO_ARCHIVE_WEBDAV_URL": "https://dav.example.test/root",
+                "TGVIO_ARCHIVE_WEBDAV_USER": "alice",
+                "TGVIO_ARCHIVE_WEBDAV_PASSWORD": "super-secret-password",
+            },
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        self.assertTrue(settings.archive_enabled)
+        self.assertTrue(settings.safe_summary()["archive_configured"])
+        self.assertNotIn("super-secret-password", repr(settings.safe_summary()))
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_UPLOAD_PART_MB": "1901"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "UPLOAD_PART_MB"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_LIVE_FIXTURE_MAX_MB": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "LIVE_FIXTURE_MAX_MB"):
+                Settings.from_env()
+
