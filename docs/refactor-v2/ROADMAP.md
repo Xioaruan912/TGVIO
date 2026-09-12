@@ -28,7 +28,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-00 | DELIVERED | 现状、功能合同、目标架构、路线图、部署协议 | 文档基线 |
 | R2-01 | DELIVERED | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
 | R2-02 | DELIVERED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
-| R2-03 | IN PROGRESS | 生产反馈修复；随后接管 migration ledger 与拆分 repository | DL-01、UI-01～02、AR-06、DB-02 |
+| R2-03 | DELIVERED | 生产反馈修复；接管 migration ledger 并拆分 repository | DL-01、UI-01～02、AR-06、DB-02 |
 | R2-04 | NOT STARTED | durable scheduler、claim/lease、严格 FIFO | DB-03、PL-09、PL-10 |
 | R2-05 | NOT STARTED | durable intake 幂等、合集会话、文字与 spoiler 偏好 | IN-04～06、PL-06、ST-01 |
 | R2-06 | NOT STARTED | 完整队列、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02、CT-04、PL-14 |
@@ -141,7 +141,7 @@ characterization -> implementation -> offline gates -> Git push
 - 并发 Telegram shard 重试耗尽后删除 partial 并自动回退一次单流下载；显式取消不得触发回退。
 - 修复宿主日志查询 wrapper 指向 runtime image 中不存在脚本的问题。
 
-本包不增加表、列、索引或 `user_version`，不改变发布顺序、PublishPlan、effect、Archive 提交或缓存保护语义。R2-03 总阶段在 migration ledger 和 repository 拆分完成前仍保持 `IN PROGRESS`。
+本包不增加表、列、索引或 `user_version`，不改变发布顺序、PublishPlan、effect、Archive 提交或缓存保护语义。R2-03A 已独立交付；后续 R2-03B 完成 migration ledger takeover 与 repository 拆分后，R2-03 总阶段于 2026-09-12 标记为 `DELIVERED`。
 
 - [x] R2-03A 已通过离线门禁、推送、正式构建、HostDZire 单实例部署和生产后验。代码提交 `a02e31c1b35673cfb9b8be54121c769026d38a9e`，2026-09-12，release `r2-03-a02e31c-20260912T044959Z`，migration=`none`；证据见 [R2-03A_UX_RELEASE.md](evidence/R2-03A_UX_RELEASE.md)。
 
@@ -160,7 +160,7 @@ characterization -> implementation -> offline gates -> Git push
 5. 按 Job/Publish/Archive/Control/Observability repository 拆分文件；保留同一短事务 API。
 6. 增加 schema/readiness/diagnostic 投影，不输出业务敏感字段。
 
-2026-09-12 本地 candidate 状态：
+2026-09-12 交付状态：
 
 - [x] 1～3 已实现：`0001_baseline.sql` 与生产已审计 schema hash 精确匹配；runner 使用 backup API、checksum ledger、精确 fingerprint takeover，未知 schema/checksum drift 均 fail closed。
 - [x] 4 已在**当前 HostDZire 生产数据库的一致性副本**上完成首次接管、重复 no-op、checksum 篡改、未知 schema、forward migration 中断与恢复。副本通过远端 read-only connection + SQLite backup API 备份到内存后直接流式传到控制端，不在生产主机落 rehearsal DB；23 Job / 42 PublishStep / 20 ArchivePackage / 179 ArchiveObject / 23 progress 在 takeover 前后完全一致。
@@ -168,9 +168,9 @@ characterization -> implementation -> offline gates -> Git push
 - [x] 6 已提供 `schema_status()`、schema runtime health/readiness 检查与 `scripts/rehearse_migration.py` 脱敏聚合报告；不输出 Job ID、用户、消息、媒体路径或秘密。
 - [x] 100/1000 Job owner-scoped query pressure 与 event-loop cooperative 门禁通过；沿用已有 `idx_jobs_owner_state`，本阶段不额外修改业务 schema/index。
 - [x] release tooling 已支持显式 `--migration 0001_baseline`；默认仍为 `none`，schema-changing postflight 强制 ledger + 目标 `user_version`，回滚继续要求恢复 pre-migration DB。
-- [ ] 正式阶段仍待 clean commit/push、release build、HostDZire preflight/三重 backup、单实例 cutover 与 postflight，因此 R2-03 总阶段继续保持 `IN PROGRESS`。
+- [x] 正式阶段已完成 clean commit/push、release build、HostDZire preflight/三重 backup、单实例 cutover、postflight 与 rollback asset check。schema-changing release `r2-03-cd3fdbb-20260912T061334Z` 成功把生产推进到 `user_version=1`；旧 preflight schema hash hardcode 导致 final report false positive 后，以 hotfix commit `dd3fa0f98c4a4aa18e8d9162aeecf49a80f8e91c` / release `r2-03-dd3fa0f-20260912T061756Z`（migration=`none`）完成闭环。最终独立后验 `blockers=[]`、container healthy/restart=0、23 Job、`quick_check=ok`、ledger present、`user_version=1`，rollback check 通过。
 
-当前候选证据见 [R2-03B_MIGRATION_CANDIDATE.md](evidence/R2-03B_MIGRATION_CANDIDATE.md)。
+完整交付证据见 [R2-03B_RELEASE.md](evidence/R2-03B_RELEASE.md)；发布前 rehearsal 细节保留在 [R2-03B_MIGRATION_CANDIDATE.md](evidence/R2-03B_MIGRATION_CANDIDATE.md)。
 
 ### 验收与回滚
 

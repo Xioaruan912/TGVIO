@@ -1,5 +1,7 @@
 # R2-03B Migration + Repository Split Candidate Evidence
 
+> 历史候选证据：本文件记录正式发布前的 rehearsal / candidate 状态。R2-03B 已于 2026-09-12 正式交付；最终生产事实、schema cutover、postflight hotfix 与 rollback 证据以 [R2-03B_RELEASE.md](R2-03B_RELEASE.md) 为准。
+
 > 状态：LOCAL CANDIDATE / NOT RELEASED
 > 日期：2026-09-12
 > 生产基线：runtime commit `a02e31c1b35673cfb9b8be54121c769026d38a9e`，release `r2-03-a02e31c-20260912T044959Z`
