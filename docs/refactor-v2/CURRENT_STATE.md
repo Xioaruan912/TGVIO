@@ -2,18 +2,18 @@
 
 > 审计时间：2026-09-12（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
-> 阶段说明：R2-03A/B、R2-05 已交付；R2-04 A-D durable scheduler 与 R2-04E bounded concurrent upload 均已正式发布。当前生产事实以 `r2-05-342cec3-20260912T125804Z` 为准；R2-04E 只剩 1～3 个真实大文件 performance acceptance 尚未关闭。
+> 阶段说明：R2-03A/B、R2-05 已交付；R2-04 A-E 已正式发布但 E 仍待 1～3 个真实大文件 performance acceptance；R2-06 automatic recovery 与 durable queue controls 已正式发布。当前生产事实以 `r2-06-b59897a-20260912T142840Z` / schema v4 为准；paged failure center、operation token 与 undo 继续。
 
 ## 1. 源码权威已经对齐
 
 | 范围 | 当前事实 | 结论 |
 |---|---|---|
-| Git runtime 基线 | `342cec36733d69c72e4d5b723be0a76901bca6c0` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object |
+| Git runtime 基线 | `b59897a50a8551d4192f19d232755993f5b24ca3` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object |
 | 退役旧树 | annotated tag `legacy-telegram-video-forwarder-750b3c1` 指向 `750b3c1629a0d360df740337671b54b8749e2ce2` | 旧架构可追溯，但不再留在当前可启动树 |
 | HostDZire | shared root `/root/TGVIO`；current link `/root/TGVIO-current`；Compose service/container `tgvio` | 版本化 release 已接管，运行卷仍留在 shared root |
-| 生产 release | `r2-05-342cec3-20260912T125804Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `342cec36733d69c72e4d5b723be0a76901bca6c0` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
-| 生产 image | `sha256:7f8b110460d3ee99d769025d1ad48b60e7951d1c9fd183d341bc3b75a30894d0` | 正式 runtime image；部署前 image 仍由 rollback tag 保留 |
-| Runtime 源码 | Git、生产宿主、运行容器的规范化 Python manifest 均为 `8f5303b70b2fafa7283c6dffeb8418446e4c8b3c3e21f9704049c11e43cddd41` | R2-05 业务源码三方身份一致 |
+| 生产 release | `r2-06-b59897a-20260912T142840Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `b59897a50a8551d4192f19d232755993f5b24ca3` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
+| 生产 image | `sha256:26591412b5ee0d18c4e62aef48ca16047f9cad8af0b282d1c59ad32862854b7e` | 正式 runtime image；部署前 image 与 v3 DB rollback asset 由 release tooling 保留 |
+| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `6d65e9fb5728cb557a4a47396d96e713cb0a13e325f2add2bc8f8f3bbef04f1c` | R2-06 queue-control 业务源码三方身份一致 |
 
 R2-00 记录的 `1da1d3d0…` 没有留下生成算法，已由 R2-01 的明确、可重复算法取代。原始 82 文件快照、逐文件 SHA-256、导入边界和发布记录见 [R2-01 evidence](evidence/R2-01_BASELINE.md)。
 
@@ -23,39 +23,39 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.1 运行状态
 
-- Release：`r2-05-342cec3-20260912T125804Z`。
-- Source：`/root/TGVIO-releases/r2-05-342cec3-20260912T125804Z/source`，由 `/root/TGVIO-current` 原子指向。
-- 容器 ID：`15fc45ee2dc139bf4d5cb459c018a131415807b22dc892b9e108621fea47c581`。
-- Started-at：`2026-09-12T12:54:56.800429471Z`。
+- Release：`r2-06-b59897a-20260912T142840Z`。
+- Source：`/root/TGVIO-releases/r2-06-b59897a-20260912T142840Z/source`，由 `/root/TGVIO-current` 原子指向。
+- 容器 ID：`52d5e38daa0e963248e701e2b7e1500814fc652d24819b44f5364599ae93fa22`。
+- Started-at：`2026-09-12T14:25:36.365729657Z`。
 - 状态：`running`，Docker health=`healthy`，当前容器 restart count=0。
 - 同一 Compose project/service 下运行实例数为 1。
 - 启动日志有 bootstrap 与 Telegram-ready 标记，无 traceback/fatal/unhandled/exception marker。
 - Bot、自动发布、受控 fixture、URL intake 和 Archive 非敏感开关均为 enabled。
 - 命令菜单配置在 Telegram-ready marker 前完成；已有会话发送一次 `/start` 后会安装六键 persistent 手机键盘。
-- Scheduler 与 bounded upload 证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)、[R2-04E_RELEASE.md](evidence/R2-04E_RELEASE.md)；最新 intake/collection cutover 见 [R2-05_RELEASE.md](evidence/R2-05_RELEASE.md)。
+- Scheduler 与 bounded upload 证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)、[R2-04E_RELEASE.md](evidence/R2-04E_RELEASE.md)；intake/collection cutover 见 [R2-05_RELEASE.md](evidence/R2-05_RELEASE.md)；最新 automatic recovery / queue-control 生产状态见 [R2-06_CONTROLS_RELEASE.md](evidence/R2-06_CONTROLS_RELEASE.md)。
 
 ### 2.2 SQLite
 
 生产数据库仍为 `/root/TGVIO/data/state.sqlite3`（容器内 `/app/data/state.sqlite3`）。
 
-- `quick_check=ok`，最新独立 postflight 报告数据库大小 909,312 bytes。
-- 23 个 Job；非终态 Job blocker 为 0。发布前 v1→v2 rehearsal 中 23 Job / 42 PublishStep / 20 ArchivePackage / 179 ArchiveObject / 23 progress 的业务计数与状态保持不变。
+- `quick_check=ok`，最新独立 postflight 报告数据库大小 950,272 bytes。
+- 24 个 Job；非终态 Job blocker 为 0。v3→v4 候选 rehearsal 对当时 23 Job / 42 PublishStep / 20 ArchivePackage / 179 ArchiveObject / 23 progress 保持不变；正式 cutover 前第 24 个 Job 已进入终态且所有 business blocker 归零。
 - Publish / Archive / progress / phase-claim / partial-uncertain blocker 在最新独立 postflight 中全部为 0；singleton `telegram-runtime` lease active=1 且不构成 blocker。
-- `PRAGMA user_version=3`，`schema_migrations` 已登记 `0001_baseline`、`0002_scheduler` 与 `0003_intake_collections`。
-- 规范化整库 schema SQL SHA-256 为 `74d331b0d2f112d354298ee7e10c39b2f16d4c58a0d0488eb198ebd912dff93b`。
-- R2-05 cutover 前使用 SQLite backup API 创建 v2 pre-migration backup；`rollback_hostdzire.sh --check r2-05-342cec3-20260912T125804Z` 通过。
+- `PRAGMA user_version=4`，`schema_migrations` 已登记 `0001_baseline`、`0002_scheduler`、`0003_intake_collections` 与 `0004_queue_controls`。
+- 规范化整库 schema SQL SHA-256 为 `9a3fab5f9fe18ac8f7c71b25c55e64fd98c333e6b31d1547c9817e7c310e7017`。
+- R2-06 v4 cutover 走正式 migration-aware SQLite backup/cutover；`rollback_hostdzire.sh --check r2-06-b59897a-20260912T142840Z` 通过。
 
 ### 2.3 代码、测试与镜像
 
-- 当前生产 R2-05 runtime：59 个 Python 源文件；新增 intake domain/repository 与不可变 `0003_intake_collections.sql`，原 repository facade、scheduler 和 bounded upload 边界保持不变。
+- 当前生产 R2-06 queue-control runtime：61 个 Python 源文件；`0004_queue_controls.sql` 新增 durable global queue state，并扩展 `job_controls` 的 hold/revision 字段；scheduler、publish effects 和 intake 边界保持不变。
 - 下载/分析保持有限并发，Telegram publish 由 durable accepted-order dispatcher 串行执行，prepare/publish/archive 都由 generation-fenced claim + heartbeat + TTL watchdog 保护。
 - 当前主要热点转为 `adapters/telegram/bot_ui.py`、Telegram publish 与 WebDAV adapter；repository 大文件热点已在 R2-03B 消除。
-- 当前生产的 domain/application AST 依赖边界与 59-file architecture gate 通过。
-- 当前生产 R2-05 正式 Docker test target 在 `--network none` 下通过 240 tests（发布机 24.253 秒），覆盖既有 scheduler/migration/upload/release 合同，并新增 intake replay、durable collection/text/spoiler/status-message 回归；没有启动第二个 Telegram Bot。
+- 当前生产的 domain/application AST 依赖边界与 61-file architecture gate 通过。
+- 当前生产 R2-06 正式 Docker test target 在 `--network none` 下通过 269 tests（27.779 秒），覆盖既有 scheduler/migration/upload/intake/release 合同，并新增 durable automatic recovery 与 queue pause/hold/resume 回归；没有启动第二个 Telegram Bot。
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 依赖已由 hashed lock 固定；多阶段 Dockerfile 的 test/runtime targets 共用固定 base digest，runtime 内精确安装 7 个锁定 Python 包。
-- 正式 runtime image `sha256:7f8b110460d3ee99d769025d1ad48b60e7951d1c9fd183d341bc3b75a30894d0` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
+- 正式 runtime image `sha256:26591412b5ee0d18c4e62aef48ca16047f9cad8af0b282d1c59ad32862854b7e` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
 
 ## 3. 当前 TGVIO 已证明的能力
 
@@ -68,7 +68,7 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - 持久 PublishPlan、step/effect journal、partial/uncertain fail-closed 恢复。
 - cover/direct 计划、评论区根解析、spoiler、caption/footer 和媒体引用复用。
 - Archive V2 计划、能力探测、PUT 校验、MOVE/commit marker、恢复和显式重试。
-- Job cancel/retry、持久进度、缓存清理、stats/health/diag 和脱敏结构化日志。
+- Job cancel/retry、durable automatic recovery、Job hold/resume、global queue pause/resume、持久进度、缓存清理、stats/health/diag 和脱敏结构化日志。
 - Persistent 手机键盘、任务直达、按钮化安全重试/取消/归档重传/缓存清理/连接检测，以及普通用户友好的失败解释。
 - 实际数据库中存在成功 Telegram 发布和成功 Archive 记录。
 
@@ -84,12 +84,12 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 6. **移动端操作与错误解释**：日常命令收敛为常驻键盘和页面按钮，任务状态不再直接抛内部错误码，重复刷新不再形成未处理异常。
 7. **并发下载单一路径脆弱**：分片路径失败后新增有界单流回退，同时保持取消、大小校验和原子落盘边界。
 8. **数据库无 migration ledger / repository hotspot**：R2-03B 已完成 `0001_baseline` takeover、checksum ledger、真实生产副本 rehearsal 与 repository 拆分。
-9. **发布顺序与 worker 所有权只依赖进程内 task**：R2-04 A-D 已上线 singleton runtime lease、generation-fenced phase claim、durable accepted order 与 strict FIFO dispatcher；随后 R2-05 在该调度基线上把生产推进到 `user_version=3`。
+9. **发布顺序与 worker 所有权只依赖进程内 task**：R2-04 A-D 已上线 singleton runtime lease、generation-fenced phase claim、durable accepted order 与 strict FIFO dispatcher；R2-05 在该调度基线上把生产推进到 v3，R2-06 又以 durable hold/resume 与 global queue pause 把生产推进到 `user_version=4`。
 
 ## 5. 剩余优先风险
 
 1. **凭据仍需轮换**：专用 SSH key 与 pinned known_hosts 已可用，但此前在会话中暴露的 GitHub PAT 等凭据仍需在不影响发布链后轮换。
-2. **功能兼容仍有缺口**：R2-05 已恢复合集会话/文字与 spoiler 偏好，但需真实交互验收；R2-04E 仍待 1～3 个真实大文件观测。自动恢复、hold/resume、undo、分页失败中心、动态 Archive、多目的地、代理和 Dashboard 仍为后续合同项。
+2. **功能兼容仍有缺口**：R2-05 已恢复合集会话/文字与 spoiler 偏好但仍需真实交互验收；R2-04E 仍待 1～3 个真实大文件观测。R2-06 automatic recovery 与 hold/resume 已上线，但 SQL paged failure center、operation token、undo，以及动态 Archive、多目的地、代理和 Dashboard 仍为后续合同项。
 3. **剩余热点**：Bot UI、Telegram publish 与 WebDAV adapter 仍需要在行为锁定后渐进拆分；SQLite repository hotspot 已由 R2-03B 消除。
 4. **VPS 时间同步未启用**：最新生产报告仍为 `ntp_synchronized=no`；当前未阻断 release，但应独立修复系统时间同步。
 
@@ -100,4 +100,4 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - schema-changing release 必须使用已通过真实生产副本 rehearsal 的不可变 migration，并在 cutover 前重新执行 production preflight、SQLite backup API 备份和 migration-aware rollback 检查；禁止直接改生产 schema。
 - 禁止为测试启动第二个使用生产 Bot token/session 的实例。
 - 禁止把 SSH/GitHub/Telegram/WebDAV/代理凭据写入脚本、示例、Git、命令输出或发布记录。
-- 禁止把生产 R2-05 的 240 tests 等同于所有旧功能已恢复；R2-04E 仍需真实大文件性能观测，R2-05 仍需真实合集交互验收，后续合同继续逐项验收。
+- 禁止把生产 R2-06 的 269 tests 等同于所有旧功能已恢复；R2-04E 仍需真实大文件性能观测，R2-05 仍需真实合集交互验收，R2-06 仍缺分页 failure center、operation token 与 undo，后续合同继续逐项验收。
