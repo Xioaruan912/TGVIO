@@ -1,9 +1,10 @@
 # R2-04E Bounded Telegram Upload Candidate Evidence
 
-> 状态：LOCAL CANDIDATE / NOT RELEASED
+> 历史说明：本文件保留发布前 candidate 证据；R2-04E 代码已正式发布，最终交付与独立 postflight 见 [R2-04E_RELEASE.md](R2-04E_RELEASE.md)。真实大文件 performance acceptance 仍待生产观测。
+> 状态：HISTORICAL CANDIDATE
 > 日期：2026-09-12
 > 范围：仅 R2-04E Telegram bounded concurrent upload；无 schema 变更，正式发布必须使用 `migration=none`。
-> 当前生产仍为 `r2-04-0016988-20260912T070451Z` / runtime `0016988fc3f4fc5ec28c55169c9e44515c83b1cf` / `user_version=2`。
+> Candidate 创建时的生产基线为 `r2-04-0016988-20260912T070451Z` / runtime `0016988fc3f4fc5ec28c55169c9e44515c83b1cf` / `user_version=2`；后续正式 release 事实以 [R2-04E_RELEASE.md](R2-04E_RELEASE.md) 为准。
 
 ## 1. 目标与边界
 

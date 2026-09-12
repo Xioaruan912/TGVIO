@@ -202,12 +202,12 @@ characterization -> implementation -> offline gates -> Git push
 - [x] `0002_scheduler` 已在真实生产数据来源的 v1 副本上完成 v1→v2 rehearsal：23 Job / 42 PublishStep / 20 ArchivePackage / 179 ArchiveObject / 23 progress 前后不变，`accepted_order=1..23` 唯一连续，第二次 migration no-op。
 - [x] 正式 Docker `--network none` release gate：205 tests / 21.483s，全部通过。
 - [x] A-D 已 commit/push，并以 `--migration 0002_scheduler` 发布 `r2-04-0016988-20260912T070451Z`；独立 postflight 为 v2、runtime lease active=1、业务 blocker=0、container healthy/restart=0，rollback-check 通过。
-- [x] E local candidate：恢复 legacy 16 路 `SaveFilePart/SaveBigFilePart`，增加单文件/全局 worker 上限、512 KiB part、约 8 MiB 默认在途 part payload 上界、cancel 不 fallback、part failure 在 visible send 前安全退回 Telethon 顺序上传；transport 回归证明 fallback 后 visible send 恰好一次。
-- [x] E candidate Docker `--network none` foundation gate：214 tests / 23.028s，全部通过；无 migration/schema 变化。
-- [ ] E 尚未正式发布：必须使用 `--migration none`，发布后确认 v2 schema hash 不变、single instance/runtime lease/业务 blocker 正常。
-- [ ] E performance acceptance：观察 1～3 个真实大文件的 VPS→Telegram 吞吐、CPU、内存与 FloodWait/fallback；在此之前 PL-10 保持 COVERED，不标 VERIFIED。
+- [x] E implementation：恢复 legacy 16 路 `SaveFilePart/SaveBigFilePart`，增加单文件/全局 worker 上限、512 KiB part、约 8 MiB 默认在途 part payload 上界、cancel 不 fallback、part failure 在 visible send 前安全退回 Telethon 顺序上传；transport 回归证明 fallback 后 visible send 恰好一次。
+- [x] E 正式 Docker `--network none` release gate：214 tests / 21.362s，全部通过；无 migration/schema 变化。
+- [x] E 已以 `--migration none` 正式发布 `r2-04-05d4bf0-20260912T072358Z`；独立 postflight 证明 v2 schema hash 不变、23 Job 不变、single instance、runtime lease active=1、业务 blocker=0、container healthy/restart=0，rollback-check 通过。
+- [ ] E performance acceptance：观察 1～3 个真实大文件的 VPS→Telegram 吞吐、CPU、内存与 FloodWait/fallback；在此之前 PL-10 保持 COVERED，不标 VERIFIED，R2-04 总阶段继续为 IN PROGRESS。
 
-A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布前 rehearsal 保留在 [R2-04_SCHEDULER_CANDIDATE.md](evidence/R2-04_SCHEDULER_CANDIDATE.md)；E 候选证据见 [R2-04E_UPLOAD_CANDIDATE.md](evidence/R2-04E_UPLOAD_CANDIDATE.md)。
+A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布前 rehearsal 保留在 [R2-04_SCHEDULER_CANDIDATE.md](evidence/R2-04_SCHEDULER_CANDIDATE.md)；E 代码发布证据见 [R2-04E_RELEASE.md](evidence/R2-04E_RELEASE.md)，候选细节保留在 [R2-04E_UPLOAD_CANDIDATE.md](evidence/R2-04E_UPLOAD_CANDIDATE.md)。
 
 ### 验收与回滚
 
