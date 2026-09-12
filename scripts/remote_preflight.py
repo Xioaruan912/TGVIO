@@ -21,7 +21,22 @@ APP_ROOT = Path("/root/TGVIO")
 RELEASE_ROOT = Path("/root/TGVIO-releases")
 CURRENT_LINK = Path("/root/TGVIO-current")
 CONTAINER = "tgvio"
-EXPECTED_SCHEMA_SQL_SHA256 = "d3ee6adf7d956c5b8e6b672727258aea5d8da28514cf9c5b5ee9f672548d7d7d"
+KNOWN_SCHEMA_SQL_SHA256_BY_USER_VERSION = {
+    0: "d3ee6adf7d956c5b8e6b672727258aea5d8da28514cf9c5b5ee9f672548d7d7d",
+    1: "593cccda96a2955990eb7807791682f73b67d4c8f0026062a37a2f7e785b25f6",
+}
+
+
+def _database_schema_is_known(database: dict[str, object]) -> bool:
+    try:
+        user_version = int(database.get("user_version", -1))
+    except (TypeError, ValueError):
+        return False
+    expected = KNOWN_SCHEMA_SQL_SHA256_BY_USER_VERSION.get(user_version)
+    if expected is None or database.get("schema_sql_sha256") != expected:
+        return False
+    ledger_present = bool(database.get("migration_ledger_present"))
+    return (user_version == 0 and not ledger_present) or (user_version >= 1 and ledger_present)
 
 
 def _run(args: list[str]) -> str:
@@ -148,7 +163,7 @@ def report(source_root: Path | None = None) -> dict[str, object]:
         blockers.append("source-manifest")
     if not database.get("safe_to_deploy"):
         blockers.append("database-activity-or-integrity")
-    if database.get("schema_sql_sha256") != EXPECTED_SCHEMA_SQL_SHA256:
+    if not _database_schema_is_known(database):
         blockers.append("database-schema")
     if not env_secure:
         blockers.append("environment-permissions")

@@ -28,6 +28,7 @@ from release_guard import (  # noqa: E402
     verify_tree,
 )
 from write_release_manifest import build_manifest  # noqa: E402
+from remote_preflight import _database_schema_is_known  # noqa: E402
 
 
 class SourceGuardTests(unittest.TestCase):
@@ -193,6 +194,50 @@ class DatabaseReleaseGateTests(unittest.TestCase):
             restored = sqlite_restore(backup, live)
             self.assertEqual(restored["quick_check"], "ok")
             self.assertEqual(database_report(live)["jobs_total"], 0)
+
+
+class RemotePreflightSchemaTests(unittest.TestCase):
+    def test_known_v0_schema_requires_no_ledger(self) -> None:
+        self.assertTrue(
+            _database_schema_is_known(
+                {
+                    "user_version": 0,
+                    "migration_ledger_present": False,
+                    "schema_sql_sha256": "d3ee6adf7d956c5b8e6b672727258aea5d8da28514cf9c5b5ee9f672548d7d7d",
+                }
+            )
+        )
+
+    def test_known_v1_schema_requires_ledger(self) -> None:
+        self.assertTrue(
+            _database_schema_is_known(
+                {
+                    "user_version": 1,
+                    "migration_ledger_present": True,
+                    "schema_sql_sha256": "593cccda96a2955990eb7807791682f73b67d4c8f0026062a37a2f7e785b25f6",
+                }
+            )
+        )
+
+    def test_unknown_hash_or_ledger_mismatch_fails_closed(self) -> None:
+        self.assertFalse(
+            _database_schema_is_known(
+                {
+                    "user_version": 1,
+                    "migration_ledger_present": True,
+                    "schema_sql_sha256": "0" * 64,
+                }
+            )
+        )
+        self.assertFalse(
+            _database_schema_is_known(
+                {
+                    "user_version": 1,
+                    "migration_ledger_present": False,
+                    "schema_sql_sha256": "593cccda96a2955990eb7807791682f73b67d4c8f0026062a37a2f7e785b25f6",
+                }
+            )
+        )
 
 
 class BuildContractTests(unittest.TestCase):
