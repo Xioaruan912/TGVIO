@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import signal
 
 from tgvio.adapters.telegram.bot_ui import TelethonBotUI
 from tgvio.adapters.telegram.discussion_resolver import BotApiDiscussionResolver
@@ -29,6 +30,7 @@ from tgvio.application.orchestrator import JobOrchestrator, PlanningPolicy
 from tgvio.application.processor import IngestionProcessor
 from tgvio.application.reference_cache import TelegramReferenceEnricher
 from tgvio.application.runtime_health import RuntimeHealthHeartbeat
+from tgvio.application.scheduler import RuntimeLeaseGuard
 from tgvio.config import Settings, load_dotenv
 from tgvio.infrastructure.media_inspector import FFprobeMediaInspector
 from tgvio.infrastructure.log_reader import JsonlOperationalLogReader
@@ -52,6 +54,7 @@ async def run(*, check_only: bool = False) -> None:
     settings.data_dir.mkdir(parents=True, exist_ok=True)
     settings.download_dir.mkdir(parents=True, exist_ok=True)
     repository = SQLiteJobRepository(settings.data_dir / "state.sqlite3")
+    runtime_lease: RuntimeLeaseGuard | None = None
     await repository.open()
     try:
         schema_status = repository.schema_status()
@@ -78,6 +81,8 @@ async def run(*, check_only: bool = False) -> None:
                 "Telegram runtime disabled; foundation check complete",
             )
             return
+        runtime_lease = RuntimeLeaseGuard(repository)
+        await runtime_lease.start()
         gateway = TelethonGateway(settings, Path("/app/session"))
         await gateway.start()
         runtime_health = RuntimeHealthHeartbeat(
@@ -201,6 +206,7 @@ async def run(*, check_only: bool = False) -> None:
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()
+        await intake_runtime.start()
         intake_runtime.register()
         if archive_runtime is not None:
             await archive_runtime.start()
@@ -216,6 +222,7 @@ async def run(*, check_only: bool = False) -> None:
         )
         for job in recoverable:
             intake_runtime.schedule(job)
+        telegram_task: asyncio.Task | None = None
         try:
             log_event(
                 logger,
@@ -224,7 +231,56 @@ async def run(*, check_only: bool = False) -> None:
                 "Telegram adapter connected; intake runtime active",
                 recovery_jobs=len(recoverable),
             )
-            await gateway.client.run_until_disconnected()
+            shutdown_event = asyncio.Event()
+            loop = asyncio.get_running_loop()
+            registered_signals: list[signal.Signals] = []
+            for sig in (signal.SIGTERM, signal.SIGINT):
+                try:
+                    loop.add_signal_handler(sig, shutdown_event.set)
+                except (NotImplementedError, RuntimeError):
+                    continue
+                registered_signals.append(sig)
+            telegram_task = asyncio.create_task(
+                gateway.client.run_until_disconnected(),
+                name="tgvio-telegram-disconnect-wait",
+            )
+            lease_lost_task = asyncio.create_task(
+                runtime_lease.wait_lost(),
+                name="tgvio-runtime-lease-loss-wait",
+            )
+            shutdown_task = asyncio.create_task(
+                shutdown_event.wait(),
+                name="tgvio-runtime-shutdown-wait",
+            )
+            try:
+                done, _pending = await asyncio.wait(
+                    {telegram_task, lease_lost_task, shutdown_task},
+                    return_when=asyncio.FIRST_COMPLETED,
+                )
+                if lease_lost_task in done:
+                    await gateway.stop()
+                    await asyncio.gather(telegram_task, return_exceptions=True)
+                    raise RuntimeError("singleton runtime lease lost")
+                if shutdown_task in done:
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "runtime.shutdown.requested",
+                        "Runtime shutdown requested; draining durable work before disconnect",
+                    )
+                else:
+                    await telegram_task
+            finally:
+                for task in (lease_lost_task, shutdown_task):
+                    if not task.done():
+                        task.cancel()
+                await asyncio.gather(
+                    lease_lost_task,
+                    shutdown_task,
+                    return_exceptions=True,
+                )
+                for sig in registered_signals:
+                    loop.remove_signal_handler(sig)
         finally:
             await intake_runtime.stop()
             await bot_ui.stop()
@@ -233,7 +289,11 @@ async def run(*, check_only: bool = False) -> None:
             await cache_runtime.stop()
             await runtime_health.stop()
             await gateway.stop()
+            if telegram_task is not None:
+                await asyncio.gather(telegram_task, return_exceptions=True)
     finally:
+        if runtime_lease is not None:
+            await runtime_lease.stop()
         await repository.close()
 
 

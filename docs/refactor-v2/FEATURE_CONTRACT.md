@@ -50,7 +50,7 @@
 | PL-06 | 用户可选择 `ask/always_spoiler/always_normal`；ask 超时按 normal，主动取消不发布 | REQUIRED | 当前仅继承源消息 spoiler，没有偏好或确认模型 |
 | PL-07 | caption forwarding、footer 和 1024 字符限制在计划中冻结 | COVERED | caption/footer tests |
 | PL-08 | 讨论组根用 Bot 可调用方式解析，并把映射写入 durable effect，重启不依赖内存 | VERIFIED | resolver/transport tests；生产有成功 effects |
-| PL-09 | 所有 Job 按接受顺序发布；早到 Job 未就绪时不得被晚到 Job 越过，除非用户显式 hold/cancel | REQUIRED | 当前每个 intake task 在 semaphore 内独立执行，测试未证明全局 FIFO |
+| PL-09 | 所有 Job 按接受顺序发布；早到 Job 未就绪时不得被晚到 Job 越过，除非用户显式 hold/cancel | COVERED | R2-04 A-D candidate 已新增 durable `accepted_order` + 单 ordered dispatcher；100 Job 随机 readiness、双 dispatcher、partial/uncertain 阻塞测试通过，待正式 production release；hold UI 仍属 R2-06 |
 | PL-10 | 下载可并行，但 Telegram upload 有明确并发/带宽策略且不会降低旧并发分片上传能力 | REQUIRED | 当前 TGVIO 使用 Telethon 默认 `upload_file`，旧 16 路分片上传能力未迁移 |
 | PL-11 | 每个已确认可见消息先写 receipt/effect；partial/uncertain 永不盲目重发 | VERIFIED | publish pipeline tests；生产有 succeeded/failed step evidence |
 | PL-12 | SHA-256 + destination + kind 的媒体引用复用；stale 引用在任何可见副作用前回退本地上传 | VERIFIED | reference cache/transport tests；生产 cache 有数据 |
@@ -90,8 +90,8 @@
 | ID | 合同 | 当前状态 | 证据/缺口 |
 |---|---|---|---|
 | DB-01 | Job/Item/Event/Plan/Step/Effect/Archive/Control/Progress 均可持久恢复 | VERIFIED | repository tests 与生产 DB |
-| DB-02 | schema 使用不可变、有 checksum 的前向 migration，并在启动前备份和校验 | REQUIRED | 当前 `user_version=0` 且无 migration ledger |
-| DB-03 | worker 使用 durable claim/lease/heartbeat；意外双进程也不能重复执行一个 Job | REQUIRED | 当前主要依赖单进程 task；需增加 singleton lease 和 claim |
+| DB-02 | schema 使用不可变、有 checksum 的前向 migration，并在启动前备份和校验 | VERIFIED | R2-03B 已正式把生产接管到 `user_version=1` + checksum ledger；production-copy rehearsal、SQLite backup API、schema fingerprint/checksum fail-closed 与 rollback asset check 已完成 |
+| DB-03 | worker 使用 durable claim/lease/heartbeat；意外双进程也不能重复执行一个 Job | COVERED | R2-04 A-D candidate 已实现 singleton runtime lease、prepare/publish/archive generation-fenced claim、TTL watchdog 与跨独立 SQLite connection 竞争测试，待正式 production release |
 | OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | COVERED | runtime health/logging/diagnostic tests |
 | OB-02 | JSONL 与 Docker logs 有界轮转，日志不含 URL、caption、peer/user、路径和凭据 | COVERED | logging tests；每次发布继续做 secret scan |
 | DP-01 | 每个 release build 可追溯到 full Git commit、source manifest、image digest 和 DB schema | VERIFIED | R2-01 建立源码权威；R2-02 machine manifest 与 HostDZire 后验验证完整链路 |

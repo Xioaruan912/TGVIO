@@ -2,7 +2,7 @@
 
 > 审计时间：2026-09-12（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
-> 阶段说明：R2-03A 与 R2-03B 均已完成正式 release、HostDZire 单实例切换和独立后验。R2-03B 已接管生产 migration ledger、完成 repository 拆分并闭环 postflight schema 识别问题；当前生产事实以 `r2-03-dd3fa0f-20260912T061756Z` 为准。
+> 阶段说明：R2-03A 与 R2-03B 均已完成正式 release、HostDZire 单实例切换和独立后验。当前生产事实仍以 `r2-03-dd3fa0f-20260912T061756Z` 为准；R2-04 A-D durable scheduler 为未发布 candidate，已完成 `0002_scheduler`、v1→v2 真实生产数据形状 rehearsal 与 205 项离线门禁。
 
 ## 1. 源码权威已经对齐
 
@@ -48,9 +48,10 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 ### 2.3 代码、测试与镜像
 
 - 当前生产 R2-03B runtime：53 个 Python 源文件；原 `infrastructure/sqlite.py` hotspot 已拆成 21 行 facade + base/Job/Publish/Archive/Control/Observability 六个边界模块，最长 repository 子模块为 423 行 `sqlite_archive.py`。
+- R2-04 A-D candidate 为 56 个 Python 源文件，新增 domain/application/infrastructure scheduler 边界与 `0002_scheduler.sql`；下载/分析保持有限并发，Telegram publish 由 durable accepted-order dispatcher 串行执行，prepare/publish/archive 都由 generation-fenced claim 保护。
 - 当前主要热点转为 `adapters/telegram/bot_ui.py`、Telegram publish 与 WebDAV adapter；repository 大文件热点已在 R2-03B 消除。
 - domain/application AST 依赖边界检查与 53-file architecture gate 均通过。
-- 最终 release 正式 Docker test target 在 `--network none` 下通过 189 tests（发布机 13.524 秒；提交前本地同 target 14.797 秒），包含 migration、release preflight schema 识别、100/1000 repository scaling 与 event-loop cooperative 测试；没有启动 Telegram Bot。
+- 当前生产 R2-03 最终 release 正式 Docker test target 在 `--network none` 下通过 189 tests（发布机 13.524 秒；提交前本地同 target 14.797 秒）。R2-04 A-D candidate 最新同 target 通过 205 tests（25.348 秒），新增 100-Job FIFO、跨 SQLite connection lease/claim、claim-loss cancellation、v1→v2 rehearsal、v2 schema drift fail-closed 和 graceful handoff contract；均没有启动 Telegram Bot。
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 依赖已由 hashed lock 固定；多阶段 Dockerfile 的 test/runtime targets 共用固定 base digest，runtime 内精确安装 7 个锁定 Python 包。
@@ -85,7 +86,7 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 ## 5. 剩余优先风险
 
 1. **凭据仍需轮换**：专用 SSH key 与 pinned known_hosts 已可用，但此前在会话中暴露的 GitHub PAT 等凭据仍需在不影响发布链后轮换。
-2. **功能兼容仍有缺口**：严格 FIFO、合集会话/文字、spoiler 偏好、并发分片上传、hold/resume、undo、分页失败中心、动态 Archive、多目的地、代理和 Dashboard 仍为合同项。
+2. **功能兼容仍有缺口**：严格 FIFO/durable claim 已在 R2-04 A-D candidate 实现但尚未生产发布；并发分片上传仍待 R2-04E。合集会话/文字、spoiler 偏好、hold/resume、undo、分页失败中心、动态 Archive、多目的地、代理和 Dashboard 仍为后续合同项。
 3. **剩余热点**：Bot UI、Telegram publish 与 WebDAV adapter 仍需要在行为锁定后渐进拆分；SQLite repository hotspot 已由 R2-03B 消除。
 4. **VPS 时间同步未启用**：最新生产报告仍为 `ntp_synchronized=no`；当前未阻断 release，但应独立修复系统时间同步。
 
@@ -96,4 +97,4 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - schema-changing release 必须使用已通过真实生产副本 rehearsal 的不可变 migration，并在 cutover 前重新执行 production preflight、SQLite backup API 备份和 migration-aware rollback 检查；禁止直接改生产 schema。
 - 禁止为测试启动第二个使用生产 Bot token/session 的实例。
 - 禁止把 SSH/GitHub/Telegram/WebDAV/代理凭据写入脚本、示例、Git、命令输出或发布记录。
-- 禁止把 189 项现有测试等同于所有旧功能已恢复；必须继续按功能合同逐项验收。
+- 禁止把生产 189 tests 或 R2-04 candidate 205 tests 等同于所有旧功能已恢复；必须继续按功能合同逐项验收。

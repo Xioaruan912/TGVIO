@@ -18,6 +18,13 @@ from tgvio.infrastructure.migration_runner import MigrationRunner
 from tgvio.infrastructure.schema import TGVIO_BASELINE_SCHEMA_SQL_SHA256, schema_sql_sha256
 
 
+_KNOWN_SCHEMA_SQL_SHA256_BY_USER_VERSION = {
+    0: TGVIO_BASELINE_SCHEMA_SQL_SHA256,
+    1: "593cccda96a2955990eb7807791682f73b67d4c8f0026062a37a2f7e785b25f6",
+    2: "f5c9495e3947c109ee6598d7a7f8c0deac9d17d0fbb5c264d21de4f5d2bd4443",
+}
+
+
 _BLOCKED_DATABASES = {
     Path("/root/TGVIO/data/state.sqlite3"),
     Path("/app/data/state.sqlite3"),
@@ -119,12 +126,18 @@ def rehearse(database_copy: Path, backup_dir: Path) -> dict[str, object]:
     before = _database_facts(database_copy)
     if before["quick_check"] != "ok":
         raise RehearsalError("database copy failed quick_check before rehearsal")
-    if before["user_version"] != 0 or before["migration_ledger_present"]:
-        raise RehearsalError("first-takeover rehearsal requires user_version=0 without a migration ledger")
-    if before["schema_sql_sha256"] != TGVIO_BASELINE_SCHEMA_SQL_SHA256:
-        raise RehearsalError("database copy schema hash does not match the audited TGVIO baseline")
+    from_version = int(before["user_version"])
+    expected_before_hash = _KNOWN_SCHEMA_SQL_SHA256_BY_USER_VERSION.get(from_version)
+    if expected_before_hash is None or before["schema_sql_sha256"] != expected_before_hash:
+        raise RehearsalError("database copy schema hash is not a known TGVIO release schema")
+    if from_version == 0 and before["migration_ledger_present"]:
+        raise RehearsalError("user_version=0 must not have a migration ledger")
+    if from_version >= 1 and not before["migration_ledger_present"]:
+        raise RehearsalError("migrated database copy is missing the migration ledger")
 
     first = MigrationRunner(database_copy, backup_dir=backup_dir).run()
+    if from_version >= first.latest_version:
+        raise RehearsalError("database copy is already at the latest migration version")
     after = _database_facts(database_copy)
     if after["quick_check"] != "ok":
         raise RehearsalError("database copy failed quick_check after takeover")
@@ -152,13 +165,22 @@ def rehearse(database_copy: Path, backup_dir: Path) -> dict[str, object]:
     backup_facts = _database_facts(backup_files[0])
     if backup_facts["quick_check"] != "ok":
         raise RehearsalError("pre-migration backup failed quick_check")
-    if backup_facts["user_version"] != 0 or backup_facts["migration_ledger_present"]:
-        raise RehearsalError("pre-migration backup does not preserve the original baseline state")
+    if backup_facts["user_version"] != before["user_version"]:
+        raise RehearsalError("pre-migration backup does not preserve user_version")
+    if backup_facts["migration_ledger_present"] != before["migration_ledger_present"]:
+        raise RehearsalError("pre-migration backup does not preserve ledger presence")
+    if backup_facts["schema_sql_sha256"] != before["schema_sql_sha256"]:
+        raise RehearsalError("pre-migration backup does not preserve schema identity")
     if _business_counts(backup_facts) != _business_counts(before):
         raise RehearsalError("pre-migration backup does not preserve business counts")
 
     return {
         "status": "passed",
+        "migration": {
+            "from_version": from_version,
+            "to_version": first.latest_version,
+            "applied_now": list(first.applied_now),
+        },
         "before": before,
         "after": after,
         "repeat_noop": {

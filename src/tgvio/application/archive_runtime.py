@@ -7,6 +7,7 @@ from pathlib import Path
 from tgvio.application.archive_executor import ArchiveExecutor
 from tgvio.application.archive_planner import ArchivePlanner
 from tgvio.application.ports import ArchiveTransport, JobRepository
+from tgvio.application.scheduler import PhaseClaimGuard, PhaseClaimLostError
 from tgvio.domain.archive import (
     ArchiveCapabilities,
     ArchivePackage,
@@ -71,23 +72,44 @@ class ArchiveService:
         )
         processed = 0
         for package in packages:
+            claim = PhaseClaimGuard(
+                self._repository,
+                package.job_id,
+                "archive",
+                ttl_seconds=600,
+            )
+            if not await claim.start():
+                continue
             try:
-                await self._executor.execute(package)
-            except asyncio.CancelledError:
-                raise
-            except Exception as exc:
-                log_event(
-                    self._log,
-                    logging.ERROR,
-                    "archive.package.failed",
-                    "Archive package execution failed",
-                    package_id=package.id,
-                    job_id=package.job_id,
-                    archive_state=package.state.value,
-                    exception_type=type(exc).__name__,
-                    exc_info=True,
-                )
-            processed += 1
+                try:
+                    await claim.run(self._executor.execute(package))
+                except asyncio.CancelledError:
+                    raise
+                except PhaseClaimLostError:
+                    log_event(
+                        self._log,
+                        logging.WARNING,
+                        "archive.claim.lost",
+                        "Archive execution stopped because its durable claim was lost",
+                        package_id=package.id,
+                        job_id=package.job_id,
+                    )
+                    continue
+                except Exception as exc:
+                    log_event(
+                        self._log,
+                        logging.ERROR,
+                        "archive.package.failed",
+                        "Archive package execution failed",
+                        package_id=package.id,
+                        job_id=package.job_id,
+                        archive_state=package.state.value,
+                        exception_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                processed += 1
+            finally:
+                await claim.stop()
         return processed
 
     async def retry_package(self, package_id: str) -> ArchivePackage:

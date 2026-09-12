@@ -23,6 +23,7 @@ from tgvio.domain.publish import (
     PublishStepState,
 )
 from tgvio.domain.progress import JobProgress
+from tgvio.domain.scheduler import PhaseClaim, PublishGate, RuntimeLease
 
 
 TransferProgressCallback = Callable[[int, int | None], None]
@@ -204,6 +205,45 @@ class JobRepository(Protocol):
         error_code: str | None = None,
         error_message: str | None = None,
     ) -> Job: ...
+
+    async def acquire_runtime_lease(
+        self,
+        lease_name: str,
+        holder_id: str,
+        *,
+        ttl_seconds: int,
+    ) -> RuntimeLease | None: ...
+
+    async def heartbeat_runtime_lease(
+        self,
+        lease: RuntimeLease,
+        *,
+        ttl_seconds: int,
+    ) -> RuntimeLease | None: ...
+
+    async def release_runtime_lease(self, lease: RuntimeLease) -> bool: ...
+
+    async def acquire_phase_claim(
+        self,
+        job_id: str,
+        phase: str,
+        holder_id: str,
+        *,
+        ttl_seconds: int,
+    ) -> PhaseClaim | None: ...
+
+    async def heartbeat_phase_claim(
+        self,
+        claim: PhaseClaim,
+        *,
+        ttl_seconds: int,
+    ) -> PhaseClaim | None: ...
+
+    async def release_phase_claim(self, claim: PhaseClaim) -> bool: ...
+
+    async def get_accepted_order(self, job_id: str) -> int | None: ...
+
+    async def get_next_publish_gate(self) -> PublishGate | None: ...
 
 
 class TelegramGateway(Protocol):

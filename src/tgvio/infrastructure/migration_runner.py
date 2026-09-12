@@ -128,18 +128,24 @@ def _execute_migration(connection: sqlite3.Connection, migration: Migration) -> 
         connection.execute(statement)
 
 
-def _baseline_identity(migration: Migration) -> tuple[str, dict[str, object]]:
+def _migration_identity(
+    migrations: list[Migration],
+    version: int,
+) -> tuple[str, dict[str, object]]:
     fixture = sqlite3.connect(":memory:", isolation_level=None)
     try:
         fixture.execute("PRAGMA foreign_keys=ON")
-        fixture.execute("BEGIN IMMEDIATE")
-        try:
-            _execute_migration(fixture, migration)
-        except Exception:
-            fixture.rollback()
-            raise
-        else:
-            fixture.commit()
+        for migration in migrations:
+            if migration.version > version:
+                break
+            fixture.execute("BEGIN IMMEDIATE")
+            try:
+                _execute_migration(fixture, migration)
+            except Exception:
+                fixture.rollback()
+                raise
+            else:
+                fixture.commit()
         identity = schema_identity(fixture)
         return identity.fingerprint, identity.snapshot
     finally:
@@ -238,13 +244,29 @@ class MigrationRunner:
             if ledger_present:
                 rows = _ledger_rows(connection)
                 _validate_applied_migrations(rows, migrations)
-                expected_fingerprint, expected_snapshot = _baseline_identity(baseline)
             else:
-                expected_fingerprint, expected_snapshot = _baseline_identity(baseline)
                 rows = []
+
+            baseline_fingerprint, baseline_snapshot = _migration_identity(migrations, baseline.version)
+            if ledger_present:
+                recorded_version = rows[-1][0]
+                expected_current_fingerprint, expected_current_snapshot = _migration_identity(
+                    migrations,
+                    recorded_version,
+                )
+            else:
+                recorded_version = 0
+                expected_current_fingerprint = baseline_fingerprint
+                expected_current_snapshot = baseline_snapshot
 
             actual_identity = schema_identity(connection)
             schema_is_empty = not any(actual_identity.snapshot.get(key) for key in ("tables", "views", "triggers"))
+            if ledger_present and actual_identity.fingerprint != expected_current_fingerprint:
+                diff = snapshot_diff(expected_current_snapshot, actual_identity.snapshot)
+                raise SchemaFingerprintError(
+                    f"database schema does not match recorded migration version {recorded_version}: "
+                    + json.dumps(diff, sort_keys=True, separators=(",", ":"))
+                )
 
             if not ledger_present:
                 if schema_is_empty:
@@ -253,7 +275,7 @@ class MigrationRunner:
                         connection.execute(_LEDGER_SQL)
                         _execute_migration(connection, baseline)
                         post_identity = schema_identity(connection)
-                        if post_identity.fingerprint != expected_fingerprint:
+                        if post_identity.fingerprint != baseline_fingerprint:
                             raise SchemaFingerprintError("fresh baseline schema fingerprint mismatch")
                         connection.execute(
                             "INSERT INTO schema_migrations(version, name, checksum) VALUES(?,?,?)",
@@ -268,8 +290,8 @@ class MigrationRunner:
                     applied_now.append(baseline.version)
                     ledger_present = True
                 else:
-                    if actual_identity.fingerprint != expected_fingerprint:
-                        diff = snapshot_diff(expected_snapshot, actual_identity.snapshot)
+                    if actual_identity.fingerprint != baseline_fingerprint:
+                        diff = snapshot_diff(baseline_snapshot, actual_identity.snapshot)
                         raise SchemaFingerprintError(
                             "existing database does not match the TGVIO baseline: "
                             + json.dumps(diff, sort_keys=True, separators=(",", ":"))
@@ -331,10 +353,22 @@ class MigrationRunner:
                 rows = _ledger_rows(connection)
                 _validate_applied_migrations(rows, migrations)
 
+            latest_version = migrations[-1].version
+            expected_latest_fingerprint, expected_latest_snapshot = _migration_identity(
+                migrations,
+                latest_version,
+            )
+            final_identity = schema_identity(connection)
+            if final_identity.fingerprint != expected_latest_fingerprint:
+                diff = snapshot_diff(expected_latest_snapshot, final_identity.snapshot)
+                raise SchemaFingerprintError(
+                    "database schema does not match the latest migration set: "
+                    + json.dumps(diff, sort_keys=True, separators=(",", ":"))
+                )
+
             _quick_check(connection)
             user_version = int(connection.execute("PRAGMA user_version").fetchone()[0])
             recorded = tuple(row[0] for row in rows)
-            latest_version = migrations[-1].version
             if recorded[-1] != latest_version:
                 raise MigrationError("database did not reach the latest migration")
             if user_version != latest_version:
@@ -345,7 +379,7 @@ class MigrationRunner:
                 applied_now=tuple(applied_now),
                 user_version=user_version,
                 ledger_present=ledger_present,
-                baseline_fingerprint=expected_fingerprint,
+                baseline_fingerprint=baseline_fingerprint,
                 backup_created=backup_created,
             )
         except Exception:

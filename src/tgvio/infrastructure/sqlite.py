@@ -6,6 +6,7 @@ from tgvio.infrastructure.sqlite_control import SQLiteControlRepositoryMixin
 from tgvio.infrastructure.sqlite_jobs import SQLiteJobRepositoryMixin
 from tgvio.infrastructure.sqlite_observability import SQLiteObservabilityRepositoryMixin
 from tgvio.infrastructure.sqlite_publish import SQLitePublishRepositoryMixin
+from tgvio.infrastructure.sqlite_scheduler import SQLiteSchedulerRepositoryMixin
 
 
 class SQLiteJobRepository(
@@ -14,6 +15,7 @@ class SQLiteJobRepository(
     SQLiteArchiveRepositoryMixin,
     SQLiteControlRepositoryMixin,
     SQLiteObservabilityRepositoryMixin,
+    SQLiteSchedulerRepositoryMixin,
     SQLiteRepositoryBase,
 ):
     """Compatibility facade over the split SQLite repository modules."""

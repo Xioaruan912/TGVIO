@@ -15,6 +15,11 @@ from tgvio.adapters.telegram.user_messages import (
 from tgvio.application.intake import IncomingMedia, IntakeService
 from tgvio.application.job_control import JobCancelRequested
 from tgvio.application.job_runner import JobRunner
+from tgvio.application.scheduler import (
+    OrderedPublishDispatcher,
+    PhaseClaimGuard,
+    PhaseClaimLostError,
+)
 from tgvio.config import Settings
 from tgvio.domain.archive import ArchivePackage, ArchivePackageState
 from tgvio.domain.job import Job, JobState, MediaKind
@@ -50,6 +55,16 @@ class TelethonIntakeRuntime:
         self._pending_batches: dict[tuple[int, int], _PendingBatch] = {}
         self._flush_tasks: set[asyncio.Task] = set()
         self._semaphore = asyncio.Semaphore(settings.worker_concurrency)
+        repository = getattr(processor, "repository", None)
+        self._dispatcher = (
+            OrderedPublishDispatcher(repository, processor)
+            if repository is not None and hasattr(processor, "prepare")
+            else None
+        )
+
+    async def start(self) -> None:
+        if self._dispatcher is not None:
+            await self._dispatcher.start()
 
     def register(self) -> None:
         self._client.add_event_handler(self._on_album, events.Album())
@@ -74,6 +89,8 @@ class TelethonIntakeRuntime:
             for task in pending:
                 task.cancel()
             await asyncio.gather(*pending, return_exceptions=True)
+        if self._dispatcher is not None:
+            await self._dispatcher.stop()
         if self._status_tasks:
             status_tasks = tuple(self._status_tasks)
             for task in status_tasks:
@@ -266,49 +283,80 @@ class TelethonIntakeRuntime:
         status_message_id: int | None = None,
     ) -> None:
         async with self._semaphore:
+            repository = getattr(self._processor, "repository", None)
+            if repository is None or not hasattr(self._processor, "prepare"):
+                await self._processor.process(job)
+                return
+            claim = PhaseClaimGuard(repository, job.id, "prepare")
+            if not await claim.start():
+                log_event(
+                    self._log,
+                    logging.INFO,
+                    "scheduler.prepare.duplicate_suppressed",
+                    job_id=job.id,
+                )
+                if self._dispatcher is not None:
+                    self._dispatcher.notify()
+                return
             try:
-                completed = await self._processor.process(job)
-            except asyncio.CancelledError:
-                raise
-            except JobCancelRequested:
-                log_event(
-                    self._log,
-                    logging.WARNING,
-                    "job.run.cancelled",
-                    job_id=job.id,
-                )
-                if chat_id is not None and status_message_id is None:
-                    await self._safe_send(chat_id, f"⛔ 任务 `{job.id[:10]}` 已取消。")
-                return
-            except Exception as exc:
-                log_event(
-                    self._log,
-                    logging.ERROR,
-                    "job.run.failed",
-                    "Job failed during intake pipeline",
-                    job_id=job.id,
-                    exception_type=type(exc).__name__,
-                    exc_info=True,
-                )
-                if chat_id is not None and status_message_id is None:
-                    await self._safe_send(chat_id, f"❌ 任务 `{job.id[:10]}` 下载/分析失败。")
-                return
+                try:
+                    completed = await claim.run(self._processor.prepare(job))
+                except asyncio.CancelledError:
+                    raise
+                except PhaseClaimLostError:
+                    log_event(
+                        self._log,
+                        logging.WARNING,
+                        "scheduler.prepare.claim_lost",
+                        "Preparation stopped because its durable claim was lost",
+                        job_id=job.id,
+                    )
+                    return
+                except JobCancelRequested:
+                    log_event(
+                        self._log,
+                        logging.WARNING,
+                        "job.run.cancelled",
+                        job_id=job.id,
+                    )
+                    if chat_id is not None and status_message_id is None:
+                        await self._safe_send(chat_id, f"⛔ 任务 `{job.id[:10]}` 已取消。")
+                    return
+                except Exception as exc:
+                    log_event(
+                        self._log,
+                        logging.ERROR,
+                        "job.run.failed",
+                        "Job failed during intake preparation",
+                        job_id=job.id,
+                        exception_type=type(exc).__name__,
+                        exc_info=True,
+                    )
+                    if chat_id is not None and status_message_id is None:
+                        await self._safe_send(chat_id, f"❌ 任务 `{job.id[:10]}` 下载/分析失败。")
+                    return
+            finally:
+                await claim.stop()
             log_event(
                 self._log,
                 logging.INFO,
-                "job.run.result",
+                "job.prepare.result",
                 job_id=completed.id,
                 state=completed.state.value,
             )
-            if chat_id is not None and status_message_id is None:
-                if completed.state == JobState.SUCCEEDED:
-                    text = f"✅ 任务 `{completed.id[:10]}` 已发布完成。"
-                else:
-                    text = (
-                        f"🧠 任务 `{completed.id[:10]}` 已完成分析与发布规划。\n"
-                        "打开“📋 我的任务”即可查看发布计划。"
-                    )
-                await self._safe_send(chat_id, text)
+            if self._dispatcher is not None:
+                self._dispatcher.notify()
+            if (
+                chat_id is not None
+                and status_message_id is None
+                and completed.state == JobState.PLANNED
+                and not bool(getattr(self._processor, "publish_enabled", False))
+            ):
+                await self._safe_send(
+                    chat_id,
+                    f"🧠 任务 `{completed.id[:10]}` 已完成分析与发布规划。\n"
+                    "打开“📋 我的任务”即可查看发布计划。",
+                )
 
     async def _track_status(self, chat_id: int, message_id: int, job_id: str) -> None:
         """Continuously edit the acceptance message with durable pipeline progress."""

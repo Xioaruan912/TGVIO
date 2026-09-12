@@ -31,6 +31,10 @@ class SQLiteJobRepositoryMixin:
                 (job.id,),
             )
             await conn.execute(
+                "INSERT INTO job_schedule(job_id) VALUES(?)",
+                (job.id,),
+            )
+            await conn.execute(
                 "INSERT INTO job_events(job_id, event_type, from_state, to_state) VALUES(?,?,?,?)",
                 (job.id, "job_created", None, job.state.value),
             )

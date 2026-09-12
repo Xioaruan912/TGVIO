@@ -443,8 +443,40 @@ def database_report(path: Path) -> dict[str, object]:
             if {"archive_packages", "archive_objects"}.issubset(tables)
             else 0
         )
-        claim_tables = sorted(name for name in tables if "claim" in name or "lease" in name)
-        claim_rows = sum(_scalar(connection, f'SELECT COUNT(*) FROM "{name}"') for name in claim_tables)
+        phase_claims_active = (
+            _scalar(
+                connection,
+                """
+                SELECT COUNT(*) FROM job_phase_claims
+                WHERE expires_at > CAST(strftime('%s','now') AS INTEGER)
+                """,
+            )
+            if "job_phase_claims" in tables
+            else 0
+        )
+        runtime_leases_active = (
+            _scalar(
+                connection,
+                """
+                SELECT COUNT(*) FROM runtime_leases
+                WHERE expires_at > CAST(strftime('%s','now') AS INTEGER)
+                """,
+            )
+            if "runtime_leases" in tables
+            else 0
+        )
+        runtime_lease_conflicts = (
+            _scalar(
+                connection,
+                """
+                SELECT COUNT(*) FROM runtime_leases
+                WHERE expires_at > CAST(strftime('%s','now') AS INTEGER)
+                  AND lease_name != 'telegram-runtime'
+                """,
+            )
+            if "runtime_leases" in tables
+            else 0
+        )
         blockers = {
             "jobs": jobs_active,
             "progress": progress_active,
@@ -453,7 +485,8 @@ def database_report(path: Path) -> dict[str, object]:
             "publish_uncommitted_effects": publish_uncommitted_effects,
             "archive_packages": archive_packages_active,
             "archive_objects": archive_objects_active,
-            "claims_or_leases": claim_rows,
+            "claims_or_leases": phase_claims_active,
+            "runtime_lease_conflicts": runtime_lease_conflicts,
         }
         return {
             "path": str(path),
@@ -463,6 +496,7 @@ def database_report(path: Path) -> dict[str, object]:
             "schema_sql_sha256": schema_sha256,
             "migration_ledger_present": "schema_migrations" in tables,
             "jobs_total": jobs_total,
+            "runtime_leases_active": runtime_leases_active,
             "blocking": blockers,
             "safe_to_deploy": quick_check == "ok" and not any(blockers.values()),
         }

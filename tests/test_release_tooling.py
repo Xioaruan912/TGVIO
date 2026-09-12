@@ -105,7 +105,7 @@ class SourceGuardTests(unittest.TestCase):
 class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
-        self.assertEqual(result["python_files"], 53)
+        self.assertEqual(result["python_files"], 56)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -179,6 +179,70 @@ class DatabaseReleaseGateTests(unittest.TestCase):
             self.assertEqual(report["blocking"]["publish_uncertain_or_partial"], 1)
             self.assertEqual(report["blocking"]["publish_uncommitted_effects"], 1)
 
+    def test_expected_runtime_lease_is_safe_but_conflict_or_phase_claim_blocks_release(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            database = Path(temporary) / "state.sqlite3"
+            self._database(database)
+            connection = sqlite3.connect(database)
+            connection.executescript(
+                """
+                CREATE TABLE runtime_leases (
+                    lease_name TEXT PRIMARY KEY,
+                    holder_id TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    acquired_at INTEGER NOT NULL,
+                    heartbeat_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL
+                );
+                CREATE TABLE job_phase_claims (
+                    job_id TEXT NOT NULL,
+                    phase TEXT NOT NULL,
+                    holder_id TEXT NOT NULL,
+                    generation INTEGER NOT NULL,
+                    claimed_at INTEGER NOT NULL,
+                    heartbeat_at INTEGER NOT NULL,
+                    expires_at INTEGER NOT NULL,
+                    PRIMARY KEY(job_id, phase)
+                );
+                """
+            )
+            future = 4_000_000_000
+            connection.execute(
+                "INSERT INTO runtime_leases VALUES('telegram-runtime','runtime-a',1,1,1,?)",
+                (future,),
+            )
+            connection.commit()
+            connection.close()
+
+            report = database_report(database)
+            self.assertTrue(report["safe_to_deploy"])
+            self.assertEqual(report["runtime_leases_active"], 1)
+            self.assertEqual(report["blocking"]["claims_or_leases"], 0)
+            self.assertEqual(report["blocking"]["runtime_lease_conflicts"], 0)
+
+            connection = sqlite3.connect(database)
+            connection.execute(
+                "INSERT INTO runtime_leases VALUES('unexpected-runtime','runtime-b',1,1,1,?)",
+                (future,),
+            )
+            connection.commit()
+            connection.close()
+            conflicted = database_report(database)
+            self.assertFalse(conflicted["safe_to_deploy"])
+            self.assertEqual(conflicted["blocking"]["runtime_lease_conflicts"], 1)
+
+            connection = sqlite3.connect(database)
+            connection.execute("DELETE FROM runtime_leases WHERE lease_name='unexpected-runtime'")
+            connection.execute(
+                "INSERT INTO job_phase_claims VALUES('job-1','publish','worker-a',1,1,1,?)",
+                (future,),
+            )
+            connection.commit()
+            connection.close()
+            blocked = database_report(database)
+            self.assertFalse(blocked["safe_to_deploy"])
+            self.assertEqual(blocked["blocking"]["claims_or_leases"], 1)
+
     def test_backup_and_explicit_restore_use_sqlite_backup_api(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
@@ -215,6 +279,17 @@ class RemotePreflightSchemaTests(unittest.TestCase):
                     "user_version": 1,
                     "migration_ledger_present": True,
                     "schema_sql_sha256": "593cccda96a2955990eb7807791682f73b67d4c8f0026062a37a2f7e785b25f6",
+                }
+            )
+        )
+
+    def test_known_v2_schema_requires_ledger(self) -> None:
+        self.assertTrue(
+            _database_schema_is_known(
+                {
+                    "user_version": 2,
+                    "migration_ledger_present": True,
+                    "schema_sql_sha256": "f5c9495e3947c109ee6598d7a7f8c0deac9d17d0fbb5c264d21de4f5d2bd4443",
                 }
             )
         )
@@ -283,6 +358,7 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("APP_COMMIT:?", compose)
         self.assertIn("TGVIO_ENV_FILE:?", compose)
         self.assertIn("TGVIO_HOST_DATA_DIR:?", compose)
+        self.assertIn("stop_grace_period: 45s", compose)
 
     def test_deployment_scripts_reject_unsafe_ssh_shortcuts(self) -> None:
         scripts = "\n".join(

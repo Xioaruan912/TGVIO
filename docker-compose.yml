@@ -11,6 +11,7 @@ services:
         REQUIREMENTS_LOCK_SHA256: ${REQUIREMENTS_LOCK_SHA256:-unknown}
     container_name: tgvio
     restart: unless-stopped
+    stop_grace_period: 45s
     env_file:
       - path: ${TGVIO_ENV_FILE:?set TGVIO_ENV_FILE to the runtime environment file}
         required: true

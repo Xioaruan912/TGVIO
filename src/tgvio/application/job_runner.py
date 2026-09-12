@@ -25,11 +25,20 @@ class JobRunner:
         self._archive = archive
         self._log = logging.getLogger("tgvio.job.runner")
 
-    async def process(self, job: Job) -> Job:
+    @property
+    def repository(self) -> JobRepository:
+        return self._repository
+
+    @property
+    def publish_enabled(self) -> bool:
+        return self._execution is not None
+
+    async def prepare(self, job: Job) -> Job:
+        """Advance one Job through download/analyze/plan, but never publish it."""
         log_event(
             self._log,
             logging.INFO,
-            "job.run.started",
+            "job.prepare.started",
             job_id=job.id,
             state=job.state.value,
             item_count=len(job.items),
@@ -42,22 +51,7 @@ class JobRunner:
             JobState.ANALYZED,
         }:
             job = await self._ingestion.process(job)
-        if job.state != JobState.PLANNED:
-            if job.state == JobState.PUBLISHING and self._execution is not None:
-                plan = await self._repository.get_publish_plan(job.id)
-                if plan is None:
-                    raise RuntimeError(f"publishing job has no PublishPlan: {job.id}")
-                result = await self._execution.execute(job, plan)
-                log_event(
-                    self._log,
-                    logging.INFO,
-                    "job.run.completed",
-                    job_id=job.id,
-                    state=result.state.value,
-                )
-                return result
-            return job
-        if self._archive is not None:
+        if job.state == JobState.PLANNED and self._archive is not None:
             package = await self._archive.enqueue_job(job)
             if package is not None:
                 log_event(
@@ -69,19 +63,17 @@ class JobRunner:
                     archive_state=package.state.value,
                     object_count=len(package.objects),
                 )
+        return job
+
+    async def publish(self, job: Job) -> Job:
+        """Publish one already planned/recovering Job without running ingestion."""
         if self._execution is None:
-            log_event(
-                self._log,
-                logging.INFO,
-                "job.run.paused",
-                job_id=job.id,
-                state=job.state.value,
-                reason="publish_disabled",
-            )
+            return job
+        if job.state not in {JobState.PLANNED, JobState.PUBLISHING}:
             return job
         plan = await self._repository.get_publish_plan(job.id)
         if plan is None:
-            raise RuntimeError(f"planned job has no PublishPlan: {job.id}")
+            raise RuntimeError(f"{job.state.value} job has no PublishPlan: {job.id}")
         result = await self._execution.execute(job, plan)
         log_event(
             self._log,
@@ -91,3 +83,26 @@ class JobRunner:
             state=result.state.value,
         )
         return result
+
+    async def process(self, job: Job) -> Job:
+        """Compatibility path used by tests/tools outside the durable dispatcher."""
+        log_event(
+            self._log,
+            logging.INFO,
+            "job.run.started",
+            job_id=job.id,
+            state=job.state.value,
+            item_count=len(job.items),
+        )
+        job = await self.prepare(job)
+        if not self.publish_enabled and job.state == JobState.PLANNED:
+            log_event(
+                self._log,
+                logging.INFO,
+                "job.run.paused",
+                job_id=job.id,
+                state=job.state.value,
+                reason="publish_disabled",
+            )
+            return job
+        return await self.publish(job)
