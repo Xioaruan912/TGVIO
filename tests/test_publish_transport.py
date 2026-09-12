@@ -137,6 +137,9 @@ class FakeTelegramClient:
         self.fail_send_on: int | None = None
         self.fail_album_send = False
         self.reuse_message = None
+        self.fail_upload_part_once = False
+        self._upload_part_failed = False
+        self.upload_calls: list[str] = []
 
     async def get_input_entity(self, entity):
         return entity
@@ -145,6 +148,7 @@ class FakeTelegramClient:
         return self.reuse_message
 
     async def upload_file(self, file):
+        self.upload_calls.append(str(file))
         return types.InputFile(
             id=123456,
             parts=1,
@@ -154,6 +158,17 @@ class FakeTelegramClient:
 
     async def __call__(self, request):
         self.requests.append(request)
+        if isinstance(
+            request,
+            (
+                functions.upload.SaveFilePartRequest,
+                functions.upload.SaveBigFilePartRequest,
+            ),
+        ):
+            if self.fail_upload_part_once and not self._upload_part_failed:
+                self._upload_part_failed = True
+                raise RuntimeError("fixture-part-upload-failure")
+            return True
         if isinstance(request, functions.messages.GetDiscussionMessageRequest):
             return SimpleNamespace(
                 messages=[
@@ -410,6 +425,71 @@ class TelethonPublishTransportTests(unittest.IsolatedAsyncioTestCase):
             if isinstance(request, functions.messages.SendMultiMediaRequest)
         )
         self.assertIsInstance(send.multi_media[0].media, types.InputMediaPhoto)
+
+    async def test_configured_bounded_uploader_handles_video_before_visible_send(self) -> None:
+        item = self._item(0, MediaKind.VIDEO)
+        Path(item.local_path).write_bytes(b"x" * (3 * 64 * 1024))
+        transport = TelethonPublishTransport(
+            self.client,
+            self.transformer,
+            self.root / "work-concurrent-upload",
+            upload_workers=4,
+            upload_global_workers=4,
+            upload_part_size_kb=64,
+        )
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[item],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_MEDIA_GROUP,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={"strategies": {"0": "native"}},
+        )
+
+        await transport.execute_step(job, step, ())
+
+        self.assertTrue(
+            any(isinstance(request, functions.upload.SaveFilePartRequest) for request in self.client.requests)
+        )
+        _entity, file_arg, _kwargs = self.client.send_calls[0]
+        self.assertIsInstance(file_arg, types.InputMediaUploadedDocument)
+
+    async def test_part_failure_falls_back_before_exactly_one_visible_send(self) -> None:
+        item = self._item(0, MediaKind.VIDEO)
+        Path(item.local_path).write_bytes(b"x" * (3 * 64 * 1024))
+        self.client.fail_upload_part_once = True
+        transport = TelethonPublishTransport(
+            self.client,
+            self.transformer,
+            self.root / "work-upload-fallback",
+            upload_workers=4,
+            upload_global_workers=4,
+            upload_part_size_kb=64,
+        )
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[item],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_MEDIA_GROUP,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={"strategies": {"0": "native"}},
+        )
+
+        receipts = await transport.execute_step(job, step, ())
+
+        self.assertEqual(len(self.client.upload_calls), 1)
+        self.assertEqual(len(self.client.send_calls), 1)
+        self.assertEqual(len(receipts), 1)
 
     async def test_video_album_upload_carries_generated_thumbnail(self) -> None:
         self.transformer.thumbnail_enabled = True

@@ -82,6 +82,8 @@ class Settings:
     forward_caption: bool
     worker_concurrency: int
     telegram_download_workers: int
+    telegram_upload_workers: int
+    telegram_upload_global_workers: int
     telegram_part_size_kb: int
     telegram_shard_retries: int
     batch_window_ms: int
@@ -128,6 +130,12 @@ class Settings:
         telegram_download_workers = _int("TGVIO_TELEGRAM_DOWNLOAD_WORKERS", 8)
         if not 1 <= telegram_download_workers <= 32:
             raise ConfigError("TGVIO_TELEGRAM_DOWNLOAD_WORKERS out of range")
+        telegram_upload_workers = _int("TGVIO_TELEGRAM_UPLOAD_WORKERS", 16)
+        if not 1 <= telegram_upload_workers <= 32:
+            raise ConfigError("TGVIO_TELEGRAM_UPLOAD_WORKERS out of range")
+        telegram_upload_global_workers = _int("TGVIO_TELEGRAM_UPLOAD_GLOBAL_WORKERS", 16)
+        if not 1 <= telegram_upload_global_workers <= 32:
+            raise ConfigError("TGVIO_TELEGRAM_UPLOAD_GLOBAL_WORKERS out of range")
         telegram_part_size_kb = _int("TGVIO_TELEGRAM_PART_SIZE_KB", 512)
         if telegram_part_size_kb not in {64, 128, 256, 512}:
             raise ConfigError("TGVIO_TELEGRAM_PART_SIZE_KB must be 64/128/256/512")
@@ -227,6 +235,8 @@ class Settings:
             forward_caption=_bool("FORWARD_CAPTION", False),
             worker_concurrency=worker_concurrency,
             telegram_download_workers=telegram_download_workers,
+            telegram_upload_workers=telegram_upload_workers,
+            telegram_upload_global_workers=telegram_upload_global_workers,
             telegram_part_size_kb=telegram_part_size_kb,
             telegram_shard_retries=telegram_shard_retries,
             batch_window_ms=batch_window_ms,
@@ -266,6 +276,8 @@ class Settings:
             "forward_caption": self.forward_caption,
             "worker_concurrency": self.worker_concurrency,
             "telegram_download_workers": self.telegram_download_workers,
+            "telegram_upload_workers": self.telegram_upload_workers,
+            "telegram_upload_global_workers": self.telegram_upload_global_workers,
             "telegram_part_size_kb": self.telegram_part_size_kb,
             "telegram_shard_retries": self.telegram_shard_retries,
             "batch_window_ms": self.batch_window_ms,

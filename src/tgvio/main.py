@@ -171,6 +171,9 @@ async def run(*, check_only: bool = False) -> None:
                     cover_width=settings.cover_width,
                     split_part_bytes=settings.upload_part_bytes,
                     discussion_resolver=BotApiDiscussionResolver(settings.bot_token, timeout_seconds=45.0, poll_interval_seconds=1.0),
+                    upload_workers=settings.telegram_upload_workers,
+                    upload_global_workers=settings.telegram_upload_global_workers,
+                    upload_part_size_kb=settings.telegram_part_size_kb,
                 ),
                 control,
             )

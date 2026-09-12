@@ -29,6 +29,10 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.allowed_users, (42, 43))
         self.assertEqual(settings.channel_at, "@destination")
         self.assertEqual(settings.worker_concurrency, 2)
+        self.assertEqual(settings.telegram_download_workers, 8)
+        self.assertEqual(settings.telegram_upload_workers, 16)
+        self.assertEqual(settings.telegram_upload_global_workers, 16)
+        self.assertEqual(settings.telegram_part_size_kb, 512)
         self.assertEqual(settings.batch_window_ms, 1500)
         self.assertEqual(settings.batch_max_wait_ms, 5000)
         self.assertEqual(settings.batch_max_items, 100)
@@ -107,6 +111,20 @@ class SettingsTests(unittest.TestCase):
             clear=True,
         ):
             with self.assertRaisesRegex(ConfigError, "DISK_RESERVE_MB"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_TELEGRAM_UPLOAD_WORKERS": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "TELEGRAM_UPLOAD_WORKERS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_TELEGRAM_UPLOAD_GLOBAL_WORKERS": "33"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "TELEGRAM_UPLOAD_GLOBAL_WORKERS"):
                 Settings.from_env()
         with patch.dict(
             os.environ,

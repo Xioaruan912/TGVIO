@@ -1,6 +1,6 @@
 # TGVIO 完全重构 V2
 
-> 状态：R2-00～R2-03 已交付；R2-04 A-D durable scheduler 已正式发布 HostDZire，R2-04E 并发分片上传继续推进（2026-09-12）
+> 状态：R2-00～R2-03 已交付；R2-04 A-D durable scheduler 已正式发布 HostDZire，R2-04E bounded concurrent upload 已完成 local candidate 与 214 项离线门禁，待正式发布和真实大文件观测（2026-09-12）
 > 适用范围：`TG_Upload_bot` Git 仓库与 HostDZire 上的 TGVIO 生产实例
 > 权威性：从本文件建立之日起，新重构工作以本目录为准；旧 `docs/REFACTORING.md`、`docs/R0_BASELINE.md`、`todo.md` 和 `AGENTS.md` 的历史阶段记录仅用于追溯。
 
@@ -58,6 +58,6 @@
 - R2-00 已完成规划文档交付；R2-01 已把生产 clean-room runtime 回收至 Git；R2-02 已完成可复现构建与强制交付链。
 - 当前生产 release 为 `r2-04-0016988-20260912T070451Z`，runtime commit 为 `0016988fc3f4fc5ec28c55169c9e44515c83b1cf`；R2-04 A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)。
 - R2-03A 已交付无 schema 变更的移动端按钮、友好错误、下载回退和日志 wrapper 修复。R2-03B 已完成 baseline fingerprint、SQLite backup API、checksum migration runner、`schema_migrations`、fail-closed takeover、真实生产 DB 副本 rehearsal、Job/Publish/Archive/Control/Observability repository 拆分与 100/1000 query/event-loop 门禁；正式 schema-changing cutover 已把生产推进到 `user_version=1` 且 ledger 存在。首次 cutover 的 final report 暴露旧 schema-hash hardcode 后，hotfix `dd3fa0f` 以 `migration=none` 闭环，独立 postflight 为 `blockers=[]`、`quick_check=ok`、container healthy/restart=0，rollback asset check 通过。
-- R2-04 A-D 已通过 `0002_scheduler` 正式推进生产到 `user_version=2`，singleton runtime lease、generation-fenced prepare/publish/archive claim、durable `accepted_order` 与单 ordered publish dispatcher 已上线；独立 postflight 为 `blockers=[]`、runtime lease active=1、container healthy/restart=0，rollback asset check 通过。100 Job 随机 readiness 仍严格按 accepted order 发布，`publish_partial/uncertain` 会阻塞后续自动发布。下载闸门策略锁定为 head-of-line FIFO 而非“等待所有下载清空”；R2-04E 并发分片上传另行实施。完整证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)。
+- R2-04 A-D 已通过 `0002_scheduler` 正式推进生产到 `user_version=2`，singleton runtime lease、generation-fenced prepare/publish/archive claim、durable `accepted_order` 与单 ordered publish dispatcher 已上线；独立 postflight 为 `blockers=[]`、runtime lease active=1、container healthy/restart=0，rollback asset check 通过。100 Job 随机 readiness 仍严格按 accepted order 发布，`publish_partial/uncertain` 会阻塞后续自动发布。下载闸门策略锁定为 head-of-line FIFO 而非“等待所有下载清空”。R2-04E local candidate 已恢复 legacy 16 路 Telegram MTProto 分片上传，并增加全局并发上限、失败前置 fallback、吞吐日志与可见消息 exactly-once 回归；最终候选 `--network none` 为 214 tests。该包无 schema 变更，正式发布必须使用 `migration=none`；真实 1～3 个大文件吞吐/CPU/内存/FloodWait 仍需生产观测。A-D 完整证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)，E 候选证据见 [R2-04E_UPLOAD_CANDIDATE.md](evidence/R2-04E_UPLOAD_CANDIDATE.md)。
 - 后续 docs-only 提交可以领先生产 runtime commit，但不因此构建或重启容器。
 - 文档中的密码、token、Authorization、代理/WebDAV 凭据一律视为缺陷；主机地址、端口、用户和目录不是秘密，可记录用于自动化。

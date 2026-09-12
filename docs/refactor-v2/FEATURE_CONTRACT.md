@@ -51,7 +51,7 @@
 | PL-07 | caption forwarding、footer 和 1024 字符限制在计划中冻结 | COVERED | caption/footer tests |
 | PL-08 | 讨论组根用 Bot 可调用方式解析，并把映射写入 durable effect，重启不依赖内存 | VERIFIED | resolver/transport tests；生产有成功 effects |
 | PL-09 | 所有 Job 按接受顺序发布；早到 Job 未就绪时不得被晚到 Job 越过，除非用户显式 hold/cancel | VERIFIED | R2-04 A-D 已正式生产发布 durable `accepted_order` + 单 ordered dispatcher；100 Job 随机 readiness、双 dispatcher、partial/uncertain 阻塞测试通过，生产 v2 postflight healthy；hold UI 仍属 R2-06 |
-| PL-10 | 下载可并行，但 Telegram upload 有明确并发/带宽策略且不会降低旧并发分片上传能力 | REQUIRED | 当前 TGVIO 使用 Telethon 默认 `upload_file`，旧 16 路分片上传能力未迁移 |
+| PL-10 | 下载可并行，但 Telegram upload 有明确并发/带宽策略且不会降低旧并发分片上传能力 | COVERED | R2-04E local candidate 已恢复 legacy 16 路 `SaveFilePart/SaveBigFilePart`、单文件/全局并发上限、约 8 MiB 默认 part-payload 内存界、cancel/fallback 和 exactly-once visible-send 回归；214 项离线门禁通过。待正式 production release，并观察 1～3 个真实大文件的吞吐/CPU/内存/FloodWait 后再升 VERIFIED |
 | PL-11 | 每个已确认可见消息先写 receipt/effect；partial/uncertain 永不盲目重发 | VERIFIED | publish pipeline tests；生产有 succeeded/failed step evidence |
 | PL-12 | SHA-256 + destination + kind 的媒体引用复用；stale 引用在任何可见副作用前回退本地上传 | VERIFIED | reference cache/transport tests；生产 cache 有数据 |
 | PL-13 | 发布失败按阶段安全重试；有 partial/uncertain 证据时进入人工处理 | COVERED | job control/diagnostics tests |

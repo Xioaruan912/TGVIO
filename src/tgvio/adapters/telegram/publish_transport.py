@@ -23,6 +23,7 @@ from tgvio.domain.publish import (
 )
 from tgvio.infrastructure.media_transformer import FFmpegMediaTransformer
 from tgvio.adapters.telegram.discussion_resolver import DiscussionRoot
+from tgvio.adapters.telegram.uploads import BoundedTelegramUploader
 from tgvio.observability import log_event
 
 
@@ -60,6 +61,9 @@ class TelethonPublishTransport:
         cover_width: int = 1280,
         split_part_bytes: int = 1900 * 1024 * 1024,
         discussion_resolver: DiscussionResolver | None = None,
+        upload_workers: int = 1,
+        upload_global_workers: int = 1,
+        upload_part_size_kb: int = 512,
     ) -> None:
         self._client = client
         self._transformer = transformer
@@ -68,6 +72,16 @@ class TelethonPublishTransport:
         self._split_part_bytes = split_part_bytes
         self._discussion_resolver = discussion_resolver
         self._discussion_root_lock = asyncio.Lock()
+        self._uploader = (
+            BoundedTelegramUploader(
+                client,
+                per_file_workers=upload_workers,
+                global_workers=upload_global_workers,
+                part_size_kb=upload_part_size_kb,
+            )
+            if upload_workers > 1
+            else None
+        )
         self._log = logging.getLogger("tgvio.telegram.publish")
 
     async def execute_step(
@@ -135,6 +149,7 @@ class TelethonPublishTransport:
                 step,
                 item,
                 bundle,
+                job_id=job.id,
             )
 
         if step.kind == PublishStepKind.CHANNEL_VIDEO_COVER:
@@ -203,6 +218,8 @@ class TelethonPublishTransport:
                     spoiler=item.spoiler,
                     thumbnail=thumbnail,
                     force_upload=len(items) > 1,
+                    job_id=job.id,
+                    item_index=item.index,
                 )
             )
         captions = [self._caption(item, step) for item in items]
@@ -266,31 +283,22 @@ class TelethonPublishTransport:
         spoiler: bool,
         thumbnail: Path | None = None,
         force_upload: bool = False,
+        job_id: str | None = None,
+        item_index: int | None = None,
     ):
-        if not spoiler and thumbnail is None and not force_upload:
-            if kind == MediaKind.VIDEO and not force_document:
-                attributes, mime_type = utils.get_attributes(
-                    str(source),
-                    force_document=force_document,
-                    supports_streaming=supports_streaming,
-                )
-                has_video_attr = any(isinstance(a, types.DocumentAttributeVideo) for a in attributes)
-                if not has_video_attr:
-                    attributes.append(
-                        types.DocumentAttributeVideo(
-                            duration=0,
-                            w=1,
-                            h=1,
-                            supports_streaming=supports_streaming
-                        )
-                    )
-                    return types.InputMediaUploadedDocument(
-                        file=await self._client.upload_file(str(source)),
-                        mime_type=mime_type,
-                        attributes=attributes,
-                    )
+        if (
+            kind == MediaKind.PHOTO
+            and not force_document
+            and not spoiler
+            and thumbnail is None
+            and not force_upload
+        ):
             return str(source)
-        uploaded = await self._client.upload_file(str(source))
+        uploaded = await self._upload_local_file(
+            source,
+            job_id=job_id,
+            item_index=item_index,
+        )
         if kind == MediaKind.PHOTO and not force_document:
             return types.InputMediaUploadedPhoto(
                 file=uploaded,
@@ -313,7 +321,11 @@ class TelethonPublishTransport:
                     )
                 )
         uploaded_thumb = (
-            await self._client.upload_file(str(thumbnail))
+            await self._upload_local_file(
+                thumbnail,
+                job_id=job_id,
+                item_index=item_index,
+            )
             if thumbnail is not None
             else None
         )
@@ -414,6 +426,8 @@ class TelethonPublishTransport:
         step: PublishStep,
         item: MediaItem,
         bundle,
+        *,
+        job_id: str,
     ) -> list[PublishReceipt]:
         receipts: list[PublishReceipt] = []
         playable = bundle.mode == "playable_video_segments"
@@ -454,6 +468,8 @@ class TelethonPublishTransport:
                     force_document=not playable,
                     supports_streaming=playable,
                     spoiler=item.spoiler,
+                    job_id=job_id,
+                    item_index=item.index,
                 )
                 part_sent = await self._send_visible_file(
                     target,
@@ -481,6 +497,21 @@ class TelethonPublishTransport:
                 raise PublishTransportPartialError(str(exc), tuple(receipts)) from exc
             raise
         return receipts
+
+    async def _upload_local_file(
+        self,
+        source: Path,
+        *,
+        job_id: str | None,
+        item_index: int | None,
+    ):
+        if self._uploader is None:
+            return await self._client.upload_file(str(source))
+        return await self._uploader.upload(
+            source,
+            job_id=job_id,
+            item_index=item_index,
+        )
 
     async def _send_visible_file(self, target, file, **kwargs):
         try:
