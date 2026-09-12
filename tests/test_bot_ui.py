@@ -195,11 +195,14 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(menus), 1)
         self.assertIsInstance(menus[0].button, types.BotMenuButtonCommands)
 
-    def test_command_surface_contains_only_new_tgvio_commands(self) -> None:
+    def test_command_surface_contains_collection_and_spoiler_controls(self) -> None:
         names = {name for name, _ in COMMANDS}
-        self.assertEqual(names, {"start", "jobs", "status", "help"})
+        self.assertEqual(
+            names,
+            {"start", "begin", "end", "mode", "jobs", "status", "help"},
+        )
         self.assertFalse(
-            names & {"queue", "begin", "end", "profiles", "webdav", "backup", "dashboard"}
+            names & {"queue", "profiles", "webdav", "backup", "dashboard"}
         )
 
     def test_mobile_reply_keyboard_is_persistent_and_compact(self) -> None:
@@ -210,8 +213,11 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             for row in keyboard
             for button in row
         }
-        self.assertEqual(labels, set(NAV_BUTTONS))
-        self.assertEqual([len(row) for row in keyboard], [2, 2, 2])
+        self.assertEqual(
+            labels,
+            set(NAV_BUTTONS) | {"📥 开始合集", "🛑 结束并发布"},
+        )
+        self.assertEqual([len(row) for row in keyboard], [2, 2, 2, 2])
         self.assertTrue(all(button.persistent for row in keyboard for button in row))
         self.assertTrue(all(button.resize for row in keyboard for button in row))
 

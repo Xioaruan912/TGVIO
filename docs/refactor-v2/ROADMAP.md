@@ -30,7 +30,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-02 | DELIVERED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
 | R2-03 | DELIVERED | 生产反馈修复；接管 migration ledger 并拆分 repository | DL-01、UI-01～02、AR-06、DB-02 |
 | R2-04 | IN PROGRESS | A-D durable scheduler / claim / strict FIFO 已交付；E 并发分片上传继续 | DB-03、PL-09、PL-10 |
-| R2-05 | NOT STARTED | durable intake 幂等、合集会话、文字与 spoiler 偏好 | IN-04～06、PL-06、ST-01 |
+| R2-05 | IN PROGRESS | A-E 本地候选完成并通过 v2→v3 rehearsal；待正式 schema-changing release | IN-04～06、PL-06、ST-01 |
 | R2-06 | NOT STARTED | 完整队列、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02、CT-04、PL-14 |
 | R2-07 | NOT STARTED | 动态 Archive、目的地 Profile、代理协调 | AR-07、ST-02、ST-03 |
 | R2-08 | NOT STARTED | 拆分 Telegram/WebDAV/UI/SQLite 热点并清除兼容层 | 架构门禁 |
@@ -230,6 +230,8 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 - R2-05C：文字 entry 按 ordinal 聚合，统一 Telegram caption 限长与原 caption/footer 顺序。
 - R2-05D：`user_preferences` 与 `ask/always_spoiler/always_normal`；ask 超时 normal、主动取消终止。
 - R2-05E：稳定状态消息引用落库，重启后编辑或至多补发一次。
+
+2026-09-12 本地候选状态：A-E 已实现，`0003_intake_collections` v2→v3 真实生产数据形状 rehearsal 通过；默认 spoiler 模式额外保留 `source` 以避免回归当前生产源 spoiler 语义。候选证据见 [R2-05_INTAKE_CANDIDATE.md](evidence/R2-05_INTAKE_CANDIDATE.md)。正式发布前仍需最终全量门禁、clean/pushed gate 和 migration-aware cutover。
 
 ### 验收与回滚
 

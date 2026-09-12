@@ -36,6 +36,8 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.batch_window_ms, 1500)
         self.assertEqual(settings.batch_max_wait_ms, 5000)
         self.assertEqual(settings.batch_max_items, 100)
+        self.assertTrue(settings.collections_enabled)
+        self.assertEqual(settings.spoiler_confirm_timeout_seconds, 60)
         self.assertEqual(settings.disk_reserve_bytes, 5120 * 1024 * 1024)
         self.assertEqual(settings.upload_part_bytes, 1900 * 1024 * 1024)
         self.assertEqual(settings.cache_retention_hours, 24)
@@ -150,6 +152,13 @@ class SettingsTests(unittest.TestCase):
             clear=True,
         ):
             with self.assertRaisesRegex(ConfigError, "BATCH_MAX_ITEMS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_SPOILER_CONFIRM_TIMEOUT_SECONDS": "4"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "SPOILER_CONFIRM_TIMEOUT_SECONDS"):
                 Settings.from_env()
         with patch.dict(
             os.environ,

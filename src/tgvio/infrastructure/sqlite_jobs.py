@@ -10,41 +10,44 @@ from tgvio.domain.job import ALLOWED_TRANSITIONS, Job, JobEvent, JobState, Media
 class SQLiteJobRepositoryMixin:
     async def create(self, job: Job) -> None:
         async with self._write_transaction() as conn:
-            await conn.execute(
-                """
-                INSERT INTO jobs(id, owner_id, destination, state, policy_json, error_code, error_message)
-                VALUES(?,?,?,?,?,?,?)
-                """,
-                (
-                    job.id,
-                    job.owner_id,
-                    job.destination,
-                    job.state.value,
-                    json.dumps(job.policy, ensure_ascii=False, separators=(",", ":")),
-                    job.error_code,
-                    job.error_message,
-                ),
-            )
-            await self._replace_items(conn, job)
-            await conn.execute(
-                "INSERT OR IGNORE INTO job_controls(job_id) VALUES(?)",
-                (job.id,),
-            )
-            await conn.execute(
-                "INSERT INTO job_schedule(job_id) VALUES(?)",
-                (job.id,),
-            )
-            await conn.execute(
-                "INSERT INTO job_events(job_id, event_type, from_state, to_state) VALUES(?,?,?,?)",
-                (job.id, "job_created", None, job.state.value),
-            )
-            await conn.execute(
-                """
-                INSERT INTO job_progress(job_id, phase, current_value, total_value, item_total)
-                VALUES(?,?,?,?,?)
-                """,
-                (job.id, "queued", 0, 0, len(job.items)),
-            )
+            await self._insert_new_job(conn, job)
+
+    async def _insert_new_job(self, conn: aiosqlite.Connection, job: Job) -> None:
+        await conn.execute(
+            """
+            INSERT INTO jobs(id, owner_id, destination, state, policy_json, error_code, error_message)
+            VALUES(?,?,?,?,?,?,?)
+            """,
+            (
+                job.id,
+                job.owner_id,
+                job.destination,
+                job.state.value,
+                json.dumps(job.policy, ensure_ascii=False, separators=(",", ":")),
+                job.error_code,
+                job.error_message,
+            ),
+        )
+        await self._replace_items(conn, job)
+        await conn.execute(
+            "INSERT OR IGNORE INTO job_controls(job_id) VALUES(?)",
+            (job.id,),
+        )
+        await conn.execute(
+            "INSERT INTO job_schedule(job_id) VALUES(?)",
+            (job.id,),
+        )
+        await conn.execute(
+            "INSERT INTO job_events(job_id, event_type, from_state, to_state) VALUES(?,?,?,?)",
+            (job.id, "job_created", None, job.state.value),
+        )
+        await conn.execute(
+            """
+            INSERT INTO job_progress(job_id, phase, current_value, total_value, item_total)
+            VALUES(?,?,?,?,?)
+            """,
+            (job.id, "queued", 0, 0, len(job.items)),
+        )
 
     async def save(self, job: Job) -> None:
         async with self._write_transaction() as conn:

@@ -19,21 +19,24 @@ class CacheCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.downloads = self.root / "downloads"
         self.repo = SQLiteJobRepository(self.root / "state.sqlite3")
         await self.repo.open()
+        self._source_message_id = 0
 
     async def asyncTearDown(self) -> None:
         await self.repo.close()
         self.tmp.cleanup()
 
     async def _job_with_cache(self, state: JobState, *, payload: bytes = b"payload"):
+        self._source_message_id += 1
+        message_id = self._source_message_id
         job = await IntakeService(self.repo).accept(
             owner_id=42,
             destination="@channel",
             media=[
                 IncomingMedia(
                     kind=MediaKind.DOCUMENT,
-                    source="telegram:42:1",
+                    source=f"telegram:42:{message_id}",
                     source_chat_id=42,
-                    source_message_id=1,
+                    source_message_id=message_id,
                 )
             ],
         )

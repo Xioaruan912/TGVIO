@@ -828,6 +828,41 @@ class TelethonPublishTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(caption), 1024)
         self.assertTrue(caption.endswith("\n@channel @group"))
 
+    def test_collection_caption_precedes_original_caption_and_footer_with_limit(self) -> None:
+        item = self._item(0, MediaKind.PHOTO, caption="原文")
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_COVER_ALBUM,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={
+                "forward_caption": True,
+                "collection_caption": "合集文字第一行\n合集文字第二行",
+                "collection_caption_item_index": 0,
+                "caption_footer": "@channel @group",
+                "strategies": {"0": "native"},
+            },
+        )
+        caption = self.transport._caption(item, step)
+        self.assertEqual(
+            caption,
+            "合集文字第一行\n合集文字第二行\n原文\n@channel @group",
+        )
+
+        long_step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_COVER_ALBUM,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={
+                **step.params,
+                "collection_caption": "文" * 2000,
+            },
+        )
+        limited = self.transport._caption(item, long_step)
+        self.assertEqual(len(limited), 1024)
+        self.assertTrue(limited.endswith("\n@channel @group"))
+
     async def test_album_captions_receive_footer(self) -> None:
         job = Job(
             owner_id=42,

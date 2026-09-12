@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import logging
 from typing import Iterable
 
@@ -37,6 +37,7 @@ class JobOrchestrator:
         photos = [item for item in items if item.kind == MediaKind.PHOTO]
         videos = [item for item in items if item.kind == MediaKind.VIDEO]
         documents = [item for item in items if item.kind == MediaKind.DOCUMENT]
+        collection_caption = str(job.policy.get("collection_caption", "") or "")
 
         if self._policy.cover_mode and (photos or videos):
             cover_photos = photos[: self._policy.cover_limit]
@@ -48,6 +49,8 @@ class JobOrchestrator:
                         PublishTarget.CHANNEL,
                         cover_photos,
                         mode="photo_album",
+                        collection_caption=collection_caption,
+                        collection_caption_item_index=cover_photos[0].index,
                     )
                 )
             elif videos:
@@ -58,6 +61,8 @@ class JobOrchestrator:
                         PublishTarget.CHANNEL,
                         [videos[0]],
                         mode="generated_frame",
+                        collection_caption=collection_caption,
+                        collection_caption_item_index=videos[0].index,
                     )
                 )
 
@@ -101,6 +106,28 @@ class JobOrchestrator:
                         [item],
                         mode="document",
                     )
+                )
+
+        if collection_caption and steps and not any(
+            step.params.get("collection_caption") for step in steps
+        ):
+            first_visible = next(
+                (
+                    index
+                    for index, step in enumerate(steps)
+                    if step.target == PublishTarget.CHANNEL and step.item_indexes
+                ),
+                None,
+            )
+            if first_visible is not None:
+                step = steps[first_visible]
+                steps[first_visible] = replace(
+                    step,
+                    params={
+                        **step.params,
+                        "collection_caption": collection_caption,
+                        "collection_caption_item_index": step.item_indexes[0],
+                    },
                 )
 
         summary = {
@@ -156,6 +183,8 @@ class JobOrchestrator:
         items: Iterable[MediaItem],
         *,
         mode: str,
+        collection_caption: str = "",
+        collection_caption_item_index: int | None = None,
     ) -> PublishStep:
         batch = tuple(items)
         strategies = {str(item.index): self._strategy(item) for item in batch}
@@ -169,6 +198,14 @@ class JobOrchestrator:
                 "strategies": strategies,
                 "forward_caption": self._policy.forward_caption,
                 "caption_footer": self._policy.caption_footer,
+                **(
+                    {
+                        "collection_caption": collection_caption,
+                        "collection_caption_item_index": collection_caption_item_index,
+                    }
+                    if collection_caption and collection_caption_item_index is not None
+                    else {}
+                ),
             },
         )
 

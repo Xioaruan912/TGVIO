@@ -14,6 +14,14 @@ from tgvio.domain.archive import (
     ArchiveRemoteStat,
     ArchiveStoreReceipt,
 )
+from tgvio.domain.intake import (
+    CollectionEntry,
+    CollectionSession,
+    IntakeEventKey,
+    JobDisplayMessage,
+    SpoilerMode,
+    UserPreference,
+)
 from tgvio.domain.job import Job, JobEvent, JobState, MediaItem, MediaKind
 from tgvio.domain.publish import (
     PublishEffect,
@@ -54,6 +62,58 @@ class PublishTransportUncertainError(RuntimeError):
 
 class JobRepository(Protocol):
     async def create(self, job: Job) -> None: ...
+
+    async def lookup_intake_events(
+        self,
+        keys: tuple[IntakeEventKey, ...],
+    ) -> dict[IntakeEventKey, str]: ...
+
+    async def create_with_intake_events(
+        self,
+        job: Job,
+        events: tuple[tuple[IntakeEventKey, int], ...],
+    ) -> bool: ...
+
+    async def get_open_collection(
+        self,
+        owner_id: int,
+        chat_id: int,
+    ) -> CollectionSession | None: ...
+
+    async def get_collection(self, session_id: str) -> CollectionSession | None: ...
+
+    async def create_collection(self, session: CollectionSession) -> CollectionSession: ...
+
+    async def set_collection_status_message(
+        self,
+        session_id: str,
+        chat_id: int,
+        message_id: int,
+    ) -> CollectionSession: ...
+
+    async def append_collection_entries(
+        self,
+        session_id: str,
+        entries: tuple[CollectionEntry, ...],
+    ) -> list[CollectionEntry]: ...
+
+    async def list_collection_entries(self, session_id: str) -> list[CollectionEntry]: ...
+
+    async def finalize_collection(
+        self,
+        session_id: str,
+        job_ids: tuple[str, ...],
+    ) -> CollectionSession: ...
+
+    async def cancel_collection(self, session_id: str) -> CollectionSession: ...
+
+    async def get_user_preference(self, owner_id: int) -> UserPreference: ...
+
+    async def set_user_spoiler_mode(self, owner_id: int, mode: SpoilerMode) -> UserPreference: ...
+
+    async def get_job_display_message(self, job_id: str) -> JobDisplayMessage | None: ...
+
+    async def save_job_display_message(self, ref: JobDisplayMessage) -> JobDisplayMessage: ...
 
     async def save(self, job: Job) -> None: ...
 

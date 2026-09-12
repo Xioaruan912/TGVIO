@@ -667,8 +667,15 @@ class TelethonPublishTransport:
     @staticmethod
     def _caption(item: MediaItem, step: PublishStep) -> str:
         text = item.caption if step.params.get("forward_caption", True) else ""
+        collection_caption = ""
+        if (
+            step.params.get("collection_caption_item_index") == item.index
+            and step.params.get("collection_caption")
+        ):
+            collection_caption = str(step.params.get("collection_caption") or "").strip()
+        body = "\n".join(part for part in (collection_caption, text or "") if part)
         return TelethonPublishTransport._with_footer(
-            text or "",
+            body,
             TelethonPublishTransport._footer(step),
         )
 

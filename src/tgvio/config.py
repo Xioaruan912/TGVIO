@@ -89,6 +89,8 @@ class Settings:
     batch_window_ms: int
     batch_max_wait_ms: int
     batch_max_items: int
+    collections_enabled: bool
+    spoiler_confirm_timeout_seconds: int
     disk_reserve_bytes: int
     upload_part_bytes: int
     cache_retention_hours: int
@@ -151,6 +153,9 @@ class Settings:
         batch_max_items = _int("TGVIO_BATCH_MAX_ITEMS", 100)
         if not 1 <= batch_max_items <= 500:
             raise ConfigError("TGVIO_BATCH_MAX_ITEMS out of range")
+        spoiler_confirm_timeout_seconds = _int("TGVIO_SPOILER_CONFIRM_TIMEOUT_SECONDS", 60)
+        if not 5 <= spoiler_confirm_timeout_seconds <= 3600:
+            raise ConfigError("TGVIO_SPOILER_CONFIRM_TIMEOUT_SECONDS out of range")
         disk_reserve_mb = _int("TGVIO_DISK_RESERVE_MB", 5120)
         if disk_reserve_mb < 0:
             raise ConfigError("TGVIO_DISK_RESERVE_MB must be >= 0")
@@ -242,6 +247,8 @@ class Settings:
             batch_window_ms=batch_window_ms,
             batch_max_wait_ms=batch_max_wait_ms,
             batch_max_items=batch_max_items,
+            collections_enabled=_bool("TGVIO_COLLECTIONS_ENABLED", True),
+            spoiler_confirm_timeout_seconds=spoiler_confirm_timeout_seconds,
             disk_reserve_bytes=disk_reserve_mb * 1024 * 1024,
             upload_part_bytes=upload_part_mb * 1024 * 1024,
             cache_retention_hours=cache_retention_hours,
@@ -282,6 +289,8 @@ class Settings:
             "telegram_shard_retries": self.telegram_shard_retries,
             "batch_window_ms": self.batch_window_ms,
             "batch_max_items": self.batch_max_items,
+            "collections_enabled": self.collections_enabled,
+            "spoiler_confirm_timeout_seconds": self.spoiler_confirm_timeout_seconds,
             "disk_reserve_mb": self.disk_reserve_bytes // (1024 * 1024),
             "upload_part_mb": self.upload_part_bytes // (1024 * 1024),
             "cache_retention_hours": self.cache_retention_hours,

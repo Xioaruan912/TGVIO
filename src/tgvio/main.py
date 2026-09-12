@@ -224,7 +224,7 @@ async def run(*, check_only: bool = False) -> None:
             )
         )
         for job in recoverable:
-            intake_runtime.schedule(job)
+            await intake_runtime.recover(job)
         telegram_task: asyncio.Task | None = None
         try:
             log_event(

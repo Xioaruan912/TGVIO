@@ -144,6 +144,56 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(large_step.params["strategies"]["1"], "split_playable")
         self.assertEqual(large_step.target, PublishTarget.CHANNEL)
 
+    def test_collection_text_is_frozen_only_into_first_channel_cover_caption(self) -> None:
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={"collection_caption": "第一行\n第二行"},
+            items=[
+                MediaItem(index=0, kind=MediaKind.PHOTO, source="photo-0"),
+                MediaItem(index=1, kind=MediaKind.PHOTO, source="photo-1"),
+                MediaItem(
+                    index=2,
+                    kind=MediaKind.VIDEO,
+                    source="video",
+                    metadata={"telegram_streamable_candidate": True},
+                ),
+            ],
+        )
+        plan = JobOrchestrator(DummyRepository()).plan(job)
+        cover = plan.steps[0]
+        self.assertEqual(cover.kind, PublishStepKind.CHANNEL_COVER_ALBUM)
+        self.assertEqual(cover.params["collection_caption"], "第一行\n第二行")
+        self.assertEqual(cover.params["collection_caption_item_index"], 0)
+        self.assertTrue(
+            all(
+                "collection_caption" not in step.params
+                for step in plan.steps[1:]
+            )
+        )
+
+    def test_collection_text_is_not_lost_in_direct_or_document_only_mode(self) -> None:
+        for item in (
+            MediaItem(index=0, kind=MediaKind.PHOTO, source="photo"),
+            MediaItem(index=0, kind=MediaKind.DOCUMENT, source="document"),
+        ):
+            with self.subTest(kind=item.kind.value):
+                job = Job(
+                    owner_id=42,
+                    destination="@destination",
+                    state=JobState.ANALYZED,
+                    policy={"collection_caption": "合集文字"},
+                    items=[item],
+                )
+                plan = JobOrchestrator(
+                    DummyRepository(),
+                    PlanningPolicy(cover_mode=False),
+                ).plan(job)
+                self.assertEqual(plan.steps[0].target, PublishTarget.CHANNEL)
+                self.assertEqual(plan.steps[0].params["collection_caption"], "合集文字")
+                self.assertEqual(plan.steps[0].params["collection_caption_item_index"], 0)
+
     def test_caption_policy_is_persisted_into_every_step(self) -> None:
         job = Job(
             owner_id=42,

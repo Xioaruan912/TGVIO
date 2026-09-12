@@ -27,6 +27,9 @@ from tgvio.observability import log_event
 
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("start", "打开 TGVIO 首页"),
+    ("begin", "开始收集一个合集"),
+    ("end", "结束合集并创建任务"),
+    ("mode", "设置雪花显示偏好"),
     ("jobs", "查看最近任务"),
     ("status", "查看运行与任务状态"),
     ("help", "查看使用说明"),
@@ -39,6 +42,8 @@ NAV_STATUS = "📊 状态"
 NAV_ARCHIVE = "☁️ 归档"
 NAV_CACHE = "🧹 缓存"
 NAV_MORE = "ℹ️ 更多"
+COLLECTION_BEGIN_BUTTON = "📥 开始合集"
+COLLECTION_END_BUTTON = "🛑 结束并发布"
 NAV_BUTTONS = frozenset(
     {NAV_HOME, NAV_JOBS, NAV_STATUS, NAV_ARCHIVE, NAV_CACHE, NAV_MORE}
 )
@@ -1668,6 +1673,7 @@ class TelethonBotUI:
             )
 
         return [
+            [text_button(COLLECTION_BEGIN_BUTTON), text_button(COLLECTION_END_BUTTON)],
             [text_button(NAV_HOME), text_button(NAV_JOBS)],
             [text_button(NAV_STATUS), text_button(NAV_ARCHIVE)],
             [text_button(NAV_CACHE), text_button(NAV_MORE)],
