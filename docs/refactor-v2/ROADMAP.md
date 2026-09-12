@@ -143,7 +143,7 @@ characterization -> implementation -> offline gates -> Git push
 
 本包不增加表、列、索引或 `user_version`，不改变发布顺序、PublishPlan、effect、Archive 提交或缓存保护语义。R2-03 总阶段在 migration ledger 和 repository 拆分完成前仍保持 `IN PROGRESS`。
 
-- [ ] R2-03A 已通过离线门禁、推送、正式构建、HostDZire 单实例部署和生产后验。
+- [x] R2-03A 已通过离线门禁、推送、正式构建、HostDZire 单实例部署和生产后验。代码提交 `a02e31c1b35673cfb9b8be54121c769026d38a9e`，2026-09-12，release `r2-03-a02e31c-20260912T044959Z`，migration=`none`；证据见 [R2-03A_UX_RELEASE.md](evidence/R2-03A_UX_RELEASE.md)。
 
 ### R2-03B 及后续：Migration 接管与 repository 拆分
 
@@ -162,7 +162,7 @@ characterization -> implementation -> offline gates -> Git push
 
 ### 验收与回滚
 
-- 现有 13 个 Job、PublishStep/Archive 数量和状态在 migration 前后完全一致。
+- 演练开始时的全部生产 Job、PublishStep/Archive 数量和状态在 migration 前后完全一致。
 - 首次登记与后续 no-op 可重复，checksum 改变会拒绝启动。
 - query 压测和 event-loop cooperative 门禁通过。
 - 回滚旧代码时必须恢复 pre-migration DB；不对已登记 schema 做 downgrade。
