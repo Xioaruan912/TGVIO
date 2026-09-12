@@ -29,7 +29,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-01 | DELIVERED | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
 | R2-02 | DELIVERED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
 | R2-03 | DELIVERED | 生产反馈修复；接管 migration ledger 并拆分 repository | DL-01、UI-01～02、AR-06、DB-02 |
-| R2-04 | NOT STARTED | durable scheduler、claim/lease、严格 FIFO | DB-03、PL-09、PL-10 |
+| R2-04 | IN PROGRESS | A-D durable scheduler / claim / strict FIFO 已交付；E 并发分片上传继续 | DB-03、PL-09、PL-10 |
 | R2-05 | NOT STARTED | durable intake 幂等、合集会话、文字与 spoiler 偏好 | IN-04～06、PL-06、ST-01 |
 | R2-06 | NOT STARTED | 完整队列、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02、CT-04、PL-14 |
 | R2-07 | NOT STARTED | 动态 Archive、目的地 Profile、代理协调 | AR-07、ST-02、ST-03 |
@@ -193,18 +193,18 @@ characterization -> implementation -> offline gates -> Git push
 - R2-04D：明确下载闸门策略，用 characterization test 决定是否保留“待下载清空后再发布”。
 - R2-04E：恢复有界并发分片上传，保留 Telethon reference cache 与 effect checkpoint。
 
-2026-09-12 A-D local candidate 状态：
+2026-09-12 A-D production delivery 状态：
 
 - [x] A：`runtime_leases` + generation heartbeat + 本地 TTL watchdog；第二 runtime 在连接 Telegram 前 fail closed。正常 SIGTERM 先 drain worker/dispatcher 再断 Telegram并释放 lease，Compose stop grace=45s。
 - [x] B：prepare/publish/archive 都使用 `(job_id,phase)` durable claim；过期 takeover 增加 generation，stale worker 无法续租，claim 丢失会取消本地 in-flight operation。跨独立 SQLite connection 的竞争测试通过。
 - [x] C：`job_schedule.accepted_order` 与 Job 创建同事务持久化，历史 Job migration 确定性 backfill；单 ordered dispatcher + publish claim 保证 Telegram 可见发布按接受顺序执行。100 Job 随机 readiness 精确按 1..100 发布；两个 dispatcher 不重复执行同一 Job；`publish_partial/uncertain` 阻塞后续自动发布。
 - [x] D：characterization 明确采用 head-of-line FIFO，不采用“所有下载先清空”的全局 barrier；最早 ready Job 可在更晚 Job 仍下载时发布，但晚到 ready Job不能越过更早未 ready Job。
 - [x] `0002_scheduler` 已在真实生产数据来源的 v1 副本上完成 v1→v2 rehearsal：23 Job / 42 PublishStep / 20 ArchivePackage / 179 ArchiveObject / 23 progress 前后不变，`accepted_order=1..23` 唯一连续，第二次 migration no-op。
-- [x] 最新 Docker `--network none` foundation gate：205 tests / 25.348s，全部通过。
-- [ ] A-D 尚未 commit/push/release；正式发布必须声明 `--migration 0002_scheduler` 并完成 v2 postflight/rollback-check。
+- [x] 正式 Docker `--network none` release gate：205 tests / 21.483s，全部通过。
+- [x] A-D 已 commit/push，并以 `--migration 0002_scheduler` 发布 `r2-04-0016988-20260912T070451Z`；独立 postflight 为 v2、runtime lease active=1、业务 blocker=0、container healthy/restart=0，rollback-check 通过。
 - [ ] E 尚未开始：并发分片上传和 1～3 大文件吞吐/CPU/内存/FloodWait 对比单独交付，不与 scheduler schema 变更混包。
 
-候选证据见 [R2-04_SCHEDULER_CANDIDATE.md](evidence/R2-04_SCHEDULER_CANDIDATE.md)。
+交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；发布前 rehearsal 细节保留在 [R2-04_SCHEDULER_CANDIDATE.md](evidence/R2-04_SCHEDULER_CANDIDATE.md)。
 
 ### 验收与回滚
 
