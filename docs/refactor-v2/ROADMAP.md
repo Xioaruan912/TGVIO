@@ -160,6 +160,18 @@ characterization -> implementation -> offline gates -> Git push
 5. 按 Job/Publish/Archive/Control/Observability repository 拆分文件；保留同一短事务 API。
 6. 增加 schema/readiness/diagnostic 投影，不输出业务敏感字段。
 
+2026-09-12 本地 candidate 状态：
+
+- [x] 1～3 已实现：`0001_baseline.sql` 与生产已审计 schema hash 精确匹配；runner 使用 backup API、checksum ledger、精确 fingerprint takeover，未知 schema/checksum drift 均 fail closed。
+- [x] 4 已在**当前 HostDZire 生产数据库的一致性副本**上完成首次接管、重复 no-op、checksum 篡改、未知 schema、forward migration 中断与恢复。副本通过远端 read-only connection + SQLite backup API 备份到内存后直接流式传到控制端，不在生产主机落 rehearsal DB；23 Job / 42 PublishStep / 20 ArchivePackage / 179 ArchiveObject / 23 progress 在 takeover 前后完全一致。
+- [x] 5 repository 已按 Job/Publish/Archive/Control/Observability 拆分，共享同一 connection、write lock 和 `BEGIN IMMEDIATE` 短事务；`sqlite.py` 保留 21 行兼容 facade。
+- [x] 6 已提供 `schema_status()`、schema runtime health/readiness 检查与 `scripts/rehearse_migration.py` 脱敏聚合报告；不输出 Job ID、用户、消息、媒体路径或秘密。
+- [x] 100/1000 Job owner-scoped query pressure 与 event-loop cooperative 门禁通过；沿用已有 `idx_jobs_owner_state`，本阶段不额外修改业务 schema/index。
+- [x] release tooling 已支持显式 `--migration 0001_baseline`；默认仍为 `none`，schema-changing postflight 强制 ledger + 目标 `user_version`，回滚继续要求恢复 pre-migration DB。
+- [ ] 正式阶段仍待 clean commit/push、release build、HostDZire preflight/三重 backup、单实例 cutover 与 postflight，因此 R2-03 总阶段继续保持 `IN PROGRESS`。
+
+当前候选证据见 [R2-03B_MIGRATION_CANDIDATE.md](evidence/R2-03B_MIGRATION_CANDIDATE.md)。
+
 ### 验收与回滚
 
 - 演练开始时的全部生产 Job、PublishStep/Archive 数量和状态在 migration 前后完全一致。

@@ -54,6 +54,8 @@ async def run(*, check_only: bool = False) -> None:
     repository = SQLiteJobRepository(settings.data_dir / "state.sqlite3")
     await repository.open()
     try:
+        schema_status = repository.schema_status()
+        await repository.set_runtime_health("schema", "ready", detail=schema_status)
         log_event(
             logger,
             logging.INFO,
@@ -65,6 +67,8 @@ async def run(*, check_only: bool = False) -> None:
             url_enabled=settings.url_enabled,
             worker_concurrency=settings.worker_concurrency,
             app_commit=os.getenv("APP_COMMIT", "unknown"),
+            schema_version=schema_status["latest_version"],
+            migration_ledger=schema_status["ledger_present"],
         )
         if check_only or not settings.run_bot:
             log_event(

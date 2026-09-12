@@ -1,6 +1,6 @@
 # TGVIO 完全重构 V2
 
-> 状态：R2-00～R2-02、R2-03A 已交付；R2-03B migration 尚未开始（2026-09-12）
+> 状态：R2-00～R2-02、R2-03A 已交付；R2-03B candidate 已完成当前生产 DB 副本 migration 演练、repository 拆分与 186 项离线门禁，正式 commit/push/release 仍待完成（2026-09-12）
 > 适用范围：`TG_Upload_bot` Git 仓库与 HostDZire 上的 TGVIO 生产实例
 > 权威性：从本文件建立之日起，新重构工作以本目录为准；旧 `docs/REFACTORING.md`、`docs/R0_BASELINE.md`、`todo.md` 和 `AGENTS.md` 的历史阶段记录仅用于追溯。
 
@@ -57,6 +57,6 @@
 
 - R2-00 已完成规划文档交付；R2-01 已把生产 clean-room runtime 回收至 Git；R2-02 已完成可复现构建与强制交付链。
 - 当前生产 release 为 `r2-03-a02e31c-20260912T044959Z`，runtime commit 为 `a02e31c1b35673cfb9b8be54121c769026d38a9e`；完整证据见 [R2-03A_UX_RELEASE.md](evidence/R2-03A_UX_RELEASE.md)。
-- R2-03A 已响应生产使用反馈，交付无 schema 变更的移动端按钮、友好错误、下载回退和日志 wrapper 修复；随后继续 R2-03B migration 接管与 SQLite 拆分。在生产数据库副本演练和 checksum migration runner 完成前不得改变 schema。
+- R2-03A 已响应生产使用反馈，交付无 schema 变更的移动端按钮、友好错误、下载回退和日志 wrapper 修复。R2-03B 当前已实现 baseline fingerprint、SQLite backup API、checksum migration runner、`schema_migrations`、fail-closed takeover、migration-aware release tooling、当前生产时点的一致性副本演练，以及 Job/Publish/Archive/Control/Observability repository 拆分；真实副本 takeover/no-op/checksum/unknown schema/interrupted-forward-recovery 与 100/1000 query/event-loop 门禁均通过。生产仍保持 `user_version=0`、无 migration ledger，直到正式 R2-03B release cutover。当前候选证据见 [R2-03B_MIGRATION_CANDIDATE.md](evidence/R2-03B_MIGRATION_CANDIDATE.md)。
 - 后续 docs-only 提交可以领先生产 runtime commit，但不因此构建或重启容器。
 - 文档中的密码、token、Authorization、代理/WebDAV 凭据一律视为缺陷；主机地址、端口、用户和目录不是秘密，可记录用于自动化。

@@ -34,6 +34,10 @@ valid_sha256() {
   [[ "$1" =~ ^[0-9a-f]{64}$ ]]
 }
 
+valid_migration() {
+  [[ "$1" == none || "$1" =~ ^[0-9]{4}_[a-z0-9_]+$ ]]
+}
+
 json_value() {
   local file=$1
   local field=$2
@@ -221,7 +225,7 @@ write_manifest() {
     --runtime-image-id "$runtime_image_id"
     --tests "$test_count"
     --test-seconds "$test_seconds"
-    --migration none
+    --migration "$migration_spec"
     --preflight "$preflight_backup"
     --image-inspection "$evidence_dir/image-inspection.json"
     --backup "$evidence_dir/backup.json"
@@ -234,7 +238,7 @@ write_manifest() {
 }
 
 deploy_release() {
-  [[ $# -eq 8 ]] || die "deploy expects 8 arguments"
+  [[ $# -eq 9 ]] || die "deploy expects 9 arguments"
   release_id=$1
   commit=$2
   expected_source_manifest=$3
@@ -243,6 +247,7 @@ deploy_release() {
   dockerfile_sha=$6
   expected_current_commit=$7
   expected_current_manifest=$8
+  migration_spec=$9
   valid_release_id "$release_id" || die "invalid release id"
   valid_commit "$commit" || die "invalid release commit"
   valid_commit "$expected_current_commit" || die "invalid current commit"
@@ -251,6 +256,7 @@ deploy_release() {
   valid_sha256 "$archive_sha" || die "invalid archive hash"
   valid_sha256 "$lock_sha" || die "invalid lock hash"
   valid_sha256 "$dockerfile_sha" || die "invalid Dockerfile hash"
+  valid_migration "$migration_spec" || die "invalid migration declaration"
 
   release_dir="${RELEASE_ROOT}/${release_id}"
   source_dir="${release_dir}/source"
@@ -382,7 +388,18 @@ deploy_release() {
     --expect-source-manifest "$expected_source_manifest" \
     --expect-image "$runtime_image_id" >"$identity_postflight"
   assert_postflight "$identity_postflight"
-  [[ "$(json_value "$identity_postflight" database.schema_sql_sha256)" == "$(json_value "$preflight_backup" database.schema_sql_sha256)" ]] || die "schema changed in migration-free release"
+  if [[ "$migration_spec" == none ]]; then
+    [[ "$(json_value "$identity_postflight" database.schema_sql_sha256)" == "$(json_value "$preflight_backup" database.schema_sql_sha256)" ]] || die "schema changed in migration-free release"
+    [[ "$(json_value "$identity_postflight" database.user_version)" == "$(json_value "$preflight_backup" database.user_version)" ]] || die "user_version changed in migration-free release"
+  else
+    before_version=$(json_value "$preflight_backup" database.user_version)
+    after_version=$(json_value "$identity_postflight" database.user_version)
+    expected_version=$((10#${migration_spec%%_*}))
+    [[ "$(json_value "$identity_postflight" database.migration_ledger_present)" == true ]] || die "migration ledger missing after schema-changing release"
+    [[ "$after_version" == "$expected_version" ]] || die "postflight user_version does not match declared migration"
+    (( after_version > before_version )) || die "declared migration did not advance user_version"
+    [[ "$(json_value "$identity_postflight" database.schema_sql_sha256)" != "$(json_value "$preflight_backup" database.schema_sql_sha256)" ]] || die "declared migration did not change schema identity"
+  fi
 
   stage=atomic-release-metadata
   atomic_metadata "$source_dir" "$commit" "$release_id"
@@ -394,6 +411,10 @@ deploy_release() {
     --expect-source-manifest "$expected_source_manifest" \
     --expect-image "$runtime_image_id" >"$final_postflight"
   assert_postflight "$final_postflight"
+  if [[ "$migration_spec" != none ]]; then
+    [[ "$(json_value "$final_postflight" database.migration_ledger_present)" == true ]] || die "final migration ledger missing"
+    [[ "$(json_value "$final_postflight" database.user_version)" == "$expected_version" ]] || die "final user_version changed after migration postflight"
+  fi
   [[ "$(json_value "$final_postflight" release_commit)" == "$commit" ]] || die "release commit metadata mismatch"
   [[ "$(json_value "$final_postflight" release_id)" == "$release_id" ]] || die "release id metadata mismatch"
   [[ "$(json_value "$final_postflight" safe_to_deploy)" == true ]] || die "final production report is not safe"

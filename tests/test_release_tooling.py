@@ -104,7 +104,7 @@ class SourceGuardTests(unittest.TestCase):
 class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
-        self.assertEqual(result["python_files"], 45)
+        self.assertEqual(result["python_files"], 53)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -371,6 +371,51 @@ class ReleaseManifestTests(unittest.TestCase):
             )
             with self.assertRaisesRegex(ValueError, "schema changed"):
                 build_manifest(args)
+
+    def test_declared_migration_records_schema_change(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            preflight = root / "preflight.json"
+            postflight = root / "postflight.json"
+            inspection = root / "inspection.json"
+            preflight.write_text(
+                '{"database":{"user_version":0,"schema_sql_sha256":"schema-a"}}',
+                encoding="utf-8",
+            )
+            postflight.write_text(
+                '{"database":{"user_version":1,"schema_sql_sha256":"schema-b"}}',
+                encoding="utf-8",
+            )
+            inspection.write_text('{"status":"passed"}', encoding="utf-8")
+            args = SimpleNamespace(
+                preflight=preflight,
+                postflight=postflight,
+                image_inspection=inspection,
+                backup=None,
+                previous=None,
+                migration="0001_baseline",
+                status="deployed",
+                release_id="r2-03-abcdef0-20260912T000000Z",
+                git_commit="a" * 40,
+                git_archive_sha256="b" * 64,
+                source_manifest="c" * 64,
+                requirements_lock_sha256="d" * 64,
+                dockerfile_sha256="e" * 64,
+                base_image="base@sha256:" + "f" * 64,
+                test_image_id="sha256:" + "1" * 64,
+                runtime_image_id="sha256:" + "2" * 64,
+                tests=182,
+                test_seconds=1.0,
+            )
+            manifest, ledger = build_manifest(args)
+            database = manifest["database"]
+            assert isinstance(database, dict)
+            self.assertEqual(database["migration"], "0001_baseline")
+            self.assertEqual(database["user_version_before"], 0)
+            self.assertEqual(database["user_version_after"], 1)
+            self.assertEqual(database["schema_sql_sha256_before"], "schema-a")
+            self.assertEqual(database["schema_sql_sha256_after"], "schema-b")
+            self.assertEqual(ledger["status"], "deployed")
 
 
 if __name__ == "__main__":

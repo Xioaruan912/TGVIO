@@ -1,0 +1,196 @@
+#!/usr/bin/env python3
+"""Rehearse TGVIO migrations against an offline SQLite database copy.
+
+This tool mutates the supplied copy in place. It deliberately refuses the known
+production database paths and emits only schema/version/count facts; it never
+prints job identifiers, users, message text, media paths, or other business data.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+from pathlib import Path
+import sqlite3
+import sys
+
+from tgvio.infrastructure.migration_runner import MigrationRunner
+from tgvio.infrastructure.schema import TGVIO_BASELINE_SCHEMA_SQL_SHA256, schema_sql_sha256
+
+
+_BLOCKED_DATABASES = {
+    Path("/root/TGVIO/data/state.sqlite3"),
+    Path("/app/data/state.sqlite3"),
+}
+
+
+class RehearsalError(RuntimeError):
+    pass
+
+
+def _table_names(connection: sqlite3.Connection) -> set[str]:
+    return {
+        str(row[0])
+        for row in connection.execute(
+            "SELECT name FROM sqlite_schema WHERE type='table' AND name NOT LIKE 'sqlite_%'"
+        )
+    }
+
+
+def _state_counts(connection: sqlite3.Connection, table: str) -> dict[str, int]:
+    return {
+        str(state): int(count)
+        for state, count in connection.execute(
+            f'SELECT state, COUNT(*) FROM "{table}" GROUP BY state ORDER BY state'
+        )
+    }
+
+
+def _database_facts(path: Path) -> dict[str, object]:
+    connection = sqlite3.connect(f"file:{path}?mode=ro", uri=True, timeout=5)
+    try:
+        quick = [str(row[0]) for row in connection.execute("PRAGMA quick_check")]
+        tables = _table_names(connection)
+        facts: dict[str, object] = {
+            "quick_check": "ok" if quick == ["ok"] else ";".join(quick),
+            "user_version": int(connection.execute("PRAGMA user_version").fetchone()[0]),
+            "schema_sql_sha256": schema_sql_sha256(connection),
+            "migration_ledger_present": "schema_migrations" in tables,
+            "table_count": len(tables),
+        }
+        if "jobs" in tables:
+            facts["jobs"] = {
+                "total": int(connection.execute("SELECT COUNT(*) FROM jobs").fetchone()[0]),
+                "states": _state_counts(connection, "jobs"),
+            }
+        if "publish_steps" in tables:
+            facts["publish_steps"] = {
+                "total": int(connection.execute("SELECT COUNT(*) FROM publish_steps").fetchone()[0]),
+                "states": _state_counts(connection, "publish_steps"),
+            }
+        if "archive_packages" in tables:
+            facts["archive_packages"] = {
+                "total": int(connection.execute("SELECT COUNT(*) FROM archive_packages").fetchone()[0]),
+                "states": _state_counts(connection, "archive_packages"),
+            }
+        if "archive_objects" in tables:
+            facts["archive_objects"] = {
+                "total": int(connection.execute("SELECT COUNT(*) FROM archive_objects").fetchone()[0]),
+                "states": _state_counts(connection, "archive_objects"),
+            }
+        if "job_progress" in tables:
+            facts["job_progress"] = {
+                "total": int(connection.execute("SELECT COUNT(*) FROM job_progress").fetchone()[0]),
+            }
+        return facts
+    finally:
+        connection.close()
+
+
+def _business_counts(facts: dict[str, object]) -> dict[str, object]:
+    return {
+        key: facts[key]
+        for key in (
+            "jobs",
+            "publish_steps",
+            "archive_packages",
+            "archive_objects",
+            "job_progress",
+        )
+        if key in facts
+    }
+
+
+def rehearse(database_copy: Path, backup_dir: Path) -> dict[str, object]:
+    database_input = database_copy.expanduser()
+    if database_input.is_symlink():
+        raise RehearsalError("database copy must not be a symbolic link")
+    database_copy = database_input.resolve()
+    backup_dir = backup_dir.expanduser().resolve()
+    if database_copy in _BLOCKED_DATABASES:
+        raise RehearsalError("refusing to run migration rehearsal against the production database path")
+    if not database_copy.is_file():
+        raise RehearsalError("database copy must be a regular existing file")
+    if backup_dir == database_copy.parent and backup_dir.name in {"data", "TGVIO"}:
+        raise RehearsalError("backup directory is too close to a production-style data path")
+    if backup_dir.exists() and any(backup_dir.iterdir()):
+        raise RehearsalError("backup directory must be empty before rehearsal")
+
+    before = _database_facts(database_copy)
+    if before["quick_check"] != "ok":
+        raise RehearsalError("database copy failed quick_check before rehearsal")
+    if before["user_version"] != 0 or before["migration_ledger_present"]:
+        raise RehearsalError("first-takeover rehearsal requires user_version=0 without a migration ledger")
+    if before["schema_sql_sha256"] != TGVIO_BASELINE_SCHEMA_SQL_SHA256:
+        raise RehearsalError("database copy schema hash does not match the audited TGVIO baseline")
+
+    first = MigrationRunner(database_copy, backup_dir=backup_dir).run()
+    after = _database_facts(database_copy)
+    if after["quick_check"] != "ok":
+        raise RehearsalError("database copy failed quick_check after takeover")
+    if _business_counts(after) != _business_counts(before):
+        raise RehearsalError("business row/state counts changed during baseline takeover")
+    if not after["migration_ledger_present"]:
+        raise RehearsalError("migration ledger is missing after takeover")
+    if after["user_version"] != first.latest_version:
+        raise RehearsalError("user_version does not match the migration runner after takeover")
+    if not first.backup_created:
+        raise RehearsalError("first takeover did not create a SQLite backup")
+
+    second = MigrationRunner(database_copy, backup_dir=backup_dir).run()
+    repeated = _database_facts(database_copy)
+    if second.applied_now:
+        raise RehearsalError("repeat migration run was not a no-op")
+    if second.backup_created:
+        raise RehearsalError("repeat no-op unexpectedly created another backup")
+    if repeated != after:
+        raise RehearsalError("database facts changed during repeat no-op")
+
+    backup_files = sorted(backup_dir.glob("*.sqlite3"))
+    if len(backup_files) != 1:
+        raise RehearsalError("expected exactly one pre-migration backup")
+    backup_facts = _database_facts(backup_files[0])
+    if backup_facts["quick_check"] != "ok":
+        raise RehearsalError("pre-migration backup failed quick_check")
+    if backup_facts["user_version"] != 0 or backup_facts["migration_ledger_present"]:
+        raise RehearsalError("pre-migration backup does not preserve the original baseline state")
+    if _business_counts(backup_facts) != _business_counts(before):
+        raise RehearsalError("pre-migration backup does not preserve business counts")
+
+    return {
+        "status": "passed",
+        "before": before,
+        "after": after,
+        "repeat_noop": {
+            "applied_now": list(second.applied_now),
+            "backup_created": second.backup_created,
+        },
+        "backup": backup_facts,
+    }
+
+
+def parser() -> argparse.ArgumentParser:
+    result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument("database_copy", type=Path, help="offline SQLite copy to mutate during rehearsal")
+    result.add_argument(
+        "--backup-dir",
+        type=Path,
+        required=True,
+        help="empty directory dedicated to rehearsal backups",
+    )
+    return result
+
+
+def main() -> int:
+    args = parser().parse_args()
+    try:
+        report = rehearse(args.database_copy, args.backup_dir)
+    except (OSError, sqlite3.DatabaseError, RehearsalError, RuntimeError) as exc:
+        print(f"migration rehearsal failed: {exc}", file=sys.stderr)
+        return 2
+    print(json.dumps(report, sort_keys=True, separators=(",", ":")))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

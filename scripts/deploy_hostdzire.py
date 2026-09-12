@@ -266,6 +266,9 @@ def deploy(args: argparse.Namespace) -> int:
     phase = args.phase.lower()
     if not re.fullmatch(r"r2-[0-9]{2}", phase):
         raise DeployError("phase must match R2-NN")
+    migration = args.migration.strip().lower()
+    if migration != "none" and not re.fullmatch(r"[0-9]{4}_[a-z0-9_]+", migration):
+        raise DeployError("migration must be 'none' or match NNNN_name")
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     release_id = f"{phase}-{head[:7]}-{timestamp}"
     if not re.fullmatch(r"r2-[0-9]{2}-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z", release_id):
@@ -316,6 +319,7 @@ def deploy(args: argparse.Namespace) -> int:
         dockerfile_sha,
         current_commit,
         current_manifest,
+        migration,
     ]
     remote_command = " ".join(shlex.quote(value) for value in remote_args)
     print(f"release_start={release_id}", flush=True)
@@ -327,6 +331,11 @@ def deploy(args: argparse.Namespace) -> int:
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument("--phase", default="R2-02", help="release phase, e.g. R2-02")
+    result.add_argument(
+        "--migration",
+        default="none",
+        help="declared forward migration, e.g. 0001_baseline; defaults to none",
+    )
     result.add_argument(
         "--github-user",
         default=os.getenv("TGVIO_GITHUB_USER", "Xioaruan912"),

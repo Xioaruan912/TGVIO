@@ -15,6 +15,19 @@ def check_health(db: Path, *, require_runtime: bool, max_age_seconds: int = 90) 
             row = conn.execute("PRAGMA quick_check").fetchone()
             if not row or row[0] != "ok":
                 return False
+            user_version = int(conn.execute("PRAGMA user_version").fetchone()[0])
+            ledger = conn.execute(
+                "SELECT version, checksum FROM schema_migrations ORDER BY version"
+            ).fetchall()
+            if not ledger:
+                return False
+            versions = [int(version) for version, _checksum in ledger]
+            if versions != list(range(1, len(versions) + 1)):
+                return False
+            if user_version != versions[-1]:
+                return False
+            if any(len(str(checksum)) != 64 for _version, checksum in ledger):
+                return False
             if require_runtime:
                 rows = conn.execute(
                     """
