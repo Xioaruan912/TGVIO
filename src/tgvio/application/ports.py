@@ -117,6 +117,14 @@ class JobRepository(Protocol):
 
     async def save(self, job: Job) -> None: ...
 
+    async def update_job_policy(
+        self,
+        job_id: str,
+        updates: dict[str, object],
+        *,
+        remove_keys: tuple[str, ...] = (),
+    ) -> Job: ...
+
     async def get(self, job_id: str) -> Job | None: ...
 
     async def list_items(self, job_id: str) -> list[MediaItem]: ...
@@ -124,6 +132,8 @@ class JobRepository(Protocol):
     async def list_events(self, job_id: str) -> list[JobEvent]: ...
 
     async def list_by_states(self, states: tuple[JobState, ...]) -> list[Job]: ...
+
+    async def list_failed_jobs_for_auto_recovery(self, *, limit: int = 100) -> list[Job]: ...
 
     async def list_recent(self, *, owner_id: int | None = None, limit: int = 10) -> list[Job]: ...
 
@@ -200,6 +210,8 @@ class JobRepository(Protocol):
 
     async def increment_retry_count(self, job_id: str) -> int: ...
 
+    async def get_retry_count(self, job_id: str) -> int: ...
+
     async def save_archive_plan(self, plan: ArchivePlan) -> ArchivePackage: ...
 
     async def get_archive_package(self, package_id: str) -> ArchivePackage | None: ...
@@ -211,6 +223,12 @@ class JobRepository(Protocol):
         states: tuple[ArchivePackageState, ...],
         *,
         limit: int = 20,
+    ) -> list[ArchivePackage]: ...
+
+    async def list_failed_archive_packages_for_auto_recovery(
+        self,
+        *,
+        limit: int = 100,
     ) -> list[ArchivePackage]: ...
 
     async def count_archive_packages_by_state(
@@ -370,7 +388,12 @@ class ArchiveEnqueuer(Protocol):
 
 
 class ArchiveOperator(ArchiveEnqueuer, Protocol):
-    async def retry_package(self, package_id: str) -> ArchivePackage: ...
+    async def retry_package(
+        self,
+        package_id: str,
+        *,
+        automatic: bool = False,
+    ) -> ArchivePackage: ...
 
     async def probe(self) -> ArchiveCapabilities: ...
 
@@ -379,4 +402,3 @@ class CacheOperator(Protocol):
     async def stats(self) -> object: ...
 
     async def cleanup(self, *, force: bool = False) -> object: ...
-

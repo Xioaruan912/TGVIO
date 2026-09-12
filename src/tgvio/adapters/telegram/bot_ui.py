@@ -13,6 +13,12 @@ from tgvio.adapters.telegram.user_messages import (
     describe_archive_failure,
     describe_job_failure,
 )
+from tgvio.application.auto_recovery import (
+    archive_failure_waits_for_recovery,
+    archive_recovery_state,
+    job_failure_waits_for_recovery,
+    job_recovery_state,
+)
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
@@ -1020,7 +1026,18 @@ class TelethonBotUI:
                 )
                 if package.state == ArchivePackageState.FAILED:
                     issue = describe_archive_failure(package.error_code)
-                    lines.append(f"  ↳ {issue.explanation}")
+                    job = await self._repository.get(package.job_id)
+                    if job is not None and archive_failure_waits_for_recovery(job, package):
+                        recovery = archive_recovery_state(job)
+                        if recovery.get("status") == "scheduled":
+                            lines.append(
+                                f"  ↳ 系统将自动续传第 {recovery.get('next_attempt', '?')}/"
+                                f"{recovery.get('max_attempts', '?')} 次，无需操作。"
+                            )
+                        else:
+                            lines.append("  ↳ 系统正在自动判断续传方式，无需操作。")
+                    else:
+                        lines.append(f"  ↳ {issue.explanation}")
         lines.extend(
             [
                 "",
@@ -1029,7 +1046,7 @@ class TelethonBotUI:
             ]
         )
         if enabled:
-            lines.append("可直接点下方失败任务重传，或点“检测连接”检查 WebDAV。")
+            lines.append("新任务失败时会先自动续传；自动处理停止后仍可点按钮手动重传。")
         else:
             lines.append("Archive 当前关闭，不会发生任何 WebDAV 网络写入。")
         return "\n".join(lines)
@@ -1161,11 +1178,14 @@ class TelethonBotUI:
                 owner_id=owner_id,
                 limit=8,
             )
-            failed = [
-                package
-                for package in recent
-                if package.state == ArchivePackageState.FAILED
-            ]
+            failed = []
+            for package in recent:
+                if package.state != ArchivePackageState.FAILED:
+                    continue
+                job = await self._repository.get(package.job_id)
+                if job is not None and archive_failure_waits_for_recovery(job, package):
+                    continue
+                failed.append(package)
             for position, package in enumerate(failed, start=1):
                 rows.append(
                     [
@@ -1216,13 +1236,9 @@ class TelethonBotUI:
             lines.append(f"更新：`{job.updated_at}` UTC")
         if job.error_code:
             issue = describe_job_failure(job.error_code)
-            lines.extend(
-                [
-                    f"原因：**{issue.title}**",
-                    issue.explanation,
-                    f"下一步：{issue.action}",
-                ]
-            )
+            lines.extend([f"原因：**{issue.title}**", issue.explanation])
+            recovery_hint = self._job_recovery_hint(job)
+            lines.append(recovery_hint or f"下一步：{issue.action}")
             if deep:
                 lines.append(f"内部错误码：`{job.error_code}`")
         if snapshot.progress is not None and not job.terminal:
@@ -1281,7 +1297,26 @@ class TelethonBotUI:
             )
             if archive.state == ArchivePackageState.FAILED:
                 issue = describe_archive_failure(archive.error_code)
-                lines.extend([issue.explanation, f"下一步：{issue.action}"])
+                recovery = archive_recovery_state(job)
+                status = str(recovery.get("status", ""))
+                if status == "scheduled":
+                    lines.extend(
+                        [
+                            issue.explanation,
+                            f"系统将自动进行第 `{recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')}` 次续传，无需操作。",
+                        ]
+                    )
+                elif status in {"exhausted", "abandoned"}:
+                    lines.extend(
+                        [
+                            issue.explanation,
+                            "自动续传已停止；Telegram 发布不受影响，仍可手动重传。",
+                        ]
+                    )
+                elif archive_failure_waits_for_recovery(job, archive):
+                    lines.extend([issue.explanation, "系统正在自动判断续传方式，无需操作。"])
+                else:
+                    lines.extend([issue.explanation, f"下一步：{issue.action}"])
             if deep:
                 lines.append(
                     f"Package：`{archive.id[-10:]}` · events `{snapshot.archive_event_count}`"
@@ -1631,6 +1666,9 @@ class TelethonBotUI:
     @staticmethod
     def _job_action_hint(job: Job) -> str:
         if job.state == JobState.FAILED:
+            recovery_hint = TelethonBotUI._job_recovery_hint(job)
+            if recovery_hint:
+                return recovery_hint
             if job.error_code in {"publish_partial", "publish_uncertain"}:
                 return "🛡️ 已检测到可能存在 Telegram 副作用；禁止盲重试，需要人工核对。"
             return "🔁 可在任务详情中点“重试任务”；系统会再次校验发布记录。"
@@ -1644,6 +1682,28 @@ class TelethonBotUI:
             JobState.PUBLISHING,
         }:
             return "⛔ 可在任务详情中点“取消任务”，任务会在安全边界停止。"
+        return ""
+
+    @staticmethod
+    def _job_recovery_hint(job: Job) -> str:
+        recovery = job_recovery_state(job)
+        status = str(recovery.get("status", ""))
+        if status == "scheduled":
+            return (
+                f"🔄 系统将自动进行第 `{recovery.get('next_attempt', '?')}/"
+                f"{recovery.get('max_attempts', '?')}` 次安全重试，无需操作。"
+            )
+        if status == "quarantined":
+            return "🛡️ 任务已隔离且不会自动重发；后续队列继续，请核对频道实际消息。"
+        if status == "manual_review":
+            return "🛡️ 安全检查阻止重发；任务已跳过，后续队列继续。"
+        if status in {"exhausted", "abandoned"}:
+            return (
+                f"⏭️ 自动恢复已停止（尝试 `{recovery.get('attempt_count', 0)}` 次）；"
+                "任务已跳过，后续队列继续。"
+            )
+        if job_failure_waits_for_recovery(job):
+            return "🔄 系统正在自动判断重试或跳过，无需操作。"
         return ""
 
     @staticmethod
@@ -1718,6 +1778,8 @@ class TelethonBotUI:
             job.state == JobState.FAILED
             and job.error_code not in {"publish_partial", "publish_uncertain"}
             and self._control is not None
+            and not job_failure_waits_for_recovery(job)
+            and job_recovery_state(job).get("status") != "manual_review"
         ):
             action_row.append(
                 Button.inline("🔁 重试任务", self._callback_data("retry", job.id))
@@ -1735,6 +1797,7 @@ class TelethonBotUI:
             and package.state == ArchivePackageState.FAILED
             and getattr(self._settings, "archive_enabled", False)
             and self._archive_operator is not None
+            and not archive_failure_waits_for_recovery(job, package)
         ):
             rows.append(
                 [

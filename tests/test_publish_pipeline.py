@@ -178,6 +178,25 @@ class PublishPipelineTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(external_effects), len(plan.steps[0].item_indexes))
         self.assertTrue(all(effect.step_index == 0 for effect in effects))
 
+    async def test_receipt_journal_failure_is_never_classified_as_safe_to_retry(self) -> None:
+        job, plan = await self._planned_job()
+        transport = RecordingTransport()
+
+        async def fail_receipt_journal(_effects):
+            raise RuntimeError("fixture receipt journal unavailable")
+
+        self.repo.record_publish_effects = fail_receipt_journal
+        with self.assertRaisesRegex(RuntimeError, "receipt journal unavailable"):
+            await PublishExecutionEngine(self.repo, transport).execute(job, plan)
+
+        failed = await self.repo.get(job.id)
+        assert failed is not None
+        self.assertEqual(failed.state, JobState.FAILED)
+        self.assertEqual(failed.error_code, "publish_partial")
+        loaded_plan = await self.repo.get_publish_plan(job.id)
+        assert loaded_plan is not None
+        self.assertEqual(loaded_plan.steps[0].error_code, "publish_partial")
+
     async def test_uncertain_visible_send_is_classified_for_manual_review(self) -> None:
         job, plan = await self._planned_job()
         with self.assertRaises(PublishTransportUncertainError):
@@ -384,4 +403,3 @@ class PublishPipelineTests(unittest.IsolatedAsyncioTestCase):
         failed = await self.repo.get(job.id)
         assert failed is not None
         self.assertEqual(failed.error_code, "publish_partial")
-

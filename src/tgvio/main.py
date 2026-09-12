@@ -17,6 +17,12 @@ from tgvio.adapters.url_downloader import UrlMediaDownloader
 from tgvio.adapters.webdav_archive import WebDavArchiveTransport
 from tgvio.application.archive_planner import ArchivePlanner
 from tgvio.application.archive_runtime import ArchiveRuntime, ArchiveService
+from tgvio.application.auto_recovery import (
+    AUTO_RECOVERY_POLICY_KEY,
+    AutoRecoveryPolicy,
+    AutoRecoveryRuntime,
+    AutoRecoveryService,
+)
 from tgvio.application.cache_cleanup import CacheCleanupRuntime, CacheCleanupService
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
@@ -67,6 +73,7 @@ async def run(*, check_only: bool = False) -> None:
             environment=settings.environment,
             publish_enabled=settings.publish_enabled,
             archive_enabled=settings.archive_enabled,
+            auto_retry_enabled=settings.auto_retry_enabled,
             url_enabled=settings.url_enabled,
             worker_concurrency=settings.worker_concurrency,
             app_commit=os.getenv("APP_COMMIT", "unknown"),
@@ -90,12 +97,13 @@ async def run(*, check_only: bool = False) -> None:
             gateway.client.is_connected,
         )
         await runtime_health.start()
+        cache_service = CacheCleanupService(
+            repository,
+            settings.download_dir,
+            retention_hours=settings.cache_retention_hours,
+        )
         cache_runtime = CacheCleanupRuntime(
-            CacheCleanupService(
-                repository,
-                settings.download_dir,
-                retention_hours=settings.cache_retention_hours,
-            ),
+            cache_service,
             interval_minutes=settings.cache_cleanup_interval_minutes,
         )
         await cache_runtime.start()
@@ -117,7 +125,16 @@ async def run(*, check_only: bool = False) -> None:
                 poll_seconds=settings.archive_poll_seconds,
             )
         control = JobControlService(repository)
-        intake = IntakeService(repository)
+        recovery_policy = AutoRecoveryPolicy(
+            enabled=settings.auto_retry_enabled,
+            max_attempts=settings.auto_retry_max_attempts,
+            base_delay_seconds=settings.auto_retry_base_seconds,
+            max_delay_seconds=settings.auto_retry_max_seconds,
+        )
+        intake = IntakeService(
+            repository,
+            default_policy={AUTO_RECOVERY_POLICY_KEY: recovery_policy.frozen()},
+        )
         routed_downloader = RoutedMediaDownloader(
             TelethonMediaDownloader(
                 gateway.client,
@@ -189,6 +206,16 @@ async def run(*, check_only: bool = False) -> None:
             intake,
             runner,
         )
+        auto_recovery_runtime = AutoRecoveryRuntime(
+            AutoRecoveryService(
+                repository,
+                control,
+                cache_operator=cache_runtime,
+                archive_operator=archive_runtime,
+            ),
+            intake_runtime.recover,
+            poll_seconds=settings.auto_retry_poll_seconds,
+        )
         bot_ui = TelethonBotUI(
             gateway.client,
             settings,
@@ -225,6 +252,7 @@ async def run(*, check_only: bool = False) -> None:
         )
         for job in recoverable:
             await intake_runtime.recover(job)
+        await auto_recovery_runtime.start()
         telegram_task: asyncio.Task | None = None
         try:
             log_event(
@@ -285,6 +313,7 @@ async def run(*, check_only: bool = False) -> None:
                 for sig in registered_signals:
                     loop.remove_signal_handler(sig)
         finally:
+            await auto_recovery_runtime.stop()
             await intake_runtime.stop()
             await bot_ui.stop()
             if archive_runtime is not None:
@@ -309,4 +338,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

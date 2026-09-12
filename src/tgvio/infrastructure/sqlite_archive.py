@@ -164,6 +164,56 @@ class SQLiteArchiveRepositoryMixin:
                 packages.append(package)
         return packages
 
+    async def list_failed_archive_packages_for_auto_recovery(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[ArchivePackage]:
+        """Bound periodic recovery scans to opted-in packages needing a decision."""
+
+        conn = self._require()
+        cursor = await conn.execute(
+            """
+            SELECT a.id
+            FROM archive_packages a
+            JOIN jobs j ON j.id=a.job_id
+            WHERE a.state='failed'
+              AND json_extract(j.policy_json, '$.auto_recovery.version')=1
+              AND json_extract(j.policy_json, '$.auto_recovery.enabled')=1
+              AND (
+                    COALESCE(
+                        json_extract(j.policy_json, '$.auto_recovery_archive.status'),
+                        ''
+                    ) NOT IN ('abandoned','exhausted')
+                    OR COALESCE(
+                        json_extract(j.policy_json, '$.auto_recovery_archive.failure_id'),
+                        ''
+                    ) != ('event:' || COALESCE(
+                        (
+                            SELECT COALESCE(
+                                MAX(CASE WHEN e.event_type='archive_failed' THEN e.id END),
+                                MAX(e.id)
+                            )
+                            FROM archive_events e
+                            WHERE e.package_id=a.id
+                        ),
+                        ''
+                    ))
+              )
+            ORDER BY a.updated_at, a.id
+            LIMIT ?
+            """,
+            (max(1, min(500, int(limit))),),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        packages: list[ArchivePackage] = []
+        for row in rows:
+            package = await self.get_archive_package(str(row["id"]))
+            if package is not None:
+                packages.append(package)
+        return packages
+
     async def count_archive_packages_by_state(
         self,
         *,

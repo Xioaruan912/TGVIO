@@ -59,6 +59,23 @@ class SQLiteControlRepositoryMixin:
             raise RuntimeError(f"job control disappeared: {job_id}")
         return int(row["retry_count"])
 
+    async def get_retry_count(self, job_id: str) -> int:
+        conn = self._require()
+        cursor = await conn.execute(
+            "SELECT retry_count FROM job_controls WHERE job_id=?",
+            (job_id,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            cursor = await conn.execute("SELECT 1 FROM jobs WHERE id=?", (job_id,))
+            job = await cursor.fetchone()
+            await cursor.close()
+            if job is None:
+                raise KeyError(f"job not found: {job_id}")
+            return 0
+        return int(row["retry_count"])
+
     async def _ensure_control_row(self, conn: aiosqlite.Connection, job_id: str) -> None:
         cursor = await conn.execute("SELECT 1 FROM jobs WHERE id=?", (job_id,))
         row = await cursor.fetchone()

@@ -229,6 +229,8 @@ class TelethonPublishTransport:
                 files,
                 captions,
                 reply_to=reply_to,
+                step=step,
+                items=items,
             )
         else:
             sent = await self._send_visible_file(
@@ -345,6 +347,8 @@ class TelethonPublishTransport:
         captions: list[str],
         *,
         reply_to: int | None,
+        step: PublishStep,
+        items: list[MediaItem],
     ) -> list:
         """Send an album while preserving spoiler and existing media refs."""
         single_media: list[types.InputSingleMedia] = []
@@ -369,17 +373,32 @@ class TelethonPublishTransport:
                     ),
                 )
             )
-        except (MediaEmptyError, MediaInvalidError) as e:
+        except (MediaEmptyError, MediaInvalidError):
             # Telegram rejected the album due to invalid or un-groupable media (like GIFs).
-            # Fall back to sending items individually to guarantee delivery.
+            # Fall back to individual sends. Each confirmed result is converted
+            # to a receipt immediately so a later failure can never look like a
+            # safe, zero-side-effect retry.
             messages = []
+            receipts: list[PublishReceipt] = []
             for position, current in enumerate(media):
-                msg = await self._client.send_file(
-                    target,
-                    current,
-                    caption=captions[position] if position < len(captions) else "",
-                    reply_to=reply_to
-                )
+                try:
+                    msg = await self._send_visible_file(
+                        target,
+                        current,
+                        caption=captions[position] if position < len(captions) else "",
+                        reply_to=reply_to,
+                    )
+                    current_receipts = self._receipts(msg, step, [items[position]])
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    if receipts:
+                        raise PublishTransportPartialError(
+                            str(exc),
+                            tuple(receipts),
+                        ) from exc
+                    raise PublishTransportUncertainError(str(exc)) from exc
+                receipts.extend(current_receipts)
                 if isinstance(msg, list):
                     messages.extend(msg)
                 else:
@@ -394,6 +413,10 @@ class TelethonPublishTransport:
             and getattr(message, "id", None) is not None
         ]
         messages.sort(key=lambda message: int(message.id))
+        if not messages:
+            raise PublishTransportUncertainError(
+                "Telegram album send returned no observable message receipts"
+            )
         return messages
 
     async def _album_media_reference(self, peer, media):
@@ -515,11 +538,17 @@ class TelethonPublishTransport:
 
     async def _send_visible_file(self, target, file, **kwargs):
         try:
-            return await self._client.send_file(target, file, **kwargs)
+            sent = await self._client.send_file(target, file, **kwargs)
         except PublishTransportUncertainError:
             raise
         except Exception as exc:
             raise PublishTransportUncertainError(str(exc)) from exc
+        messages = self._normalize_messages(sent)
+        if not messages or any(getattr(message, "id", None) is None for message in messages):
+            raise PublishTransportUncertainError(
+                "Telegram send returned no observable message receipt"
+            )
+        return sent
 
     def _validate_step(self, items: list[MediaItem], step: PublishStep) -> None:
         if not items:
@@ -712,38 +741,55 @@ class TelethonPublishTransport:
     ) -> list[PublishReceipt]:
         messages = self._normalize_messages(sent)
         if not messages:
-            raise RuntimeError("Telegram send returned no messages")
+            raise PublishTransportUncertainError(
+                "Telegram send returned no observable messages"
+            )
         indexes = [item.index for item in items]
         receipts: list[PublishReceipt] = []
         for position, message in enumerate(messages):
-            peer_id = getattr(message, "peer_id", None)
-            external_chat_id = str(utils.get_peer_id(peer_id)) if peer_id is not None else None
-            item_index = indexes[position] if position < len(indexes) else None
-            reusable_ref = None
-            if (
-                external_chat_id is not None
-                and item_index is not None
-                and step.kind != PublishStepKind.CHANNEL_VIDEO_COVER
-            ):
-                reusable_ref = f"telegram:{external_chat_id}:{message.id}"
-            receipts.append(
-                PublishReceipt(
-                    effect_type=(
-                        "telegram_channel_message"
-                        if step.target == PublishTarget.CHANNEL
-                        else "telegram_discussion_message"
-                    ),
-                    external_chat_id=external_chat_id,
-                    external_message_id=str(message.id),
-                    detail={
-                        "step_kind": step.kind.value,
-                        "target": step.target.value,
-                        "item_index": item_index,
-                        "item_indexes": indexes,
-                        "reusable_ref": reusable_ref,
-                    },
+            try:
+                message_id = getattr(message, "id", None)
+                if message_id is None:
+                    raise ValueError("Telegram message id is unavailable")
+                peer_id = getattr(message, "peer_id", None)
+                external_chat_id = (
+                    str(utils.get_peer_id(peer_id)) if peer_id is not None else None
                 )
-            )
+                item_index = indexes[position] if position < len(indexes) else None
+                reusable_ref = None
+                if (
+                    external_chat_id is not None
+                    and item_index is not None
+                    and step.kind != PublishStepKind.CHANNEL_VIDEO_COVER
+                ):
+                    reusable_ref = f"telegram:{external_chat_id}:{message_id}"
+                receipts.append(
+                    PublishReceipt(
+                        effect_type=(
+                            "telegram_channel_message"
+                            if step.target == PublishTarget.CHANNEL
+                            else "telegram_discussion_message"
+                        ),
+                        external_chat_id=external_chat_id,
+                        external_message_id=str(message_id),
+                        detail={
+                            "step_kind": step.kind.value,
+                            "target": step.target.value,
+                            "item_index": item_index,
+                            "item_indexes": indexes,
+                            "reusable_ref": reusable_ref,
+                        },
+                    )
+                )
+            except (PublishTransportPartialError, PublishTransportUncertainError):
+                raise
+            except Exception as exc:
+                if receipts:
+                    raise PublishTransportPartialError(
+                        str(exc),
+                        tuple(receipts),
+                    ) from exc
+                raise PublishTransportUncertainError(str(exc)) from exc
         return receipts
 
     @staticmethod

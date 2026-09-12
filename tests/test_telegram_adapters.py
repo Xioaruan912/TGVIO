@@ -9,6 +9,7 @@ import unittest
 
 from tgvio.adapters.telegram.intake_runtime import TelethonIntakeRuntime
 from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
+from tgvio.application.auto_recovery import AutoRecoveryPolicy
 from tgvio.domain.archive import ArchivePackage, ArchivePackageState
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
 
@@ -124,6 +125,60 @@ class TelegramIntakeMappingTests(unittest.TestCase):
         self.assertNotIn("archive_execution_failed", text)
         payloads = [button.data for row in buttons for button in row]
         self.assertIn(f"ui:archive-retry:{completed.id}".encode(), payloads)
+
+    def test_auto_retry_status_needs_no_retry_button_and_tracker_stays_alive(self) -> None:
+        runtime = object.__new__(TelethonIntakeRuntime)
+        runtime._settings = SimpleNamespace(publish_enabled=True)
+        failed = Job(
+            id="f" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.FAILED,
+            error_code="download_failed",
+            policy={
+                "auto_recovery": AutoRecoveryPolicy().frozen(),
+                "auto_recovery_job": {
+                    "status": "scheduled",
+                    "next_attempt": 1,
+                    "max_attempts": 3,
+                },
+            },
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
+        )
+
+        text = runtime._render_live_status(failed, None, None)
+        buttons = runtime._status_buttons(failed, None)
+
+        self.assertIn("自动恢复", text)
+        self.assertIn("无需操作", text)
+        payloads = [button.data for row in buttons for button in row]
+        self.assertNotIn(f"ui:retry:{failed.id}".encode(), payloads)
+        self.assertFalse(runtime._status_is_terminal(failed, None))
+
+    def test_uncertain_publish_quarantine_is_terminal_but_never_retryable(self) -> None:
+        runtime = object.__new__(TelethonIntakeRuntime)
+        runtime._settings = SimpleNamespace(publish_enabled=True)
+        failed = Job(
+            id="a" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.FAILED,
+            error_code="publish_uncertain",
+            policy={
+                "auto_recovery": AutoRecoveryPolicy().frozen(),
+                "auto_recovery_job": {"status": "quarantined"},
+            },
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
+        )
+
+        text = runtime._render_live_status(failed, None, None)
+        buttons = runtime._status_buttons(failed, None)
+
+        self.assertIn("已隔离", text)
+        self.assertIn("后续任务会继续", text)
+        payloads = [button.data for row in buttons for button in row]
+        self.assertNotIn(f"ui:retry:{failed.id}".encode(), payloads)
+        self.assertTrue(runtime._status_is_terminal(failed, None))
 
 
 @dataclass

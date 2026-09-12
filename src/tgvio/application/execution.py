@@ -11,7 +11,7 @@ from tgvio.application.ports import (
     PublishTransportUncertainError,
 )
 from tgvio.domain.job import Job, JobState
-from tgvio.domain.publish import PublishEffect, PublishPlan, PublishStepState
+from tgvio.domain.publish import PublishEffect, PublishPlan, PublishReceipt, PublishStepState
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
 
@@ -77,8 +77,10 @@ class PublishExecutionEngine:
             )
         )
         active_step_index: int | None = None
+        active_receipts: tuple[PublishReceipt, ...] = ()
         try:
             for original_step in plan.steps:
+                active_receipts = ()
                 await self._cancel_checkpoint(
                     job,
                     f"cancelled before publish step {original_step.index}",
@@ -144,16 +146,17 @@ class PublishExecutionEngine:
                         exception_type=type(exc).__name__,
                     )
                     raise
-                effects = self._effects_from_receipts(plan.id, step.index, tuple(receipts))
+                active_receipts = tuple(receipts)
+                effects = self._effects_from_receipts(plan.id, step.index, active_receipts)
                 expected_effects = self._expected_effect_count(step)
-                if len(receipts) < expected_effects:
+                if len(active_receipts) < expected_effects:
                     # Preserve confirmed external side effects, but deliberately
                     # do not write the commit marker. Recovery will therefore
                     # classify this step as partial instead of replaying it.
                     await self._repository.record_publish_effects(effects)
                     raise IncompletePublishReceipts(
                         f"publish step {step.index} returned incomplete receipts: "
-                        f"{len(receipts)}/{expected_effects}"
+                        f"{len(active_receipts)}/{expected_effects}"
                     )
                 marker = PublishEffect(
                     plan_id=plan.id,
@@ -162,7 +165,7 @@ class PublishExecutionEngine:
                     detail={"receipt_count": len(receipts)},
                 )
                 await self._repository.record_publish_effects(effects + (marker,))
-                await self._remember_references(job, tuple(receipts))
+                await self._remember_references(job, active_receipts)
                 await self._repository.update_publish_step_state(
                     plan.id,
                     step.index,
@@ -195,6 +198,12 @@ class PublishExecutionEngine:
                 failure_code = "publish_uncertain" if isinstance(
                     exc, PublishTransportUncertainError
                 ) else "publish_partial"
+            elif active_receipts:
+                # Telegram has returned concrete message ids, but local
+                # journaling/finalization failed afterwards. Replaying this
+                # step could duplicate visible posts, even when the journal
+                # transaction itself left no durable rows.
+                failure_code = "publish_partial"
             else:
                 failure_code = "publish_failed"
             log_event(

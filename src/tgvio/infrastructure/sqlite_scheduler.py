@@ -255,7 +255,13 @@ class SQLiteSchedulerRepositoryMixin:
             WHERE j.state NOT IN ('succeeded','cancelled')
               AND NOT (
                 j.state='failed'
-                AND COALESCE(j.error_code, '') NOT IN ('publish_partial','publish_uncertain')
+                AND (
+                    COALESCE(j.error_code, '') NOT IN ('publish_partial','publish_uncertain')
+                    OR COALESCE(
+                        json_extract(j.policy_json, '$.auto_recovery_job.status'),
+                        ''
+                    )='quarantined'
+                )
               )
             ORDER BY s.accepted_order
             LIMIT 1

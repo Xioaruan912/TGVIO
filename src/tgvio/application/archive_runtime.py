@@ -25,6 +25,10 @@ _RECOVERABLE_ARCHIVE_STATES = (
 )
 
 
+class ArchiveCanonicalCacheUnavailable(RuntimeError):
+    pass
+
+
 class ArchiveService:
     """Plan and execute one durable archive package per Job."""
 
@@ -112,7 +116,12 @@ class ArchiveService:
                 await claim.stop()
         return processed
 
-    async def retry_package(self, package_id: str) -> ArchivePackage:
+    async def retry_package(
+        self,
+        package_id: str,
+        *,
+        automatic: bool = False,
+    ) -> ArchivePackage:
         package = await self._repository.get_archive_package(package_id)
         if package is None:
             raise KeyError(f"archive package not found: {package_id}")
@@ -123,14 +132,21 @@ class ArchiveService:
         for obj in package.objects:
             local = Path(obj.local_path)
             if not local.is_file() or local.stat().st_size != obj.size_bytes:
-                raise RuntimeError(
+                raise ArchiveCanonicalCacheUnavailable(
                     f"canonical cache unavailable for archive object {obj.object_index}"
                 )
         reset = await self._repository.update_archive_package_state(
             package.id,
             ArchivePackageState.STAGING,
-            event_type="archive_retry_requested",
-            detail={"object_count": len(package.objects)},
+            event_type=(
+                "archive_auto_retry_requested"
+                if automatic
+                else "archive_retry_requested"
+            ),
+            detail={
+                "object_count": len(package.objects),
+                "automatic": bool(automatic),
+            },
             error_code=None,
             error_message=None,
         )
@@ -141,6 +157,7 @@ class ArchiveService:
             package_id=package.id,
             job_id=package.job_id,
             object_count=len(package.objects),
+            automatic=bool(automatic),
         )
         return reset
 
@@ -149,7 +166,7 @@ class ArchiveService:
 
 
 class ArchiveRuntime:
-    """Wakeable durable worker; failed packages require an explicit retry."""
+    """Wakeable durable worker; retries are explicitly policy-controlled."""
 
     def __init__(
         self,
@@ -179,8 +196,16 @@ class ArchiveRuntime:
             self._wake.set()
         return package
 
-    async def retry_package(self, package_id: str) -> ArchivePackage:
-        package = await self._service.retry_package(package_id)
+    async def retry_package(
+        self,
+        package_id: str,
+        *,
+        automatic: bool = False,
+    ) -> ArchivePackage:
+        package = await self._service.retry_package(
+            package_id,
+            automatic=automatic,
+        )
         self._wake.set()
         return package
 

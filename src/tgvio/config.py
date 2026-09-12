@@ -95,6 +95,11 @@ class Settings:
     upload_part_bytes: int
     cache_retention_hours: int
     cache_cleanup_interval_minutes: int
+    auto_retry_enabled: bool
+    auto_retry_max_attempts: int
+    auto_retry_base_seconds: int
+    auto_retry_max_seconds: int
+    auto_retry_poll_seconds: int
     url_enabled: bool
     url_private_network_policy: str
     archive_enabled: bool
@@ -168,6 +173,20 @@ class Settings:
         cache_cleanup_interval_minutes = _int("TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES", 30)
         if not 1 <= cache_cleanup_interval_minutes <= 24 * 60:
             raise ConfigError("TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES out of range")
+        auto_retry_max_attempts = _int("TGVIO_AUTO_RETRY_MAX_ATTEMPTS", 3)
+        if not 0 <= auto_retry_max_attempts <= 10:
+            raise ConfigError("TGVIO_AUTO_RETRY_MAX_ATTEMPTS out of range")
+        auto_retry_base_seconds = _int("TGVIO_AUTO_RETRY_BASE_SECONDS", 15)
+        if not 1 <= auto_retry_base_seconds <= 3600:
+            raise ConfigError("TGVIO_AUTO_RETRY_BASE_SECONDS out of range")
+        auto_retry_max_seconds = _int("TGVIO_AUTO_RETRY_MAX_SECONDS", 300)
+        if not auto_retry_base_seconds <= auto_retry_max_seconds <= 86400:
+            raise ConfigError(
+                "TGVIO_AUTO_RETRY_MAX_SECONDS must be >= base delay and <= 86400"
+            )
+        auto_retry_poll_seconds = _int("TGVIO_AUTO_RETRY_POLL_SECONDS", 2)
+        if not 1 <= auto_retry_poll_seconds <= 300:
+            raise ConfigError("TGVIO_AUTO_RETRY_POLL_SECONDS out of range")
         live_fixture_max_mb = _int("TGVIO_LIVE_FIXTURE_MAX_MB", 100)
         if not 1 <= live_fixture_max_mb <= 512:
             raise ConfigError("TGVIO_LIVE_FIXTURE_MAX_MB out of range")
@@ -253,6 +272,11 @@ class Settings:
             upload_part_bytes=upload_part_mb * 1024 * 1024,
             cache_retention_hours=cache_retention_hours,
             cache_cleanup_interval_minutes=cache_cleanup_interval_minutes,
+            auto_retry_enabled=_bool("TGVIO_AUTO_RETRY_ENABLED", True),
+            auto_retry_max_attempts=auto_retry_max_attempts,
+            auto_retry_base_seconds=auto_retry_base_seconds,
+            auto_retry_max_seconds=auto_retry_max_seconds,
+            auto_retry_poll_seconds=auto_retry_poll_seconds,
             url_enabled=_bool("TGVIO_URL_ENABLED", False),
             url_private_network_policy=url_private_network_policy,
             archive_enabled=archive_enabled,
@@ -294,6 +318,10 @@ class Settings:
             "disk_reserve_mb": self.disk_reserve_bytes // (1024 * 1024),
             "upload_part_mb": self.upload_part_bytes // (1024 * 1024),
             "cache_retention_hours": self.cache_retention_hours,
+            "auto_retry_enabled": self.auto_retry_enabled,
+            "auto_retry_max_attempts": self.auto_retry_max_attempts,
+            "auto_retry_base_seconds": self.auto_retry_base_seconds,
+            "auto_retry_max_seconds": self.auto_retry_max_seconds,
             "log_level": self.log_level,
             "log_file_enabled": self.log_file_enabled,
             "log_max_mb": self.log_max_bytes // (1024 * 1024),
@@ -307,4 +335,3 @@ class Settings:
             "vps_ssh_key_configured": bool(str(self.vps_ssh_key)),
             "github_repo_configured": bool(self.github_repo),
         }
-

@@ -49,8 +49,14 @@ class CollectionEmptyError(ValueError):
 
 
 class IntakeService:
-    def __init__(self, repository: JobRepository) -> None:
+    def __init__(
+        self,
+        repository: JobRepository,
+        *,
+        default_policy: dict[str, Any] | None = None,
+    ) -> None:
         self._repository = repository
+        self._default_policy = dict(default_policy or {})
 
     @property
     def repository(self) -> JobRepository:
@@ -312,7 +318,8 @@ class IntakeService:
         spoiler_mode: SpoilerMode | None,
         ask_timeout_seconds: int,
     ) -> Job:
-        job_policy = dict(policy or {})
+        job_policy = dict(self._default_policy)
+        job_policy.update(policy or {})
         override: bool | None = None
         if spoiler_mode is not None:
             job_policy["spoiler_mode"] = spoiler_mode.value

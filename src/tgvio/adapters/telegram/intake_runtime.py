@@ -18,6 +18,12 @@ from tgvio.application.intake import (
     IntakeAcceptResult,
     IntakeService,
 )
+from tgvio.application.auto_recovery import (
+    archive_failure_waits_for_recovery,
+    archive_recovery_state,
+    job_failure_waits_for_recovery,
+    job_recovery_state,
+)
 from tgvio.application.job_control import JobCancelRequested
 from tgvio.application.job_runner import JobRunner
 from tgvio.application.scheduler import (
@@ -61,7 +67,7 @@ class TelethonIntakeRuntime:
         self._processor = processor
         self._log = logging.getLogger("tgvio.telegram.intake")
         self._tasks: set[asyncio.Task] = set()
-        self._status_tasks: set[asyncio.Task] = set()
+        self._status_tasks: dict[str, asyncio.Task] = {}
         self._confirmation_tasks: dict[str, asyncio.Task] = {}
         self._confirmation_lock = asyncio.Lock()
         self._pending_batches: dict[tuple[int, int], _PendingBatch] = {}
@@ -126,10 +132,11 @@ class TelethonIntakeRuntime:
         if self._dispatcher is not None:
             await self._dispatcher.stop()
         if self._status_tasks:
-            status_tasks = tuple(self._status_tasks)
+            status_tasks = tuple(self._status_tasks.values())
             for task in status_tasks:
                 task.cancel()
             await asyncio.gather(*status_tasks, return_exceptions=True)
+            self._status_tasks.clear()
         if self._confirmation_tasks:
             confirmation_tasks = tuple(self._confirmation_tasks.values())
             for task in confirmation_tasks:
@@ -911,18 +918,29 @@ class TelethonIntakeRuntime:
         if chat_id is None:
             chat_id = next((item.source_chat_id for item in job.items if item.source_chat_id is not None), None)
         if chat_id is not None and status_message_id is not None:
-            tracker = asyncio.create_task(
-                self._track_status(int(chat_id), int(status_message_id), job.id),
-                name=f"tgvio-status-{job.id}",
-            )
-            self._status_tasks.add(tracker)
-            tracker.add_done_callback(self._status_tasks.discard)
+            existing = self._status_tasks.get(job.id)
+            if existing is None or existing.done():
+                tracker = asyncio.create_task(
+                    self._track_status(int(chat_id), int(status_message_id), job.id),
+                    name=f"tgvio-status-{job.id}",
+                )
+                self._status_tasks[job.id] = tracker
+                tracker.add_done_callback(
+                    lambda completed, job_id=job.id: self._forget_status_task(
+                        job_id,
+                        completed,
+                    )
+                )
         task = asyncio.create_task(
             self._process_job(chat_id, job, status_message_id=status_message_id),
             name=f"tgvio-job-{job.id}",
         )
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
+
+    def _forget_status_task(self, job_id: str, completed: asyncio.Task) -> None:
+        if self._status_tasks.get(job_id) is completed:
+            self._status_tasks.pop(job_id, None)
 
     async def _process_job(
         self,
@@ -1131,13 +1149,56 @@ class TelethonIntakeRuntime:
             lines.append("状态：✅ **Telegram 发布完成**")
         elif job.state == JobState.FAILED:
             issue = describe_job_failure(job.error_code)
-            lines.extend(
-                [
-                    f"状态：❌ **{issue.title}**",
-                    issue.explanation,
-                    f"下一步：{issue.action}",
-                ]
-            )
+            recovery = job_recovery_state(job)
+            recovery_status = str(recovery.get("status", ""))
+            if recovery_status == "scheduled":
+                lines.extend(
+                    [
+                        "状态：🔄 **系统正在自动恢复**",
+                        f"原因：{issue.title}",
+                        f"将自动进行第 `{recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')}` 次安全重试，无需操作。",
+                    ]
+                )
+            elif recovery_status == "quarantined":
+                lines.extend(
+                    [
+                        "状态：🛡️ **已隔离，不会自动重发**",
+                        issue.explanation,
+                        "后续任务会继续；请有空时核对目标频道中的实际消息。",
+                    ]
+                )
+            elif recovery_status == "manual_review":
+                lines.extend(
+                    [
+                        "状态：🛡️ **安全检查阻止重发**",
+                        issue.explanation,
+                        "此任务已跳过，后续任务会继续；需要管理员核对发布记录。",
+                    ]
+                )
+            elif recovery_status in {"exhausted", "abandoned"}:
+                lines.extend(
+                    [
+                        f"状态：⏭️ **{issue.title}，已自动跳过**",
+                        f"自动处理未能恢复任务（已尝试 `{recovery.get('attempt_count', 0)}` 次）。",
+                        "后续任务会继续；如仍需要这份内容，可在详情中手动重试或重新转发。",
+                    ]
+                )
+            elif job_failure_waits_for_recovery(job):
+                lines.extend(
+                    [
+                        "状态：🔄 **系统正在判断恢复方式**",
+                        f"原因：{issue.title}",
+                        "无需操作，系统会自动重试或安全跳过。",
+                    ]
+                )
+            else:
+                lines.extend(
+                    [
+                        f"状态：❌ **{issue.title}**",
+                        issue.explanation,
+                        f"下一步：{issue.action}",
+                    ]
+                )
         elif job.state == JobState.CANCELLED:
             lines.append("状态：⛔ **已取消**")
         elif job.state == JobState.PLANNED:
@@ -1171,7 +1232,26 @@ class TelethonIntakeRuntime:
             )
             if archive.state == ArchivePackageState.FAILED:
                 issue = describe_archive_failure(archive.error_code)
-                lines.extend([issue.explanation, f"下一步：{issue.action}"])
+                recovery = archive_recovery_state(job)
+                recovery_status = str(recovery.get("status", ""))
+                if recovery_status == "scheduled":
+                    lines.extend(
+                        [
+                            issue.explanation,
+                            f"系统将自动进行第 `{recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')}` 次续传，无需操作。",
+                        ]
+                    )
+                elif recovery_status in {"exhausted", "abandoned"}:
+                    lines.extend(
+                        [
+                            issue.explanation,
+                            "自动续传已停止；Telegram 发布不受影响，可稍后从详情手动重传。",
+                        ]
+                    )
+                elif archive_failure_waits_for_recovery(job, archive):
+                    lines.extend([issue.explanation, "系统正在自动判断续传方式，无需操作。"])
+                else:
+                    lines.extend([issue.explanation, f"下一步：{issue.action}"])
         return "\n".join(lines)
 
     @staticmethod
@@ -1187,6 +1267,8 @@ class TelethonIntakeRuntime:
         if (
             job.state == JobState.FAILED
             and job.error_code not in {"publish_partial", "publish_uncertain"}
+            and not job_failure_waits_for_recovery(job)
+            and job_recovery_state(job).get("status") != "manual_review"
         ):
             rows[0].append(
                 Button.inline(
@@ -1194,7 +1276,11 @@ class TelethonIntakeRuntime:
                     f"ui:retry:{job.id}".encode("utf-8"),
                 )
             )
-        if archive is not None and archive.state == ArchivePackageState.FAILED:
+        if (
+            archive is not None
+            and archive.state == ArchivePackageState.FAILED
+            and not archive_failure_waits_for_recovery(job, archive)
+        ):
             rows.append(
                 [
                     Button.inline(
@@ -1206,6 +1292,10 @@ class TelethonIntakeRuntime:
         return rows
 
     def _status_is_terminal(self, job: Job, archive: ArchivePackage | None) -> bool:
+        if job_failure_waits_for_recovery(job):
+            return False
+        if archive_failure_waits_for_recovery(job, archive):
+            return False
         archive_terminal = archive is None or archive.state in {
             ArchivePackageState.COMMITTED,
             ArchivePackageState.FAILED,

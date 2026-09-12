@@ -71,6 +71,46 @@ class SQLiteJobRepositoryMixin:
                 raise KeyError(f"job not found: {job.id}")
             await self._replace_items(conn, job)
 
+    async def update_job_policy(
+        self,
+        job_id: str,
+        updates: dict[str, object],
+        *,
+        remove_keys: tuple[str, ...] = (),
+    ) -> Job:
+        """Atomically patch top-level policy fields without replacing Job items/state."""
+
+        async with self._write_transaction() as conn:
+            cursor = await conn.execute(
+                "SELECT policy_json FROM jobs WHERE id=?",
+                (job_id,),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                raise KeyError(f"job not found: {job_id}")
+            policy = json.loads(row["policy_json"] or "{}")
+            if not isinstance(policy, dict):
+                raise ValueError(f"job policy must be an object: {job_id}")
+            for key in remove_keys:
+                policy.pop(str(key), None)
+            policy.update({str(key): value for key, value in updates.items()})
+            await conn.execute(
+                """
+                UPDATE jobs
+                SET policy_json=?, updated_at=CURRENT_TIMESTAMP
+                WHERE id=?
+                """,
+                (
+                    json.dumps(policy, ensure_ascii=False, separators=(",", ":")),
+                    job_id,
+                ),
+            )
+        job = await self.get(job_id)
+        if job is None:
+            raise RuntimeError("job disappeared after policy update")
+        return job
+
     async def transition(
         self,
         job_id: str,
@@ -176,6 +216,54 @@ class SQLiteJobRepositoryMixin:
         jobs: list[Job] = []
         for row in rows:
             job = await self.get(row["id"])
+            if job is not None:
+                jobs.append(job)
+        return jobs
+
+    async def list_failed_jobs_for_auto_recovery(
+        self,
+        *,
+        limit: int = 100,
+    ) -> list[Job]:
+        """Return only policy-managed failures still needing a recovery decision."""
+
+        conn = self._require()
+        cursor = await conn.execute(
+            """
+            SELECT j.id
+            FROM jobs j
+            WHERE j.state='failed'
+              AND json_extract(j.policy_json, '$.auto_recovery.version')=1
+              AND json_extract(j.policy_json, '$.auto_recovery.enabled')=1
+              AND (
+                    COALESCE(
+                        json_extract(j.policy_json, '$.auto_recovery_job.status'),
+                        ''
+                    ) NOT IN ('abandoned','exhausted','manual_review','quarantined')
+                    OR COALESCE(
+                        json_extract(j.policy_json, '$.auto_recovery_job.failure_id'),
+                        ''
+                    ) != ('event:' || COALESCE(
+                        (
+                            SELECT MAX(e.id)
+                            FROM job_events e
+                            WHERE e.job_id=j.id
+                              AND e.to_state='failed'
+                              AND COALESCE(e.from_state, '')!='failed'
+                        ),
+                        ''
+                    ))
+              )
+            ORDER BY j.updated_at, j.id
+            LIMIT ?
+            """,
+            (max(1, min(500, int(limit))),),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        jobs: list[Job] = []
+        for row in rows:
+            job = await self.get(str(row["id"]))
             if job is not None:
                 jobs.append(job)
         return jobs

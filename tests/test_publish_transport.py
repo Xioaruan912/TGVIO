@@ -7,6 +7,7 @@ from types import SimpleNamespace
 import unittest
 
 from telethon.tl import functions, types
+from telethon.errors.rpcerrorlist import MediaEmptyError
 
 from tgvio.adapters.telegram.discussion_resolver import DiscussionRoot
 from tgvio.application.ports import (
@@ -136,6 +137,9 @@ class FakeTelegramClient:
         self.requests: list[object] = []
         self.fail_send_on: int | None = None
         self.fail_album_send = False
+        self.reject_album_as_media_empty = False
+        self.empty_album_result = False
+        self.send_without_id_on: int | None = None
         self.reuse_message = None
         self.fail_upload_part_once = False
         self._upload_part_failed = False
@@ -204,8 +208,12 @@ class FakeTelegramClient:
                     )
                 )
         if isinstance(request, functions.messages.SendMultiMediaRequest):
+            if self.reject_album_as_media_empty:
+                raise MediaEmptyError(request)
             if self.fail_album_send:
                 raise RuntimeError("album-send-response-lost")
+            if self.empty_album_result:
+                return SimpleNamespace(updates=[])
             channel_id = 111 if request.peer == "@channel" else 222
             return SimpleNamespace(
                 updates=[
@@ -229,7 +237,11 @@ class FakeTelegramClient:
         channel_id = 111 if entity == "@channel" else 222
         messages = [
             SimpleNamespace(
-                id=900 + len(self.send_calls) * 10 + index,
+                id=(
+                    None
+                    if self.send_without_id_on == call_number
+                    else 900 + len(self.send_calls) * 10 + index
+                ),
                 peer_id=types.PeerChannel(channel_id=channel_id),
             )
             for index in range(count)
@@ -350,6 +362,89 @@ class TelethonPublishTransportTests(unittest.IsolatedAsyncioTestCase):
             item_indexes=(0, 1),
             params={"strategies": {"0": "native", "1": "native"}},
         )
+        with self.assertRaises(PublishTransportUncertainError):
+            await self.transport.execute_step(job, step, ())
+
+    async def test_album_fallback_preserves_receipt_when_later_item_fails(self) -> None:
+        self.client.reject_album_as_media_empty = True
+        self.client.fail_send_on = 2
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.PHOTO), self._item(1, MediaKind.PHOTO)],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_COVER_ALBUM,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0, 1),
+            params={"strategies": {"0": "native", "1": "native"}},
+        )
+
+        with self.assertRaises(PublishTransportPartialError) as captured:
+            await self.transport.execute_step(job, step, ())
+
+        self.assertEqual(len(captured.exception.receipts), 1)
+        self.assertEqual(captured.exception.receipts[0].detail["item_index"], 0)
+        self.assertEqual(len(self.client.send_calls), 1)
+
+    async def test_album_fallback_first_send_failure_is_uncertain(self) -> None:
+        self.client.reject_album_as_media_empty = True
+        self.client.fail_send_on = 1
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.PHOTO), self._item(1, MediaKind.PHOTO)],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_COVER_ALBUM,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0, 1),
+            params={"strategies": {"0": "native", "1": "native"}},
+        )
+
+        with self.assertRaises(PublishTransportUncertainError):
+            await self.transport.execute_step(job, step, ())
+
+    async def test_album_fallback_without_message_id_is_uncertain(self) -> None:
+        self.client.reject_album_as_media_empty = True
+        self.client.send_without_id_on = 1
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.PHOTO), self._item(1, MediaKind.PHOTO)],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_COVER_ALBUM,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0, 1),
+            params={"strategies": {"0": "native", "1": "native"}},
+        )
+
+        with self.assertRaises(PublishTransportUncertainError):
+            await self.transport.execute_step(job, step, ())
+
+    async def test_album_send_without_observable_receipts_is_uncertain(self) -> None:
+        self.client.empty_album_result = True
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.PHOTO), self._item(1, MediaKind.PHOTO)],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_COVER_ALBUM,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0, 1),
+            params={"strategies": {"0": "native", "1": "native"}},
+        )
+
         with self.assertRaises(PublishTransportUncertainError):
             await self.transport.execute_step(job, step, ())
 

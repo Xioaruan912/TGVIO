@@ -42,6 +42,11 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.upload_part_bytes, 1900 * 1024 * 1024)
         self.assertEqual(settings.cache_retention_hours, 24)
         self.assertEqual(settings.cache_cleanup_interval_minutes, 30)
+        self.assertTrue(settings.auto_retry_enabled)
+        self.assertEqual(settings.auto_retry_max_attempts, 3)
+        self.assertEqual(settings.auto_retry_base_seconds, 15)
+        self.assertEqual(settings.auto_retry_max_seconds, 300)
+        self.assertEqual(settings.auto_retry_poll_seconds, 2)
         self.assertEqual(settings.log_level, "INFO")
         self.assertTrue(settings.log_file_enabled)
         self.assertEqual(settings.log_max_bytes, 20 * 1024 * 1024)
@@ -52,6 +57,8 @@ class SettingsTests(unittest.TestCase):
         self.assertNotIn("bot-token", repr(summary))
         self.assertNotIn("hash-value", repr(summary))
         self.assertTrue(summary["log_file_enabled"])
+        self.assertTrue(summary["auto_retry_enabled"])
+        self.assertEqual(summary["auto_retry_max_attempts"], 3)
 
     def test_url_policy_is_explicit_and_validated(self) -> None:
         with patch.dict(
@@ -176,6 +183,31 @@ class SettingsTests(unittest.TestCase):
                 Settings.from_env()
         with patch.dict(
             os.environ,
+            {**BASE_ENV, "TGVIO_AUTO_RETRY_MAX_ATTEMPTS": "11"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "AUTO_RETRY_MAX_ATTEMPTS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_AUTO_RETRY_BASE_SECONDS": "30",
+                "TGVIO_AUTO_RETRY_MAX_SECONDS": "29",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "AUTO_RETRY_MAX_SECONDS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_AUTO_RETRY_POLL_SECONDS": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "AUTO_RETRY_POLL_SECONDS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
             {**BASE_ENV, "TGVIO_LOG_LEVEL": "TRACE"},
             clear=True,
         ):
@@ -249,4 +281,3 @@ class SettingsTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ConfigError, "LIVE_FIXTURE_MAX_MB"):
                 Settings.from_env()
-
