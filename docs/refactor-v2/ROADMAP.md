@@ -30,8 +30,8 @@ characterization -> implementation -> offline gates -> Git push
 | R2-02 | DELIVERED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
 | R2-03 | DELIVERED | 生产反馈修复；接管 migration ledger 并拆分 repository | DL-01、UI-01～02、AR-06、DB-02 |
 | R2-04 | IN PROGRESS | A-D durable scheduler / claim / strict FIFO 已交付；E 并发分片上传继续 | DB-03、PL-09、PL-10 |
-| R2-05 | IN PROGRESS | A-E 本地候选完成并通过 v2→v3 rehearsal；待正式 schema-changing release | IN-04～06、PL-06、ST-01 |
-| R2-06 | NOT STARTED | 完整队列、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02、CT-04、PL-14 |
+| R2-05 | DELIVERED | Durable intake/合集/文字/spoiler/状态消息已随 v3 正式发布 | IN-04～06、PL-06、ST-01 |
+| R2-06 | IN PROGRESS | 完整队列、自动恢复、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02～04、PL-13～14 |
 | R2-07 | NOT STARTED | 动态 Archive、目的地 Profile、代理协调 | AR-07、ST-02、ST-03 |
 | R2-08 | NOT STARTED | 拆分 Telegram/WebDAV/UI/SQLite 热点并清除兼容层 | 架构门禁 |
 | R2-09 | NOT STARTED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
@@ -231,7 +231,7 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 - R2-05D：`user_preferences` 与 `ask/always_spoiler/always_normal`；ask 超时 normal、主动取消终止。
 - R2-05E：稳定状态消息引用落库，重启后编辑或至多补发一次。
 
-2026-09-12 本地候选状态：A-E 已实现，`0003_intake_collections` v2→v3 真实生产数据形状 rehearsal 通过；默认 spoiler 模式额外保留 `source` 以避免回归当前生产源 spoiler 语义。候选证据见 [R2-05_INTAKE_CANDIDATE.md](evidence/R2-05_INTAKE_CANDIDATE.md)。正式发布前仍需最终全量门禁、clean/pushed gate 和 migration-aware cutover。
+2026-09-12 交付结果：A-E 已随 `r2-05-342cec3-20260912T125804Z` 正式发布，`0003_intake_collections` 把生产从 v2 推进到 v3；240 tests、23 个历史 Job 不变、独立 postflight 与 rollback asset check 均通过。默认 spoiler 模式额外保留 `source` 以避免回归当前生产源 spoiler 语义。候选细节见 [R2-05_INTAKE_CANDIDATE.md](evidence/R2-05_INTAKE_CANDIDATE.md)，正式证据见 [R2-05_RELEASE.md](evidence/R2-05_RELEASE.md)。
 
 ### 验收与回滚
 
@@ -251,6 +251,7 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 - SQL 分页 `/jobs`、状态筛选、任务详情、计划详情和失败中心。
 - Job `pause/hold/resume`；全局暂停只阻止新 claim，外部 send 在安全边界停。
 - cancel/retry 状态矩阵，保留 canonical cache 与 Archive 保护规则。
+- 无可见外部副作用的瞬时失败执行 durable 有界自动重试与退避；耗尽后自动终止/丢弃并释放 FIFO，`publish_partial/uncertain` 永远转人工核对。
 - 通用 `operation_tokens`：owner、revision、TTL、单次消费、动作 payload hash。
 - undo 读取 durable effects，逐 peer 删除并记录每条 receipt；部分删除可重试剩余项。
 - callback 全遍历、64-byte 上限、过期按钮和 owner 隔离测试。

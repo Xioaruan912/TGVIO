@@ -1,19 +1,19 @@
 # 视频转发机器人 — 项目说明（供 Agent 参考）
 
 > 本文件面向后续接手该项目的开发/运维 Agent，说明生产事实、强制规则和历史背景。
-> 最后更新：2026-09-12（R2-03A 生产反馈修复已交付）
+> 最后更新：2026-09-12（R2-05 durable intake/合集已交付）
 >
 > **阅读顺序**：先完整阅读第 0 节和 [`docs/refactor-v2/`](docs/refactor-v2/README.md)。第 1～21 节是旧 `telegram-video-forwarder` 架构及其执行历史，仅用于追溯；其中任何“当前”“下一步”“已部署”表述都不得覆盖 V2 文档与实时只读审计结果。
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
 - V2 权威入口：[`docs/refactor-v2/README.md`](docs/refactor-v2/README.md)。功能保证以 [`FEATURE_CONTRACT.md`](docs/refactor-v2/FEATURE_CONTRACT.md) 为验收合同；实施顺序以 [`ROADMAP.md`](docs/refactor-v2/ROADMAP.md) 为准；发布遵守 [`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md)，构建/交付入口见 [`RELEASE_TOOLING.md`](docs/refactor-v2/RELEASE_TOOLING.md)。
-- R2-01 已恢复生产源码的 Git 权威；R2-02 已交付可复现构建和强制发布链；R2-03A 已于 2026-09-12 交付生产反馈修复。生产 runtime full commit 为 `a02e31c1b35673cfb9b8be54121c769026d38a9e`，release 为 `r2-03-a02e31c-20260912T044959Z`；退役旧树仍由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留。完整证据见 [`R2-03A_UX_RELEASE.md`](docs/refactor-v2/evidence/R2-03A_UX_RELEASE.md)。后续 docs-only closure commit 可以领先生产 runtime commit，但不因此构建或重启。
-- HostDZire shared root 为 `/root/TGVIO`，current symlink 为 `/root/TGVIO-current`，Compose service/容器为 `tgvio`，包名为 `src/tgvio`。生产 `.release-commit` 与容器 `APP_COMMIT` 均为上述 full commit，runtime image ID 为 `sha256:ddc6c481231b4e27537012bcdb12b95de8979d2fc25ee51b2110b650d16da06a`；容器 `running`、health=`healthy`、restart=0、单实例。Git/宿主/容器规范化 Python 源码 manifest 均为 `e14aa7c75dec44f71a8f383f75d0bd533ef82cdd72507c78df9fe71fbf48c473`。
-- 当前生产 SQLite 是 `/root/TGVIO/data/state.sqlite3`：`quick_check=ok`，23 个 Job（16 succeeded、4 cancelled、3 failed），关联非终态 Job 的 progress 为 0。当前没有 migration ledger，`PRAGMA user_version=0`，schema hash 仍为 `d3ee6adf7d956c5b8e6b672727258aea5d8da28514cf9c5b5ee9f672548d7d7d`；禁止未经生产副本演练直接改变 schema。
-- 精确 R2-03A 正式 test image 在 `--network none` 下 **174 tests 全通过**（9.482s）；测试容器未启动 Bot。runtime image 的 47-file/7-package 离线检查通过，无 tests、bytecode、构建工具、秘密或运行数据。当前生产 Bot、发布、受控 fixture、URL 和 Archive 非敏感开关均为 enabled。
-- R2-03A 已把日常入口收敛为 persistent 手机键盘和任务按钮，普通视图使用可执行的中文错误说明；并发 Telegram 下载耗尽重试后会清除 partial 并自动尝试一次单流下载。已有会话需发送一次 `/start` 安装常驻键盘。
-- 正式发布只能从 clean、已推送的 `origin/main` 运行 `scripts/deploy_hostdzire.py`；dirty worktree 只能做无网络诊断构建。下一阶段是 R2-03B migration ledger 与 repository 拆分；生产副本演练及 checksum runner 完成前不得修改 schema，也不得顺手改变功能语义。
+- R2-01～R2-03 已恢复 Git 权威、可复现发布链、移动端 UX、migration ledger 与 repository 拆分；R2-04 A-E 已交付 durable scheduler/FIFO 与 bounded upload；R2-05 已于 2026-09-12 交付 durable intake、合集/文字、spoiler 偏好和稳定状态消息。生产 runtime full commit 为 `342cec36733d69c72e4d5b723be0a76901bca6c0`，release 为 `r2-05-342cec3-20260912T125804Z`；退役旧树仍由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留。完整证据见 [`R2-05_RELEASE.md`](docs/refactor-v2/evidence/R2-05_RELEASE.md)。后续 docs-only closure commit 可以领先生产 runtime commit，但不因此构建或重启。
+- HostDZire shared root 为 `/root/TGVIO`，current symlink 为 `/root/TGVIO-current`，Compose service/容器为 `tgvio`，包名为 `src/tgvio`。生产 `.release-commit` 与容器 `APP_COMMIT` 均为上述 full commit，runtime image ID 为 `sha256:7f8b110460d3ee99d769025d1ad48b60e7951d1c9fd183d341bc3b75a30894d0`；容器 `running`、health=`healthy`、restart=0、单实例。Git/宿主/容器规范化 Python 源码 manifest 均为 `8f5303b70b2fafa7283c6dffeb8418446e4c8b3c3e21f9704049c11e43cddd41`。
+- 当前生产 SQLite 是 `/root/TGVIO/data/state.sqlite3`：`quick_check=ok`，23 个历史 Job 不变，所有业务 blocker 为 0；migration ledger 已登记 1～3，`PRAGMA user_version=3`，schema hash 为 `74d331b0d2f112d354298ee7e10c39b2f16d4c58a0d0488eb198ebd912dff93b`。任何后续 schema 变化仍必须新增不可变 migration，并先做生产副本演练。
+- 精确 R2-05 正式 test image 在 `--network none` 下 **240 tests 全通过**（24.253s）；测试容器未启动 Bot。runtime image 的 59-file/7-package 离线检查通过，无 tests、bytecode、构建工具、秘密或运行数据。当前生产 Bot、发布、受控 fixture、URL 和 Archive 非敏感开关均为 enabled。
+- R2-03A 已把日常入口收敛为 persistent 手机键盘和任务按钮；R2-05 把合集、文字、spoiler 决策与状态消息引用持久化。已有会话需发送一次 `/start` 安装/刷新常驻键盘。
+- 正式发布只能从 clean、已推送的 `origin/main` 运行 `scripts/deploy_hostdzire.py`；dirty worktree 只能做无网络诊断构建。下一阶段是 R2-06 队列控制、自动恢复/失败中心与撤销；不得绕过 partial/uncertain 外部副作用保护。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`data/`、`downloads/`、`logs/`、数据库及运行数据以 VPS 为准；代码差异先只读比对并保留生产新增逻辑，再合并回本地/GitHub。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
 - **严禁同时启动两个使用同一 BOT_TOKEN/session 的实例**。本地测试必须使用 fake client 或独立测试 Bot；不能复制正在运行的生产 Telethon session 后连接。

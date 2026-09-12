@@ -1,6 +1,7 @@
 # R2-05 Intake / Collection / Spoiler Candidate Evidence
 
-> 状态：LOCAL CANDIDATE / NOT RELEASED
+> 历史说明：本文件保留发布前 candidate 证据；R2-05 已正式发布，最终交付与独立后验见 [R2-05_RELEASE.md](R2-05_RELEASE.md)。
+> 状态：HISTORICAL CANDIDATE
 > 日期：2026-09-12
 > 生产基线：`r2-04-05d4bf0-20260912T072358Z` / runtime `05d4bf02f8dbc42eb9ace2fd572270b3a5d84750` / SQLite `user_version=2`
 > 候选 migration：`0003_intake_collections`
