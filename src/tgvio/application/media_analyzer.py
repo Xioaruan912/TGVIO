@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import logging
 
-from tgvio.application.job_control import JobCancelRequested, JobControlService
+from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.ports import JobRepository, MediaInspector
 from tgvio.domain.job import Job, JobState
 from tgvio.domain.progress import JobProgress
@@ -22,7 +22,7 @@ class MediaAnalyzer:
         self._log = logging.getLogger("tgvio.analysis")
 
     async def analyze(self, job: Job) -> Job:
-        await self._cancel_checkpoint(job, "cancelled before analysis started")
+        await self._safe_checkpoint(job, "paused before analysis started")
         if job.state == JobState.DOWNLOADED:
             job = await self._repository.transition(
                 job.id,
@@ -51,16 +51,16 @@ class MediaAnalyzer:
                         item_total=len(job.items),
                     )
                 )
-                await self._cancel_checkpoint(
+                await self._safe_checkpoint(
                     job,
-                    f"cancelled before analysis item {item.index}",
+                    f"paused before analysis item {item.index}",
                 )
                 analyzed.append(await self._inspector.inspect(item))
-                await self._cancel_checkpoint(
+                await self._safe_checkpoint(
                     job,
-                    f"cancelled after analysis item {item.index}",
+                    f"paused after analysis item {item.index}",
                 )
-        except JobCancelRequested:
+        except (JobCancelRequested, JobHoldRequested):
             raise
         except Exception as exc:
             log_event(
@@ -114,6 +114,6 @@ class MediaAnalyzer:
         )
         return completed
 
-    async def _cancel_checkpoint(self, job: Job, detail: str) -> None:
+    async def _safe_checkpoint(self, job: Job, detail: str) -> None:
         if self._control is not None:
-            await self._control.checkpoint(job, detail=detail)
+            await self._control.safe_checkpoint(job, detail=detail)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tgvio.application.ports import JobRepository
+from tgvio.domain.control import JobControlState, QueueControlState
 from tgvio.domain.job import Job, JobState
 from tgvio.domain.publish import PublishStepState
 from tgvio.domain.progress import JobProgress
@@ -13,6 +14,10 @@ class JobCancelRequested(RuntimeError):
 
 
 class UnsafeRetryError(RuntimeError):
+    pass
+
+
+class JobHoldRequested(RuntimeError):
     pass
 
 
@@ -74,6 +79,28 @@ class JobControlService:
                     raise KeyError(f"job not found after cancel race: {job.id}")
                 return refreshed
         return current
+
+    async def request_hold(self, job: Job, *, reason: str | None = None) -> JobControlState:
+        if job.terminal:
+            raise ValueError(f"job cannot be held from {job.state.value}")
+        return await self._repository.request_hold(job.id, reason=reason)
+
+    async def resume(self, job: Job) -> JobControlState:
+        if job.terminal:
+            raise ValueError(f"job cannot be resumed from {job.state.value}")
+        return await self._repository.clear_hold(job.id)
+
+    async def pause_queue(self, *, reason: str | None = None) -> QueueControlState:
+        return await self._repository.set_queue_paused(True, reason=reason)
+
+    async def resume_queue(self) -> QueueControlState:
+        return await self._repository.set_queue_paused(False)
+
+    async def safe_checkpoint(self, job: Job, *, detail: str) -> None:
+        await self.checkpoint(job, detail=detail)
+        control = await self._repository.get_job_control(job.id)
+        if control.hold_requested:
+            raise JobHoldRequested(detail)
 
     async def checkpoint(self, job: Job, *, detail: str) -> None:
         if not await self._repository.is_cancel_requested(job.id):

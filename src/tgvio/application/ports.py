@@ -14,6 +14,7 @@ from tgvio.domain.archive import (
     ArchiveRemoteStat,
     ArchiveStoreReceipt,
 )
+from tgvio.domain.control import JobControlState, QueueControlState
 from tgvio.domain.intake import (
     CollectionEntry,
     CollectionSession,
@@ -207,6 +208,21 @@ class JobRepository(Protocol):
     async def clear_cancel_request(self, job_id: str) -> None: ...
 
     async def is_cancel_requested(self, job_id: str) -> bool: ...
+
+    async def request_hold(self, job_id: str, *, reason: str | None = None) -> JobControlState: ...
+
+    async def clear_hold(self, job_id: str) -> JobControlState: ...
+
+    async def get_job_control(self, job_id: str) -> JobControlState: ...
+
+    async def set_queue_paused(
+        self,
+        paused: bool,
+        *,
+        reason: str | None = None,
+    ) -> QueueControlState: ...
+
+    async def get_queue_control(self) -> QueueControlState: ...
 
     async def increment_retry_count(self, job_id: str) -> int: ...
 

@@ -127,11 +127,24 @@ class SQLiteSchedulerRepositoryMixin:
         ttl = max(3, int(ttl_seconds))
         async with self._write_transaction() as conn:
             now = await self._unix_now(conn)
-            cursor = await conn.execute("SELECT 1 FROM jobs WHERE id=?", (job_id,))
-            if await cursor.fetchone() is None:
-                await cursor.close()
-                raise KeyError(f"job not found: {job_id}")
+            cursor = await conn.execute(
+                """
+                SELECT j.id,
+                       COALESCE(c.hold_requested, 0) AS hold_requested,
+                       q.paused AS queue_paused
+                FROM jobs j
+                CROSS JOIN queue_controls q
+                LEFT JOIN job_controls c ON c.job_id=j.id
+                WHERE j.id=? AND q.singleton=1
+                """,
+                (job_id,),
+            )
+            control = await cursor.fetchone()
             await cursor.close()
+            if control is None:
+                raise KeyError(f"job not found: {job_id}")
+            if bool(control["queue_paused"]) or bool(control["hold_requested"]):
+                return None
             cursor = await conn.execute(
                 """
                 SELECT holder_id, generation, expires_at
@@ -252,7 +265,9 @@ class SQLiteSchedulerRepositoryMixin:
             SELECT s.job_id, s.accepted_order, j.state, j.error_code
             FROM job_schedule s
             JOIN jobs j ON j.id=s.job_id
+            LEFT JOIN job_controls c ON c.job_id=j.id
             WHERE j.state NOT IN ('succeeded','cancelled')
+              AND COALESCE(c.hold_requested, 0)=0
               AND NOT (
                 j.state='failed'
                 AND (

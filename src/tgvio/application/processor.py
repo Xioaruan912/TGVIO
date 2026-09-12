@@ -32,9 +32,9 @@ class IngestionProcessor:
             job = await self._analyzer.analyze(job)
         if job.state == JobState.ANALYZED:
             if self._control is not None:
-                await self._control.checkpoint(
+                await self._control.safe_checkpoint(
                     job,
-                    detail="cancelled before publish planning",
+                    detail="paused before publish planning",
                 )
             if self._reference_enricher is not None:
                 job = await self._reference_enricher.enrich(job)

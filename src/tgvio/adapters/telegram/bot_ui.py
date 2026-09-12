@@ -36,6 +36,8 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("begin", "开始收集一个合集"),
     ("end", "结束合集并创建任务"),
     ("mode", "设置雪花显示偏好"),
+    ("pause", "暂停队列或指定任务"),
+    ("resume", "恢复队列或指定任务"),
     ("jobs", "查看最近任务"),
     ("status", "查看运行与任务状态"),
     ("help", "查看使用说明"),
@@ -211,7 +213,7 @@ class TelethonBotUI:
         elif command == "status":
             await event.respond(
                 await self._status_text(int(event.sender_id)),
-                buttons=self._nav_buttons(),
+                buttons=await self._status_page_buttons(),
                 parse_mode="md",
             )
         elif command == "jobs":
@@ -251,6 +253,10 @@ class TelethonBotUI:
             await self._retry_job(event, int(event.sender_id), argument.strip() or None)
         elif command == "cancel":
             await self._cancel_job(event, int(event.sender_id), argument.strip() or None)
+        elif command == "pause":
+            await self._pause_command(event, int(event.sender_id), argument.strip() or None)
+        elif command == "resume":
+            await self._resume_command(event, int(event.sender_id), argument.strip() or None)
         elif command == "archive":
             await self._archive_command(event, int(event.sender_id), argument.strip())
         elif command == "cache":
@@ -278,7 +284,7 @@ class TelethonBotUI:
         elif action == NAV_STATUS:
             await event.respond(
                 await self._status_text(owner_id),
-                buttons=self._nav_buttons(),
+                buttons=await self._status_page_buttons(),
                 parse_mode="md",
             )
         elif action == NAV_ARCHIVE:
@@ -318,7 +324,30 @@ class TelethonBotUI:
             await self._edit_page(
                 event,
                 await self._status_text(owner_id),
-                self._nav_buttons(),
+                await self._status_page_buttons(),
+            )
+            return
+        if action == "ui:queue-pause":
+            await self._edit_page(
+                event,
+                "**确认暂停队列**\n\n只会阻止新的 prepare / publish / archive claim；已经在执行的外部操作会在原安全边界结束，不会被强制中断。",
+                [[Button.inline("⏸ 确认暂停", b"ui:queue-pause-confirm"), Button.inline("返回", b"ui:status")]],
+            )
+            return
+        if action == "ui:queue-pause-confirm":
+            await self._pause_queue_exact(owner_id=owner_id)
+            await self._edit_page(
+                event,
+                await self._status_text(owner_id),
+                await self._status_page_buttons(),
+            )
+            return
+        if action == "ui:queue-resume":
+            await self._resume_queue_exact()
+            await self._edit_page(
+                event,
+                await self._status_text(owner_id),
+                await self._status_page_buttons(),
             )
             return
         if action == "ui:jobs":
@@ -415,6 +444,8 @@ class TelethonBotUI:
             ("ui:retry:", self._confirm_retry_callback),
             ("ui:cancel-confirm:", self._run_cancel_callback),
             ("ui:cancel:", self._confirm_cancel_callback),
+            ("ui:resume:", self._resume_job_callback),
+            ("ui:hold:", self._hold_job_callback),
             ("ui:job-deep:", self._show_deep_job_callback),
             ("ui:plan:", self._show_plan_callback),
             ("ui:job:", self._show_job_callback),
@@ -582,6 +613,26 @@ class TelethonBotUI:
             await self._safe_answer(event, "任务不存在或无权限", alert=True)
             return
         text = await self._cancel_exact(job, owner_id=owner_id)
+        current = await self._owned_job(owner_id, job.id)
+        buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
+        await self._edit_page(event, text, buttons)
+
+    async def _hold_job_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        text = await self._hold_exact(job, owner_id=owner_id)
+        current = await self._owned_job(owner_id, job.id)
+        buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
+        await self._edit_page(event, text, buttons)
+
+    async def _resume_job_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        text = await self._resume_exact(job)
         current = await self._owned_job(owner_id, job.id)
         buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
         await self._edit_page(event, text, buttons)
@@ -823,10 +874,10 @@ class TelethonBotUI:
             "**TGVIO 使用说明**\n\n"
             "1. 直接发送图片、视频、文件、媒体组或支持的链接。\n"
             "2. 点“📋 我的任务”查看进度，再点对应任务查看详情。\n"
-            "3. 失败任务可在详情页点“重试任务”；活动任务可点“取消任务”。\n"
-            "4. WebDAV 失败只影响归档副本，不影响已经完成的 Telegram 发布。\n\n"
-            "常用入口都在常驻键盘和页面按钮中。命令菜单只保留 `/start`、"
-            "`/jobs`、`/status`、`/help` 四个快捷入口；旧命令仍兼容。"
+            "3. 活动任务可暂停/恢复或取消；失败任务可在详情页执行安全重试。\n"
+            "4. `/pause` / `/resume` 无参数时控制整个队列；带任务 ID 时只控制该任务。\n"
+            "5. WebDAV 失败只影响归档副本，不影响已经完成的 Telegram 发布。\n\n"
+            "常用入口都在常驻键盘和页面按钮中，命令菜单也提供合集、队列与任务控制快捷入口。"
         )
         if self._settings.url_enabled:
             text += "\n🔗 也可直接发送一个 HTTP(S) 媒体/站点链接，由 yt-dlp 下载后进入同一流水线。"
@@ -840,6 +891,7 @@ class TelethonBotUI:
     async def _status_text(self, owner_id: int) -> str:
         counts = await self._repository.count_by_state(owner_id=owner_id)
         runtime_health = await self._repository.get_runtime_health()
+        queue_control = await self._repository.get_queue_control()
         disk = shutil.disk_usage(self._settings.download_dir)
         active_states = {
             JobState.RECEIVED,
@@ -865,6 +917,7 @@ class TelethonBotUI:
             f"Telegram：{telegram_label}",
             f"⚙️ 环境：`{self._settings.environment}`",
             f"🚦 发布执行：`{'开启' if self._settings.publish_enabled else '关闭'}`",
+            f"⏯ 队列：`{'已暂停' if queue_control.paused else '运行中'}`",
             f"🧪 受控发布：`{'开启' if getattr(self._settings, 'live_fixture_enabled', False) else '关闭'}`",
             f"🔗 URL 下载：`{'开启' if self._settings.url_enabled else '关闭'}` · `{self._settings.url_private_network_policy}`",
             f"🧵 Worker：`{self._settings.worker_concurrency}`",
@@ -1213,7 +1266,11 @@ class TelethonBotUI:
             job,
             log_limit=60 if deep else 16,
         )
-        return self._render_job_diagnostic(snapshot, deep=deep)
+        text = self._render_job_diagnostic(snapshot, deep=deep)
+        control = await self._repository.get_job_control(job.id)
+        if control.hold_requested and not job.terminal:
+            text += "\n\n⏸ **任务已暂停** · 当前缓存已保留，恢复后从安全边界继续。"
+        return text
 
     def _render_job_diagnostic(
         self,
@@ -1476,6 +1533,37 @@ class TelethonBotUI:
         matches = [job for job in jobs if job.id.lower().startswith(normalized)]
         return matches[0] if len(matches) == 1 else None
 
+    async def _pause_command(self, event, owner_id: int, prefix: str | None) -> None:
+        if self._control is None:
+            await event.respond("任务控制服务未启用。")
+            return
+        if not prefix:
+            await self._pause_queue_exact(owner_id=owner_id)
+            await event.respond(
+                "⏸ 队列已暂停：不会再取得新的 prepare / publish / archive claim；当前外部操作不会被强制中断。",
+                parse_mode="md",
+            )
+            return
+        job = await self._resolve_job(owner_id, prefix)
+        if job is None:
+            await event.respond("没有找到唯一对应的任务。")
+            return
+        await event.respond(await self._hold_exact(job, owner_id=owner_id), parse_mode="md")
+
+    async def _resume_command(self, event, owner_id: int, prefix: str | None) -> None:
+        if self._control is None:
+            await event.respond("任务控制服务未启用。")
+            return
+        if not prefix:
+            await self._resume_queue_exact()
+            await event.respond("▶️ 队列已恢复，新 claim 可以继续取得。", parse_mode="md")
+            return
+        job = await self._resolve_job(owner_id, prefix)
+        if job is None:
+            await event.respond("没有找到唯一对应的任务。")
+            return
+        await event.respond(await self._resume_exact(job), parse_mode="md")
+
     async def _cancel_job(self, event, owner_id: int, prefix: str | None) -> None:
         if self._control is None:
             await event.respond("任务控制服务未启用。")
@@ -1491,6 +1579,76 @@ class TelethonBotUI:
             await self._cancel_exact(job, owner_id=owner_id),
             parse_mode="md",
         )
+
+    async def _hold_exact(self, job: Job, *, owner_id: int) -> str:
+        if self._control is None:
+            return "任务控制服务未启用。"
+        try:
+            control = await self._control.request_hold(
+                job,
+                reason=f"requested by owner {owner_id}",
+            )
+        except ValueError:
+            return "🛡️ 任务已经结束或状态已变化，无法暂停。"
+        return (
+            f"⏸ 任务 `{job.id[:10]}` 已暂停（revision `{control.hold_revision}`）。\n"
+            "当前正在执行的安全单元会先结束；后续 prepare / publish / archive claim 不会再取得。"
+        )
+
+    async def _resume_exact(self, job: Job) -> str:
+        if self._control is None:
+            return "任务控制服务未启用。"
+        try:
+            control = await self._control.resume(job)
+        except ValueError:
+            return "🛡️ 任务已经结束或状态已变化，无法恢复。"
+        if self._schedule_job is not None:
+            display = await self._repository.get_job_display_message(job.id)
+            if display is not None:
+                self._schedule_job(
+                    job,
+                    chat_id=display.chat_id,
+                    status_message_id=display.message_id,
+                )
+            else:
+                self._schedule_job(job)
+        return f"▶️ 任务 `{job.id[:10]}` 已恢复（revision `{control.hold_revision}`），将从 durable 状态继续。"
+
+    async def _pause_queue_exact(self, *, owner_id: int) -> None:
+        if self._control is None:
+            return
+        await self._control.pause_queue(reason=f"requested by owner {owner_id}")
+
+    async def _resume_queue_exact(self) -> None:
+        if self._control is None:
+            return
+        await self._control.resume_queue()
+        if self._schedule_job is None:
+            return
+        recoverable = await self._repository.list_by_states(
+            (
+                JobState.RECEIVED,
+                JobState.DOWNLOADING,
+                JobState.DOWNLOADED,
+                JobState.ANALYZING,
+                JobState.ANALYZED,
+                JobState.PLANNED,
+                JobState.PUBLISHING,
+            )
+        )
+        for job in recoverable:
+            control = await self._repository.get_job_control(job.id)
+            if control.hold_requested:
+                continue
+            display = await self._repository.get_job_display_message(job.id)
+            if display is not None:
+                self._schedule_job(
+                    job,
+                    chat_id=display.chat_id,
+                    status_message_id=display.message_id,
+                )
+            else:
+                self._schedule_job(job)
 
     async def _retry_job(self, event, owner_id: int, prefix: str | None) -> None:
         if self._control is None:
@@ -1753,6 +1911,19 @@ class TelethonBotUI:
             [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
         ]
 
+    async def _status_page_buttons(self):
+        queue = await self._repository.get_queue_control()
+        rows = [
+            [
+                Button.inline(
+                    "▶️ 恢复队列" if queue.paused else "⏸ 暂停新任务",
+                    b"ui:queue-resume" if queue.paused else b"ui:queue-pause",
+                )
+            ]
+        ]
+        rows.extend(self._nav_buttons())
+        return rows
+
     def _nav_buttons(self):
         return [
             [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("📊 刷新状态", b"ui:status")],
@@ -1774,6 +1945,7 @@ class TelethonBotUI:
     async def _job_buttons(self, job: Job, *, deep: bool = False):
         rows = []
         action_row = []
+        control_state = await self._repository.get_job_control(job.id)
         if (
             job.state == JobState.FAILED
             and job.error_code not in {"publish_partial", "publish_uncertain"}
@@ -1785,6 +1957,14 @@ class TelethonBotUI:
                 Button.inline("🔁 重试任务", self._callback_data("retry", job.id))
             )
         if not job.terminal and self._control is not None:
+            if control_state.hold_requested:
+                action_row.append(
+                    Button.inline("▶️ 恢复任务", self._callback_data("resume", job.id))
+                )
+            else:
+                action_row.append(
+                    Button.inline("⏸ 暂停任务", self._callback_data("hold", job.id))
+                )
             action_row.append(
                 Button.inline("⛔ 取消任务", self._callback_data("cancel", job.id))
             )

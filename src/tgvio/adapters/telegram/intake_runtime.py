@@ -24,7 +24,7 @@ from tgvio.application.auto_recovery import (
     job_failure_waits_for_recovery,
     job_recovery_state,
 )
-from tgvio.application.job_control import JobCancelRequested
+from tgvio.application.job_control import JobCancelRequested, JobHoldRequested
 from tgvio.application.job_runner import JobRunner
 from tgvio.application.scheduler import (
     OrderedPublishDispatcher,
@@ -989,6 +989,15 @@ class TelethonIntakeRuntime:
                     if chat_id is not None and status_message_id is None:
                         await self._safe_send(chat_id, f"⛔ 任务 `{job.id[:10]}` 已取消。")
                     return
+                except JobHoldRequested:
+                    log_event(
+                        self._log,
+                        logging.INFO,
+                        "job.run.held",
+                        "Preparation stopped at a safe boundary because the Job is held",
+                        job_id=job.id,
+                    )
+                    return
                 except Exception as exc:
                     log_event(
                         self._log,
@@ -1050,6 +1059,8 @@ class TelethonIntakeRuntime:
                     return
                 progress = await repository.get_job_progress(job_id)
                 archive = await repository.get_archive_package_for_job(job_id)
+                control = await repository.get_job_control(job_id)
+                held = bool(control.hold_requested)
 
                 now = time.monotonic()
                 speed_bps: float | None = None
@@ -1067,7 +1078,13 @@ class TelethonIntakeRuntime:
                     previous_current = 0
                     previous_time = now
 
-                text = self._render_live_status(job, progress, archive, speed_bps=speed_bps)
+                text = self._render_live_status(
+                    job,
+                    progress,
+                    archive,
+                    speed_bps=speed_bps,
+                    held=held,
+                )
                 if text != last_text:
                     if await self._safe_edit(
                         chat_id,
@@ -1099,6 +1116,7 @@ class TelethonIntakeRuntime:
         archive: ArchivePackage | None,
         *,
         speed_bps: float | None = None,
+        held: bool = False,
     ) -> str:
         total_bytes = sum(max(0, int(item.size_bytes or 0)) for item in job.items)
         lines = [
@@ -1107,7 +1125,9 @@ class TelethonIntakeRuntime:
         ]
 
         phase = progress.phase if progress is not None else job.state.value
-        if phase == "downloading" and progress is not None:
+        if held and not job.terminal:
+            lines.append("状态：⏸ **已暂停** · 已保留当前缓存，恢复后从安全边界继续")
+        elif phase == "downloading" and progress is not None:
             completed_indexes = {item.index for item in job.items if item.local_path}
             completed_bytes = sum(
                 max(0, int(item.size_bytes or 0))

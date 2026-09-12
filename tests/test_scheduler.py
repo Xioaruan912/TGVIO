@@ -160,6 +160,80 @@ class DurableSchedulerTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await second_repo.close()
 
+    async def test_global_pause_blocks_new_claim_but_not_existing_heartbeat(self) -> None:
+        first_job = await self._create_job(1)
+        second_job = await self._create_job(2)
+        first = await self.repo.acquire_phase_claim(
+            first_job.id, "prepare", "worker-a", ttl_seconds=30
+        )
+        self.assertIsNotNone(first)
+        assert first is not None
+        paused = await self.repo.set_queue_paused(True, reason="maintenance")
+        self.assertTrue(paused.paused)
+        self.assertIsNotNone(await self.repo.heartbeat_phase_claim(first, ttl_seconds=30))
+        self.assertIsNone(
+            await self.repo.acquire_phase_claim(
+                second_job.id, "prepare", "worker-b", ttl_seconds=30
+            )
+        )
+        await self.repo.set_queue_paused(False)
+        self.assertIsNotNone(
+            await self.repo.acquire_phase_claim(
+                second_job.id, "prepare", "worker-b", ttl_seconds=30
+            )
+        )
+
+    async def test_held_job_cannot_claim_and_is_skipped_by_publish_gate(self) -> None:
+        first = await self._create_job(1)
+        second = await self._create_job(2)
+        first.state = JobState.PLANNED
+        second.state = JobState.PLANNED
+        await self.repo.save(first)
+        await self.repo.save(second)
+        await self.repo.request_hold(first.id, reason="operator pause")
+
+        self.assertIsNone(
+            await self.repo.acquire_phase_claim(
+                first.id, "publish", "worker-a", ttl_seconds=30
+            )
+        )
+        gate = await self.repo.get_next_publish_gate()
+        assert gate is not None
+        self.assertEqual(gate.job_id, second.id)
+
+        await self.repo.clear_hold(first.id)
+        gate = await self.repo.get_next_publish_gate()
+        assert gate is not None
+        self.assertEqual(gate.job_id, first.id)
+
+    async def test_held_head_job_allows_explainable_overtake_then_resumes(self) -> None:
+        first = await self._create_job(1)
+        second = await self._create_job(2)
+        first.state = JobState.PLANNED
+        second.state = JobState.PLANNED
+        await self.repo.save(first)
+        await self.repo.save(second)
+        await self.repo.request_hold(first.id, reason="operator pause")
+        runner = _RecordingRunner(self.repo)
+        dispatcher = OrderedPublishDispatcher(self.repo, runner, poll_seconds=0.01)
+        await dispatcher.start()
+        try:
+            dispatcher.notify()
+            deadline = asyncio.get_running_loop().time() + 2
+            while runner.published != [second.id]:
+                if asyncio.get_running_loop().time() >= deadline:
+                    self.fail("later job did not overtake held head job")
+                await asyncio.sleep(0.01)
+            await self.repo.clear_hold(first.id)
+            dispatcher.notify()
+            deadline = asyncio.get_running_loop().time() + 2
+            while runner.published != [second.id, first.id]:
+                if asyncio.get_running_loop().time() >= deadline:
+                    self.fail("resumed held job did not publish")
+                await asyncio.sleep(0.01)
+        finally:
+            await dispatcher.stop()
+
     async def test_claim_loss_cancels_inflight_operation(self) -> None:
         job = await self._create_job(1)
         guard = PhaseClaimGuard(

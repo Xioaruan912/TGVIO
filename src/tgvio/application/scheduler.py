@@ -5,6 +5,7 @@ import logging
 from typing import Awaitable, TypeVar
 from uuid import uuid4
 
+from tgvio.application.job_control import JobHoldRequested
 from tgvio.application.job_runner import JobRunner
 from tgvio.application.ports import JobRepository
 from tgvio.domain.job import JobState
@@ -356,6 +357,16 @@ class OrderedPublishDispatcher:
                         logging.WARNING,
                         "scheduler.publish.claim_lost",
                         "Publish execution stopped because its durable claim was lost",
+                        job_id=job.id,
+                        accepted_order=gate.accepted_order,
+                    )
+                    continue
+                except JobHoldRequested:
+                    log_event(
+                        self._log,
+                        logging.INFO,
+                        "scheduler.publish.held",
+                        "Publish stopped at a safe boundary because the Job is held",
                         job_id=job.id,
                         accepted_order=gate.accepted_order,
                     )

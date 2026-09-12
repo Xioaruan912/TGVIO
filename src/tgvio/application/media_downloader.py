@@ -6,7 +6,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
-from tgvio.application.job_control import JobCancelRequested, JobControlService
+from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.ports import JobRepository, MediaDownloader
 from tgvio.domain.job import Job, JobState, MediaKind
 from tgvio.domain.progress import JobProgress
@@ -35,7 +35,7 @@ class JobDownloader:
         self._log = logging.getLogger("tgvio.download")
 
     async def download(self, job: Job) -> Job:
-        await self._cancel_checkpoint(job, "cancelled before download started")
+        await self._safe_checkpoint(job, "paused before download started")
         if job.state == JobState.RECEIVED:
             job = await self._repository.transition(
                 job.id,
@@ -67,9 +67,9 @@ class JobDownloader:
         try:
             downloaded = list(job.items)
             for position, item in enumerate(job.items):
-                await self._cancel_checkpoint(
+                await self._safe_checkpoint(
                     job,
-                    f"cancelled before download item {item.index}",
+                    f"paused before download item {item.index}",
                 )
                 if item.kind == MediaKind.TEXT:
                     continue
@@ -90,11 +90,11 @@ class JobDownloader:
                     item_kind=item.kind.value,
                     bytes_done=int(downloaded[position].size_bytes or 0),
                 )
-                await self._cancel_checkpoint(
+                await self._safe_checkpoint(
                     job,
-                    f"cancelled after download item {item.index}",
+                    f"paused after download item {item.index}",
                 )
-        except JobCancelRequested:
+        except (JobCancelRequested, JobHoldRequested):
             raise
         except DiskSpaceLowError as exc:
             log_event(
@@ -173,6 +173,10 @@ class JobDownloader:
             bytes_done=sum(max(0, int(item.size_bytes or 0)) for item in job.items),
         )
         return completed
+
+    async def _safe_checkpoint(self, job: Job, detail: str) -> None:
+        if self._control is not None:
+            await self._control.safe_checkpoint(job, detail=detail)
 
     async def _cancel_checkpoint(self, job: Job, detail: str) -> None:
         if self._control is not None:

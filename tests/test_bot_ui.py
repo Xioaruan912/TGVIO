@@ -13,6 +13,7 @@ from tgvio.adapters.telegram.bot_ui import (
 )
 from tgvio.application.job_control import RetryDecision
 from tgvio.domain.archive import ArchivePackage, ArchivePackageState
+from tgvio.domain.control import JobControlState, QueueControlState
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
 from tgvio.domain.publish import PublishPlan, PublishStep, PublishStepKind, PublishTarget
 
@@ -35,6 +36,8 @@ class FakeRepository:
         self.jobs = {job.id: job for job in jobs}
         self.archives = {package.job_id: package for package in archives}
         self.plans = {plan.job_id: plan for plan in plans}
+        self.controls = {job.id: JobControlState(job_id=job.id) for job in jobs}
+        self.queue_control = QueueControlState()
 
     async def list_recent(self, *, owner_id, limit):
         return [
@@ -43,8 +46,22 @@ class FakeRepository:
             if job.owner_id == owner_id
         ][:limit]
 
+    async def list_by_states(self, states):
+        return [job for job in self.jobs.values() if job.state in states]
+
     async def get(self, job_id):
         return self.jobs.get(job_id)
+
+    async def count_by_state(self, *, owner_id=None):
+        counts = {}
+        for value in self.jobs.values():
+            if owner_id is not None and value.owner_id != owner_id:
+                continue
+            counts[value.state] = counts.get(value.state, 0) + 1
+        return counts
+
+    async def get_runtime_health(self):
+        return {"telegram": {"status": "connected"}, "runtime": {"status": "alive"}}
 
     async def get_job_progress(self, job_id):
         return None
@@ -69,6 +86,15 @@ class FakeRepository:
 
     async def list_archive_events(self, package_id):
         return []
+
+    async def get_job_control(self, job_id):
+        return self.controls.setdefault(job_id, JobControlState(job_id=job_id))
+
+    async def get_job_display_message(self, job_id):
+        return None
+
+    async def get_queue_control(self):
+        return self.queue_control
 
 
 class FakeEvent:
@@ -103,6 +129,10 @@ class FakeControl:
         self.repository = repository
         self.retry_calls = 0
         self.cancel_calls = 0
+        self.hold_calls = 0
+        self.resume_calls = 0
+        self.pause_queue_calls = 0
+        self.resume_queue_calls = 0
 
     async def retry_failed(self, job):
         self.retry_calls += 1
@@ -114,6 +144,48 @@ class FakeControl:
         self.cancel_calls += 1
         job.state = JobState.CANCELLED
         return job
+
+    async def request_hold(self, job, *, reason=None):
+        self.hold_calls += 1
+        current = await self.repository.get_job_control(job.id)
+        updated = JobControlState(
+            job_id=job.id,
+            hold_requested=True,
+            hold_reason=reason,
+            hold_revision=current.hold_revision + 1,
+        )
+        self.repository.controls[job.id] = updated
+        return updated
+
+    async def resume(self, job):
+        self.resume_calls += 1
+        current = await self.repository.get_job_control(job.id)
+        updated = JobControlState(
+            job_id=job.id,
+            hold_requested=False,
+            hold_revision=current.hold_revision + 1,
+        )
+        self.repository.controls[job.id] = updated
+        return updated
+
+    async def pause_queue(self, *, reason=None):
+        self.pause_queue_calls += 1
+        current = self.repository.queue_control
+        self.repository.queue_control = QueueControlState(
+            paused=True,
+            pause_reason=reason,
+            revision=current.revision + 1,
+        )
+        return self.repository.queue_control
+
+    async def resume_queue(self):
+        self.resume_queue_calls += 1
+        current = self.repository.queue_control
+        self.repository.queue_control = QueueControlState(
+            paused=False,
+            revision=current.revision + 1,
+        )
+        return self.repository.queue_control
 
 
 class FakeArchiveOperator:
@@ -150,6 +222,10 @@ def settings(**overrides):
         "archive_enabled": True,
         "url_enabled": True,
         "live_fixture_enabled": False,
+        "download_dir": "/tmp",
+        "environment": "test",
+        "worker_concurrency": 2,
+        "url_private_network_policy": "block",
     }
     values.update(overrides)
     return SimpleNamespace(**values)
@@ -199,7 +275,7 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         names = {name for name, _ in COMMANDS}
         self.assertEqual(
             names,
-            {"start", "begin", "end", "mode", "jobs", "status", "help"},
+            {"start", "begin", "end", "mode", "pause", "resume", "jobs", "status", "help"},
         )
         self.assertFalse(
             names & {"queue", "profiles", "webdav", "backup", "dashboard"}
@@ -241,6 +317,8 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             "retry-confirm",
             "cancel",
             "cancel-confirm",
+            "hold",
+            "resume",
             "archive-retry",
             "archive-retry-confirm",
         ):
@@ -394,6 +472,78 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(control.cancel_calls, 1)
         self.assertIn("已取消", confirm.edits[0][0])
+
+    async def test_hold_and_resume_buttons_toggle_durable_control_and_reschedule(self) -> None:
+        active = job(state=JobState.DOWNLOADING, error_code=None)
+        repository = FakeRepository([active])
+        control = FakeControl(repository)
+        scheduled = []
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            control=control,
+            schedule_job=lambda value, **kwargs: scheduled.append((value, kwargs)),
+        )
+
+        hold = FakeEvent(data=f"ui:hold:{active.id}".encode())
+        await ui._on_callback(hold)
+        self.assertEqual(control.hold_calls, 1)
+        self.assertEqual(active.state, JobState.DOWNLOADING)
+        state = await repository.get_job_control(active.id)
+        self.assertTrue(state.hold_requested)
+        hold_payloads = [
+            button.data
+            for row in hold.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(f"ui:resume:{active.id}".encode(), hold_payloads)
+
+        resume = FakeEvent(data=f"ui:resume:{active.id}".encode())
+        await ui._on_callback(resume)
+        self.assertEqual(control.resume_calls, 1)
+        self.assertFalse((await repository.get_job_control(active.id)).hold_requested)
+        self.assertEqual(len(scheduled), 1)
+        self.assertEqual(scheduled[0][0].id, active.id)
+        self.assertIn("已恢复", resume.edits[0][0])
+
+    async def test_queue_pause_requires_confirmation_and_resume_reschedules_jobs(self) -> None:
+        active = job(state=JobState.DOWNLOADING, error_code=None)
+        repository = FakeRepository([active])
+        control = FakeControl(repository)
+        scheduled = []
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            control=control,
+            schedule_job=lambda value, **kwargs: scheduled.append((value, kwargs)),
+        )
+
+        request = FakeEvent(data=b"ui:queue-pause")
+        await ui._on_callback(request)
+        self.assertEqual(control.pause_queue_calls, 0)
+        confirmation_payloads = [
+            button.data
+            for row in request.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(b"ui:queue-pause-confirm", confirmation_payloads)
+
+        confirm = FakeEvent(data=b"ui:queue-pause-confirm")
+        await ui._on_callback(confirm)
+        self.assertEqual(control.pause_queue_calls, 1)
+        self.assertTrue(repository.queue_control.paused)
+        self.assertIn("已暂停", confirm.edits[0][0])
+
+        resume = FakeEvent(data=b"ui:queue-resume")
+        await ui._on_callback(resume)
+        self.assertEqual(control.resume_queue_calls, 1)
+        self.assertFalse(repository.queue_control.paused)
+        self.assertEqual([value.id for value, _kwargs in scheduled], [active.id])
+        self.assertIn("运行中", resume.edits[0][0])
 
     async def test_archive_retry_button_requires_confirmation(self) -> None:
         completed = job(state=JobState.SUCCEEDED, error_code=None)

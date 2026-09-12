@@ -7,7 +7,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from tgvio.application.intake import IncomingMedia, IntakeService
-from tgvio.application.job_control import JobCancelRequested, JobControlService
+from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.media_analyzer import MediaAnalyzer
 from tgvio.application.media_downloader import DiskSpaceLowError, JobDownloader
 from tgvio.application.orchestrator import JobOrchestrator
@@ -29,6 +29,25 @@ class FakeDownloader:
 class FakeInspector:
     async def inspect(self, item: MediaItem) -> MediaItem:
         return replace(item, mime_type="application/octet-stream", sha256="abc")
+
+
+class ReleasableDownloader:
+    def __init__(self) -> None:
+        self.started = asyncio.Event()
+        self.release = asyncio.Event()
+        self.cancelled = asyncio.Event()
+
+    async def download(self, item: MediaItem, target_dir: Path, progress_callback=None) -> MediaItem:
+        self.started.set()
+        try:
+            await self.release.wait()
+        except asyncio.CancelledError:
+            self.cancelled.set()
+            raise
+        target_dir.mkdir(parents=True, exist_ok=True)
+        path = target_dir / f"{item.index}.bin"
+        path.write_bytes(b"payload")
+        return replace(item, local_path=str(path), size_bytes=path.stat().st_size)
 
 
 class BlockingDownloader:
@@ -211,6 +230,51 @@ class IntakeAndDownloaderTests(unittest.IsolatedAsyncioTestCase):
         cancelled = await self.repo.get(job.id)
         assert cancelled is not None
         self.assertEqual(cancelled.state, JobState.CANCELLED)
+
+    async def test_hold_finishes_current_download_item_then_stops_at_safe_boundary(self) -> None:
+        intake = IntakeService(self.repo)
+        job = await intake.accept(
+            owner_id=42,
+            destination="@channel",
+            media=[
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:351",
+                    source_chat_id=42,
+                    source_message_id=351,
+                )
+            ],
+        )
+        control = JobControlService(self.repo)
+        transport = ReleasableDownloader()
+        downloader = JobDownloader(
+            self.repo,
+            transport,
+            self.root / "downloads",
+            reserve_bytes=0,
+            control=control,
+        )
+        running = asyncio.create_task(downloader.download(job))
+        await asyncio.wait_for(transport.started.wait(), timeout=2)
+        current = await self.repo.get(job.id)
+        assert current is not None
+        await control.request_hold(current, reason="test hold")
+        await asyncio.sleep(0.6)
+        self.assertFalse(running.done())
+        self.assertFalse(transport.cancelled.is_set())
+
+        transport.release.set()
+        with self.assertRaises(JobHoldRequested):
+            await asyncio.wait_for(running, timeout=2)
+        held = await self.repo.get(job.id)
+        assert held is not None
+        self.assertEqual(held.state, JobState.DOWNLOADING)
+        self.assertIsNotNone(held.items[0].local_path)
+        self.assertFalse(transport.cancelled.is_set())
+
+        await control.resume(held)
+        completed = await downloader.download(held)
+        self.assertEqual(completed.state, JobState.DOWNLOADED)
 
     async def test_ingestion_processor_resumes_downloading_job_after_restart(self) -> None:
         intake = IntakeService(self.repo)

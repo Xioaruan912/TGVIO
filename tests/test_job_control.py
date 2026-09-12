@@ -7,6 +7,7 @@ import unittest
 from tgvio.application.job_control import (
     JobCancelRequested,
     JobControlService,
+    JobHoldRequested,
     UnsafeRetryError,
 )
 from tgvio.application.orchestrator import JobOrchestrator
@@ -53,6 +54,71 @@ class JobControlTests(unittest.IsolatedAsyncioTestCase):
         cancelled = await self.repo.get(job.id)
         assert cancelled is not None
         self.assertEqual(cancelled.state, JobState.CANCELLED)
+
+    async def test_hold_is_durable_and_safe_checkpoint_stops_without_failing_job(self) -> None:
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
+        )
+        await self.repo.create(job)
+        job = await self.repo.transition(job.id, JobState.DOWNLOADING, event_type="download_started")
+        held = await self.control.request_hold(job, reason="operator pause")
+        self.assertTrue(held.hold_requested)
+        self.assertEqual(held.hold_revision, 1)
+
+        await self.repo.close()
+        self.repo = SQLiteJobRepository(self.path)
+        await self.repo.open()
+        self.control = JobControlService(self.repo)
+        durable = await self.repo.get_job_control(job.id)
+        self.assertTrue(durable.hold_requested)
+
+        with self.assertRaises(JobHoldRequested):
+            await self.control.safe_checkpoint(job, detail="safe boundary")
+        current = await self.repo.get(job.id)
+        assert current is not None
+        self.assertEqual(current.state, JobState.DOWNLOADING)
+        self.assertIsNone(current.error_code)
+
+        resumed = await self.control.resume(current)
+        self.assertFalse(resumed.hold_requested)
+        self.assertEqual(resumed.hold_revision, 2)
+        await self.control.safe_checkpoint(current, detail="resumed boundary")
+
+    async def test_cancel_supersedes_hold(self) -> None:
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
+        )
+        await self.repo.create(job)
+        job = await self.repo.transition(job.id, JobState.DOWNLOADING, event_type="download_started")
+        await self.control.request_hold(job, reason="pause first")
+        await self.control.request_cancel(job, reason="cancel instead")
+        state = await self.repo.get_job_control(job.id)
+        self.assertTrue(state.cancel_requested)
+        self.assertFalse(state.hold_requested)
+        with self.assertRaises(JobCancelRequested):
+            await self.control.safe_checkpoint(job, detail="cancel boundary")
+
+    async def test_global_queue_pause_is_durable_and_revisioned(self) -> None:
+        paused = await self.control.pause_queue(reason="maintenance")
+        self.assertTrue(paused.paused)
+        self.assertEqual(paused.revision, 1)
+
+        await self.repo.close()
+        self.repo = SQLiteJobRepository(self.path)
+        await self.repo.open()
+        self.control = JobControlService(self.repo)
+        durable = await self.repo.get_queue_control()
+        self.assertTrue(durable.paused)
+        self.assertEqual(durable.pause_reason, "maintenance")
+
+        resumed = await self.control.resume_queue()
+        self.assertFalse(resumed.paused)
+        self.assertIsNone(resumed.pause_reason)
+        self.assertEqual(resumed.revision, 2)
 
     async def test_planned_job_cancels_immediately_without_publish_side_effect(self) -> None:
         job = Job(

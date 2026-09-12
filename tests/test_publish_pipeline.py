@@ -5,7 +5,7 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from tgvio.application.execution import PublishExecutionEngine, PublishRecoveryRequired
-from tgvio.application.job_control import JobCancelRequested, JobControlService
+from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.job_runner import JobRunner
 from tgvio.application.orchestrator import JobOrchestrator
 from tgvio.application.ports import PublishTransportUncertainError
@@ -39,6 +39,18 @@ class RecordingTransport:
 class UncertainTransport:
     async def execute_step(self, job, step, prior_effects):
         raise PublishTransportUncertainError("Telegram response lost")
+
+
+class HoldAfterFirstTransport(RecordingTransport):
+    def __init__(self, repository) -> None:
+        super().__init__()
+        self.repository = repository
+
+    async def execute_step(self, job, step, prior_effects):
+        receipts = await super().execute_step(job, step, prior_effects)
+        if step.index == 0:
+            await self.repository.request_hold(job.id, reason="pause after first step")
+        return receipts
 
 
 class CancelAfterFirstTransport(RecordingTransport):
@@ -208,6 +220,37 @@ class PublishPipelineTests(unittest.IsolatedAsyncioTestCase):
         loaded_plan = await self.repo.get_publish_plan(job.id)
         assert loaded_plan is not None
         self.assertEqual(loaded_plan.steps[0].error_code, "publish_uncertain")
+
+    async def test_hold_after_completed_step_preserves_effects_and_resumes_without_replay(self) -> None:
+        job, plan = await self._planned_job()
+        control = JobControlService(self.repo)
+        first_transport = HoldAfterFirstTransport(self.repo)
+        with self.assertRaises(JobHoldRequested):
+            await PublishExecutionEngine(self.repo, first_transport, control).execute(job, plan)
+        held = await self.repo.get(job.id)
+        assert held is not None
+        self.assertEqual(held.state, JobState.PUBLISHING)
+        self.assertEqual(first_transport.calls, [0])
+        held_plan = await self.repo.get_publish_plan(job.id)
+        assert held_plan is not None
+        self.assertEqual(held_plan.steps[0].state, PublishStepState.SUCCEEDED)
+        self.assertEqual(held_plan.steps[1].state, PublishStepState.PENDING)
+
+        await control.resume(held)
+        second_transport = RecordingTransport()
+        completed = await PublishExecutionEngine(self.repo, second_transport, control).execute(
+            held,
+            held_plan,
+        )
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertEqual(second_transport.calls, [1, 2])
+        effects = await self.repo.list_publish_effects(plan.id)
+        external = [
+            effect for effect in effects if effect.effect_type != "publish_step_receipts_committed"
+        ]
+        self.assertTrue(any(effect.step_index == 0 for effect in external))
+        self.assertTrue(any(effect.step_index == 1 for effect in external))
+        self.assertTrue(any(effect.step_index == 2 for effect in external))
 
     async def test_cancel_after_completed_step_preserves_effects_and_stops_next_step(self) -> None:
         job, plan = await self._planned_job()

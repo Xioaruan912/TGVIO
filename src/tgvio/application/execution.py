@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
-from tgvio.application.job_control import JobCancelRequested, JobControlService
+from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.ports import (
     JobRepository,
     PublishTransport,
@@ -55,7 +55,7 @@ class PublishExecutionEngine:
             step_count=len(plan.steps),
             item_count=len(job.items),
         )
-        await self._cancel_checkpoint(job, "cancelled before publish started")
+        await self._safe_checkpoint(job, "paused before publish started")
         if job.state == JobState.PLANNED:
             job = await self._repository.transition(
                 job.id,
@@ -81,9 +81,9 @@ class PublishExecutionEngine:
         try:
             for original_step in plan.steps:
                 active_receipts = ()
-                await self._cancel_checkpoint(
+                await self._safe_checkpoint(
                     job,
-                    f"cancelled before publish step {original_step.index}",
+                    f"paused before publish step {original_step.index}",
                 )
                 current_plan = await self._repository.get_publish_plan(job.id)
                 if current_plan is None:
@@ -189,7 +189,7 @@ class PublishExecutionEngine:
                         item_total=len(job.items),
                     )
                 )
-        except JobCancelRequested:
+        except (JobCancelRequested, JobHoldRequested):
             raise
         except Exception as exc:
             if isinstance(exc, PublishTransportPartialError):
@@ -272,9 +272,9 @@ class PublishExecutionEngine:
         )
         return completed
 
-    async def _cancel_checkpoint(self, job: Job, detail: str) -> None:
+    async def _safe_checkpoint(self, job: Job, detail: str) -> None:
         if self._control is not None:
-            await self._control.checkpoint(job, detail=detail)
+            await self._control.safe_checkpoint(job, detail=detail)
 
     async def _reconcile_inflight(self, job: Job, plan: PublishPlan) -> None:
         current = await self._repository.get_publish_plan(job.id)

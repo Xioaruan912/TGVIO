@@ -248,6 +248,8 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 
 ### 实施包
 
+2026-09-12 当前进度：durable automatic recovery 已随 `r2-06-2a00074-20260912T134944Z` 正式发布；durable Job hold/resume 与 global queue pause/resume 已形成 v4 本地候选，发布前证据见 [R2-06_CONTROLS_CANDIDATE.md](evidence/R2-06_CONTROLS_CANDIDATE.md)。R2-06 整体仍为 `IN PROGRESS`。
+
 - SQL 分页 `/jobs`、状态筛选、任务详情、计划详情和失败中心。
 - Job `pause/hold/resume`；全局暂停只阻止新 claim，外部 send 在安全边界停。
 - cancel/retry 状态矩阵，保留 canonical cache 与 Archive 保护规则。

@@ -105,7 +105,7 @@ class SourceGuardTests(unittest.TestCase):
 class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
-        self.assertEqual(result["python_files"], 60)
+        self.assertEqual(result["python_files"], 61)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -301,6 +301,17 @@ class RemotePreflightSchemaTests(unittest.TestCase):
                     "user_version": 3,
                     "migration_ledger_present": True,
                     "schema_sql_sha256": "74d331b0d2f112d354298ee7e10c39b2f16d4c58a0d0488eb198ebd912dff93b",
+                }
+            )
+        )
+
+    def test_known_v4_schema_requires_ledger(self) -> None:
+        self.assertTrue(
+            _database_schema_is_known(
+                {
+                    "user_version": 4,
+                    "migration_ledger_present": True,
+                    "schema_sql_sha256": "9a3fab5f9fe18ac8f7c71b25c55e64fd98c333e6b31d1547c9817e7c310e7017",
                 }
             )
         )
