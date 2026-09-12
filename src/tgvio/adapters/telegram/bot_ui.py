@@ -26,6 +26,13 @@ from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepositor
 from tgvio.config import Settings
 from tgvio.domain.archive import ArchivePackageState
 from tgvio.domain.job import Job, JobState
+from tgvio.domain.job_query import (
+    FailurePage,
+    FailureSummary,
+    JobListEntry,
+    JobListFilter,
+    JobPage,
+)
 from tgvio.domain.publish import PublishPlan, PublishStepKind, PublishStepState, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
@@ -79,6 +86,15 @@ ARCHIVE_STATE_LABELS = {
     ArchivePackageState.COMMITTED: "已完成",
     ArchivePackageState.FAILED: "失败",
     ArchivePackageState.CANCELLED: "已取消",
+}
+
+
+JOB_FILTER_LABELS = {
+    JobListFilter.ALL: "全部",
+    JobListFilter.ACTIVE: "进行中",
+    JobListFilter.HELD: "暂停",
+    JobListFilter.FAILED: "失败",
+    JobListFilter.COMPLETED: "完成",
 }
 
 
@@ -352,6 +368,33 @@ class TelethonBotUI:
             return
         if action == "ui:jobs":
             text, buttons = await self._jobs_page(owner_id)
+            await self._edit_page(event, text, buttons)
+            return
+        if action.startswith("ui:jobs:"):
+            parts = action.split(":")
+            if len(parts) != 4:
+                await self._safe_answer(event, "任务列表操作已过期")
+                return
+            try:
+                job_filter = JobListFilter(parts[2])
+                page = max(0, int(parts[3]))
+            except (ValueError, TypeError):
+                await self._safe_answer(event, "任务列表操作已过期")
+                return
+            text, buttons = await self._jobs_page(owner_id, filter=job_filter, page=page)
+            await self._edit_page(event, text, buttons)
+            return
+        if action.startswith("ui:failures:"):
+            parts = action.split(":")
+            if len(parts) != 3:
+                await self._safe_answer(event, "失败中心操作已过期")
+                return
+            try:
+                page = max(0, int(parts[2]))
+            except (ValueError, TypeError):
+                await self._safe_answer(event, "失败中心操作已过期")
+                return
+            text, buttons = await self._failures_page(owner_id, page=page)
             await self._edit_page(event, text, buttons)
             return
         if action == "ui:job":
@@ -873,8 +916,8 @@ class TelethonBotUI:
         text = (
             "**TGVIO 使用说明**\n\n"
             "1. 直接发送图片、视频、文件、媒体组或支持的链接。\n"
-            "2. 点“📋 我的任务”查看进度，再点对应任务查看详情。\n"
-            "3. 活动任务可暂停/恢复或取消；失败任务可在详情页执行安全重试。\n"
+            "2. 点“📋 我的任务”按状态筛选和翻页；“失败中心”只显示需要人工处理的最终失败。\n"
+            "3. 点任务编号查看详情；活动任务可暂停/恢复或取消，普通失败可安全重试。\n"
             "4. `/pause` / `/resume` 无参数时控制整个队列；带任务 ID 时只控制该任务。\n"
             "5. WebDAV 失败只影响归档副本，不影响已经完成的 Telegram 发布。\n\n"
             "常用入口都在常驻键盘和页面按钮中，命令菜单也提供合集、队列与任务控制快捷入口。"
@@ -1165,63 +1208,246 @@ class TelethonBotUI:
             return
         await event.respond(await self._archive_retry_exact(job), parse_mode="md")
 
-    async def _jobs_text(
+    async def _load_jobs_page(
         self,
         owner_id: int,
         *,
-        jobs: list[Job] | None = None,
-    ) -> str:
-        if jobs is None:
-            jobs = await self._repository.list_recent(owner_id=owner_id, limit=8)
-        if not jobs:
-            return "**最近任务**\n\n还没有任务。直接发送媒体即可开始。"
-        lines = ["**最近任务**", ""]
-        for position, job in enumerate(jobs, start=1):
-            size = sum(item.size_bytes for item in job.items)
-            line = (
-                f"{position}. `{job.id[:10]}` · {STATE_LABELS[job.state]} · "
-                f"{len(job.items)} 项 · {self._human_bytes(size)}"
+        filter: JobListFilter,
+        page: int,
+        page_size: int = 5,
+    ) -> JobPage:
+        page_jobs = getattr(self._repository, "page_jobs", None)
+        if callable(page_jobs):
+            return await page_jobs(
+                owner_id=owner_id,
+                filter=filter,
+                page=page,
+                page_size=page_size,
             )
-            if job.state == JobState.FAILED:
-                line += f" · {describe_job_failure(job.error_code).title}"
-            lines.append(line)
-            progress = await self._repository.get_job_progress(job.id)
-            if progress is not None and job.state not in {
+
+        # Compatibility for narrow test doubles. Production SQLite always uses
+        # the SQL-paged repository method above.
+        jobs = await self._repository.list_recent(owner_id=owner_id, limit=50)
+        entries: list[JobListEntry] = []
+        for job in jobs:
+            control = None
+            get_control = getattr(self._repository, "get_job_control", None)
+            if callable(get_control):
+                control = await get_control(job.id)
+            held = bool(getattr(control, "hold_requested", False))
+            if filter == JobListFilter.ACTIVE and (job.terminal or held):
+                continue
+            if filter == JobListFilter.HELD and not held:
+                continue
+            if filter == JobListFilter.FAILED and job.state != JobState.FAILED:
+                continue
+            if filter == JobListFilter.COMPLETED and job.state not in {
                 JobState.SUCCEEDED,
-                JobState.FAILED,
                 JobState.CANCELLED,
             }:
-                lines.append(f"  {self._progress_text(progress)}")
-            hint = self._job_action_hint(job)
-            if hint:
-                lines.append(f"  {hint}")
-        lines.extend(["", "点下方编号即可查看详情，不需要复制任务 ID。"])
-        return "\n".join(lines)
+                continue
+            entries.append(JobListEntry(job=job, held=held))
+        total = len(entries)
+        page_size = max(1, int(page_size))
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        current_page = min(max(0, int(page)), total_pages - 1)
+        start = current_page * page_size
+        return JobPage(
+            entries=tuple(entries[start : start + page_size]),
+            filter=filter,
+            page=current_page,
+            page_size=page_size,
+            total=total,
+        )
 
-    async def _jobs_page(self, owner_id: int) -> tuple[str, list]:
-        jobs = await self._repository.list_recent(owner_id=owner_id, limit=8)
-        text = await self._jobs_text(owner_id, jobs=jobs)
+    async def _jobs_page(
+        self,
+        owner_id: int,
+        *,
+        filter: JobListFilter = JobListFilter.ALL,
+        page: int = 0,
+    ) -> tuple[str, list]:
+        result = await self._load_jobs_page(owner_id, filter=filter, page=page)
+        label = JOB_FILTER_LABELS[result.filter]
+        lines = [
+            f"**我的任务 · {label} · 第 {result.page + 1}/{result.total_pages} 页**",
+            f"共 `{result.total}` 个任务",
+            "",
+        ]
+        if not result.entries:
+            lines.append("这个筛选下暂时没有任务。")
+        else:
+            for position, entry in enumerate(result.entries, start=1):
+                job = entry.job
+                size = sum(item.size_bytes for item in job.items)
+                state_label = "已暂停" if entry.held else STATE_LABELS[job.state]
+                icon = "⏸" if entry.held else self._job_state_icon(job.state)
+                line = (
+                    f"{position}. {icon} `{job.id[:10]}` · {state_label} · "
+                    f"{len(job.items)} 项 · {self._human_bytes(size)}"
+                )
+                if job.state == JobState.FAILED:
+                    line += f" · {describe_job_failure(job.error_code).title}"
+                lines.append(line)
+                progress = await self._repository.get_job_progress(job.id)
+                if progress is not None and not job.terminal and not entry.held:
+                    lines.append(f"  {self._progress_text(progress)}")
+        lines.extend(["", "点编号查看详情；筛选和翻页都只读取当前 SQL 页面。"])
+
         rows: list[list] = []
-        buttons = []
-        icons = {
+        for position, entry in enumerate(result.entries, start=1):
+            rows.append(
+                [
+                    Button.inline(
+                        f"{position} {self._job_state_icon(entry.job.state, held=entry.held)} 详情",
+                        self._callback_data("job", entry.job.id),
+                    )
+                ]
+            )
+        filter_buttons = [
+            Button.inline(
+                ("• " if item == result.filter else "") + JOB_FILTER_LABELS[item],
+                f"ui:jobs:{item.value}:0".encode("utf-8"),
+            )
+            for item in JobListFilter
+        ]
+        rows.append(filter_buttons[:3])
+        rows.append(filter_buttons[3:])
+        if result.total_pages > 1:
+            nav = []
+            if result.page > 0:
+                nav.append(
+                    Button.inline(
+                        "⬅️ 上一页",
+                        f"ui:jobs:{result.filter.value}:{result.page - 1}".encode("utf-8"),
+                    )
+                )
+            nav.append(
+                Button.inline(
+                    "🔄 刷新",
+                    f"ui:jobs:{result.filter.value}:{result.page}".encode("utf-8"),
+                )
+            )
+            if result.page + 1 < result.total_pages:
+                nav.append(
+                    Button.inline(
+                        "下一页 ➡️",
+                        f"ui:jobs:{result.filter.value}:{result.page + 1}".encode("utf-8"),
+                    )
+                )
+            rows.append(nav)
+        else:
+            rows.append(
+                [
+                    Button.inline(
+                        "🔄 刷新",
+                        f"ui:jobs:{result.filter.value}:{result.page}".encode("utf-8"),
+                    )
+                ]
+            )
+        rows.append([Button.inline("❌ 失败中心", b"ui:failures:0")])
+        rows.extend(self._nav_buttons())
+        return "\n".join(lines), rows
+
+    async def _load_failure_page(
+        self,
+        owner_id: int,
+        *,
+        page: int,
+        page_size: int = 5,
+    ) -> FailurePage:
+        page_failures = getattr(self._repository, "page_failures", None)
+        if callable(page_failures):
+            return await page_failures(owner_id=owner_id, page=page, page_size=page_size)
+
+        jobs = await self._repository.list_recent(owner_id=owner_id, limit=50)
+        entries: list[FailureSummary] = []
+        for job in jobs:
+            job_actionable = job.state == JobState.FAILED and not job_failure_waits_for_recovery(job)
+            archive = await self._repository.get_archive_package_for_job(job.id)
+            archive_actionable = (
+                archive is not None
+                and archive.state == ArchivePackageState.FAILED
+                and not archive_failure_waits_for_recovery(job, archive)
+            )
+            if not job_actionable and not archive_actionable:
+                continue
+            entries.append(
+                FailureSummary(
+                    job=job,
+                    job_actionable=job_actionable,
+                    archive_actionable=archive_actionable,
+                    archive_package_id=archive.id if archive is not None else None,
+                    archive_error_code=archive.error_code if archive is not None else None,
+                )
+            )
+        total = len(entries)
+        page_size = max(1, int(page_size))
+        total_pages = max(1, (total + page_size - 1) // page_size)
+        current_page = min(max(0, int(page)), total_pages - 1)
+        start = current_page * page_size
+        return FailurePage(
+            entries=tuple(entries[start : start + page_size]),
+            page=current_page,
+            page_size=page_size,
+            total=total,
+        )
+
+    async def _failures_page(self, owner_id: int, *, page: int = 0) -> tuple[str, list]:
+        result = await self._load_failure_page(owner_id, page=page)
+        lines = [
+            f"**失败中心 · 第 {result.page + 1}/{result.total_pages} 页**",
+            f"需要处理：`{result.total}`",
+            "",
+        ]
+        if not result.entries:
+            lines.append("✅ 当前没有需要人工处理的失败。自动恢复中的任务不会在这里重复催促。")
+        else:
+            for position, entry in enumerate(result.entries, start=1):
+                job = entry.job
+                lines.append(f"{position}. `{job.id[:10]}`")
+                if entry.job_actionable:
+                    issue = describe_job_failure(job.error_code)
+                    lines.append(f"  ❌ Telegram/任务：{issue.title} · {issue.action}")
+                if entry.archive_actionable:
+                    issue = describe_archive_failure(entry.archive_error_code)
+                    lines.append(f"  ☁️ WebDAV：{issue.title} · {issue.action}")
+                if job.error_code in {"publish_partial", "publish_uncertain"}:
+                    lines.append("  🛡️ 可能已有可见消息，禁止自动重发。")
+        rows: list[list] = []
+        for position, entry in enumerate(result.entries, start=1):
+            rows.append(
+                [
+                    Button.inline(
+                        f"{position} 🔎 查看任务",
+                        self._callback_data("job", entry.job.id),
+                    )
+                ]
+            )
+        if result.total_pages > 1:
+            nav = []
+            if result.page > 0:
+                nav.append(Button.inline("⬅️ 上一页", f"ui:failures:{result.page - 1}".encode()))
+            nav.append(Button.inline("🔄 刷新", f"ui:failures:{result.page}".encode()))
+            if result.page + 1 < result.total_pages:
+                nav.append(Button.inline("下一页 ➡️", f"ui:failures:{result.page + 1}".encode()))
+            rows.append(nav)
+        else:
+            rows.append([Button.inline("🔄 刷新", b"ui:failures:0")])
+        rows.append([Button.inline("← 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")])
+        return "\n".join(lines), rows
+
+    @staticmethod
+    def _job_state_icon(state: JobState, *, held: bool = False) -> str:
+        if held:
+            return "⏸"
+        return {
             JobState.SUCCEEDED: "✅",
             JobState.FAILED: "❌",
             JobState.CANCELLED: "⛔",
             JobState.DOWNLOADING: "⬇️",
             JobState.PUBLISHING: "📤",
-        }
-        for position, job in enumerate(jobs, start=1):
-            icon = icons.get(job.state, "⏳")
-            buttons.append(
-                Button.inline(
-                    f"{position} {icon} 详情",
-                    self._callback_data("job", job.id),
-                )
-            )
-        for index in range(0, len(buttons), 2):
-            rows.append(buttons[index : index + 2])
-        rows.extend(self._nav_buttons())
-        return text, rows
+        }.get(state, "⏳")
 
     async def _archive_page(self, owner_id: int) -> tuple[str, list]:
         text = await self._archive_text(owner_id)

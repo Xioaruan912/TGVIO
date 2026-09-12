@@ -5,6 +5,7 @@ from pathlib import Path
 import tempfile
 import unittest
 
+from tgvio.domain.job_query import JobListFilter
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
 
@@ -66,6 +67,23 @@ class SQLiteRepositoryScalingTests(unittest.IsolatedAsyncioTestCase):
         plan = " ".join(str(row[3]) for row in await cursor.fetchall())
         await cursor.close()
         self.assertIn("idx_jobs_owner_state", plan)
+
+    async def test_sql_job_page_remains_bounded_at_1000_jobs(self) -> None:
+        await self._seed_to(1000)
+        page = await asyncio.wait_for(
+            self.repo.page_jobs(
+                owner_id=7,
+                filter=JobListFilter.COMPLETED,
+                page=37,
+                page_size=5,
+            ),
+            timeout=5.0,
+        )
+        self.assertEqual(page.total, 500)
+        self.assertEqual(page.page, 37)
+        self.assertEqual(len(page.entries), 5)
+        self.assertTrue(all(entry.job.owner_id == 7 for entry in page.entries))
+        self.assertTrue(all(entry.job.state.value == "succeeded" for entry in page.entries))
 
     async def test_read_pressure_remains_event_loop_cooperative(self) -> None:
         await self._seed_to(1000)

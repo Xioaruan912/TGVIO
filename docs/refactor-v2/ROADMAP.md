@@ -248,7 +248,7 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 
 ### 实施包
 
-2026-09-12 当前进度：durable automatic recovery 已随 `r2-06-2a00074-20260912T134944Z` 正式发布；durable Job hold/resume 与 global queue pause/resume 已随 `r2-06-b59897a-20260912T142840Z` + `0004_queue_controls` 正式把生产推进到 v4，证据见 [R2-06_CONTROLS_RELEASE.md](evidence/R2-06_CONTROLS_RELEASE.md)。SQL 分页 `/jobs`、状态筛选与 failure center 已在隔离 worktree 形成 migration-free 候选，必须在独立 clean/pushed commit 再验证后发布。R2-06 整体仍为 `IN PROGRESS`。
+2026-09-12 当前进度：durable automatic recovery 已随 `r2-06-2a00074-20260912T134944Z` 正式发布；durable Job hold/resume 与 global queue pause/resume 已随 `r2-06-b59897a-20260912T142840Z` + `0004_queue_controls` 正式把生产推进到 v4，证据见 [R2-06_CONTROLS_RELEASE.md](evidence/R2-06_CONTROLS_RELEASE.md)。SQL 分页 `/jobs`、状态筛选与 failure center 已形成 migration-free 候选，见 [R2-06_JOB_QUERY_CANDIDATE.md](evidence/R2-06_JOB_QUERY_CANDIDATE.md)，正在集成到 clean/pushed main 后单独发布。R2-06 整体仍为 `IN PROGRESS`。
 
 - SQL 分页 `/jobs`、状态筛选、任务详情、计划详情和失败中心。
 - Job `pause/hold/resume`；全局暂停只阻止新 claim，外部 send 在安全边界停。

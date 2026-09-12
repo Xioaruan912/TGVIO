@@ -24,6 +24,7 @@ from tgvio.domain.intake import (
     UserPreference,
 )
 from tgvio.domain.job import Job, JobEvent, JobState, MediaItem, MediaKind
+from tgvio.domain.job_query import FailurePage, JobListFilter, JobPage
 from tgvio.domain.publish import (
     PublishEffect,
     PublishPlan,
@@ -137,6 +138,23 @@ class JobRepository(Protocol):
     async def list_failed_jobs_for_auto_recovery(self, *, limit: int = 100) -> list[Job]: ...
 
     async def list_recent(self, *, owner_id: int | None = None, limit: int = 10) -> list[Job]: ...
+
+    async def page_jobs(
+        self,
+        *,
+        owner_id: int,
+        filter: JobListFilter = JobListFilter.ALL,
+        page: int = 0,
+        page_size: int = 5,
+    ) -> JobPage: ...
+
+    async def page_failures(
+        self,
+        *,
+        owner_id: int,
+        page: int = 0,
+        page_size: int = 5,
+    ) -> FailurePage: ...
 
     async def count_by_state(self, *, owner_id: int | None = None) -> dict[JobState, int]: ...
 

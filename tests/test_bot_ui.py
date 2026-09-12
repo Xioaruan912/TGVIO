@@ -340,6 +340,77 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             if getattr(button, "data", None)
         ]
         self.assertIn(f"ui:job:{failed.id}".encode(), payloads)
+        self.assertIn(b"ui:failures:0", payloads)
+        self.assertTrue(all(len(payload) <= 64 for payload in payloads))
+
+    async def test_jobs_filter_callback_renders_only_selected_state(self) -> None:
+        active = Job(
+            id="a" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.DOWNLOADING,
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="active")],
+        )
+        completed = Job(
+            id="b" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.SUCCEEDED,
+            items=[MediaItem(index=0, kind=MediaKind.PHOTO, source="completed")],
+        )
+        ui = TelethonBotUI(FakeClient(), settings(), FakeRepository([active, completed]))
+        event = FakeEvent(data=b"ui:jobs:completed:0")
+
+        await ui._on_callback(event)
+
+        text = event.edits[0][0]
+        self.assertIn("完成", text)
+        self.assertIn(completed.id[:10], text)
+        self.assertNotIn(active.id[:10], text)
+        payloads = [
+            button.data
+            for row in event.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertTrue(all(len(payload) <= 64 for payload in payloads))
+
+    async def test_failure_center_hides_auto_recovery_pending_failure(self) -> None:
+        failed = Job(
+            id="c" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.FAILED,
+            error_code="download_failed",
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="failed")],
+        )
+        pending = Job(
+            id="d" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.FAILED,
+            error_code="download_failed",
+            policy={
+                "auto_recovery": {
+                    "version": 1,
+                    "enabled": True,
+                    "max_attempts": 3,
+                    "base_delay_seconds": 15,
+                    "max_delay_seconds": 300,
+                }
+            },
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="pending")],
+        )
+        repository = FakeRepository([failed, pending])
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+        event = FakeEvent(data=b"ui:failures:0")
+
+        await ui._on_callback(event)
+
+        text = event.edits[0][0]
+        self.assertIn(failed.id[:10], text)
+        self.assertNotIn(pending.id[:10], text)
+        self.assertIn("需要处理", text)
 
     async def test_normal_job_detail_hides_internal_code_but_deep_view_keeps_it(self) -> None:
         failed = job()

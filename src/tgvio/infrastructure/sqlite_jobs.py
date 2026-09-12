@@ -5,6 +5,13 @@ import json
 import aiosqlite
 
 from tgvio.domain.job import ALLOWED_TRANSITIONS, Job, JobEvent, JobState, MediaItem, MediaKind
+from tgvio.domain.job_query import (
+    FailurePage,
+    FailureSummary,
+    JobListEntry,
+    JobListFilter,
+    JobPage,
+)
 
 
 class SQLiteJobRepositoryMixin:
@@ -290,6 +297,170 @@ class SQLiteJobRepositoryMixin:
             if job is not None:
                 jobs.append(job)
         return jobs
+
+    async def page_jobs(
+        self,
+        *,
+        owner_id: int,
+        filter: JobListFilter = JobListFilter.ALL,
+        page: int = 0,
+        page_size: int = 5,
+    ) -> JobPage:
+        filter = JobListFilter(filter)
+        size = max(1, min(20, int(page_size)))
+        requested_page = max(0, int(page))
+        conditions = ["j.owner_id=?"]
+        params: list[object] = [int(owner_id)]
+        if filter == JobListFilter.ACTIVE:
+            conditions.extend(
+                [
+                    "j.state NOT IN ('succeeded','failed','cancelled')",
+                    "COALESCE(c.hold_requested,0)=0",
+                ]
+            )
+        elif filter == JobListFilter.HELD:
+            conditions.append("COALESCE(c.hold_requested,0)=1")
+        elif filter == JobListFilter.FAILED:
+            conditions.append("j.state='failed'")
+        elif filter == JobListFilter.COMPLETED:
+            conditions.append("j.state IN ('succeeded','cancelled')")
+        where = " AND ".join(conditions)
+        conn = self._require()
+        cursor = await conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM jobs j
+            LEFT JOIN job_controls c ON c.job_id=j.id
+            WHERE {where}
+            """,
+            tuple(params),
+        )
+        total_row = await cursor.fetchone()
+        await cursor.close()
+        total = int(total_row["count"]) if total_row is not None else 0
+        total_pages = max(1, (total + size - 1) // size)
+        current_page = min(requested_page, total_pages - 1)
+        cursor = await conn.execute(
+            f"""
+            SELECT j.id, COALESCE(c.hold_requested,0) AS held
+            FROM jobs j
+            LEFT JOIN job_controls c ON c.job_id=j.id
+            WHERE {where}
+            ORDER BY j.created_at DESC, j.rowid DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, size, current_page * size),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        entries: list[JobListEntry] = []
+        for row in rows:
+            job = await self.get(str(row["id"]))
+            if job is not None:
+                entries.append(JobListEntry(job=job, held=bool(row["held"])))
+        return JobPage(
+            entries=tuple(entries),
+            filter=filter,
+            page=current_page,
+            page_size=size,
+            total=total,
+        )
+
+    async def page_failures(
+        self,
+        *,
+        owner_id: int,
+        page: int = 0,
+        page_size: int = 5,
+    ) -> FailurePage:
+        size = max(1, min(20, int(page_size)))
+        requested_page = max(0, int(page))
+        managed = """
+            COALESCE(json_extract(j.policy_json, '$.auto_recovery.version'),0)=1
+            AND COALESCE(json_extract(j.policy_json, '$.auto_recovery.enabled'),0)=1
+        """
+        job_actionable = f"""
+            j.state='failed'
+            AND NOT (
+                {managed}
+                AND COALESCE(
+                    json_extract(j.policy_json, '$.auto_recovery_job.status'),
+                    ''
+                ) NOT IN ('abandoned','exhausted','manual_review','quarantined')
+            )
+        """
+        archive_actionable = f"""
+            a.state='failed'
+            AND NOT (
+                {managed}
+                AND COALESCE(
+                    json_extract(j.policy_json, '$.auto_recovery_archive.status'),
+                    ''
+                ) NOT IN ('abandoned','exhausted')
+            )
+        """
+        conn = self._require()
+        cursor = await conn.execute(
+            f"""
+            SELECT COUNT(*) AS count
+            FROM jobs j
+            LEFT JOIN archive_packages a ON a.job_id=j.id
+            WHERE j.owner_id=?
+              AND (({job_actionable}) OR ({archive_actionable}))
+            """,
+            (int(owner_id),),
+        )
+        total_row = await cursor.fetchone()
+        await cursor.close()
+        total = int(total_row["count"]) if total_row is not None else 0
+        total_pages = max(1, (total + size - 1) // size)
+        current_page = min(requested_page, total_pages - 1)
+        cursor = await conn.execute(
+            f"""
+            SELECT
+                j.id,
+                CASE WHEN ({job_actionable}) THEN 1 ELSE 0 END AS job_actionable,
+                CASE WHEN ({archive_actionable}) THEN 1 ELSE 0 END AS archive_actionable,
+                a.id AS archive_package_id,
+                a.error_code AS archive_error_code
+            FROM jobs j
+            LEFT JOIN archive_packages a ON a.job_id=j.id
+            WHERE j.owner_id=?
+              AND (({job_actionable}) OR ({archive_actionable}))
+            ORDER BY
+                CASE
+                    WHEN j.state='failed' AND j.error_code IN ('publish_partial','publish_uncertain') THEN 0
+                    WHEN j.state='failed' THEN 1
+                    ELSE 2
+                END,
+                j.updated_at DESC,
+                j.rowid DESC
+            LIMIT ? OFFSET ?
+            """,
+            (int(owner_id), size, current_page * size),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        entries: list[FailureSummary] = []
+        for row in rows:
+            job = await self.get(str(row["id"]))
+            if job is None:
+                continue
+            entries.append(
+                FailureSummary(
+                    job=job,
+                    job_actionable=bool(row["job_actionable"]),
+                    archive_actionable=bool(row["archive_actionable"]),
+                    archive_package_id=row["archive_package_id"],
+                    archive_error_code=row["archive_error_code"],
+                )
+            )
+        return FailurePage(
+            entries=tuple(entries),
+            page=current_page,
+            page_size=size,
+            total=total,
+        )
 
     async def count_by_state(self, *, owner_id: int | None = None) -> dict[JobState, int]:
         conn = self._require()
