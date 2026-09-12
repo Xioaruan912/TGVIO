@@ -52,32 +52,27 @@ enables it. It remains independent from automatic publishing and only exposes
 the hidden `/publish <job>` flow with a second confirmation and strict
 item/size/strategy limits.
 
-## Bot commands
+## Bot controls
 
-- `/start` - TGVIO home
-- `/status` - runtime and durable job status
-- `/jobs` - recent jobs
-- `/job [job id]` - correlated Job/Publish/Archive diagnostic view
-- `/plan [job id]` - persisted PublishPlan preview
-- `/stats` - owner-scoped task/media/event statistics
-- `/health` - durable SQLite/runtime/Telegram health
-- `/diag` - redacted runtime diagnostics and build commit
-- `/diag job <job id>` - deep per-job diagnostics with recent redacted structured log events
-- `/retry <job id>` - side-effect-aware retry for failed jobs
-- `/cancel <job id>` - durable cancellation at a safe processing boundary
-- `/cache` - local cache usage/retention status (`/cache clean` for terminal jobs)
-- `/archive` - WebDAV Archive package status, scoped capability probe and explicit retry
-- `/help` - usage help
+Run `/start` once to install a persistent mobile keyboard with six compact
+entries: home, my jobs, status, Archive, cache, and more. Recent jobs have
+direct detail buttons. Job detail provides context-sensitive plan, safe retry,
+cancel, Archive retry, and redacted technical-detail buttons, so normal use
+never requires copying a job ID. Mutating/network actions opened from buttons
+have a separate confirmation page.
 
-TGVIO resets the retired bot command list on startup so Telegram clients do not
-continue showing old `/queue`, `/begin`, `/webdav`, `/dashboard`, etc. entries.
+The Telegram command menu intentionally exposes only `/start`, `/jobs`,
+`/status`, and `/help`. Existing advanced commands remain accepted for
+backward compatibility, but they are no longer presented as the normal mobile
+workflow. TGVIO resets legacy command scopes on startup so clients do not keep
+showing the retired long menu.
 
 Docker health is not just a SQLite existence check. When the Bot runtime is
 enabled, TGVIO writes durable process/Telegram heartbeats and the container
 healthcheck requires both to remain fresh and connected. `/status` renders the
 same durable Telegram connectivity state.
 
-`/stats`, `/health`, `/job`, and `/diag` are read-only. They never send a Telegram
+Statistics, health, job detail, and diagnostics are read-only. They never send a Telegram
 probe, touch WebDAV, or trigger cache cleanup. Diagnostics only use the static
 settings safe-summary plus durable Job/Publish/Archive state, low-cardinality
 runtime facts, the image build commit, and already-redacted structured log
@@ -111,6 +106,12 @@ gathered for 1.5 seconds (maximum wait 5 seconds) and up to 100 items are sent
 to one PublishPlan. Set `TGVIO_BATCH_WINDOW_MS=0` to restore immediate one-event
 Job creation.
 
+Known-size Telegram files use bounded concurrent range downloads for throughput.
+If all retries for a concurrent shard are exhausted, TGVIO removes the partial
+file and makes one automatic single-stream attempt before failing the Job.
+Explicit cancellation never starts this fallback, and every successful result
+still passes the same size check and atomic rename boundary.
+
 ## Local cache lifecycle
 
 TGVIO keeps local media long enough for durable retry/recovery instead of
@@ -125,9 +126,10 @@ TGVIO_CACHE_RETENTION_HOURS=24
 TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES=30
 ```
 
-`/cache` shows managed usage and cleanup eligibility. `/cache clean` skips the
-age window for terminal jobs but still refuses to delete files required by an
-ArchivePackage that has not reached `committed`/`cancelled`.
+The cache page shows managed usage and cleanup eligibility. Its confirmed
+cleanup action skips the age window for terminal jobs but still refuses to
+delete files required by an ArchivePackage that has not reached
+`committed`/`cancelled`.
 
 Active jobs expose durable phase progress in `/jobs`. Telegram and yt-dlp
 downloads report byte counters while analysis/publish report item/step
@@ -195,9 +197,9 @@ directory directly with the complete marker as the commit boundary.
 The Archive runtime is wired into the Bot lifecycle. Source defaults remain
 disabled; production is explicitly enabled after endpoint validation. When enabled it plans the package without network I/O, then a separate
 worker executes it. A failed package does not mutate Telegram Job state and is
-not retried in a tight automatic loop; `/archive retry <job id>` explicitly
+not retried in a tight automatic loop; the confirmed Archive retry button
 returns that same durable package to staging after validating local canonical
-cache. `/archive probe` begins with OPTIONS/PROPFIND. If the DAV frontend omits
+cache. The confirmed connection test begins with OPTIONS/PROPFIND. If the DAV frontend omits
 write methods from `Allow`, TGVIO performs one tiny isolated
 `.staging/.capability-*` write/read/move fixture under the configured archive
 root and deletes it immediately; the result is cached for the process lifetime.

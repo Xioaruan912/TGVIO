@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import replace
+import logging
 from pathlib import Path
 
 from telethon import TelegramClient
 
 from tgvio.application.ports import TransferProgressCallback
 from tgvio.domain.job import MediaItem
+from tgvio.observability import log_event
 
 
 class TelethonMediaDownloader:
@@ -23,6 +25,7 @@ class TelethonMediaDownloader:
         self._download_workers = max(1, int(download_workers))
         self._request_size = max(64, int(part_size_kb)) * 1024
         self._shard_retries = max(0, int(shard_retries))
+        self._log = logging.getLogger("tgvio.telegram.download")
 
     async def download(
         self,
@@ -59,23 +62,38 @@ class TelethonMediaDownloader:
                 and self._download_workers > 1
                 and callable(getattr(self._client, "iter_download", None))
             ):
-                await self._download_concurrent(
-                    message.media,
+                try:
+                    await self._download_concurrent(
+                        message.media,
+                        temp_path,
+                        expected_size,
+                        progress_callback,
+                    )
+                except asyncio.CancelledError:
+                    raise
+                except Exception as exc:
+                    log_event(
+                        self._log,
+                        logging.WARNING,
+                        "telegram.download.concurrent_fallback",
+                        "Concurrent Telegram download failed; falling back to one stream",
+                        item_index=item.index,
+                        exception_type=type(exc).__name__,
+                    )
+                    temp_path.unlink(missing_ok=True)
+                    temp_path = await self._download_sequential(
+                        message,
+                        temp_path,
+                        item.index,
+                        progress_callback,
+                    )
+            else:
+                temp_path = await self._download_sequential(
+                    message,
                     temp_path,
-                    expected_size,
+                    item.index,
                     progress_callback,
                 )
-            else:
-                downloaded = await self._client.download_media(
-                    message,
-                    file=str(temp_path),
-                    progress_callback=progress_callback,
-                )
-                if not downloaded:
-                    raise RuntimeError(f"Telegram download returned no file for item {item.index}")
-                actual_path = Path(downloaded)
-                if actual_path != temp_path:
-                    temp_path = actual_path
             if not temp_path.is_file() or temp_path.stat().st_size <= 0:
                 raise RuntimeError(f"Telegram download produced an empty file for item {item.index}")
             if expected_size > 0 and temp_path.stat().st_size != expected_size:
@@ -88,6 +106,24 @@ class TelethonMediaDownloader:
             temp_path.unlink(missing_ok=True)
             raise
         return self._completed(item, final_path, final_path.stat().st_size, reused=False)
+
+    async def _download_sequential(
+        self,
+        message,
+        temp_path: Path,
+        item_index: int,
+        progress_callback: TransferProgressCallback | None,
+    ) -> Path:
+        downloaded = await self._client.download_media(
+            message,
+            file=str(temp_path),
+            progress_callback=progress_callback,
+        )
+        if not downloaded:
+            raise RuntimeError(
+                f"Telegram download returned no file for item {item_index}"
+            )
+        return Path(downloaded)
 
     async def _download_concurrent(
         self,

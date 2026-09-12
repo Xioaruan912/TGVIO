@@ -15,7 +15,7 @@
 
 | ID | 合同 | 当前状态 | 证据/缺口 |
 |---|---|---|---|
-| IN-01 | 只有 allowlist 用户能创建、查询或控制自己的 Job | COVERED | `test_telegram_adapters.py`、repository owner-scoped tests；补齐所有 callback/未来 Web owner 边界测试 |
+| IN-01 | 只有 allowlist 用户能创建、查询或控制自己的 Job | COVERED | intake/repository tests；R2-03A callback 从 durable Job 复核 owner，仍需完整 callback/未来 Web owner 矩阵 |
 | IN-02 | 图片、视频、普通文件和 Telegram 原生相册都能进入同一 durable pipeline | VERIFIED | intake/downloader tests；生产已有成功 Job |
 | IN-03 | 相邻单条/相册可合为一个逻辑 Job；达到上限分块但不丢任何媒体 | COVERED | `test_intake_batching.py` 覆盖 100-item cap 与 shutdown flush |
 | IN-04 | 重复 Telegram update 不得重复创建或发布 | REQUIRED | 当前没有 durable `(chat_id,message_id)` intake 幂等键 |
@@ -28,7 +28,7 @@
 
 | ID | 合同 | 当前状态 | 证据/缺口 |
 |---|---|---|---|
-| DL-01 | Telegram 大文件分片并发下载，失败 shard 有界重试，输出原子落盘 | COVERED | `TelethonMediaDownloader` 与 intake/downloader tests |
+| DL-01 | Telegram 大文件分片并发下载，失败 shard 有界重试，输出原子落盘 | COVERED | downloader tests；R2-03A 增加 shard 耗尽后的单流回退及取消不回退测试 |
 | DL-02 | Job 重启后复用完整缓存，缺失或不完整缓存不会伪装成功 | COVERED | restart/atomic reuse tests |
 | DL-03 | 下载取消可中断本地副作用；Telegram 可见发送不得强制取消成未知状态 | COVERED | job control/download tests |
 | DL-04 | 已知/未知大小都受磁盘预留和 managed-root containment 保护 | COVERED | disk guard/cache tests；需增加 symlink/并发 reservation 压力门禁 |
@@ -66,15 +66,15 @@
 | AR-03 | 支持 staging+MOVE；无 MOVE 时以 `_COMPLETE.json` 为唯一提交边界 | VERIFIED | executor tests；生产有 committed evidence |
 | AR-04 | 崩溃恢复从已存对象继续，manifest/marker 确定性，不产生 attempt sprawl | COVERED | executor/runtime tests |
 | AR-05 | Archive 失败不回滚已成功 Telegram 发布，且未完成时保护 canonical cache | COVERED | runtime/cache tests |
-| AR-06 | 用户可查看、探测和显式重试失败 package；操作 owner-scoped | COVERED | Bot UI/runtime tests需扩充 owner/callback 矩阵 |
+| AR-06 | 用户可查看、探测和显式重试失败 package；操作 owner-scoped | COVERED | R2-03A 增加按钮、二次确认和 durable Job owner 复核；仍需完整 callback 矩阵 |
 | AR-07 | 动态配置、best-effort/required 策略和远端精确删除有安全 UI、确认与审计 | REQUIRED | 当前 Archive 只用 env，且没有旧策略或删除交互的完整等价 |
 
 ## 6. 队列、控制与 UI
 
 | ID | 合同 | 当前状态 | 证据/缺口 |
 |---|---|---|---|
-| UI-01 | 一个任务有稳定状态消息，展示阶段、总进度、当前项和速度；UI 失败不改变业务结果 | COVERED | runtime 有 tracker；状态消息引用未持久化，重启补发仍需实现 |
-| UI-02 | 首页、帮助、任务、计划、统计、健康、诊断、缓存和 Archive 都可通过按钮到达和返回 | COVERED | Bot UI 当前有按钮；tests 需增加 view callback 全遍历 |
+| UI-01 | 一个任务有稳定状态消息，展示阶段、总进度、当前项和速度；UI 失败不改变业务结果 | COVERED | R2-03A 状态消息增加详情/重试/归档按钮及友好错误；消息引用持久化仍待实现 |
+| UI-02 | 首页、帮助、任务、计划、统计、健康、诊断、缓存和 Archive 都可通过按钮到达和返回 | COVERED | R2-03A 增加 persistent 手机键盘、任务直达按钮、确认页和重复刷新回归；仍需完整 view callback 遍历 |
 | UI-03 | `/jobs` 支持 SQL 分页、状态筛选、详情和失败中心，100+ Job 不超 Telegram 限制 | REQUIRED | 当前只取最近 8 项，无分页、筛选或独立失败中心 |
 | CT-01 | cancel 是 durable、幂等、owner-scoped，并在安全边界生效 | COVERED | job control tests |
 | CT-02 | 单 Job `pause/hold/resume` 保留缓存；全局暂停只停止新 claim | REQUIRED | 当前状态机没有 paused/hold |

@@ -6,8 +6,12 @@ import logging
 import time
 from typing import Iterable
 
-from telethon import TelegramClient, events
+from telethon import Button, TelegramClient, events
 
+from tgvio.adapters.telegram.user_messages import (
+    describe_archive_failure,
+    describe_job_failure,
+)
 from tgvio.application.intake import IncomingMedia, IntakeService
 from tgvio.application.job_control import JobCancelRequested
 from tgvio.application.job_runner import JobRunner
@@ -302,7 +306,7 @@ class TelethonIntakeRuntime:
                 else:
                     text = (
                         f"🧠 任务 `{completed.id[:10]}` 已完成分析与发布规划。\n"
-                        f"使用 /plan {completed.id[:10]} 查看计划。"
+                        "打开“📋 我的任务”即可查看发布计划。"
                     )
                 await self._safe_send(chat_id, text)
 
@@ -350,7 +354,12 @@ class TelethonIntakeRuntime:
 
                 text = self._render_live_status(job, progress, archive, speed_bps=speed_bps)
                 if text != last_text:
-                    if await self._safe_edit(chat_id, message_id, text):
+                    if await self._safe_edit(
+                        chat_id,
+                        message_id,
+                        text,
+                        buttons=self._status_buttons(job, archive),
+                    ):
                         last_text = text
                 if self._status_is_terminal(job, archive):
                     return
@@ -424,8 +433,14 @@ class TelethonIntakeRuntime:
         elif job.state == JobState.SUCCEEDED:
             lines.append("状态：✅ **Telegram 发布完成**")
         elif job.state == JobState.FAILED:
-            lines.append(f"状态：❌ **失败** · `{job.error_code or 'unknown_error'}`")
-            lines.append(f"诊断：`/job {job.id[:10]}`")
+            issue = describe_job_failure(job.error_code)
+            lines.extend(
+                [
+                    f"状态：❌ **{issue.title}**",
+                    issue.explanation,
+                    f"下一步：{issue.action}",
+                ]
+            )
         elif job.state == JobState.CANCELLED:
             lines.append("状态：⛔ **已取消**")
         elif job.state == JobState.PLANNED:
@@ -455,9 +470,43 @@ class TelethonIntakeRuntime:
                 ArchivePackageState.CANCELLED: "⛔",
             }.get(archive.state, "☁️")
             lines.append(
-                f"Archive：{icon} `{archive_labels[archive.state]}` · `{stored}/{len(archive.objects)}`"
+                f"WebDAV 归档：{icon} `{archive_labels[archive.state]}` · `{stored}/{len(archive.objects)}`"
             )
+            if archive.state == ArchivePackageState.FAILED:
+                issue = describe_archive_failure(archive.error_code)
+                lines.extend([issue.explanation, f"下一步：{issue.action}"])
         return "\n".join(lines)
+
+    @staticmethod
+    def _status_buttons(job: Job, archive: ArchivePackage | None):
+        rows = [
+            [
+                Button.inline(
+                    "🔎 查看任务",
+                    f"ui:job:{job.id}".encode("utf-8"),
+                )
+            ]
+        ]
+        if (
+            job.state == JobState.FAILED
+            and job.error_code not in {"publish_partial", "publish_uncertain"}
+        ):
+            rows[0].append(
+                Button.inline(
+                    "🔁 重试任务",
+                    f"ui:retry:{job.id}".encode("utf-8"),
+                )
+            )
+        if archive is not None and archive.state == ArchivePackageState.FAILED:
+            rows.append(
+                [
+                    Button.inline(
+                        "☁️ 重传失败归档",
+                        f"ui:archive-retry:{job.id}".encode("utf-8"),
+                    )
+                ]
+            )
+        return rows
 
     def _status_is_terminal(self, job: Job, archive: ArchivePackage | None) -> bool:
         archive_terminal = archive is None or archive.state in {
@@ -505,9 +554,22 @@ class TelethonIntakeRuntime:
             )
             return None
 
-    async def _safe_edit(self, chat_id: int, message_id: int, text: str) -> bool:
+    async def _safe_edit(
+        self,
+        chat_id: int,
+        message_id: int,
+        text: str,
+        *,
+        buttons=None,
+    ) -> bool:
         try:
-            await self._client.edit_message(chat_id, message_id, text, parse_mode="md")
+            await self._client.edit_message(
+                chat_id,
+                message_id,
+                text,
+                buttons=buttons,
+                parse_mode="md",
+            )
             return True
         except Exception as exc:
             if type(exc).__name__ == "MessageNotModifiedError":

@@ -28,7 +28,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-00 | DELIVERED | 现状、功能合同、目标架构、路线图、部署协议 | 文档基线 |
 | R2-01 | DELIVERED | 生产源码完整回收进 Git，恢复唯一源码权威 | DP-01、SC-01 |
 | R2-02 | DELIVERED | 可复现 test/release build 与 HostDZire 自动交付 | DP-01、DP-02、SC-02 |
-| R2-03 | NOT STARTED | 不可变 migration ledger 与 repository 拆分 | DB-02 |
+| R2-03 | IN PROGRESS | 生产反馈修复；随后接管 migration ledger 与拆分 repository | DL-01、UI-01～02、AR-06、DB-02 |
 | R2-04 | NOT STARTED | durable scheduler、claim/lease、严格 FIFO | DB-03、PL-09、PL-10 |
 | R2-05 | NOT STARTED | durable intake 幂等、合集会话、文字与 spoiler 偏好 | IN-04～06、PL-06、ST-01 |
 | R2-06 | NOT STARTED | 完整队列、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02、CT-04、PL-14 |
@@ -129,6 +129,23 @@ characterization -> implementation -> offline gates -> Git push
 - DP-02 已改为 `VERIFIED`；完整证据见 [R2-02_RELEASE.md](evidence/R2-02_RELEASE.md)。
 
 ## 6. R2-03：Migration 接管与 SQLite 拆分
+
+### R2-03A：用户反馈优先修复（无 schema 变更）
+
+2026-09-12 用户根据前一日真实使用反馈，明确要求先处理难以理解的错误和手机端长命令。该优先级覆盖原定的实施顺序，但不授权提前改变数据库 schema。R2-03 先交付一个可独立回滚的无 migration 小包：
+
+- 依据脱敏生产日志区分 Telegram 下载失败、Telegram 发布结果和 WebDAV 归档结果，不再把内部错误码或异常类名直接展示给普通用户。
+- 常用入口改为 persistent reply keyboard；任务列表、详情、计划、重试、取消、缓存清理、归档重传和连接检测形成按钮闭环。
+- 所有有副作用的按钮先进入确认页；每个 Job callback 重新从 repository 校验 owner，callback data 保持在 Telegram 64-byte 限制内。
+- 重复点击未变化的页面视为成功刷新，不再记录未处理的 `MessageNotModifiedError`。
+- 并发 Telegram shard 重试耗尽后删除 partial 并自动回退一次单流下载；显式取消不得触发回退。
+- 修复宿主日志查询 wrapper 指向 runtime image 中不存在脚本的问题。
+
+本包不增加表、列、索引或 `user_version`，不改变发布顺序、PublishPlan、effect、Archive 提交或缓存保护语义。R2-03 总阶段在 migration ledger 和 repository 拆分完成前仍保持 `IN PROGRESS`。
+
+- [ ] R2-03A 已通过离线门禁、推送、正式构建、HostDZire 单实例部署和生产后验。
+
+### R2-03B 及后续：Migration 接管与 repository 拆分
 
 ### 目标
 

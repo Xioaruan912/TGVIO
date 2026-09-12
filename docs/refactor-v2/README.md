@@ -1,6 +1,6 @@
 # TGVIO 完全重构 V2
 
-> 状态：R2-00、R2-01、R2-02 已交付（2026-09-11）；下一阶段为 R2-03
+> 状态：R2-00、R2-01、R2-02 已交付；R2-03 已进入用户反馈优先修复小包，migration 尚未开始（2026-09-12）
 > 适用范围：`TG_Upload_bot` Git 仓库与 HostDZire 上的 TGVIO 生产实例
 > 权威性：从本文件建立之日起，新重构工作以本目录为准；旧 `docs/REFACTORING.md`、`docs/R0_BASELINE.md`、`todo.md` 和 `AGENTS.md` 的历史阶段记录仅用于追溯。
 
@@ -57,6 +57,6 @@
 
 - R2-00 已完成规划文档交付；R2-01 已把生产 clean-room runtime 回收至 Git；R2-02 已完成可复现构建与强制交付链。
 - 当前生产 release 为 `r2-02-569926b-20260911T063133Z`，runtime commit 为 `569926b53af19539b118daa93f95c58da2001637`；完整证据见 [R2-02_RELEASE.md](evidence/R2-02_RELEASE.md)。
-- 下一阶段是 R2-03“Migration 接管与 SQLite 拆分”；在生产数据库副本演练和 checksum migration runner 完成前不得改变 schema。
+- R2-03A 先响应生产使用反馈，交付无 schema 变更的移动端按钮、友好错误和下载回退；随后继续 R2-03 migration 接管与 SQLite 拆分。在生产数据库副本演练和 checksum migration runner 完成前不得改变 schema。
 - 后续 docs-only 提交可以领先生产 runtime commit，但不因此构建或重启容器。
 - 文档中的密码、token、Authorization、代理/WebDAV 凭据一律视为缺陷；主机地址、端口、用户和目录不是秘密，可记录用于自动化。

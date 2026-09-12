@@ -104,7 +104,7 @@ class SourceGuardTests(unittest.TestCase):
 class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
-        self.assertEqual(result["python_files"], 44)
+        self.assertEqual(result["python_files"], 45)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -254,6 +254,12 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("rollback image tag mismatch", scripts)
         self.assertIn("GIT_ASKPASS", scripts)
         self.assertIn("getpass.getpass", scripts)
+
+    def test_log_query_wrapper_uses_host_source_and_shared_log(self) -> None:
+        wrapper = (ROOT / "scripts" / "logs.sh").read_text(encoding="utf-8")
+        self.assertIn('python3 "$repo_root/scripts/logs.py"', wrapper)
+        self.assertIn("/root/TGVIO/logs/tgvio.jsonl", wrapper)
+        self.assertNotIn("/app/scripts/logs.py", wrapper)
 
     def test_known_hosts_contains_only_the_pinned_alias(self) -> None:
         lines = [

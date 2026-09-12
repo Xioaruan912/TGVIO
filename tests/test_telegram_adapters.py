@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -8,7 +9,8 @@ import unittest
 
 from tgvio.adapters.telegram.intake_runtime import TelethonIntakeRuntime
 from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
-from tgvio.domain.job import MediaItem, MediaKind
+from tgvio.domain.archive import ArchivePackage, ArchivePackageState
+from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
 
 
 class TelegramIntakeMappingTests(unittest.TestCase):
@@ -71,6 +73,58 @@ class TelegramIntakeMappingTests(unittest.TestCase):
         with self.assertRaisesRegex(ValueError, "credential-like"):
             TelethonIntakeRuntime._from_url_message(message, 42)
 
+    def test_failed_live_status_uses_plain_language_and_direct_retry_button(self) -> None:
+        runtime = object.__new__(TelethonIntakeRuntime)
+        runtime._settings = SimpleNamespace(publish_enabled=True)
+        failed = Job(
+            id="d" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.FAILED,
+            error_code="download_failed",
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture", size_bytes=7)],
+        )
+
+        text = runtime._render_live_status(failed, None, None)
+        buttons = runtime._status_buttons(failed, None)
+
+        self.assertIn("暂时无法读取原媒体", text)
+        self.assertIn("尚未向目标频道发布", text)
+        self.assertNotIn("download_failed", text)
+        payloads = [button.data for row in buttons for button in row]
+        self.assertIn(f"ui:retry:{failed.id}".encode(), payloads)
+
+    def test_archive_failure_status_does_not_describe_telegram_publish_as_failed(self) -> None:
+        runtime = object.__new__(TelethonIntakeRuntime)
+        runtime._settings = SimpleNamespace(publish_enabled=True)
+        completed = Job(
+            id="e" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.SUCCEEDED,
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture", size_bytes=7)],
+        )
+        archive = ArchivePackage(
+            id=f"arc_{completed.id}",
+            job_id=completed.id,
+            layout_version="v1",
+            remote_path="archive/x",
+            staging_path=".staging/x",
+            state=ArchivePackageState.FAILED,
+            manifest={},
+            objects=(),
+            error_code="archive_execution_failed",
+        )
+
+        text = runtime._render_live_status(completed, None, archive)
+        buttons = runtime._status_buttons(completed, archive)
+
+        self.assertIn("Telegram 发布完成", text)
+        self.assertIn("Telegram 发布不受影响", text)
+        self.assertNotIn("archive_execution_failed", text)
+        payloads = [button.data for row in buttons for button in row]
+        self.assertIn(f"ui:archive-retry:{completed.id}".encode(), payloads)
+
 
 @dataclass
 class FakeTelegramFile:
@@ -124,3 +178,69 @@ class TelethonMediaDownloaderTests(unittest.IsolatedAsyncioTestCase):
             second = await downloader.download(item, Path(tmp))
             self.assertEqual(client.download_calls, 1)
             self.assertTrue(second.metadata["download_reused_local"])
+
+    async def test_exhausted_concurrent_download_falls_back_to_one_stream(self) -> None:
+        class FailingConcurrentClient(FakeTelegramClient):
+            def __init__(self) -> None:
+                super().__init__()
+                self.concurrent_calls = 0
+
+            def iter_download(self, *args, **kwargs):
+                async def chunks_iterator():
+                    self.concurrent_calls += 1
+                    raise ValueError("fixture shard failure")
+                    yield b""  # pragma: no cover
+
+                return chunks_iterator()
+
+        client = FailingConcurrentClient()
+        downloader = TelethonMediaDownloader(
+            client,
+            download_workers=2,
+            shard_retries=0,
+        )
+        item = MediaItem(
+            index=0,
+            kind=MediaKind.VIDEO,
+            source="telegram:42:99",
+            size_bytes=7,
+            source_chat_id=42,
+            source_message_id=99,
+        )
+
+        with TemporaryDirectory() as tmp:
+            completed = await downloader.download(item, Path(tmp))
+
+        self.assertGreater(client.concurrent_calls, 0)
+        self.assertEqual(client.download_calls, 1)
+        self.assertEqual(completed.size_bytes, 7)
+
+    async def test_cancelled_concurrent_download_never_starts_fallback(self) -> None:
+        class CancelledConcurrentClient(FakeTelegramClient):
+            def iter_download(self, *args, **kwargs):
+                async def cancel():
+                    raise asyncio.CancelledError
+                    yield b""  # pragma: no cover
+
+                return cancel()
+
+        client = CancelledConcurrentClient()
+        downloader = TelethonMediaDownloader(
+            client,
+            download_workers=2,
+            shard_retries=0,
+        )
+        item = MediaItem(
+            index=0,
+            kind=MediaKind.VIDEO,
+            source="telegram:42:99",
+            size_bytes=7,
+            source_chat_id=42,
+            source_message_id=99,
+        )
+
+        with TemporaryDirectory() as tmp:
+            with self.assertRaises(asyncio.CancelledError):
+                await downloader.download(item, Path(tmp))
+
+        self.assertEqual(client.download_calls, 0)

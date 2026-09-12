@@ -9,6 +9,10 @@ from typing import Callable
 from telethon import Button, TelegramClient, events
 from telethon.tl import functions, types
 
+from tgvio.adapters.telegram.user_messages import (
+    describe_archive_failure,
+    describe_job_failure,
+)
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
@@ -23,18 +27,20 @@ from tgvio.observability import log_event
 
 COMMANDS: tuple[tuple[str, str], ...] = (
     ("start", "打开 TGVIO 首页"),
-    ("status", "查看运行与任务状态"),
     ("jobs", "查看最近任务"),
-    ("job", "查看任务诊断详情"),
-    ("plan", "查看最新发布计划"),
-    ("stats", "查看任务统计"),
-    ("health", "查看运行健康状态"),
-    ("diag", "查看脱敏诊断信息"),
-    ("retry", "安全重试失败任务"),
-    ("cancel", "取消活动任务"),
-    ("cache", "查看或清理本地缓存"),
-    ("archive", "查看 WebDAV Archive 状态"),
+    ("status", "查看运行与任务状态"),
     ("help", "查看使用说明"),
+)
+
+
+NAV_HOME = "🏠 首页"
+NAV_JOBS = "📋 我的任务"
+NAV_STATUS = "📊 状态"
+NAV_ARCHIVE = "☁️ 归档"
+NAV_CACHE = "🧹 缓存"
+NAV_MORE = "ℹ️ 更多"
+NAV_BUTTONS = frozenset(
+    {NAV_HOME, NAV_JOBS, NAV_STATUS, NAV_ARCHIVE, NAV_CACHE, NAV_MORE}
 )
 
 
@@ -105,6 +111,13 @@ class TelethonBotUI:
             self._on_command,
             events.NewMessage(incoming=True, func=lambda event: (event.raw_text or "").lstrip().startswith("/")),
         )
+        self._client.add_event_handler(
+            self._on_nav_button,
+            events.NewMessage(
+                incoming=True,
+                func=lambda event: (event.raw_text or "").strip() in NAV_BUTTONS,
+            ),
+        )
         self._client.add_event_handler(self._on_callback, events.CallbackQuery(pattern=b"^ui:"))
 
     async def stop(self) -> None:
@@ -173,35 +186,39 @@ class TelethonBotUI:
         head, _, argument = raw.partition(" ")
         command = head[1:].split("@", 1)[0].lower()
         if command == "start":
-            await event.respond(self._home_text(), buttons=self._home_buttons(), parse_mode="md")
+            await event.respond(
+                self._home_text(),
+                buttons=self._reply_keyboard(),
+                parse_mode="md",
+            )
         elif command == "help":
-            await event.respond(self._help_text(), buttons=self._home_buttons(), parse_mode="md")
+            await event.respond(
+                self._help_text(),
+                buttons=self._more_buttons(),
+                parse_mode="md",
+            )
         elif command == "status":
-            await event.respond(await self._status_text(int(event.sender_id)), buttons=self._home_buttons(), parse_mode="md")
+            await event.respond(
+                await self._status_text(int(event.sender_id)),
+                buttons=self._nav_buttons(),
+                parse_mode="md",
+            )
         elif command == "jobs":
-            await event.respond(await self._jobs_text(int(event.sender_id)), buttons=self._home_buttons(), parse_mode="md")
+            await self._respond_jobs(event, int(event.sender_id))
         elif command == "job":
-            await event.respond(
-                await self._job_text(int(event.sender_id), argument.strip() or None),
-                buttons=self._home_buttons(),
-                parse_mode="md",
-            )
+            await self._respond_job(event, int(event.sender_id), argument.strip() or None)
         elif command == "plan":
-            await event.respond(
-                await self._plan_text(int(event.sender_id), argument.strip() or None),
-                buttons=self._home_buttons(),
-                parse_mode="md",
-            )
+            await self._respond_plan(event, int(event.sender_id), argument.strip() or None)
         elif command == "stats":
             await event.respond(
                 await self._stats_text(int(event.sender_id)),
-                buttons=self._home_buttons(),
+                buttons=self._more_buttons(),
                 parse_mode="md",
             )
         elif command == "health":
             await event.respond(
                 await self._health_text(),
-                buttons=self._home_buttons(),
+                buttons=self._more_buttons(),
                 parse_mode="md",
             )
         elif command == "diag":
@@ -216,7 +233,7 @@ class TelethonBotUI:
                 text = await self._diag_text()
             await event.respond(
                 text,
-                buttons=self._home_buttons(),
+                buttons=self._more_buttons(),
                 parse_mode="md",
             )
         elif command == "retry":
@@ -234,9 +251,44 @@ class TelethonBotUI:
                 argument.strip() or None,
             )
 
+    async def _on_nav_button(self, event) -> None:
+        if not self._authorized(event.sender_id):
+            return
+        owner_id = int(event.sender_id)
+        action = (event.raw_text or "").strip()
+        if action == NAV_HOME:
+            await event.respond(
+                self._home_text(),
+                buttons=self._reply_keyboard(),
+                parse_mode="md",
+            )
+        elif action == NAV_JOBS:
+            await self._respond_jobs(event, owner_id)
+        elif action == NAV_STATUS:
+            await event.respond(
+                await self._status_text(owner_id),
+                buttons=self._nav_buttons(),
+                parse_mode="md",
+            )
+        elif action == NAV_ARCHIVE:
+            await self._respond_archive(event, owner_id)
+        elif action == NAV_CACHE:
+            await event.respond(
+                await self._cache_text(),
+                buttons=self._cache_buttons(),
+                parse_mode="md",
+            )
+        elif action == NAV_MORE:
+            await event.respond(
+                self._more_text(),
+                buttons=self._more_buttons(),
+                parse_mode="md",
+            )
+        raise events.StopPropagation
+
     async def _on_callback(self, event) -> None:
         if not self._authorized(event.sender_id):
-            await event.answer("无权限", alert=True)
+            await self._safe_answer(event, "无权限", alert=True)
             return
         action = bytes(event.data or b"").decode("utf-8", "replace")
         owner_id = int(event.sender_id)
@@ -245,69 +297,525 @@ class TelethonBotUI:
             await self._confirm_fixture_publish(event, owner_id, job_id)
             return
         if action == "ui:fixture-cancel":
-            await event.edit("已取消受控发布。", buttons=self._home_buttons())
-            await event.answer()
+            await self._edit_page(event, "已取消受控发布。", self._nav_buttons())
             return
+
         if action == "ui:home":
-            text = self._home_text()
-        elif action == "ui:status":
-            text = await self._status_text(owner_id)
-        elif action == "ui:jobs":
-            text = await self._jobs_text(owner_id)
-        elif action == "ui:job":
-            text = await self._job_text(owner_id, None)
-        elif action == "ui:plan":
-            text = await self._plan_text(owner_id, None)
-        elif action == "ui:stats":
-            text = await self._stats_text(owner_id)
-        elif action == "ui:health":
-            text = await self._health_text()
-        elif action == "ui:diag":
-            text = await self._diag_text()
-        elif action == "ui:archive":
-            text = await self._archive_text(owner_id)
-        elif action == "ui:cache":
-            text = await self._cache_text()
-        elif action == "ui:help":
-            text = self._help_text()
-        else:
-            await event.answer("未知操作")
+            await self._edit_page(event, self._home_text(), self._home_buttons())
             return
-        await event.edit(text, buttons=self._home_buttons(), parse_mode="md")
-        await event.answer()
+        if action == "ui:status":
+            await self._edit_page(
+                event,
+                await self._status_text(owner_id),
+                self._nav_buttons(),
+            )
+            return
+        if action == "ui:jobs":
+            text, buttons = await self._jobs_page(owner_id)
+            await self._edit_page(event, text, buttons)
+            return
+        if action == "ui:job":
+            job = await self._resolve_job(owner_id, None)
+            if job is None:
+                await self._edit_page(
+                    event,
+                    "**任务详情**\n\n还没有任务。直接发送媒体即可开始。",
+                    self._nav_buttons(),
+                )
+            else:
+                await self._show_job_callback(event, owner_id, job.id)
+            return
+        if action == "ui:plan":
+            job = await self._resolve_job(owner_id, None)
+            if job is None:
+                await self._edit_page(
+                    event,
+                    "**发布计划**\n\n还没有任务。直接发送媒体即可开始。",
+                    self._nav_buttons(),
+                )
+            else:
+                await self._show_plan_callback(event, owner_id, job.id)
+            return
+        if action == "ui:more":
+            await self._edit_page(event, self._more_text(), self._more_buttons())
+            return
+        if action == "ui:stats":
+            await self._edit_page(
+                event,
+                await self._stats_text(owner_id),
+                self._more_buttons(),
+            )
+            return
+        if action == "ui:health":
+            await self._edit_page(event, await self._health_text(), self._more_buttons())
+            return
+        if action == "ui:diag":
+            await self._edit_page(event, await self._diag_text(), self._more_buttons())
+            return
+        if action == "ui:archive":
+            text, buttons = await self._archive_page(owner_id)
+            await self._edit_page(event, text, buttons)
+            return
+        if action == "ui:cache":
+            await self._edit_page(event, await self._cache_text(), self._cache_buttons())
+            return
+        if action == "ui:help":
+            await self._edit_page(event, self._help_text(), self._more_buttons())
+            return
+
+        if action == "ui:cache-clean":
+            await self._edit_page(
+                event,
+                "**确认清理缓存**\n\n只会删除已完成或已取消任务的缓存；失败任务和归档未完成任务不会被删除。",
+                [
+                    [
+                        Button.inline("⚠️ 确认清理", b"ui:cache-clean-confirm"),
+                        Button.inline("返回", b"ui:cache"),
+                    ]
+                ],
+            )
+            return
+        if action == "ui:cache-clean-confirm":
+            await self._run_cache_cleanup_callback(event)
+            return
+        if action == "ui:archive-probe":
+            await self._edit_page(
+                event,
+                (
+                    "**确认检测 WebDAV**\n\n"
+                    "检测会访问 WebDAV；若服务器没有声明完整能力，系统会写入并立即清理一个极小的测试文件。"
+                ),
+                [
+                    [
+                        Button.inline("确认检测", b"ui:archive-probe-confirm"),
+                        Button.inline("返回", b"ui:archive"),
+                    ]
+                ],
+            )
+            return
+        if action == "ui:archive-probe-confirm":
+            await self._run_archive_probe_callback(event, owner_id)
+            return
+
+        job_actions = (
+            ("ui:archive-retry-confirm:", self._run_archive_retry_callback),
+            ("ui:archive-retry:", self._confirm_archive_retry_callback),
+            ("ui:retry-confirm:", self._run_retry_callback),
+            ("ui:retry:", self._confirm_retry_callback),
+            ("ui:cancel-confirm:", self._run_cancel_callback),
+            ("ui:cancel:", self._confirm_cancel_callback),
+            ("ui:job-deep:", self._show_deep_job_callback),
+            ("ui:plan:", self._show_plan_callback),
+            ("ui:job:", self._show_job_callback),
+        )
+        for prefix, handler in job_actions:
+            if action.startswith(prefix):
+                await handler(event, owner_id, action[len(prefix) :])
+                return
+
+        await self._safe_answer(event, "未知操作")
+
+    async def _respond_jobs(self, event, owner_id: int) -> None:
+        text, buttons = await self._jobs_page(owner_id)
+        await event.respond(text, buttons=buttons, parse_mode="md")
+
+    async def _respond_job(
+        self,
+        event,
+        owner_id: int,
+        prefix: str | None,
+    ) -> None:
+        job = await self._resolve_job(owner_id, prefix)
+        if job is None:
+            await event.respond(
+                "**任务详情**\n\n没有找到唯一对应的任务，请从“我的任务”中直接点选。",
+                buttons=self._nav_buttons(),
+                parse_mode="md",
+            )
+            return
+        await event.respond(
+            await self._job_text(owner_id, job.id),
+            buttons=await self._job_buttons(job),
+            parse_mode="md",
+        )
+
+    async def _respond_plan(
+        self,
+        event,
+        owner_id: int,
+        prefix: str | None,
+    ) -> None:
+        job = await self._resolve_job(owner_id, prefix)
+        if job is None:
+            await event.respond(
+                "**发布计划**\n\n没有找到唯一对应的任务，请从“我的任务”中直接点选。",
+                buttons=self._nav_buttons(),
+                parse_mode="md",
+            )
+            return
+        await event.respond(
+            await self._plan_text(owner_id, job.id),
+            buttons=self._plan_buttons(job),
+            parse_mode="md",
+        )
+
+    async def _respond_archive(self, event, owner_id: int) -> None:
+        text, buttons = await self._archive_page(owner_id)
+        await event.respond(text, buttons=buttons, parse_mode="md")
+
+    async def _show_job_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        await self._edit_page(
+            event,
+            await self._job_text(owner_id, job.id),
+            await self._job_buttons(job),
+        )
+
+    async def _show_deep_job_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        await self._edit_page(
+            event,
+            await self._job_text(owner_id, job.id, deep=True),
+            await self._job_buttons(job, deep=True),
+        )
+
+    async def _show_plan_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        await self._edit_page(
+            event,
+            await self._plan_text(owner_id, job.id),
+            self._plan_buttons(job),
+        )
+
+    async def _confirm_retry_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        if job.state != JobState.FAILED:
+            await self._safe_answer(event, "任务状态已变化，请刷新", alert=True)
+            return
+        issue = describe_job_failure(job.error_code)
+        if job.error_code in {"publish_partial", "publish_uncertain"}:
+            await self._edit_page(
+                event,
+                f"**不能自动重试**\n\n{issue.explanation}\n\n下一步：{issue.action}",
+                await self._job_buttons(job),
+            )
+            return
+        await self._edit_page(
+            event,
+            (
+                f"**确认重试任务 `{job.id[:10]}`**\n\n"
+                f"{issue.explanation}\n\n"
+                "系统会再次检查已记录的发布结果，只在确认安全时继续。"
+            ),
+            [
+                [
+                    Button.inline(
+                        "确认安全重试",
+                        self._callback_data("retry-confirm", job.id),
+                    ),
+                    Button.inline("返回", self._callback_data("job", job.id)),
+                ]
+            ],
+        )
+
+    async def _run_retry_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        text = await self._retry_exact(job, chat_id=event.chat_id)
+        current = await self._owned_job(owner_id, job.id)
+        buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
+        await self._edit_page(event, text, buttons)
+
+    async def _confirm_cancel_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        if job.terminal:
+            await self._safe_answer(event, "任务已经结束，不能取消", alert=True)
+            return
+        await self._edit_page(
+            event,
+            (
+                f"**确认取消任务 `{job.id[:10]}`**\n\n"
+                "取消请求会持久保存，任务将在下一个安全边界停止。"
+            ),
+            [
+                [
+                    Button.inline(
+                        "⚠️ 确认取消",
+                        self._callback_data("cancel-confirm", job.id),
+                    ),
+                    Button.inline("返回", self._callback_data("job", job.id)),
+                ]
+            ],
+        )
+
+    async def _run_cancel_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        text = await self._cancel_exact(job, owner_id=owner_id)
+        current = await self._owned_job(owner_id, job.id)
+        buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
+        await self._edit_page(event, text, buttons)
+
+    async def _confirm_archive_retry_callback(
+        self,
+        event,
+        owner_id: int,
+        job_id: str,
+    ) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        package = await self._repository.get_archive_package_for_job(job.id)
+        if package is None or package.state != ArchivePackageState.FAILED:
+            await self._safe_answer(event, "归档状态已变化，请刷新", alert=True)
+            return
+        issue = describe_archive_failure(package.error_code)
+        await self._edit_page(
+            event,
+            (
+                f"**确认重传归档 `{job.id[:10]}`**\n\n"
+                f"{issue.explanation}\n\n"
+                "已在远端确认的文件会被复用，不会重新发布 Telegram 消息。"
+            ),
+            [
+                [
+                    Button.inline(
+                        "确认重传归档",
+                        self._callback_data("archive-retry-confirm", job.id),
+                    ),
+                    Button.inline("返回", self._callback_data("job", job.id)),
+                ]
+            ],
+        )
+
+    async def _run_archive_retry_callback(
+        self,
+        event,
+        owner_id: int,
+        job_id: str,
+    ) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        text = await self._archive_retry_exact(job)
+        current = await self._owned_job(owner_id, job.id)
+        buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
+        await self._edit_page(event, text, buttons)
+
+    async def _run_cache_cleanup_callback(self, event) -> None:
+        if self._cache_operator is None:
+            await self._edit_page(event, "缓存维护服务未启用。", self._nav_buttons())
+            return
+        try:
+            result = await self._cache_operator.cleanup(force=True)
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.ERROR,
+                "telegram.cache.cleanup_failed",
+                "Cache cleanup requested from Telegram failed",
+                exception_type=type(exc).__name__,
+                exc_info=True,
+            )
+            await self._edit_page(
+                event,
+                "❌ 缓存清理没有完成。没有删除失败任务或归档未完成任务的数据，请稍后重试。",
+                self._cache_buttons(),
+            )
+            return
+        await self._edit_page(
+            event,
+            (
+                f"🧹 已清理 `{result.removed_jobs}` 个终态任务缓存，"
+                f"释放 `{self._human_bytes(result.removed_bytes)}`。\n"
+                f"因归档未完成而保留：`{result.blocked_by_archive}`。"
+            ),
+            self._cache_buttons(),
+        )
+
+    async def _run_archive_probe_callback(self, event, owner_id: int) -> None:
+        if not getattr(self._settings, "archive_enabled", False) or self._archive_operator is None:
+            await self._edit_page(event, "🛡️ WebDAV 归档当前未启用。", self._nav_buttons())
+            return
+        try:
+            capabilities = await self._archive_operator.probe()
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "telegram.archive.probe_failed",
+                "WebDAV capability probe requested from Telegram failed",
+                exception_type=type(exc).__name__,
+            )
+            await self._edit_page(
+                event,
+                "❌ WebDAV 连接检测失败。Telegram 发布不受影响，请检查远端服务或稍后重试。",
+                (await self._archive_page(owner_id))[1],
+            )
+            return
+        await self._edit_page(
+            event,
+            (
+                "**WebDAV 检测完成**\n\n"
+                f"读取目录：`{'支持' if capabilities.supports_propfind else '不支持'}`\n"
+                f"创建目录：`{'支持' if capabilities.supports_mkcol else '不支持'}`\n"
+                f"上传文件：`{'支持' if capabilities.supports_put else '不支持'}`\n"
+                f"读取文件：`{'支持' if capabilities.supports_get else '不支持'}`\n"
+                f"原子移动：`{'支持' if capabilities.supports_move else '不支持'}`\n"
+                f"完整性标识：`{'支持' if capabilities.supports_etag else '不支持'}`"
+            ),
+            (await self._archive_page(owner_id))[1],
+        )
+
+    async def _retry_exact(self, job: Job, *, chat_id: int) -> str:
+        if self._control is None:
+            return "任务控制服务未启用。"
+        try:
+            decision = await self._control.retry_failed(job)
+        except ValueError:
+            return "🛡️ 任务状态已变化，请刷新任务详情后再操作。"
+        except UnsafeRetryError:
+            return "🛡️ 系统检测到可能已经发布的 Telegram 消息，已阻止自动重试以免重复。"
+
+        if decision.target_state == JobState.RECEIVED and self._schedule_job is not None:
+            self._schedule_job(decision.job, chat_id=chat_id)
+            suffix = "已重新进入下载和分析流程。"
+        elif (
+            decision.target_state == JobState.PLANNED
+            and self._settings.publish_enabled
+            and self._schedule_job is not None
+        ):
+            self._schedule_job(decision.job, chat_id=chat_id)
+            suffix = "已从确认无副作用的失败步骤继续发布。"
+        else:
+            suffix = "已恢复到等待发布；当前自动发布关闭，不会产生频道消息。"
+        return (
+            f"🔁 任务 `{job.id[:10]}` 已开始第 `{decision.retry_count}` 次安全重试。\n"
+            f"{suffix}"
+        )
+
+    async def _cancel_exact(self, job: Job, *, owner_id: int) -> str:
+        if self._control is None:
+            return "任务控制服务未启用。"
+        try:
+            current = await self._control.request_cancel(
+                job,
+                reason=f"requested by owner {owner_id}",
+            )
+        except ValueError:
+            return "🛡️ 任务已经结束或状态已变化，无法再取消。"
+        if current.state == JobState.CANCELLED:
+            return f"⛔ 任务 `{job.id[:10]}` 已取消。"
+        return f"⏳ 任务 `{job.id[:10]}` 已记录取消请求，将在下一个安全边界停止。"
+
+    async def _archive_retry_exact(self, job: Job) -> str:
+        if not getattr(self._settings, "archive_enabled", False) or self._archive_operator is None:
+            return "🛡️ WebDAV 归档当前未启用。"
+        package = await self._repository.get_archive_package_for_job(job.id)
+        if package is None:
+            return "这个任务没有归档记录。"
+        try:
+            await self._archive_operator.retry_package(package.id)
+        except (KeyError, ValueError):
+            return "🛡️ 归档状态已变化，请刷新后再操作。"
+        except RuntimeError:
+            return "🛡️ 本地原始缓存已经不可用，无法安全重传归档。Telegram 发布不受影响。"
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.ERROR,
+                "telegram.archive.retry_failed",
+                "Archive retry requested from Telegram failed",
+                job_id=job.id,
+                package_id=package.id,
+                exception_type=type(exc).__name__,
+                exc_info=True,
+            )
+            return "❌ 归档重传没有启动。Telegram 发布不受影响，请稍后再试。"
+        return (
+            f"🔁 任务 `{job.id[:10]}` 的归档已重新排队。\n"
+            "系统会复用远端已确认文件，并从未完成的位置继续。"
+        )
+
+    async def _owned_job(self, owner_id: int, job_id: str) -> Job | None:
+        if not job_id or len(job_id) > 40:
+            return None
+        job = await self._repository.get(job_id)
+        if job is None or int(job.owner_id) != int(owner_id):
+            return None
+        return job
+
+    async def _edit_page(self, event, text: str, buttons) -> None:
+        try:
+            await event.edit(text, buttons=buttons, parse_mode="md")
+        except Exception as exc:
+            if type(exc).__name__ == "MessageNotModifiedError":
+                await self._safe_answer(event, "已经是最新页面")
+                return
+            log_event(
+                self._log,
+                logging.WARNING,
+                "telegram.ui.edit_failed",
+                "Telegram UI page edit failed",
+                exception_type=type(exc).__name__,
+            )
+            await self._safe_answer(event, "页面刷新失败，请稍后重试", alert=True)
+            return
+        await self._safe_answer(event)
+
+    async def _safe_answer(self, event, text: str | None = None, **kwargs) -> None:
+        try:
+            await event.answer(text, **kwargs)
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.DEBUG,
+                "telegram.ui.callback_answer_failed",
+                "Telegram callback acknowledgement failed",
+                exception_type=type(exc).__name__,
+            )
 
     def _home_text(self) -> str:
         publish_status = "开启" if getattr(self._settings, "publish_enabled", False) else "关闭"
         return (
-            "**TGVIO** · Telegram Video I/O\n\n"
-            "新一代媒体任务编排器。\n"
-            "当前流水线：`接收 → 下载 → 分析 → 发布规划`\n\n"
-            "📥 直接发送图片、视频、文件或媒体组即可创建任务。\n"
+            "**TGVIO 首页**\n\n"
+            "📥 直接发送图片、视频、文件或媒体组即可开始。\n"
             f"🔗 URL 下载：`{'开启' if self._settings.url_enabled else '关闭'}`。\n"
-            f"☁️ WebDAV Archive：`{'开启' if self._settings.archive_enabled else '关闭'}`。\n"
-            "🧠 每个任务都会先生成可审计的 PublishPlan。\n"
-            f"🚦 发布执行：`{publish_status}`。\n"
-            "🛡️ 发布关闭时任务会安全停在 PLANNED，不会产生频道副作用。"
+            f"☁️ WebDAV 归档：`{'开启' if self._settings.archive_enabled else '关闭'}`。\n"
+            f"🚦 自动发布：`{publish_status}`。\n\n"
+            "手机端直接使用输入框上方的常驻按钮，不需要复制任务 ID 或输入长命令。"
         )
 
     def _help_text(self) -> str:
         text = (
             "**TGVIO 使用说明**\n\n"
-            "`/start` — 首页\n"
-            "`/status` — 运行状态与任务统计\n"
-            "`/jobs` — 最近任务\n"
-            "`/job [任务ID]` — 查看任务全链路状态与诊断提示\n"
-            "`/plan [任务ID]` — 查看发布计划；ID 可只填前缀\n"
-            "`/stats` — 今日/累计任务统计\n"
-            "`/health` — SQLite、Telegram、磁盘健康状态\n"
-            "`/diag` — 脱敏运行诊断；`/diag job 任务ID` 查看深度任务日志\n"
-            "`/retry 任务ID` — 安全重试失败任务\n"
-            "`/cancel 任务ID` — 请求取消活动任务\n"
-            "`/cache` — 查看本地缓存；`/cache clean` 清理已完成/取消任务缓存\n"
-            "`/archive` — 查看 WebDAV Archive 状态；支持 `retry` / `probe`\n"
-            "`/help` — 本说明\n\n"
-            "支持输入：图片、视频、普通文件、Telegram 媒体组。\n"
-            "一个任务会依次持久化下载事实、媒体分析结果与发布步骤。"
+            "1. 直接发送图片、视频、文件、媒体组或支持的链接。\n"
+            "2. 点“📋 我的任务”查看进度，再点对应任务查看详情。\n"
+            "3. 失败任务可在详情页点“重试任务”；活动任务可点“取消任务”。\n"
+            "4. WebDAV 失败只影响归档副本，不影响已经完成的 Telegram 发布。\n\n"
+            "常用入口都在常驻键盘和页面按钮中。命令菜单只保留 `/start`、"
+            "`/jobs`、`/status`、`/help` 四个快捷入口；旧命令仍兼容。"
         )
         if self._settings.url_enabled:
             text += "\n🔗 也可直接发送一个 HTTP(S) 媒体/站点链接，由 yt-dlp 下载后进入同一流水线。"
@@ -451,7 +959,7 @@ class TelethonBotUI:
             f"到期可清理：`{stats.eligible_jobs}`\n"
             f"被 Archive 阻塞：`{stats.blocked_by_archive}`\n\n"
             "自动清理只处理 SUCCEEDED/CANCELLED，不会删除 PLANNED/FAILED 的重试缓存。\n"
-            "需要立即释放已完成缓存可使用 `/cache clean`。"
+            "需要立即释放空间时，点下方“清理已完成缓存”。"
         )
 
     async def _cache_command(self, event, argument: str) -> None:
@@ -481,14 +989,14 @@ class TelethonBotUI:
     async def _archive_text(self, owner_id: int) -> str:
         enabled = bool(getattr(self._settings, "archive_enabled", False))
         lines = [
-            "**WebDAV Archive V2**",
+            "**WebDAV 归档**",
             "",
             f"状态：`{'开启' if enabled else '关闭'}`",
             f"远端根目录：`{getattr(self._settings, 'archive_remote_root', 'TGVIO')}`",
         ]
         counts = await self._repository.count_archive_packages_by_state(owner_id=owner_id)
         if counts:
-            lines.extend(["", "**Packages**"])
+            lines.extend(["", "**归档统计**"])
             for state in ArchivePackageState:
                 if counts.get(state, 0):
                     lines.append(f"• {ARCHIVE_STATE_LABELS[state]}：`{counts[state]}`")
@@ -505,15 +1013,18 @@ class TelethonBotUI:
                     f"• `{package.job_id[:10]}` · {ARCHIVE_STATE_LABELS[package.state]} · "
                     f"`{stored}/{len(package.objects)}` 文件 · {self._human_bytes(total_bytes)}"
                 )
+                if package.state == ArchivePackageState.FAILED:
+                    issue = describe_archive_failure(package.error_code)
+                    lines.append(f"  ↳ {issue.explanation}")
         lines.extend(
             [
                 "",
-                "一个 Job 永远只有一个 ArchivePackage；不会再产生 backup attempt 链。",
-                "只有 `_COMPLETE.json` 存在且校验通过才视为归档完成。",
+                "Telegram 发布与 WebDAV 归档相互独立：归档失败不会撤回已发布内容。",
+                "归档未完成时本地缓存会保留；重传会复用远端已确认文件。",
             ]
         )
         if enabled:
-            lines.append("失败包可用 `/archive retry 任务ID` 显式恢复；`/archive probe` 只读检测 WebDAV 能力。")
+            lines.append("可直接点下方失败任务重传，或点“检测连接”检查 WebDAV。")
         else:
             lines.append("Archive 当前关闭，不会发生任何 WebDAV 网络写入。")
         return "\n".join(lines)
@@ -535,7 +1046,16 @@ class TelethonBotUI:
             try:
                 capabilities = await self._archive_operator.probe()
             except Exception as exc:
-                await event.respond(f"❌ WebDAV capability probe 失败：`{type(exc).__name__}`", parse_mode="md")
+                log_event(
+                    self._log,
+                    logging.WARNING,
+                    "telegram.archive.probe_failed",
+                    "WebDAV capability probe requested by command failed",
+                    exception_type=type(exc).__name__,
+                )
+                await event.respond(
+                    "❌ WebDAV 连接检测失败。Telegram 发布不受影响，请检查远端服务或稍后重试。"
+                )
                 return
             await event.respond(
                 (
@@ -568,29 +1088,27 @@ class TelethonBotUI:
         if package is None:
             await event.respond("这个任务还没有 ArchivePackage。")
             return
-        try:
-            reset = await self._archive_operator.retry_package(package.id)
-        except Exception as exc:
-            await event.respond(f"🛡️ 无法恢复 ArchivePackage：`{type(exc).__name__}`", parse_mode="md")
-            return
-        await event.respond(
-            f"🔁 ArchivePackage `{reset.id[-10:]}` 已恢复到 durable staging 队列。",
-            parse_mode="md",
-        )
+        await event.respond(await self._archive_retry_exact(job), parse_mode="md")
 
-    async def _jobs_text(self, owner_id: int) -> str:
-        jobs = await self._repository.list_recent(owner_id=owner_id, limit=8)
+    async def _jobs_text(
+        self,
+        owner_id: int,
+        *,
+        jobs: list[Job] | None = None,
+    ) -> str:
+        if jobs is None:
+            jobs = await self._repository.list_recent(owner_id=owner_id, limit=8)
         if not jobs:
             return "**最近任务**\n\n还没有任务。直接发送媒体即可开始。"
         lines = ["**最近任务**", ""]
-        for job in jobs:
+        for position, job in enumerate(jobs, start=1):
             size = sum(item.size_bytes for item in job.items)
             line = (
-                f"`{job.id[:10]}` · {STATE_LABELS[job.state]} · "
+                f"{position}. `{job.id[:10]}` · {STATE_LABELS[job.state]} · "
                 f"{len(job.items)} 项 · {self._human_bytes(size)}"
             )
             if job.state == JobState.FAILED:
-                line += f" · `{job.error_code or 'unknown_error'}`"
+                line += f" · {describe_job_failure(job.error_code).title}"
             lines.append(line)
             progress = await self._repository.get_job_progress(job.id)
             if progress is not None and job.state not in {
@@ -602,8 +1120,59 @@ class TelethonBotUI:
             hint = self._job_action_hint(job)
             if hint:
                 lines.append(f"  {hint}")
-        lines.extend(["", "使用 `/job 任务ID` 查看全链路诊断；`/plan 任务ID` 查看具体发布计划。"])
+        lines.extend(["", "点下方编号即可查看详情，不需要复制任务 ID。"])
         return "\n".join(lines)
+
+    async def _jobs_page(self, owner_id: int) -> tuple[str, list]:
+        jobs = await self._repository.list_recent(owner_id=owner_id, limit=8)
+        text = await self._jobs_text(owner_id, jobs=jobs)
+        rows: list[list] = []
+        buttons = []
+        icons = {
+            JobState.SUCCEEDED: "✅",
+            JobState.FAILED: "❌",
+            JobState.CANCELLED: "⛔",
+            JobState.DOWNLOADING: "⬇️",
+            JobState.PUBLISHING: "📤",
+        }
+        for position, job in enumerate(jobs, start=1):
+            icon = icons.get(job.state, "⏳")
+            buttons.append(
+                Button.inline(
+                    f"{position} {icon} 详情",
+                    self._callback_data("job", job.id),
+                )
+            )
+        for index in range(0, len(buttons), 2):
+            rows.append(buttons[index : index + 2])
+        rows.extend(self._nav_buttons())
+        return text, rows
+
+    async def _archive_page(self, owner_id: int) -> tuple[str, list]:
+        text = await self._archive_text(owner_id)
+        rows: list[list] = []
+        if getattr(self._settings, "archive_enabled", False) and self._archive_operator is not None:
+            recent = await self._repository.list_recent_archive_packages(
+                owner_id=owner_id,
+                limit=8,
+            )
+            failed = [
+                package
+                for package in recent
+                if package.state == ArchivePackageState.FAILED
+            ]
+            for position, package in enumerate(failed, start=1):
+                rows.append(
+                    [
+                        Button.inline(
+                            f"🔁 重传失败归档 {position} · {package.job_id[:8]}",
+                            self._callback_data("archive-retry", package.job_id),
+                        )
+                    ]
+                )
+            rows.append([Button.inline("🔌 检测连接", b"ui:archive-probe")])
+        rows.extend(self._nav_buttons())
+        return text, rows
 
     async def _job_text(
         self,
@@ -641,20 +1210,29 @@ class TelethonBotUI:
         if job.updated_at:
             lines.append(f"更新：`{job.updated_at}` UTC")
         if job.error_code:
-            lines.append(f"错误码：`{job.error_code}`")
+            issue = describe_job_failure(job.error_code)
+            lines.extend(
+                [
+                    f"原因：**{issue.title}**",
+                    issue.explanation,
+                    f"下一步：{issue.action}",
+                ]
+            )
+            if deep:
+                lines.append(f"内部错误码：`{job.error_code}`")
         if snapshot.progress is not None and not job.terminal:
             lines.append(self._progress_text(snapshot.progress))
 
         lines.extend(
             [
                 "",
-                "**Pipeline**",
-                f"{self._phase_status(event_types, 'job_created', None)} Intake",
-                f"{self._phase_status(event_types, 'download_completed', 'download_failed', 'download_started')} Download",
-                f"{self._phase_status(event_types, 'analysis_completed', 'analysis_failed', 'analysis_started')} Analysis",
-                f"{'✅' if snapshot.plan is not None else '▫️'} PublishPlan",
-                f"{self._publish_status(snapshot)} Publish",
-                f"{self._archive_status(snapshot)} Archive",
+                "**处理流程**",
+                f"{self._phase_status(event_types, 'job_created', None)} 接收",
+                f"{self._phase_status(event_types, 'download_completed', 'download_failed', 'download_started')} 下载",
+                f"{self._phase_status(event_types, 'analysis_completed', 'analysis_failed', 'analysis_started')} 分析",
+                f"{'✅' if snapshot.plan is not None else '▫️'} 发布计划",
+                f"{self._publish_status(snapshot)} Telegram 发布",
+                f"{self._archive_status(snapshot)} WebDAV 归档",
             ]
         )
 
@@ -671,11 +1249,11 @@ class TelethonBotUI:
             lines.extend(
                 [
                     "",
-                    "**Publish**",
-                    f"Plan：`{snapshot.plan.id[:10]}` · steps `{succeeded}/{len(snapshot.plan.steps)}` · effects `{len(external_effects)}`",
+                    "**Telegram 发布**",
+                    f"计划步骤：`{succeeded}/{len(snapshot.plan.steps)}` · 已确认消息记录：`{len(external_effects)}`",
                 ]
             )
-            for step in failed[:3]:
+            for step in failed[:3] if deep else ():
                 confirmed = sum(
                     1
                     for effect in external_effects
@@ -692,14 +1270,20 @@ class TelethonBotUI:
             lines.extend(
                 [
                     "",
-                    "**Archive**",
-                    f"Package：`{archive.id[-10:]}` · {ARCHIVE_STATE_LABELS[archive.state]}",
-                    f"Objects：`{stored}/{len(archive.objects)}` · `{self._human_bytes(sum(obj.size_bytes for obj in archive.objects))}` · events `{snapshot.archive_event_count}`",
+                    "**WebDAV 归档**",
+                    f"状态：{ARCHIVE_STATE_LABELS[archive.state]} · 文件：`{stored}/{len(archive.objects)}` · `{self._human_bytes(sum(obj.size_bytes for obj in archive.objects))}`",
                 ]
             )
-            if archive.error_code:
-                lines.append(f"错误码：`{archive.error_code}`")
-            if failed_objects:
+            if archive.state == ArchivePackageState.FAILED:
+                issue = describe_archive_failure(archive.error_code)
+                lines.extend([issue.explanation, f"下一步：{issue.action}"])
+            if deep:
+                lines.append(
+                    f"Package：`{archive.id[-10:]}` · events `{snapshot.archive_event_count}`"
+                )
+            if archive.error_code and deep:
+                lines.append(f"内部错误码：`{archive.error_code}`")
+            if failed_objects and deep:
                 indexes = ", ".join(str(obj.object_index) for obj in failed_objects[:8])
                 lines.append(f"失败对象：`{indexes}`")
 
@@ -710,21 +1294,22 @@ class TelethonBotUI:
                 "warning": "🟡",
                 "info": "🟢",
             }
-            lines.extend(["", "**Diagnosis**"])
+            lines.extend(["", "**处理建议**"])
             for hint in snapshot.hints:
-                lines.append(f"{icons.get(hint.severity, '•')} `{hint.code}` · {hint.summary}")
+                code = f" `{hint.code}` ·" if deep else ""
+                lines.append(f"{icons.get(hint.severity, '•')}{code} {hint.summary}")
                 if hint.action:
                     lines.append(f"  ↳ {hint.action}")
 
-        recent_events = snapshot.events[-(8 if deep else 4) :]
+        recent_events = snapshot.events[-8:] if deep else ()
         if recent_events:
-            lines.extend(["", "**Durable events**"])
+            lines.extend(["", "**持久化事件**"])
             for event in recent_events:
                 timestamp = event.created_at or "?"
                 lines.append(f"• `{timestamp}` · `{event.event_type}`")
 
         if deep:
-            lines.extend(["", "**Structured logs**"])
+            lines.extend(["", "**结构化日志**"])
             recent_logs = snapshot.recent_logs[-10:]
             if not recent_logs:
                 lines.append("没有找到该 Job 的持久结构化日志。")
@@ -747,7 +1332,7 @@ class TelethonBotUI:
                 ]
             )
         else:
-            lines.extend(["", f"深度日志：`/diag job {job.id[:10]}`"])
+            lines.extend(["", "需要排障时可点下方“技术详情”。"])
 
         text = "\n".join(lines)
         return text if len(text) <= 3900 else text[:3850] + "\n\n…诊断输出已截断。"
@@ -838,12 +1423,16 @@ class TelethonBotUI:
         return self._render_plan(job, plan)
 
     async def _resolve_job(self, owner_id: int, prefix: str | None) -> Job | None:
+        normalized = prefix.strip().lower() if prefix else ""
+        if len(normalized) == 32:
+            exact = await self._repository.get(normalized)
+            if exact is not None and int(exact.owner_id) == int(owner_id):
+                return exact
         jobs = await self._repository.list_recent(owner_id=owner_id, limit=50)
         if not jobs:
             return None
         if not prefix:
             return next((job for job in jobs if job.state in {JobState.PLANNED, JobState.PUBLISHING, JobState.SUCCEEDED}), jobs[0])
-        normalized = prefix.strip().lower()
         matches = [job for job in jobs if job.id.lower().startswith(normalized)]
         return matches[0] if len(matches) == 1 else None
 
@@ -858,21 +1447,10 @@ class TelethonBotUI:
         if job is None:
             await event.respond("没有找到唯一对应的任务。")
             return
-        try:
-            current = await self._control.request_cancel(
-                job,
-                reason=f"requested by owner {owner_id}",
-            )
-        except ValueError as exc:
-            await event.respond(f"🛡️ 无法取消：{exc}")
-            return
-        if current.state == JobState.CANCELLED:
-            await event.respond(f"⛔ 任务 `{job.id[:10]}` 已取消。", parse_mode="md")
-        else:
-            await event.respond(
-                f"⏳ 任务 `{job.id[:10]}` 已记录取消请求，将在当前安全边界停止。",
-                parse_mode="md",
-            )
+        await event.respond(
+            await self._cancel_exact(job, owner_id=owner_id),
+            parse_mode="md",
+        )
 
     async def _retry_job(self, event, owner_id: int, prefix: str | None) -> None:
         if self._control is None:
@@ -885,22 +1463,8 @@ class TelethonBotUI:
         if job is None:
             await event.respond("没有找到唯一对应的任务。")
             return
-        try:
-            decision = await self._control.retry_failed(job)
-        except (ValueError, UnsafeRetryError) as exc:
-            await event.respond(f"🛡️ 无法安全重试：{exc}")
-            return
-
-        if decision.target_state == JobState.RECEIVED and self._schedule_job is not None:
-            self._schedule_job(decision.job, chat_id=event.chat_id)
-            suffix = "已重新进入下载/分析流水线。"
-        elif decision.target_state == JobState.PLANNED and self._settings.publish_enabled and self._schedule_job is not None:
-            self._schedule_job(decision.job, chat_id=event.chat_id)
-            suffix = "已从失败的发布 step 继续执行。"
-        else:
-            suffix = "已恢复到 PLANNED；当前发布执行关闭，不会自动产生频道消息。"
         await event.respond(
-            f"🔁 任务 `{job.id[:10]}` 已创建第 `{decision.retry_count}` 次安全重试。\n{suffix}",
+            await self._retry_exact(job, chat_id=event.chat_id),
             parse_mode="md",
         )
 
@@ -1064,7 +1628,7 @@ class TelethonBotUI:
         if job.state == JobState.FAILED:
             if job.error_code in {"publish_partial", "publish_uncertain"}:
                 return "🛡️ 已检测到可能存在 Telegram 副作用；禁止盲重试，需要人工核对。"
-            return f"🔁 可使用 `/retry {job.id[:10]}` 请求安全重试；系统会再次校验副作用。"
+            return "🔁 可在任务详情中点“重试任务”；系统会再次校验发布记录。"
         if job.state in {
             JobState.RECEIVED,
             JobState.DOWNLOADING,
@@ -1074,7 +1638,7 @@ class TelethonBotUI:
             JobState.PLANNED,
             JobState.PUBLISHING,
         }:
-            return f"⛔ 使用 `/cancel {job.id[:10]}` 请求在安全边界取消。"
+            return "⛔ 可在任务详情中点“取消任务”，任务会在安全边界停止。"
         return ""
 
     @staticmethod
@@ -1088,14 +1652,126 @@ class TelethonBotUI:
 
     def _home_buttons(self):
         return [
-            [Button.inline("📊 状态", b"ui:status"), Button.inline("📋 最近任务", b"ui:jobs")],
-            [Button.inline("🔎 任务诊断", b"ui:job"), Button.inline("🧠 最新计划", b"ui:plan")],
-            [Button.inline("📈 统计", b"ui:stats"), Button.inline("❤️ 健康", b"ui:health")],
-            [Button.inline("🧹 缓存", b"ui:cache"), Button.inline("☁️ Archive", b"ui:archive")],
-            [Button.inline("🩺 诊断", b"ui:diag"), Button.inline("ℹ️ 帮助", b"ui:help")],
-            [Button.inline("🏠 首页", b"ui:home")],
+            [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("📊 状态", b"ui:status")],
+            [Button.inline("☁️ 归档", b"ui:archive"), Button.inline("🧹 缓存", b"ui:cache")],
+            [Button.inline("ℹ️ 更多", b"ui:more")],
         ]
+
+    def _reply_keyboard(self):
+        def text_button(label: str):
+            return Button.text(
+                label,
+                resize=True,
+                single_use=False,
+                persistent=True,
+                placeholder="发送媒体，或选择一个操作",
+            )
+
+        return [
+            [text_button(NAV_HOME), text_button(NAV_JOBS)],
+            [text_button(NAV_STATUS), text_button(NAV_ARCHIVE)],
+            [text_button(NAV_CACHE), text_button(NAV_MORE)],
+        ]
+
+    @staticmethod
+    def _more_text() -> str:
+        return (
+            "**更多工具**\n\n"
+            "这里是统计、运行健康和脱敏技术诊断。日常转发一般不需要打开这些页面。"
+        )
+
+    def _more_buttons(self):
+        return [
+            [Button.inline("📈 统计", b"ui:stats"), Button.inline("❤️ 运行健康", b"ui:health")],
+            [Button.inline("🩺 技术诊断", b"ui:diag"), Button.inline("❓ 使用帮助", b"ui:help")],
+            [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
+        ]
+
+    def _nav_buttons(self):
+        return [
+            [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("📊 刷新状态", b"ui:status")],
+            [Button.inline("🏠 首页", b"ui:home"), Button.inline("ℹ️ 更多", b"ui:more")],
+        ]
+
+    def _cache_buttons(self):
+        rows = []
+        if self._cache_operator is not None:
+            rows.append([Button.inline("🧹 清理已完成缓存", b"ui:cache-clean")])
+        rows.extend(
+            [
+                [Button.inline("🔄 刷新", b"ui:cache")],
+                [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
+            ]
+        )
+        return rows
+
+    async def _job_buttons(self, job: Job, *, deep: bool = False):
+        rows = []
+        action_row = []
+        if (
+            job.state == JobState.FAILED
+            and job.error_code not in {"publish_partial", "publish_uncertain"}
+            and self._control is not None
+        ):
+            action_row.append(
+                Button.inline("🔁 重试任务", self._callback_data("retry", job.id))
+            )
+        if not job.terminal and self._control is not None:
+            action_row.append(
+                Button.inline("⛔ 取消任务", self._callback_data("cancel", job.id))
+            )
+        if action_row:
+            rows.append(action_row)
+
+        package = await self._repository.get_archive_package_for_job(job.id)
+        if (
+            package is not None
+            and package.state == ArchivePackageState.FAILED
+            and getattr(self._settings, "archive_enabled", False)
+            and self._archive_operator is not None
+        ):
+            rows.append(
+                [
+                    Button.inline(
+                        "☁️ 重传失败归档",
+                        self._callback_data("archive-retry", job.id),
+                    )
+                ]
+            )
+
+        plan = await self._repository.get_publish_plan(job.id)
+        detail_row = []
+        if plan is not None:
+            detail_row.append(
+                Button.inline("🧠 发布计划", self._callback_data("plan", job.id))
+            )
+        if deep:
+            detail_row.append(
+                Button.inline("简明详情", self._callback_data("job", job.id))
+            )
+        else:
+            detail_row.append(
+                Button.inline("🩺 技术详情", self._callback_data("job-deep", job.id))
+            )
+        if detail_row:
+            rows.append(detail_row)
+        rows.append(
+            [Button.inline("← 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")]
+        )
+        return rows
+
+    def _plan_buttons(self, job: Job):
+        return [
+            [Button.inline("🔎 任务详情", self._callback_data("job", job.id))],
+            [Button.inline("← 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
+        ]
+
+    @staticmethod
+    def _callback_data(action: str, job_id: str) -> bytes:
+        payload = f"ui:{action}:{job_id}".encode("utf-8")
+        if len(payload) > 64:
+            raise ValueError("Telegram callback data exceeds 64 bytes")
+        return payload
 
     def _authorized(self, sender_id: int | None) -> bool:
         return sender_id is not None and int(sender_id) in self._settings.allowed_users
-

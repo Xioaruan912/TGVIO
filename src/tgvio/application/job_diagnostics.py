@@ -93,7 +93,7 @@ class JobDiagnosticService:
                     "critical",
                     code,
                     "Telegram 可见发送的结果不确定；系统已阻止盲目重发。",
-                    "先核对已确认 publish effects / 频道消息，再决定人工恢复。",
+                    "先核对目标频道中的实际消息，再决定是否人工恢复。",
                 )
             )
         elif code == "publish_partial":
@@ -101,8 +101,8 @@ class JobDiagnosticService:
                 DiagnosticHint(
                     "critical",
                     code,
-                    "Publish step 已确认部分外部副作用，但没有完整提交凭据。",
-                    "不要直接 /retry；先检查该 step 已确认消息。",
+                    "发布步骤已确认部分频道消息，但没有完整提交结果。",
+                    "不要直接重试；先检查目标频道中已经出现的消息。",
                 )
             )
         elif code == "disk_low":
@@ -120,7 +120,7 @@ class JobDiagnosticService:
                     "error",
                     code,
                     "任务失败于下载阶段，尚未产生 Telegram 发布副作用。",
-                    "网络/来源恢复后可走普通安全重试。",
+                    "网络或来源恢复后，可在任务详情中点“重试任务”。",
                 )
             )
         elif code == "media_analysis_failed":
@@ -129,7 +129,7 @@ class JobDiagnosticService:
                     "error",
                     code,
                     "媒体分析失败，发布尚未开始。",
-                    "检查 FFprobe/媒体格式后可安全重试。",
+                    "可以先安全重试；仍失败时请换一个文件或重新导出媒体。",
                 )
             )
         elif code == "publish_failed" and any(
@@ -140,8 +140,8 @@ class JobDiagnosticService:
                 DiagnosticHint(
                     "error",
                     "telegram_bot_method_invalid",
-                    "Telegram 拒绝了仅用户账号可调用的 MTProto 方法。",
-                    "检查 Telegram adapter 的 bot-safe fallback；不要把该错误当作媒体文件故障。",
+                    "Telegram 拒绝了仅用户账号可调用的方法。",
+                    "需要管理员检查 Telegram 适配逻辑；这不是媒体文件故障。",
                 )
             )
         elif code == "publish_failed":
@@ -149,8 +149,8 @@ class JobDiagnosticService:
                 DiagnosticHint(
                     "error",
                     code,
-                    "发布失败；是否可重试取决于失败 step 是否已有确认副作用。",
-                    "查看 Publish steps/effects；只有无副作用的失败 step 才允许自动安全重试。",
+                    "发布失败；能否重试取决于是否已有确认的频道消息。",
+                    "点“重试任务”后系统会检查记录，只有确认安全时才会继续。",
                 )
             )
 
@@ -162,8 +162,8 @@ class JobDiagnosticService:
                     DiagnosticHint(
                         "warning",
                         step.error_code or "publish_step_failed",
-                        f"Publish step {step.index} 失败；当前有 {confirmed} 个确认外部 effect。",
-                        "确认 effect 数量和实际频道消息一致后再处理该 step。",
+                        f"发布步骤 {step.index + 1} 失败；当前有 {confirmed} 条已确认消息记录。",
+                        "确认记录数量和实际频道消息一致后再处理这个步骤。",
                     )
                 )
 
@@ -173,8 +173,8 @@ class JobDiagnosticService:
                 DiagnosticHint(
                     "warning",
                     archive.error_code or "archive_failed",
-                    f"Telegram Job 与 Archive 独立；当前归档失败，失败对象 {failed_objects} 个。",
-                    "本地 canonical cache 会继续受保护，可用 /archive retry 任务ID 恢复同一 Package。",
+                    f"Telegram 发布与 WebDAV 归档相互独立；当前有 {failed_objects} 个文件归档失败。",
+                    "本地缓存会继续受保护，可在任务详情中点“重传失败归档”。",
                 )
             )
         elif (
@@ -186,8 +186,8 @@ class JobDiagnosticService:
                 DiagnosticHint(
                     "warning",
                     "archive_pending_after_publish",
-                    "Telegram 已发布成功，但 Archive 尚未 COMMITTED。",
-                    "不要清理该任务缓存；等待 Archive 完成或检查 /archive。",
+                    "Telegram 已发布成功，但 WebDAV 归档尚未完成。",
+                    "不要清理该任务缓存；等待归档完成或打开“归档”页面检查。",
                 )
             )
 
@@ -202,7 +202,7 @@ class JobDiagnosticService:
                     "warning",
                     "operational_log_error",
                     f"结构化日志中检测到错误事件：{recent_error_events[-1]}。",
-                    "查看 /diag job 任务ID 的最近日志时间线。",
+                    "在任务详情中点“技术详情”查看最近日志时间线。",
                 )
             )
 
@@ -212,7 +212,7 @@ class JobDiagnosticService:
                     DiagnosticHint(
                         "info",
                         "healthy_terminal",
-                        "未发现需要人工处理的 durable 异常。",
+                        "未发现需要人工处理的持久化异常。",
                     )
                 )
 
