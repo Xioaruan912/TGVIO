@@ -24,7 +24,16 @@ from tgvio.application.auto_recovery import (
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
+from tgvio.application.operation_tokens import (
+    OperationTokenInvalidError,
+    OperationTokenService,
+)
 from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepository
+from tgvio.application.undo import (
+    UndoOperationInvalidError,
+    UndoService,
+    UndoUnavailableError,
+)
 from tgvio.config import Settings
 from tgvio.domain.archive import ArchivePackageState
 from tgvio.domain.job import Job, JobState, MediaKind
@@ -124,6 +133,8 @@ class TelethonBotUI:
         archive_operator: ArchiveOperator | None = None,
         cache_operator: CacheOperator | None = None,
         job_diagnostics: JobDiagnosticService | None = None,
+        undo_service: UndoService | None = None,
+        operation_tokens: OperationTokenService | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -134,6 +145,8 @@ class TelethonBotUI:
         self._archive_operator = archive_operator
         self._cache_operator = cache_operator
         self._job_diagnostics = job_diagnostics or JobDiagnosticService(repository)
+        self._undo_service = undo_service
+        self._operation_tokens = operation_tokens
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 
@@ -449,19 +462,44 @@ class TelethonBotUI:
             return
 
         if action == "ui:cache-clean":
+            confirmation_data = b"ui:cache-clean-confirm"
+            if self._operation_tokens is not None and self._cache_operator is not None:
+                stats = await self._cache_operator.stats()
+                payload = {
+                    "scope": "managed_terminal_cache",
+                    "eligible_jobs": int(stats.eligible_jobs),
+                    "blocked_by_archive": int(stats.blocked_by_archive),
+                    "bytes_used": int(stats.bytes_used),
+                }
+                operation = await self._operation_tokens.issue(
+                    owner_id=owner_id,
+                    action="cache_cleanup",
+                    resource_type="cache",
+                    resource_id="managed",
+                    expected_revision=int(stats.eligible_jobs),
+                    payload=payload,
+                )
+                confirmation_data = self._callback_data("cache-clean-confirm", operation.token)
             await self._edit_page(
                 event,
                 "**确认清理缓存**\n\n只会删除已完成或已取消任务的缓存；失败任务和归档未完成任务不会被删除。",
                 [
                     [
-                        Button.inline("⚠️ 确认清理", b"ui:cache-clean-confirm"),
+                        Button.inline("⚠️ 确认清理", confirmation_data),
                         Button.inline("返回", b"ui:cache"),
                     ]
                 ],
             )
             return
         if action == "ui:cache-clean-confirm":
-            await self._run_cache_cleanup_callback(event)
+            await self._run_cache_cleanup_callback(event, owner_id=owner_id)
+            return
+        if action.startswith("ui:cache-clean-confirm:"):
+            await self._run_cache_cleanup_callback(
+                event,
+                owner_id=owner_id,
+                token=action[len("ui:cache-clean-confirm:") :],
+            )
             return
         if action == "ui:archive-probe":
             await self._edit_page(
@@ -483,6 +521,8 @@ class TelethonBotUI:
             return
 
         job_actions = (
+            ("ui:undo-confirm:", self._run_undo_callback),
+            ("ui:undo:", self._confirm_undo_callback),
             ("ui:archive-retry-confirm:", self._run_archive_retry_callback),
             ("ui:archive-retry:", self._confirm_archive_retry_callback),
             ("ui:retry-confirm:", self._run_retry_callback),
@@ -599,6 +639,20 @@ class TelethonBotUI:
                 await self._job_buttons(job),
             )
             return
+        control_state = await self._repository.get_job_control(job.id)
+        payload = {
+            "job_id": job.id,
+            "state": job.state.value,
+            "error_code": job.error_code or "",
+            "retry_count": control_state.retry_count,
+        }
+        confirmation_ref = await self._issue_job_operation(
+            job,
+            owner_id=owner_id,
+            action="retry_job",
+            expected_revision=control_state.retry_count,
+            payload=payload,
+        )
         label = await self._job_label(job)
         await self._edit_page(
             event,
@@ -611,17 +665,44 @@ class TelethonBotUI:
                 [
                     Button.inline(
                         "确认安全重试",
-                        self._callback_data("retry-confirm", job.id),
+                        self._callback_data("retry-confirm", confirmation_ref),
                     ),
                     Button.inline("返回", self._callback_data("job", job.id)),
                 ]
             ],
         )
 
-    async def _run_retry_callback(self, event, owner_id: int, job_id: str) -> None:
-        job = await self._owned_job(owner_id, job_id)
+    async def _run_retry_callback(self, event, owner_id: int, reference: str) -> None:
+        job, operation = await self._job_from_operation(
+            owner_id,
+            reference,
+            action="retry_job",
+        )
         if job is None:
-            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            message = (
+                "任务不存在或无权限"
+                if self._operation_tokens is None
+                else "确认操作已过期，请重新打开任务"
+            )
+            await self._safe_answer(event, message, alert=True)
+            return
+        control_state = await self._repository.get_job_control(job.id)
+        payload = {
+            "job_id": job.id,
+            "state": job.state.value,
+            "error_code": job.error_code or "",
+            "retry_count": control_state.retry_count,
+        }
+        if not await self._consume_job_operation(
+            owner_id,
+            reference,
+            operation,
+            action="retry_job",
+            job=job,
+            expected_revision=control_state.retry_count,
+            payload=payload,
+        ):
+            await self._safe_answer(event, "确认操作已过期，请重新打开任务", alert=True)
             return
         text = await self._retry_exact(job, chat_id=event.chat_id)
         current = await self._owned_job(owner_id, job.id)
@@ -636,6 +717,22 @@ class TelethonBotUI:
         if job.terminal:
             await self._safe_answer(event, "任务已经结束，不能取消", alert=True)
             return
+        control_state = await self._repository.get_job_control(job.id)
+        revision = control_state.retry_count * 1_000_000 + control_state.hold_revision
+        payload = {
+            "job_id": job.id,
+            "state": job.state.value,
+            "cancel_requested": control_state.cancel_requested,
+            "retry_count": control_state.retry_count,
+            "hold_revision": control_state.hold_revision,
+        }
+        confirmation_ref = await self._issue_job_operation(
+            job,
+            owner_id=owner_id,
+            action="cancel_job",
+            expected_revision=revision,
+            payload=payload,
+        )
         label = await self._job_label(job)
         await self._edit_page(
             event,
@@ -647,17 +744,46 @@ class TelethonBotUI:
                 [
                     Button.inline(
                         "⚠️ 确认取消",
-                        self._callback_data("cancel-confirm", job.id),
+                        self._callback_data("cancel-confirm", confirmation_ref),
                     ),
                     Button.inline("返回", self._callback_data("job", job.id)),
                 ]
             ],
         )
 
-    async def _run_cancel_callback(self, event, owner_id: int, job_id: str) -> None:
-        job = await self._owned_job(owner_id, job_id)
+    async def _run_cancel_callback(self, event, owner_id: int, reference: str) -> None:
+        job, operation = await self._job_from_operation(
+            owner_id,
+            reference,
+            action="cancel_job",
+        )
         if job is None:
-            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            message = (
+                "任务不存在或无权限"
+                if self._operation_tokens is None
+                else "确认操作已过期，请重新打开任务"
+            )
+            await self._safe_answer(event, message, alert=True)
+            return
+        control_state = await self._repository.get_job_control(job.id)
+        revision = control_state.retry_count * 1_000_000 + control_state.hold_revision
+        payload = {
+            "job_id": job.id,
+            "state": job.state.value,
+            "cancel_requested": control_state.cancel_requested,
+            "retry_count": control_state.retry_count,
+            "hold_revision": control_state.hold_revision,
+        }
+        if not await self._consume_job_operation(
+            owner_id,
+            reference,
+            operation,
+            action="cancel_job",
+            job=job,
+            expected_revision=revision,
+            payload=payload,
+        ):
+            await self._safe_answer(event, "确认操作已过期，请重新打开任务", alert=True)
             return
         text = await self._cancel_exact(job, owner_id=owner_id)
         current = await self._owned_job(owner_id, job.id)
@@ -684,6 +810,87 @@ class TelethonBotUI:
         buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
         await self._edit_page(event, text, buttons)
 
+    async def _confirm_undo_callback(self, event, owner_id: int, job_id: str) -> None:
+        if self._undo_service is None:
+            await self._safe_answer(event, "撤销服务未启用", alert=True)
+            return
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        try:
+            confirmation = await self._undo_service.prepare(job, owner_id=owner_id)
+        except UndoUnavailableError:
+            await self._safe_answer(event, "当前没有可撤销的已发布消息", alert=True)
+            return
+        status = confirmation.status
+        label = await self._job_label(job)
+        await self._edit_page(
+            event,
+            (
+                f"**⚠️ 确认撤销发布 · {label}**\n\n"
+                f"将删除已确认的 Telegram 消息：`{status.remaining_messages}` 条\n"
+                f"频道：`{status.remaining_channel_messages}` · 评论区：`{status.remaining_discussion_messages}`\n\n"
+                "只删除这个任务已记录的消息；不会删除任务历史或 WebDAV 归档。\n"
+                "确认令牌 5 分钟内有效，并且只能使用一次。"
+            ),
+            [
+                [
+                    Button.inline(
+                        "⚠️ 确认撤销",
+                        self._callback_data("undo-confirm", confirmation.operation.token),
+                    ),
+                    Button.inline("返回", self._callback_data("job", job.id)),
+                ]
+            ],
+        )
+
+    async def _run_undo_callback(self, event, owner_id: int, token: str) -> None:
+        if self._undo_service is None:
+            await self._safe_answer(event, "撤销服务未启用", alert=True)
+            return
+        await self._safe_answer(event, "正在撤销已确认的消息…")
+        try:
+            result = await self._undo_service.confirm(owner_id=owner_id, token=token)
+        except UndoOperationInvalidError:
+            await self._edit_page(
+                event,
+                "**撤销操作已过期**\n\n任务状态、已发布消息或确认令牌已经变化。请重新打开任务详情后再操作。",
+                self._nav_buttons(),
+            )
+            return
+        job = await self._owned_job(owner_id, result.job_id)
+        label = await self._job_label(job) if job is not None else "任务"
+        if result.complete:
+            text = (
+                f"**✅ 撤销完成 · {label}**\n\n"
+                f"已删除 `{result.deleted_total}/{result.total_messages}` 条已确认 Telegram 消息。\n"
+                "原始发布事实和撤销审计记录仍保留。"
+            )
+            buttons = (
+                await self._job_buttons(job)
+                if job is not None
+                else self._nav_buttons()
+            )
+        else:
+            text = (
+                f"**⚠️ 撤销未完全完成 · {label}**\n\n"
+                f"本次删除：`{result.deleted_now}` 条\n"
+                f"累计已删除：`{result.deleted_total}/{result.total_messages}` 条\n"
+                f"仍需处理：`{result.remaining_messages}` 条\n\n"
+                "已成功删除的消息不会再次删除；可继续处理剩余项。"
+            )
+            buttons = [
+                [
+                    Button.inline(
+                        "↩️ 继续撤销剩余消息",
+                        self._callback_data("undo", result.job_id),
+                    )
+                ],
+                [Button.inline("🔎 任务详情", self._callback_data("job", result.job_id))],
+            ]
+        await self._edit_page(event, text, buttons)
+
     async def _confirm_archive_retry_callback(
         self,
         event,
@@ -699,6 +906,21 @@ class TelethonBotUI:
             await self._safe_answer(event, "归档状态已变化，请刷新", alert=True)
             return
         issue = describe_archive_failure(package.error_code)
+        archive_events = await self._repository.list_archive_events(package.id)
+        payload = {
+            "job_id": job.id,
+            "package_id": package.id,
+            "state": package.state.value,
+            "error_code": package.error_code or "",
+            "event_count": len(archive_events),
+        }
+        confirmation_ref = await self._issue_job_operation(
+            job,
+            owner_id=owner_id,
+            action="archive_retry",
+            expected_revision=len(archive_events),
+            payload=payload,
+        )
         label = await self._job_label(job)
         await self._edit_page(
             event,
@@ -711,7 +933,7 @@ class TelethonBotUI:
                 [
                     Button.inline(
                         "确认重传归档",
-                        self._callback_data("archive-retry-confirm", job.id),
+                        self._callback_data("archive-retry-confirm", confirmation_ref),
                     ),
                     Button.inline("返回", self._callback_data("job", job.id)),
                 ]
@@ -722,21 +944,90 @@ class TelethonBotUI:
         self,
         event,
         owner_id: int,
-        job_id: str,
+        reference: str,
     ) -> None:
-        job = await self._owned_job(owner_id, job_id)
+        job, operation = await self._job_from_operation(
+            owner_id,
+            reference,
+            action="archive_retry",
+        )
         if job is None:
-            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            message = (
+                "任务不存在或无权限"
+                if self._operation_tokens is None
+                else "确认操作已过期，请重新打开任务"
+            )
+            await self._safe_answer(event, message, alert=True)
+            return
+        package = await self._repository.get_archive_package_for_job(job.id)
+        if package is None or package.state != ArchivePackageState.FAILED:
+            await self._safe_answer(event, "归档状态已变化，请重新打开任务", alert=True)
+            return
+        archive_events = await self._repository.list_archive_events(package.id)
+        payload = {
+            "job_id": job.id,
+            "package_id": package.id,
+            "state": package.state.value,
+            "error_code": package.error_code or "",
+            "event_count": len(archive_events),
+        }
+        if not await self._consume_job_operation(
+            owner_id,
+            reference,
+            operation,
+            action="archive_retry",
+            job=job,
+            expected_revision=len(archive_events),
+            payload=payload,
+        ):
+            await self._safe_answer(event, "确认操作已过期，请重新打开任务", alert=True)
             return
         text = await self._archive_retry_exact(job)
         current = await self._owned_job(owner_id, job.id)
         buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
         await self._edit_page(event, text, buttons)
 
-    async def _run_cache_cleanup_callback(self, event) -> None:
+    async def _run_cache_cleanup_callback(
+        self,
+        event,
+        *,
+        owner_id: int | None = None,
+        token: str | None = None,
+    ) -> None:
         if self._cache_operator is None:
             await self._edit_page(event, "缓存维护服务未启用。", self._nav_buttons())
             return
+        if self._operation_tokens is not None:
+            if owner_id is None or not token:
+                await self._safe_answer(event, "确认操作已过期，请重新打开缓存页面", alert=True)
+                return
+            try:
+                operation = await self._operation_tokens.inspect(
+                    token=token,
+                    owner_id=owner_id,
+                    action="cache_cleanup",
+                )
+                if operation.resource_type != "cache" or operation.resource_id != "managed":
+                    raise OperationTokenInvalidError("invalid cache resource")
+                stats = await self._cache_operator.stats()
+                payload = {
+                    "scope": "managed_terminal_cache",
+                    "eligible_jobs": int(stats.eligible_jobs),
+                    "blocked_by_archive": int(stats.blocked_by_archive),
+                    "bytes_used": int(stats.bytes_used),
+                }
+                await self._operation_tokens.consume(
+                    token=token,
+                    owner_id=owner_id,
+                    action="cache_cleanup",
+                    resource_type="cache",
+                    resource_id="managed",
+                    expected_revision=int(stats.eligible_jobs),
+                    payload=payload,
+                )
+            except OperationTokenInvalidError:
+                await self._safe_answer(event, "确认操作已过期，请重新打开缓存页面", alert=True)
+                return
         try:
             result = await self._cache_operator.cleanup(force=True)
         except Exception as exc:
@@ -873,6 +1164,77 @@ class TelethonBotUI:
         get_order = getattr(self._repository, "get_accepted_order", None)
         accepted_order = await get_order(job.id) if callable(get_order) else None
         return self._job_number(accepted_order)
+
+    async def _issue_job_operation(
+        self,
+        job: Job,
+        *,
+        owner_id: int,
+        action: str,
+        expected_revision: int,
+        payload: dict[str, object],
+    ) -> str:
+        if self._operation_tokens is None:
+            return job.id
+        operation = await self._operation_tokens.issue(
+            owner_id=owner_id,
+            action=action,
+            resource_type="job",
+            resource_id=job.id,
+            expected_revision=expected_revision,
+            payload=payload,
+        )
+        return operation.token
+
+    async def _job_from_operation(
+        self,
+        owner_id: int,
+        reference: str,
+        *,
+        action: str,
+    ) -> tuple[Job | None, object | None]:
+        if self._operation_tokens is None:
+            return await self._owned_job(owner_id, reference), None
+        try:
+            operation = await self._operation_tokens.inspect(
+                token=reference,
+                owner_id=owner_id,
+                action=action,
+            )
+        except OperationTokenInvalidError:
+            return None, None
+        if operation.resource_type != "job":
+            return None, None
+        return await self._owned_job(owner_id, operation.resource_id), operation
+
+    async def _consume_job_operation(
+        self,
+        owner_id: int,
+        reference: str,
+        operation: object | None,
+        *,
+        action: str,
+        job: Job,
+        expected_revision: int,
+        payload: dict[str, object],
+    ) -> bool:
+        if self._operation_tokens is None:
+            return True
+        if operation is None:
+            return False
+        try:
+            await self._operation_tokens.consume(
+                token=reference,
+                owner_id=owner_id,
+                action=action,
+                resource_type="job",
+                resource_id=job.id,
+                expected_revision=expected_revision,
+                payload=payload,
+            )
+        except OperationTokenInvalidError:
+            return False
+        return True
 
     async def _owned_job(self, owner_id: int, job_id: str) -> Job | None:
         if not job_id or len(job_id) > 40:
@@ -1546,6 +1908,19 @@ class TelethonBotUI:
             deep=deep,
             accepted_order=accepted_order,
         )
+        if self._undo_service is not None and job.terminal:
+            undo_status = await self._undo_service.status(job)
+            if undo_status.total_messages > 0:
+                if undo_status.complete:
+                    text += (
+                        f"\n\n↩️ **发布撤销** · 已删除 `{undo_status.deleted_messages}/"
+                        f"{undo_status.total_messages}` 条已确认 Telegram 消息。"
+                    )
+                elif undo_status.deleted_messages or undo_status.failed_messages:
+                    text += (
+                        f"\n\n↩️ **发布撤销** · 已删除 `{undo_status.deleted_messages}/"
+                        f"{undo_status.total_messages}`，仍需处理 `{undo_status.remaining_messages}` 条。"
+                    )
         control = await self._repository.get_job_control(job.id)
         if control.hold_requested and not job.terminal:
             text += "\n\n⏸ **任务已暂停** · 当前缓存已保留，恢复后从安全边界继续。"
@@ -1988,6 +2363,18 @@ class TelethonBotUI:
         if error:
             await event.respond(f"🛡️ 不能用于受控发布：{error}")
             return
+        confirmation_ref = await self._issue_job_operation(
+            job,
+            owner_id=owner_id,
+            action="fixture_publish",
+            expected_revision=int(plan.version),
+            payload={
+                "job_id": job.id,
+                "plan_id": plan.id,
+                "plan_version": int(plan.version),
+                "state": job.state.value,
+            },
+        )
         label = await self._job_label(job)
         await event.respond(
             (
@@ -2000,7 +2387,7 @@ class TelethonBotUI:
                 [
                     Button.inline(
                         "⚠️ 确认真实发布",
-                        f"ui:fixture-confirm:{job.id}".encode(),
+                        self._callback_data("fixture-confirm", confirmation_ref),
                     ),
                     Button.inline("取消", b"ui:fixture-cancel"),
                 ]
@@ -2008,15 +2395,24 @@ class TelethonBotUI:
             parse_mode="md",
         )
 
-    async def _confirm_fixture_publish(self, event, owner_id: int, job_id: str) -> None:
+    async def _confirm_fixture_publish(self, event, owner_id: int, reference: str) -> None:
         if self._fixture_execution is None or not getattr(
             self._settings, "live_fixture_enabled", False
         ):
             await event.answer("受控发布未启用", alert=True)
             return
-        job = await self._repository.get(job_id)
-        if job is None or job.owner_id != owner_id:
-            await event.answer("任务不存在或无权限", alert=True)
+        job, operation = await self._job_from_operation(
+            owner_id,
+            reference,
+            action="fixture_publish",
+        )
+        if job is None:
+            message = (
+                "任务不存在或无权限"
+                if self._operation_tokens is None
+                else "确认操作已过期，请重新发起"
+            )
+            await event.answer(message, alert=True)
             return
         plan = await self._repository.get_publish_plan(job.id)
         if plan is None:
@@ -2025,6 +2421,23 @@ class TelethonBotUI:
         error = self._fixture_validation_error(job, plan)
         if error:
             await event.answer(error, alert=True)
+            return
+        payload = {
+            "job_id": job.id,
+            "plan_id": plan.id,
+            "plan_version": int(plan.version),
+            "state": job.state.value,
+        }
+        if not await self._consume_job_operation(
+            owner_id,
+            reference,
+            operation,
+            action="fixture_publish",
+            job=job,
+            expected_revision=int(plan.version),
+            payload=payload,
+        ):
+            await event.answer("确认操作已过期，请重新发起", alert=True)
             return
         await event.answer("受控发布已开始")
         await event.edit(
@@ -2402,6 +2815,18 @@ class TelethonBotUI:
                     )
                 ]
             )
+
+        if self._undo_service is not None and job.terminal:
+            undo_status = await self._undo_service.status(job)
+            if undo_status.remaining_messages > 0:
+                rows.append(
+                    [
+                        Button.inline(
+                            "↩️ 撤销发布",
+                            self._callback_data("undo", job.id),
+                        )
+                    ]
+                )
 
         plan = await self._repository.get_publish_plan(job.id)
         detail_row = []

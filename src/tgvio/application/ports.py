@@ -25,6 +25,7 @@ from tgvio.domain.intake import (
 )
 from tgvio.domain.job import Job, JobEvent, JobState, MediaItem, MediaKind
 from tgvio.domain.job_query import FailurePage, JobListFilter, JobPage
+from tgvio.domain.operations import OperationToken, PublishEffectRevocation, RevocationState
 from tgvio.domain.publish import (
     PublishEffect,
     PublishPlan,
@@ -195,6 +196,59 @@ class JobRepository(Protocol):
     ) -> list[PublishEffect]: ...
 
     async def list_publish_effects(self, plan_id: str) -> list[PublishEffect]: ...
+
+    async def create_operation_token(
+        self,
+        *,
+        token: str,
+        owner_id: int,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        expected_revision: int,
+        payload_hash: str,
+        payload: dict[str, object],
+        ttl_seconds: int,
+    ) -> OperationToken: ...
+
+    async def get_operation_token(self, token: str) -> OperationToken | None: ...
+
+    async def consume_operation_token(
+        self,
+        *,
+        token: str,
+        owner_id: int,
+        action: str,
+        resource_type: str,
+        resource_id: str,
+        expected_revision: int,
+        payload_hash: str,
+    ) -> OperationToken | None: ...
+
+    async def ensure_publish_effect_revocations(
+        self,
+        job_id: str,
+        effect_ids: tuple[int, ...],
+    ) -> None: ...
+
+    async def list_publish_effect_revocations(
+        self,
+        job_id: str,
+    ) -> list[PublishEffectRevocation]: ...
+
+    async def checkpoint_publish_effect_revocations(
+        self,
+        job_id: str,
+        effect_ids: tuple[int, ...],
+        *,
+        state: RevocationState,
+        error_code: str | None = None,
+    ) -> list[PublishEffectRevocation]: ...
+
+    async def list_publish_effect_revocation_events(
+        self,
+        job_id: str,
+    ) -> list[dict[str, object]]: ...
 
     async def get_telegram_reference(
         self,
@@ -381,6 +435,10 @@ class MediaDownloader(Protocol):
         target_dir: Path,
         progress_callback: TransferProgressCallback | None = None,
     ) -> MediaItem: ...
+
+
+class PublishedMessageRemover(Protocol):
+    async def delete_message(self, peer_id: int, message_id: int) -> None: ...
 
 
 class PublishTransport(Protocol):

@@ -62,6 +62,25 @@ else:
 PY
 }
 
+json_int_list_csv() {
+  local file=$1
+  local field=$2
+  python3 - "$file" "$field" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+value = json.loads(Path(sys.argv[1]).read_text(encoding="utf-8"))
+for part in sys.argv[2].split("."):
+    if not isinstance(value, dict) or part not in value:
+        raise SystemExit(f"missing JSON field: {sys.argv[2]}")
+    value = value[part]
+if not isinstance(value, list) or any(isinstance(item, bool) or not isinstance(item, int) for item in value):
+    raise SystemExit(f"JSON field is not an integer list: {sys.argv[2]}")
+print(",".join(str(item) for item in value))
+PY
+}
+
 wait_for_health() {
   local deadline=$((SECONDS + 180))
   local state
@@ -359,6 +378,29 @@ deploy_release() {
   write_previous_json "$evidence_dir/previous.json" "$preflight_backup"
   write_backup_json "$evidence_dir/backup.json" "$evidence_dir/database-backup.json" \
     "$rollback_dir/source-pre.tar.gz" "$rollback_dir/env-pre.bak" "$rollback_tag"
+
+  if [[ "$migration_spec" != none ]]; then
+    stage=migration-rehearsal
+    rehearsal_dir="$release_dir/rehearsal"
+    rehearsal_report="$evidence_dir/migration-rehearsal.json"
+    expected_version=$((10#${migration_spec%%_*}))
+    (
+      trap 'find "$rehearsal_dir" -depth -delete 2>/dev/null || true' EXIT
+      mkdir -p "$rehearsal_dir/backups"
+      python3 "$source_dir/scripts/release_guard.py" sqlite-backup \
+        "$rollback_dir/state-pre.sqlite3" "$rehearsal_dir/state-copy.sqlite3" \
+        >"$evidence_dir/migration-rehearsal-copy.json"
+      python3 "$source_dir/scripts/rehearse_migration.py" \
+        "$rehearsal_dir/state-copy.sqlite3" \
+        --backup-dir "$rehearsal_dir/backups" >"$rehearsal_report"
+      [[ "$(json_value "$rehearsal_report" status)" == passed ]] || die "migration rehearsal did not pass"
+      [[ "$(json_value "$rehearsal_report" migration.from_version)" == "$(json_value "$preflight_backup" database.user_version)" ]] || die "migration rehearsal source version differs from production"
+      [[ "$(json_value "$rehearsal_report" migration.to_version)" == "$expected_version" ]] || die "migration rehearsal target version differs from declared migration"
+      [[ "$(json_int_list_csv "$rehearsal_report" migration.applied_now)" == "$expected_version" ]] || die "migration rehearsal applied set differs from declared migration"
+      [[ "$(json_value "$rehearsal_report" before.schema_sql_sha256)" == "$(json_value "$preflight_backup" database.schema_sql_sha256)" ]] || die "migration rehearsal source schema differs from production"
+      [[ "$(json_value "$rehearsal_report" backup.schema_sql_sha256)" == "$(json_value "$preflight_backup" database.schema_sql_sha256)" ]] || die "migration rehearsal backup does not preserve production schema"
+    )
+  fi
 
   stage=release-compose-config
   write_release_env "$source_dir/.release.env" "$image_ref" "$commit" "$release_id" \

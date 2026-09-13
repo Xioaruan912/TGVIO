@@ -105,7 +105,7 @@ class SourceGuardTests(unittest.TestCase):
 class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
-        self.assertEqual(result["python_files"], 62)
+        self.assertEqual(result["python_files"], 67)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -316,6 +316,17 @@ class RemotePreflightSchemaTests(unittest.TestCase):
             )
         )
 
+    def test_known_v5_schema_requires_ledger(self) -> None:
+        self.assertTrue(
+            _database_schema_is_known(
+                {
+                    "user_version": 5,
+                    "migration_ledger_present": True,
+                    "schema_sql_sha256": "c70f05023d89fb89127070a4cffb7f6232609b578eb9e47e4d20fc79afb879c2",
+                }
+            )
+        )
+
     def test_unknown_hash_or_ledger_mismatch_fails_closed(self) -> None:
         self.assertFalse(
             _database_schema_is_known(
@@ -397,6 +408,18 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("rollback image tag mismatch", scripts)
         self.assertIn("GIT_ASKPASS", scripts)
         self.assertIn("getpass.getpass", scripts)
+
+    def test_schema_release_rehearses_production_backup_before_cutover(self) -> None:
+        script = (ROOT / "scripts" / "remote_release.sh").read_text(encoding="utf-8")
+        rehearsal = script.index("stage=migration-rehearsal")
+        cutover = script.index("stage=preflight-before-cutover")
+        self.assertLess(rehearsal, cutover)
+        self.assertIn('"$rollback_dir/state-pre.sqlite3" "$rehearsal_dir/state-copy.sqlite3"', script)
+        self.assertIn('scripts/rehearse_migration.py', script)
+        self.assertIn('migration.applied_now', script)
+        self.assertIn('before.schema_sql_sha256', script)
+        self.assertIn('backup.schema_sql_sha256', script)
+        self.assertIn('find "$rehearsal_dir" -depth -delete', script)
 
     def test_log_query_wrapper_uses_host_source_and_shared_log(self) -> None:
         wrapper = (ROOT / "scripts" / "logs.sh").read_text(encoding="utf-8")

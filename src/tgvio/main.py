@@ -11,6 +11,7 @@ from tgvio.adapters.telegram.bot_ui import TelethonBotUI
 from tgvio.adapters.telegram.discussion_resolver import BotApiDiscussionResolver
 from tgvio.adapters.telegram.intake_runtime import TelethonIntakeRuntime
 from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
+from tgvio.adapters.telegram.message_remover import TelethonPublishedMessageRemover
 from tgvio.adapters.telegram.publish_transport import TelethonPublishTransport
 from tgvio.adapters.telegram.telethon_gateway import TelethonGateway
 from tgvio.adapters.url_downloader import UrlMediaDownloader
@@ -32,11 +33,13 @@ from tgvio.application.job_runner import JobRunner
 from tgvio.application.media_analyzer import MediaAnalyzer
 from tgvio.application.media_downloader import JobDownloader
 from tgvio.application.media_router import RoutedMediaDownloader
+from tgvio.application.operation_tokens import OperationTokenService
 from tgvio.application.orchestrator import JobOrchestrator, PlanningPolicy
 from tgvio.application.processor import IngestionProcessor
 from tgvio.application.reference_cache import TelegramReferenceEnricher
 from tgvio.application.runtime_health import RuntimeHealthHeartbeat
 from tgvio.application.scheduler import RuntimeLeaseGuard
+from tgvio.application.undo import UndoService
 from tgvio.config import Settings, load_dotenv
 from tgvio.infrastructure.media_inspector import FFprobeMediaInspector
 from tgvio.infrastructure.log_reader import JsonlOperationalLogReader
@@ -216,6 +219,12 @@ async def run(*, check_only: bool = False) -> None:
             intake_runtime.recover,
             poll_seconds=settings.auto_retry_poll_seconds,
         )
+        operation_tokens = OperationTokenService(repository)
+        undo_service = UndoService(
+            repository,
+            TelethonPublishedMessageRemover(gateway.client),
+            operation_tokens=operation_tokens,
+        )
         bot_ui = TelethonBotUI(
             gateway.client,
             settings,
@@ -233,6 +242,8 @@ async def run(*, check_only: bool = False) -> None:
                 if settings.log_file_enabled
                 else None,
             ),
+            undo_service=undo_service,
+            operation_tokens=operation_tokens,
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()

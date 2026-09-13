@@ -12,6 +12,8 @@ from tgvio.adapters.telegram.bot_ui import (
     TelethonBotUI,
 )
 from tgvio.application.job_control import RetryDecision
+from tgvio.application.operation_tokens import OperationTokenInvalidError
+from tgvio.application.undo import UndoOperationInvalidError
 from tgvio.domain.archive import ArchivePackage, ArchivePackageState
 from tgvio.domain.control import JobControlState, QueueControlState
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
@@ -209,6 +211,120 @@ class FakeArchiveOperator:
         return SimpleNamespace(id=package_id)
 
 
+class FakeOperationTokens:
+    def __init__(self) -> None:
+        self.operations = {}
+        self.consumed: set[str] = set()
+        self.consume_calls = 0
+
+    async def issue(
+        self,
+        *,
+        owner_id,
+        action,
+        resource_type,
+        resource_id,
+        expected_revision,
+        payload,
+    ):
+        token = f"op-{action}"
+        operation = SimpleNamespace(
+            token=token,
+            owner_id=owner_id,
+            action=action,
+            resource_type=resource_type,
+            resource_id=resource_id,
+            expected_revision=expected_revision,
+            payload=payload,
+            consumed_at=None,
+        )
+        self.operations[token] = operation
+        return operation
+
+    async def inspect(self, *, token, owner_id, action):
+        operation = self.operations.get(token)
+        if (
+            operation is None
+            or operation.owner_id != owner_id
+            or operation.action != action
+            or token in self.consumed
+        ):
+            raise OperationTokenInvalidError("invalid")
+        return operation
+
+    async def consume(
+        self,
+        *,
+        token,
+        owner_id,
+        action,
+        resource_type,
+        resource_id,
+        expected_revision,
+        payload,
+    ):
+        operation = await self.inspect(token=token, owner_id=owner_id, action=action)
+        if (
+            operation.resource_type != resource_type
+            or operation.resource_id != resource_id
+            or operation.expected_revision != expected_revision
+            or operation.payload != payload
+        ):
+            raise OperationTokenInvalidError("stale")
+        self.consume_calls += 1
+        self.consumed.add(token)
+        return operation
+
+
+class FakeUndoService:
+    def __init__(self, *, partial: bool = False, invalid: bool = False) -> None:
+        self.prepare_calls = 0
+        self.confirm_calls = 0
+        self.partial = partial
+        self.invalid = invalid
+        self.completed = False
+
+    async def status(self, job):
+        return SimpleNamespace(remaining_messages=0 if self.completed else 2)
+
+    async def prepare(self, job, *, owner_id):
+        self.prepare_calls += 1
+        status = SimpleNamespace(
+            remaining_messages=2,
+            channel_messages=1,
+            discussion_messages=1,
+            remaining_channel_messages=1,
+            remaining_discussion_messages=1,
+        )
+        return SimpleNamespace(
+            operation=SimpleNamespace(token="undo-token-1234"),
+            status=status,
+        )
+
+    async def confirm(self, *, owner_id, token):
+        self.confirm_calls += 1
+        if self.invalid:
+            raise UndoOperationInvalidError("expired")
+        if self.partial:
+            return SimpleNamespace(
+                job_id="a" * 32,
+                complete=False,
+                deleted_now=1,
+                deleted_total=1,
+                total_messages=2,
+                remaining_messages=1,
+            )
+        self.completed = True
+        return SimpleNamespace(
+            job_id="a" * 32,
+            complete=True,
+            deleted_now=2,
+            deleted_total=2,
+            total_messages=2,
+            remaining_messages=0,
+        )
+
+
 class FakeCacheOperator:
     def __init__(self) -> None:
         self.cleanup_calls = 0
@@ -342,9 +458,89 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             "resume",
             "archive-retry",
             "archive-retry-confirm",
+            "undo",
+            "undo-confirm",
         ):
             payload = ui._callback_data(action, "f" * 32)
             self.assertLessEqual(len(payload), 64)
+
+    async def test_undo_requires_confirmation_before_service_confirm(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([completed])
+        undo = FakeUndoService()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            undo_service=undo,  # type: ignore[arg-type]
+        )
+
+        buttons = await ui._job_buttons(completed)
+        payloads = [
+            button.data
+            for row in buttons
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(f"ui:undo:{completed.id}".encode(), payloads)
+
+        request = FakeEvent(data=f"ui:undo:{completed.id}".encode())
+        await ui._on_callback(request)
+        self.assertEqual(undo.prepare_calls, 1)
+        self.assertEqual(undo.confirm_calls, 0)
+        self.assertIn("确认撤销发布", request.edits[0][0])
+        confirm_payloads = [
+            button.data
+            for row in request.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(b"ui:undo-confirm:undo-token-1234", confirm_payloads)
+
+        confirm = FakeEvent(data=b"ui:undo-confirm:undo-token-1234")
+        await ui._on_callback(confirm)
+        self.assertEqual(undo.confirm_calls, 1)
+        self.assertIn("撤销完成", confirm.edits[0][0])
+        self.assertTrue(confirm.answers)
+
+    async def test_partial_undo_offers_continue_without_reusing_successful_items(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([completed])
+        undo = FakeUndoService(partial=True)
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            undo_service=undo,  # type: ignore[arg-type]
+        )
+        event = FakeEvent(data=b"ui:undo-confirm:undo-token-1234")
+
+        await ui._on_callback(event)
+
+        self.assertIn("撤销未完全完成", event.edits[0][0])
+        payloads = [
+            button.data
+            for row in event.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(f"ui:undo:{completed.id}".encode(), payloads)
+
+    async def test_expired_undo_token_does_not_call_delete_path_twice(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        undo = FakeUndoService(invalid=True)
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            FakeRepository([completed]),
+            undo_service=undo,  # type: ignore[arg-type]
+        )
+        event = FakeEvent(data=b"ui:undo-confirm:expired-token")
+
+        await ui._on_callback(event)
+
+        self.assertEqual(undo.confirm_calls, 1)
+        self.assertIn("撤销操作已过期", event.edits[0][0])
 
     async def test_jobs_page_uses_direct_buttons_and_friendly_failure_text(self) -> None:
         failed = job()
@@ -637,6 +833,42 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(control.cancel_calls, 1)
         self.assertIn("已取消", confirm.edits[0][0])
+
+    async def test_cancel_confirmation_uses_single_use_operation_token_when_enabled(self) -> None:
+        active = job(state=JobState.DOWNLOADING, error_code=None)
+        repository = FakeRepository([active])
+        control = FakeControl(repository)
+        operations = FakeOperationTokens()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            control=control,
+            operation_tokens=operations,  # type: ignore[arg-type]
+        )
+        request = FakeEvent(data=f"ui:cancel:{active.id}".encode())
+
+        await ui._on_callback(request)
+
+        payloads = [
+            button.data
+            for row in request.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(b"ui:cancel-confirm:op-cancel_job", payloads)
+        self.assertEqual(control.cancel_calls, 0)
+
+        confirm = FakeEvent(data=b"ui:cancel-confirm:op-cancel_job")
+        await ui._on_callback(confirm)
+        self.assertEqual(control.cancel_calls, 1)
+        self.assertEqual(operations.consume_calls, 1)
+
+        repeated = FakeEvent(data=b"ui:cancel-confirm:op-cancel_job")
+        await ui._on_callback(repeated)
+        self.assertEqual(control.cancel_calls, 1)
+        self.assertEqual(operations.consume_calls, 1)
+        self.assertIn("确认操作已过期", repeated.answers[0][0])
 
     async def test_hold_and_resume_buttons_toggle_durable_control_and_reschedule(self) -> None:
         active = job(state=JobState.DOWNLOADING, error_code=None)
