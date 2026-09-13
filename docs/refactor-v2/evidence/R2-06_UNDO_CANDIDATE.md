@@ -54,16 +54,28 @@ Undo only targets durable effects of type:
 
 Each delete uses Telegram peer + message ID and `revoke=True`. After every external delete attempt the repository immediately records success/failure. A later retry reconstructs the remaining target set and never re-deletes a message already checkpointed as deleted.
 
+The post-candidate review tightened the operational boundary further:
+
+- delete children in the discussion group before deleting the channel root;
+- bound each Telegram delete to 10 seconds, retry transient failures once, stop after two consecutive terminal failures, and cap one confirmation run at 60 seconds;
+- record every failed transport attempt even when the bounded automatic retry later succeeds;
+- reject expired tokens during inspection as well as during atomic consumption;
+- keep normal Job pages usable if undo status storage is temporarily unavailable, with a Chinese actionable error instead of an unhandled callback;
+- bind cache cleanup tokens to the exact sorted Job-ID target set and pass that same set to execution, so a newly completed Job cannot be swept by an older confirmation page;
+- stop reporting already-cleaned Job rows as cache-cleanup candidates.
+
 No caption, URL, local path, credential, or message content is stored in operation-token payloads or revocation audit rows.
 
 ## Candidate validation completed so far
 
-- mounted-source full unittest discovery: `289` tests, all passed;
+- post-review mounted-source foundation: `304` tests / `28.982s`, all passed;
 - final fresh-image foundation: `290` tests / `35.867s` / `foundation_gates=passed`;
 - v0/v1/v2/v3/v4 forward migration coverage to latest v5 passed;
 - explicit v4 -> v5 rehearsal test preserves Job business counts and v4 backup identity;
 - owner isolation, token expiry/single consumption, sibling invalidation, effect-revision invalidation, duplicate-effect dedupe and partial undo resume tests passed;
 - callback payload length tests include undo/undo-confirm;
+- retry, cancel, Archive retry and exact cache-cleanup token callbacks have explicit consume/replay/stale-state coverage;
+- delete timeout, transient auto-retry, per-attempt audit, discussion-first ordering and repeated-failure circuit breaking have explicit tests;
 - source/secret guard passed;
 - architecture gate passed with `67` Python source files;
 - `compileall` and `git diff --check` passed.
@@ -71,3 +83,5 @@ No caption, URL, local path, credential, or message content is stored in operati
 The remote schema-release pipeline now creates a SQLite Backup API rollback point, copies that rollback database into an ephemeral rehearsal directory, runs the candidate migration there, verifies source/target versions, applied migration set and before/backup schema identity, then deletes the rehearsal database directory before cutover. The formal release will therefore execute the production-derived v4 -> v5 rehearsal and fail closed before cutover if it differs from the declared migration.
 
 Formal production release and postflight are still pending at this candidate stage. No real Telegram message is deleted during candidate validation.
+
+A read-only production-shape check found 188 valid visible Telegram effect rows across 19 Jobs, no malformed peer/message IDs and no duplicate targets; the largest current Job has 36 unique delete targets. Only aggregate counts were recorded.

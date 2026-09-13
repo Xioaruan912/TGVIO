@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import secrets
+import time
 from collections.abc import Callable
 
 from tgvio.application.ports import JobRepository
@@ -60,6 +61,7 @@ class OperationTokenService:
             or int(operation.owner_id) != int(owner_id)
             or operation.action != action
             or operation.consumed_at is not None
+            or operation.expires_at <= int(time.time())
         ):
             raise OperationTokenInvalidError("operation is unavailable")
         return operation

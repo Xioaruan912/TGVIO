@@ -56,6 +56,8 @@ class CacheCleanupService:
         eligible = 0
         blocked = 0
         for job in jobs:
+            if not await asyncio.to_thread(self._has_cache, job):
+                continue
             if not self._age_due(job):
                 continue
             if await self._archive_blocks(job):
@@ -71,12 +73,36 @@ class CacheCleanupService:
             retention_hours=self._retention_hours,
         )
 
-    async def cleanup(self, *, force: bool = False) -> CacheCleanupResult:
+    async def cleanup_candidates(self, *, force: bool = False) -> tuple[str, ...]:
+        """Return the exact safe Job set a cleanup would currently consider."""
         jobs = await self._repository.list_by_states(_AUTO_CLEAN_STATES)
+        candidates: list[str] = []
+        for job in jobs:
+            if not await asyncio.to_thread(self._has_cache, job):
+                continue
+            if not force and not self._age_due(job):
+                continue
+            if await self._archive_blocks(job):
+                continue
+            candidates.append(job.id)
+        return tuple(sorted(candidates))
+
+    async def cleanup(
+        self,
+        *,
+        force: bool = False,
+        job_ids: tuple[str, ...] | None = None,
+    ) -> CacheCleanupResult:
+        jobs = await self._repository.list_by_states(_AUTO_CLEAN_STATES)
+        requested = None if job_ids is None else frozenset(str(value) for value in job_ids)
         removed_jobs = 0
         removed_bytes = 0
         blocked = 0
         for job in jobs:
+            if requested is not None and job.id not in requested:
+                continue
+            if not await asyncio.to_thread(self._has_cache, job):
+                continue
             if not force and not self._age_due(job):
                 continue
             if await self._archive_blocks(job):
@@ -122,6 +148,12 @@ class CacheCleanupService:
         if path.parent != self._download_root:
             raise ValueError("managed cache path escaped download root")
         return path
+
+    def _has_cache(self, job: Job) -> bool:
+        if any(item.local_path for item in job.items):
+            return True
+        path = self._job_dir(job.id)
+        return path.is_dir() and not path.is_symlink()
 
     def _disk_usage(self) -> tuple[int, int]:
         if not self._download_root.is_dir():
@@ -179,8 +211,16 @@ class CacheCleanupRuntime:
     async def stats(self) -> CacheStats:
         return await self._service.stats()
 
-    async def cleanup(self, *, force: bool = False) -> CacheCleanupResult:
-        return await self._service.cleanup(force=force)
+    async def cleanup_candidates(self, *, force: bool = False) -> tuple[str, ...]:
+        return await self._service.cleanup_candidates(force=force)
+
+    async def cleanup(
+        self,
+        *,
+        force: bool = False,
+        job_ids: tuple[str, ...] | None = None,
+    ) -> CacheCleanupResult:
+        return await self._service.cleanup(force=force, job_ids=job_ids)
 
     async def _run(self) -> None:
         while True:

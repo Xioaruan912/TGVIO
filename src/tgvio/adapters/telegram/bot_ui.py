@@ -44,6 +44,7 @@ from tgvio.domain.job_query import (
     JobListFilter,
     JobPage,
 )
+from tgvio.domain.operations import UndoStatus
 from tgvio.domain.publish import PublishPlan, PublishStepKind, PublishStepState, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
@@ -463,26 +464,35 @@ class TelethonBotUI:
 
         if action == "ui:cache-clean":
             confirmation_data = b"ui:cache-clean-confirm"
+            cleanup_targets: tuple[str, ...] | None = None
             if self._operation_tokens is not None and self._cache_operator is not None:
-                stats = await self._cache_operator.stats()
+                cleanup_targets = await self._cache_operator.cleanup_candidates(force=True)
                 payload = {
+                    "version": 1,
                     "scope": "managed_terminal_cache",
-                    "eligible_jobs": int(stats.eligible_jobs),
-                    "blocked_by_archive": int(stats.blocked_by_archive),
-                    "bytes_used": int(stats.bytes_used),
+                    "job_ids": list(cleanup_targets),
                 }
                 operation = await self._operation_tokens.issue(
                     owner_id=owner_id,
                     action="cache_cleanup",
                     resource_type="cache",
                     resource_id="managed",
-                    expected_revision=int(stats.eligible_jobs),
+                    expected_revision=len(cleanup_targets),
                     payload=payload,
                 )
                 confirmation_data = self._callback_data("cache-clean-confirm", operation.token)
+            target_text = (
+                f"\n\n本次精确匹配：`{len(cleanup_targets)}` 个任务缓存。"
+                if cleanup_targets is not None
+                else ""
+            )
             await self._edit_page(
                 event,
-                "**确认清理缓存**\n\n只会删除已完成或已取消任务的缓存；失败任务和归档未完成任务不会被删除。",
+                (
+                    "**确认清理缓存**\n\n"
+                    "只会删除已完成或已取消任务的缓存；失败任务和归档未完成任务不会被删除。"
+                    f"{target_text}"
+                ),
                 [
                     [
                         Button.inline("⚠️ 确认清理", confirmation_data),
@@ -823,6 +833,18 @@ class TelethonBotUI:
         except UndoUnavailableError:
             await self._safe_answer(event, "当前没有可撤销的已发布消息", alert=True)
             return
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.ERROR,
+                "telegram.undo.prepare_failed",
+                "Unable to prepare durable publish undo",
+                job_id=job.id,
+                exception_type=type(exc).__name__,
+                exc_info=True,
+            )
+            await self._safe_answer(event, "暂时无法准备撤销，请稍后重试", alert=True)
+            return
         status = confirmation.status
         label = await self._job_label(job)
         await self._edit_page(
@@ -856,6 +878,25 @@ class TelethonBotUI:
             await self._edit_page(
                 event,
                 "**撤销操作已过期**\n\n任务状态、已发布消息或确认令牌已经变化。请重新打开任务详情后再操作。",
+                self._nav_buttons(),
+            )
+            return
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.ERROR,
+                "telegram.undo.execution_failed",
+                "Durable publish undo did not complete",
+                exception_type=type(exc).__name__,
+                exc_info=True,
+            )
+            await self._edit_page(
+                event,
+                (
+                    "**撤销暂未完成**\n\n"
+                    "系统已保留每条消息的处理记录，不会把失败伪装成成功。\n\n"
+                    "请重新打开任务详情，只会继续处理尚未确认删除的消息。"
+                ),
                 self._nav_buttons(),
             )
             return
@@ -997,6 +1038,7 @@ class TelethonBotUI:
         if self._cache_operator is None:
             await self._edit_page(event, "缓存维护服务未启用。", self._nav_buttons())
             return
+        cleanup_targets: tuple[str, ...] | None = None
         if self._operation_tokens is not None:
             if owner_id is None or not token:
                 await self._safe_answer(event, "确认操作已过期，请重新打开缓存页面", alert=True)
@@ -1009,12 +1051,11 @@ class TelethonBotUI:
                 )
                 if operation.resource_type != "cache" or operation.resource_id != "managed":
                     raise OperationTokenInvalidError("invalid cache resource")
-                stats = await self._cache_operator.stats()
+                cleanup_targets = await self._cache_operator.cleanup_candidates(force=True)
                 payload = {
+                    "version": 1,
                     "scope": "managed_terminal_cache",
-                    "eligible_jobs": int(stats.eligible_jobs),
-                    "blocked_by_archive": int(stats.blocked_by_archive),
-                    "bytes_used": int(stats.bytes_used),
+                    "job_ids": list(cleanup_targets),
                 }
                 await self._operation_tokens.consume(
                     token=token,
@@ -1022,14 +1063,17 @@ class TelethonBotUI:
                     action="cache_cleanup",
                     resource_type="cache",
                     resource_id="managed",
-                    expected_revision=int(stats.eligible_jobs),
+                    expected_revision=len(cleanup_targets),
                     payload=payload,
                 )
             except OperationTokenInvalidError:
                 await self._safe_answer(event, "确认操作已过期，请重新打开缓存页面", alert=True)
                 return
         try:
-            result = await self._cache_operator.cleanup(force=True)
+            result = await self._cache_operator.cleanup(
+                force=True,
+                job_ids=cleanup_targets if self._operation_tokens is not None else None,
+            )
         except Exception as exc:
             log_event(
                 self._log,
@@ -1164,6 +1208,22 @@ class TelethonBotUI:
         get_order = getattr(self._repository, "get_accepted_order", None)
         accepted_order = await get_order(job.id) if callable(get_order) else None
         return self._job_number(accepted_order)
+
+    async def _safe_undo_status(self, job: Job) -> UndoStatus | None:
+        if self._undo_service is None:
+            return None
+        try:
+            return await self._undo_service.status(job)
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "telegram.undo.status_failed",
+                "Unable to read durable publish undo status",
+                job_id=job.id,
+                exception_type=type(exc).__name__,
+            )
+            return None
 
     async def _issue_job_operation(
         self,
@@ -1909,8 +1969,8 @@ class TelethonBotUI:
             accepted_order=accepted_order,
         )
         if self._undo_service is not None and job.terminal:
-            undo_status = await self._undo_service.status(job)
-            if undo_status.total_messages > 0:
+            undo_status = await self._safe_undo_status(job)
+            if undo_status is not None and undo_status.total_messages > 0:
                 if undo_status.complete:
                     text += (
                         f"\n\n↩️ **发布撤销** · 已删除 `{undo_status.deleted_messages}/"
@@ -2817,8 +2877,8 @@ class TelethonBotUI:
             )
 
         if self._undo_service is not None and job.terminal:
-            undo_status = await self._undo_service.status(job)
-            if undo_status.remaining_messages > 0:
+            undo_status = await self._safe_undo_status(job)
+            if undo_status is not None and undo_status.remaining_messages > 0:
                 rows.append(
                     [
                         Button.inline(

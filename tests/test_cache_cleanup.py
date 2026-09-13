@@ -130,3 +130,34 @@ class CacheCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stats.eligible_jobs, 1)
         self.assertEqual(stats.blocked_by_archive, 1)
 
+    async def test_exact_cleanup_candidates_do_not_expand_during_execution(self) -> None:
+        first, first_path = await self._job_with_cache(JobState.SUCCEEDED, payload=b"one")
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        candidates = await service.cleanup_candidates(force=True)
+        self.assertEqual(candidates, (first.id,))
+
+        second, second_path = await self._job_with_cache(JobState.SUCCEEDED, payload=b"two")
+        result = await service.cleanup(force=True, job_ids=candidates)
+
+        self.assertEqual(result.removed_jobs, 1)
+        self.assertFalse(first_path.exists())
+        self.assertTrue(second_path.exists())
+        self.assertEqual(await service.cleanup_candidates(force=True), (second.id,))
+
+    async def test_already_cleaned_job_is_not_reported_again(self) -> None:
+        job, _local = await self._job_with_cache(JobState.SUCCEEDED)
+        connection = self.repo._require()
+        await connection.execute(
+            "UPDATE jobs SET updated_at='2000-01-01 00:00:00' WHERE id=?",
+            (job.id,),
+        )
+        await connection.commit()
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+
+        first = await service.cleanup(force=False)
+        stats = await service.stats()
+        second = await service.cleanup(force=False)
+
+        self.assertEqual(first.removed_jobs, 1)
+        self.assertEqual(stats.eligible_jobs, 0)
+        self.assertEqual(second.removed_jobs, 0)

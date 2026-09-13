@@ -277,14 +277,25 @@ class FakeOperationTokens:
 
 
 class FakeUndoService:
-    def __init__(self, *, partial: bool = False, invalid: bool = False) -> None:
+    def __init__(
+        self,
+        *,
+        partial: bool = False,
+        invalid: bool = False,
+        error: bool = False,
+        status_error: bool = False,
+    ) -> None:
         self.prepare_calls = 0
         self.confirm_calls = 0
         self.partial = partial
         self.invalid = invalid
+        self.error = error
+        self.status_error = status_error
         self.completed = False
 
     async def status(self, job):
+        if self.status_error:
+            raise RuntimeError("fixture status unavailable")
         return SimpleNamespace(remaining_messages=0 if self.completed else 2)
 
     async def prepare(self, job, *, owner_id):
@@ -305,6 +316,8 @@ class FakeUndoService:
         self.confirm_calls += 1
         if self.invalid:
             raise UndoOperationInvalidError("expired")
+        if self.error:
+            raise RuntimeError("fixture checkpoint unavailable")
         if self.partial:
             return SimpleNamespace(
                 job_id="a" * 32,
@@ -328,10 +341,16 @@ class FakeUndoService:
 class FakeCacheOperator:
     def __init__(self) -> None:
         self.cleanup_calls = 0
+        self.cleanup_job_ids = None
+        self.candidate_ids = ("job-a", "job-b")
 
-    async def cleanup(self, *, force=False):
+    async def cleanup(self, *, force=False, job_ids=None):
         self.cleanup_calls += 1
+        self.cleanup_job_ids = job_ids
         return SimpleNamespace(removed_jobs=2, removed_bytes=14, blocked_by_archive=1)
+
+    async def cleanup_candidates(self, *, force=False):
+        return self.candidate_ids
 
     async def stats(self):
         return SimpleNamespace(
@@ -541,6 +560,28 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(undo.confirm_calls, 1)
         self.assertIn("撤销操作已过期", event.edits[0][0])
+
+    async def test_undo_infrastructure_error_keeps_task_ui_usable(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        undo = FakeUndoService(error=True, status_error=True)
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            FakeRepository([completed]),
+            undo_service=undo,  # type: ignore[arg-type]
+        )
+
+        text = await ui._job_text(42, completed.id)
+        buttons = await ui._job_buttons(completed)
+        self.assertIn("任务详情", text)
+        self.assertNotIn(
+            f"ui:undo:{completed.id}".encode(),
+            [button.data for row in buttons for button in row if getattr(button, "data", None)],
+        )
+
+        event = FakeEvent(data=b"ui:undo-confirm:broken-token")
+        await ui._on_callback(event)
+        self.assertIn("撤销暂未完成", event.edits[0][0])
 
     async def test_jobs_page_uses_direct_buttons_and_friendly_failure_text(self) -> None:
         failed = job()
@@ -870,6 +911,35 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(operations.consume_calls, 1)
         self.assertIn("确认操作已过期", repeated.answers[0][0])
 
+    async def test_retry_confirmation_uses_operation_token_when_enabled(self) -> None:
+        failed = job()
+        repository = FakeRepository([failed])
+        control = FakeControl(repository)
+        operations = FakeOperationTokens()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            control=control,
+            operation_tokens=operations,  # type: ignore[arg-type]
+        )
+        request = FakeEvent(data=f"ui:retry:{failed.id}".encode())
+
+        await ui._on_callback(request)
+        payloads = [
+            button.data
+            for row in request.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(b"ui:retry-confirm:op-retry_job", payloads)
+        self.assertEqual(control.retry_calls, 0)
+
+        confirm = FakeEvent(data=b"ui:retry-confirm:op-retry_job")
+        await ui._on_callback(confirm)
+        self.assertEqual(operations.consume_calls, 1)
+        self.assertEqual(control.retry_calls, 1)
+
     async def test_hold_and_resume_buttons_toggle_durable_control_and_reschedule(self) -> None:
         active = job(state=JobState.DOWNLOADING, error_code=None)
         repository = FakeRepository([active])
@@ -978,6 +1048,46 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(archive.retry_calls, [package.id])
         self.assertIn("重新排队", confirm.edits[0][0])
 
+    async def test_archive_retry_confirmation_uses_operation_token_when_enabled(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        package = ArchivePackage(
+            id=f"arc_{completed.id}",
+            job_id=completed.id,
+            layout_version="v1",
+            remote_path="archive/x",
+            staging_path=".staging/x",
+            state=ArchivePackageState.FAILED,
+            manifest={},
+            objects=(),
+            error_code="archive_execution_failed",
+        )
+        repository = FakeRepository([completed], archives=[package])
+        archive = FakeArchiveOperator()
+        operations = FakeOperationTokens()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            archive_operator=archive,
+            operation_tokens=operations,  # type: ignore[arg-type]
+        )
+
+        request = FakeEvent(data=f"ui:archive-retry:{completed.id}".encode())
+        await ui._on_callback(request)
+        payloads = [
+            button.data
+            for row in request.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(b"ui:archive-retry-confirm:op-archive_retry", payloads)
+        self.assertFalse(archive.retry_calls)
+
+        confirm = FakeEvent(data=b"ui:archive-retry-confirm:op-archive_retry")
+        await ui._on_callback(confirm)
+        self.assertEqual(operations.consume_calls, 1)
+        self.assertEqual(archive.retry_calls, [package.id])
+
     async def test_cache_cleanup_button_requires_confirmation(self) -> None:
         cache = FakeCacheOperator()
         ui = TelethonBotUI(
@@ -998,6 +1108,55 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(cache.cleanup_calls, 1)
         self.assertIn("已清理", confirm.edits[0][0])
+
+    async def test_cache_cleanup_token_binds_exact_candidate_set(self) -> None:
+        cache = FakeCacheOperator()
+        operations = FakeOperationTokens()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            FakeRepository(),
+            cache_operator=cache,
+            operation_tokens=operations,  # type: ignore[arg-type]
+        )
+        request = FakeEvent(data=b"ui:cache-clean")
+
+        await ui._on_callback(request)
+
+        self.assertIn("精确匹配：`2`", request.edits[0][0])
+        payloads = [
+            button.data
+            for row in request.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(b"ui:cache-clean-confirm:op-cache_cleanup", payloads)
+
+        confirm = FakeEvent(data=b"ui:cache-clean-confirm:op-cache_cleanup")
+        await ui._on_callback(confirm)
+
+        self.assertEqual(operations.consume_calls, 1)
+        self.assertEqual(cache.cleanup_job_ids, cache.candidate_ids)
+
+    async def test_cache_cleanup_token_fails_closed_when_candidates_change(self) -> None:
+        cache = FakeCacheOperator()
+        operations = FakeOperationTokens()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            FakeRepository(),
+            cache_operator=cache,
+            operation_tokens=operations,  # type: ignore[arg-type]
+        )
+        await ui._on_callback(FakeEvent(data=b"ui:cache-clean"))
+        cache.candidate_ids = ("job-b",)
+
+        confirm = FakeEvent(data=b"ui:cache-clean-confirm:op-cache_cleanup")
+        await ui._on_callback(confirm)
+
+        self.assertEqual(operations.consume_calls, 0)
+        self.assertEqual(cache.cleanup_calls, 0)
+        self.assertIn("确认操作已过期", confirm.answers[0][0])
 
     def test_live_fixture_gate_accepts_only_small_planned_jobs(self) -> None:
         settings = SimpleNamespace(

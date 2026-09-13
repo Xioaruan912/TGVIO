@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Callable
 
 from tgvio.application.operation_tokens import (
@@ -34,6 +35,11 @@ class UndoService:
         "telegram_channel_message",
         "telegram_discussion_message",
     }
+    _RETRYABLE_DELETE_CODES = {
+        "telegram_delete_flood_wait",
+        "telegram_delete_timeout",
+        "telegram_delete_failed",
+    }
 
     def __init__(
         self,
@@ -43,6 +49,11 @@ class UndoService:
         ttl_seconds: int = 300,
         token_factory: Callable[[], str] | None = None,
         operation_tokens: OperationTokenService | None = None,
+        delete_timeout_seconds: float = 10.0,
+        delete_attempts: int = 2,
+        delete_retry_delay_seconds: float = 0.5,
+        max_consecutive_failures: int = 2,
+        delete_batch_timeout_seconds: float = 60.0,
     ) -> None:
         self._repository = repository
         self._remover = remover
@@ -50,6 +61,23 @@ class UndoService:
             repository,
             ttl_seconds=ttl_seconds,
             token_factory=token_factory,
+        )
+        self._delete_timeout_seconds = max(
+            0.01,
+            min(120.0, float(delete_timeout_seconds)),
+        )
+        self._delete_attempts = max(1, min(3, int(delete_attempts)))
+        self._delete_retry_delay_seconds = max(
+            0.0,
+            min(5.0, float(delete_retry_delay_seconds)),
+        )
+        self._max_consecutive_failures = max(
+            1,
+            min(10, int(max_consecutive_failures)),
+        )
+        self._delete_batch_timeout_seconds = max(
+            self._delete_timeout_seconds,
+            min(300.0, float(delete_batch_timeout_seconds)),
         )
 
     async def status(self, job: Job) -> UndoStatus:
@@ -125,24 +153,71 @@ class UndoService:
 
         deleted_now = 0
         failed_now = 0
-        for target in status.remaining_targets:
-            try:
-                await self._remover.delete_message(target.peer_id, target.message_id)
-            except Exception as exc:
-                failed_now += 1
-                await self._repository.checkpoint_publish_effect_revocations(
-                    job.id,
-                    target.effect_ids,
-                    state=RevocationState.FAILED,
-                    error_code=self._delete_error_code(exc),
-                )
-            else:
+        consecutive_failures = 0
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + self._delete_batch_timeout_seconds
+        targets = sorted(
+            status.remaining_targets,
+            key=lambda target: (
+                1 if target.effect_type == "telegram_channel_message" else 0,
+                min(target.effect_ids),
+            ),
+        )
+        for target in targets:
+            if loop.time() >= deadline:
+                break
+            deleted = False
+            attempted = False
+            for attempt in range(self._delete_attempts):
+                remaining_seconds = deadline - loop.time()
+                if remaining_seconds <= 0:
+                    break
+                attempted = True
+                try:
+                    await asyncio.wait_for(
+                        self._remover.delete_message(target.peer_id, target.message_id),
+                        timeout=min(self._delete_timeout_seconds, remaining_seconds),
+                    )
+                except Exception as exc:
+                    error_code = self._delete_error_code(exc)
+                    await self._repository.checkpoint_publish_effect_revocations(
+                        job.id,
+                        target.effect_ids,
+                        state=RevocationState.FAILED,
+                        error_code=error_code,
+                    )
+                    should_retry = (
+                        error_code in self._RETRYABLE_DELETE_CODES
+                        and attempt + 1 < self._delete_attempts
+                    )
+                    if not should_retry:
+                        break
+                    if self._delete_retry_delay_seconds:
+                        delay = min(
+                            self._delete_retry_delay_seconds * (2**attempt),
+                            max(0.0, deadline - loop.time()),
+                        )
+                        if delay:
+                            await asyncio.sleep(delay)
+                else:
+                    await self._repository.checkpoint_publish_effect_revocations(
+                        job.id,
+                        target.effect_ids,
+                        state=RevocationState.DELETED,
+                    )
+                    deleted = True
+                    break
+
+            if deleted:
                 deleted_now += 1
-                await self._repository.checkpoint_publish_effect_revocations(
-                    job.id,
-                    target.effect_ids,
-                    state=RevocationState.DELETED,
-                )
+                consecutive_failures = 0
+                continue
+            if not attempted:
+                break
+            failed_now += 1
+            consecutive_failures += 1
+            if consecutive_failures >= self._max_consecutive_failures:
+                break
 
         final = await self._build_status(job.id, effects)
         return UndoResult(
