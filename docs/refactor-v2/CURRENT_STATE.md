@@ -8,12 +8,12 @@
 
 | 范围 | 当前事实 | 结论 |
 |---|---|---|
-| Git runtime 基线 | `5ff2a61e6ca51a8faaf6960d78ea34a6dbeb45af` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object；R2-09 业务实现位于父提交 `408e08adf34534325339067b089b8af508316eb9` |
+| Git runtime 基线 | `c39fe9d579d86e73c1505741606221408e0b5fd2` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object；R2-08 Bot UI 拆分位于其父提交 `1c26f733fca819164edb3321040cc19a68d9609a` |
 | 退役旧树 | annotated tag `legacy-telegram-video-forwarder-750b3c1` 指向 `750b3c1629a0d360df740337671b54b8749e2ce2` | 旧架构可追溯，但不再留在当前可启动树 |
 | HostDZire | shared root `/root/TGVIO`；current link `/root/TGVIO-current`；Compose service/container `tgvio` | 版本化 release 已接管，运行卷仍留在 shared root |
-| 生产 release | `r2-09-5ff2a61-20260913T092930Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `5ff2a61e6ca51a8faaf6960d78ea34a6dbeb45af` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
-| 生产 image | `sha256:8836cb221f446a7373087cc4cca2fdb22e777ca33d89b4b909cafd78335b740c` | 正式 R2-09 closure runtime image；匹配 source manifest、v8 DB 与 rollback point 均可验证 |
-| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `1d97e920a4f14d7320778dc15d75066e482e6823ac5edc92575c0f11bbdeb2e3` | R2-09 只读运维面 runtime 三方身份一致 |
+| 生产 release | `r2-08-c39fe9d-20260913T094000Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `c39fe9d579d86e73c1505741606221408e0b5fd2` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
+| 生产 image | `sha256:1f931e65a76d5ad3c90cc81ccdd3a07fce10034d7c6ea802b2ba0d494e44111f` | 正式 R2-08 runtime image；匹配 source manifest、v8 DB 与 rollback point 均可验证 |
+| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `ba8ad0406e1a32d1a921dd98a0860f860731b006e5fc0f32e37dbb23e94982c0` | R2-08 Bot UI 拆分 runtime 三方身份一致 |
 
 R2-00 记录的 `1da1d3d0…` 没有留下生成算法，已由 R2-01 的明确、可重复算法取代。原始 82 文件快照、逐文件 SHA-256、导入边界和发布记录见 [R2-01 evidence](evidence/R2-01_BASELINE.md)。
 
@@ -23,10 +23,10 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.1 运行状态
 
-- Release：`r2-09-5ff2a61-20260913T092930Z`。
-- Source：`/root/TGVIO-releases/r2-09-5ff2a61-20260913T092930Z/source`，由 `/root/TGVIO-current` 原子指向。
-- 容器 ID：`67c9752c37f8ee4fd62affdcb729d18fe39a22dad60a2dbc78dc01f2478c5161`。
-- Started-at：`2026-09-13T09:26:31.987079483Z`。
+- Release：`r2-08-c39fe9d-20260913T094000Z`。
+- Source：`/root/TGVIO-releases/r2-08-c39fe9d-20260913T094000Z/source`，由 `/root/TGVIO-current` 原子指向。
+- 容器 ID：`8d51d025b9c9c8c2a17a6e0cef0f52706ed6ccc7342da51407f7fce2ff9d8f2d`。
+- Started-at：`2026-09-13T09:36:59.551388067Z`。
 - 状态：`running`，Docker health=`healthy`，当前容器 restart count=0。
 - 同一 Compose project/service 下运行实例数为 1。
 - 启动日志有 bootstrap 与 Telegram-ready 标记，无 traceback/fatal/unhandled/exception marker。
@@ -50,15 +50,15 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.3 代码、测试与镜像
 
-- 当前生产 R2-09 runtime：79 个 Python 源文件；schema 为 v8，新增 `notification_outbox` durable 表、loopback-only 只读 Dashboard 适配器、低基数 metrics 与脱敏通知 dispatcher。
+- 当前生产 R2-08 runtime：84 个 Python 源文件；schema 仍为 v8（migration=none）。R2-08 为行为等价的 Bot UI mixin 拆分，`bot_ui.py` 由 3324 行降至 867 行，表现层与动作回调移入 `bot_ui_format/jobs/archive/fixture/support`。
 - 下载/分析保持有限并发，Telegram publish 由 durable accepted-order dispatcher 串行执行，prepare/publish/archive 都由 generation-fenced claim + heartbeat + TTL watchdog 保护。
 - 当前主要热点为 `adapters/telegram/bot_ui.py`、Telegram publish 与 WebDAV adapter；repository 大文件热点已在 R2-03B 消除。
-- 当前生产的 domain/application AST 依赖边界与 79-file architecture gate 通过。
-- 当前生产 R2-09 正式 clean/pushed Docker test target 在 `--network none` 下通过 367 tests，覆盖既有 scheduler/migration/upload/intake/release/undo/Archive/diagnostics 合同，以及只读 Dashboard DTO 脱敏、HTTP 认证/方法/安全头、metrics 低基数、outbox 幂等/claim/退避/dead-letter/HMAC 与 v7→v8 rehearsal；没有启动第二个 Telegram Bot。
+- 当前生产的 domain/application AST 依赖边界与 84-file architecture gate 通过，并强制 `MAX_SOURCE_FILE_LINES=1600` 单文件预算。
+- 当前生产 R2-08 正式 clean/pushed Docker test target 在 `--network none` 下通过 368 tests，覆盖既有 scheduler/migration/upload/intake/release/undo/Archive/diagnostics 合同、R2-09 的 Dashboard/metrics/outbox，以及 R2-08 mixin 拆分与 1600 行源文件预算；没有启动第二个 Telegram Bot。
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 依赖已由 hashed lock 固定；多阶段 Dockerfile 的 test/runtime targets 共用固定 base digest，runtime 内精确安装 7 个锁定 Python 包。
-- 正式 runtime image `sha256:8836cb221f446a7373087cc4cca2fdb22e777ca33d89b4b909cafd78335b740c` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
+- 正式 runtime image `sha256:1f931e65a76d5ad3c90cc81ccdd3a07fce10034d7c6ea802b2ba0d494e44111f` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
 
 ## 3. 当前 TGVIO 已证明的能力
 

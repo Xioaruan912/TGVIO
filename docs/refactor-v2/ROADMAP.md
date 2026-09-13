@@ -33,7 +33,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-05 | DELIVERED | Durable intake/合集/文字/spoiler/状态消息已随 v3 正式发布 | IN-04～06、PL-06、ST-01 |
 | R2-06 | DELIVERED | 完整队列、自动恢复、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02～04、PL-13～14 |
 | R2-07 | DELIVERED | A1/A2/A3/D 已生产交付；Archive Profile/策略、exact remote delete 与安全 Diagnostic Snapshot 已完成 | AR-07、OB-01、ST-04 |
-| R2-08 | NOT STARTED | 拆分 Telegram/WebDAV/UI/SQLite 热点并清除兼容层 | 架构门禁 |
+| R2-08 | DELIVERED | 拆分 Telegram/WebDAV/UI/SQLite 热点并锁定文件大小预算 | 架构门禁 |
 | R2-09 | DELIVERED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
 | R2-10 | NOT STARTED | 完整等价验收、灾难恢复演练、旧树退役 | 全合同 |
 
@@ -305,6 +305,10 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 - WebDAV 按 client/verifier/path policy 拆分；Archive executor 按 use-case step 拆分。
 - application commands 与 queries 分离；删除只做代理且连续两个 release 无 fallback 命中的旧入口。
 - import-linter/AST 门禁和每个热点的合理复杂度/文件大小预算进入 CI。
+
+### 交付结果（2026-09-13）
+
+R2-08 已随 `r2-08-c39fe9d-20260913T094000Z`（runtime commit `c39fe9d579d86e73c1505741606221408e0b5fd2`，source manifest `ba8ad0406e1a32d1a921dd98a0860f860731b006e5fc0f32e37dbb23e94982c0`，migration=none）交付。`bot_ui.py` 由 3324 行拆为 867 行，表现层与动作回调移入 `bot_ui_format/jobs/archive/fixture/support` mixins，行为、文案与 callback 一律不变，368 tests 全绿；SQLite repository 拆分已在 R2-03B 完成。`check_architecture` 新增 `MAX_SOURCE_FILE_LINES=1600` 源文件大小预算，超标即 fail closed。剩余 `intake_runtime.py`(1467) 与 `sqlite_archive.py`(958) 已受预算约束，进一步拆分留给 R2-10。证据见 [R2-08_RELEASE.md](evidence/R2-08_RELEASE.md)。
 
 ### 验收与回滚
 
