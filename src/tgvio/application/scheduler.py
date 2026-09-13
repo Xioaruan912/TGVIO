@@ -339,6 +339,17 @@ class OrderedPublishDispatcher:
                 await self._wait()
                 continue
             try:
+                # Re-read under the claim: another dispatcher may have published
+                # this Job after we fetched the (now stale) gate, which would
+                # otherwise re-publish a non-idempotent runner.
+                fresh = await self._repository.get(job.id)
+                if fresh is None or fresh.state not in {
+                    JobState.PLANNED,
+                    JobState.PUBLISHING,
+                }:
+                    await self._wait()
+                    continue
+                job = fresh
                 log_event(
                     self._log,
                     logging.INFO,
