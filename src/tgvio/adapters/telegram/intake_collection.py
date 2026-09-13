@@ -59,7 +59,14 @@ class IntakeCollectionMixin:
         if not bool(getattr(self._settings, "collections_enabled", True)):
             await self._safe_send(chat_id, "合集功能当前未启用。")
             return
-        if bool(getattr(self._settings, "collection_preview_enabled", True)):
+        preview_enabled = bool(getattr(self._settings, "collection_preview_enabled", True))
+        flags = getattr(self, "_flags", None)
+        if flags is not None:
+            try:
+                preview_enabled = flags.bool("collection_preview_enabled", preview_enabled)
+            except Exception:
+                pass
+        if preview_enabled:
             await self._request_collection_preview(chat_id, owner_id)
             return
         await self._confirm_collection(chat_id, owner_id)

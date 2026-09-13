@@ -82,6 +82,30 @@ class ArchivePlannerTests(unittest.TestCase):
         self.assertIn("└── _COMPLETE.json", tree)
         self.assertIn("│   ├── 001__Original 1.jpg", tree)
 
+    def test_remote_layout_v2_is_short_dated_sequence(self) -> None:
+        with TemporaryDirectory() as tmp:
+            job = self._job(Path(tmp), 3)
+            plan = ArchivePlanner(remote_root="115/Pron", layout="v2").plan(
+                job,
+                day="2026-09-13",
+                day_seq=2,
+            )
+        package = plan.package
+        self.assertEqual(package.layout_version, "tgvio.archive/v2")
+        self.assertEqual(package.remote_path, "115/Pron/2026-09-13/2")
+        self.assertEqual(
+            package.staging_path,
+            "115/Pron/.staging/arc_a84c19d2f00112233445566778899abc",
+        )
+        expected = [
+            f"{item.sha256[:12]}{Path(item.name or '').suffix[:16]}"
+            for item in sorted(job.items, key=lambda current: current.index)
+        ]
+        self.assertEqual([obj.remote_relpath for obj in package.objects], expected)
+        self.assertNotIn("media/", repr([obj.remote_relpath for obj in package.objects]))
+        tree = ArchivePlanner.render_tree(plan)
+        self.assertIn("115/Pron/2026-09-13/2/", tree)
+
     def test_archive_profile_policy_is_frozen_into_package_and_manifest(self) -> None:
         with TemporaryDirectory() as tmp:
             profile = ArchiveProfileSnapshot(

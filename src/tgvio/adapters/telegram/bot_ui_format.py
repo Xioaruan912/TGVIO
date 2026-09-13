@@ -739,7 +739,60 @@ class BotUIFormatMixin:
         return [
             [Button.inline("📈 统计", b"ui:stats"), Button.inline("❤️ 运行健康", b"ui:health")],
             [Button.inline("🩺 技术诊断", b"ui:diag"), Button.inline("❓ 使用帮助", b"ui:help")],
-            [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
+            [Button.inline("⚙️ 设置", b"ui:settings"), Button.inline("📋 我的任务", b"ui:jobs")],
+            [Button.inline("🏠 首页", b"ui:home")],
+        ]
+
+    def _settings_page_text(self) -> str:
+        flags = getattr(self, "_runtime_flags", None)
+
+        def on(key: str, default: bool = True) -> bool:
+            if flags is None:
+                return default
+            try:
+                return flags.bool(key, default)
+            except Exception:
+                return default
+
+        def label(value: bool) -> str:
+            return "已开启" if value else "已关闭"
+
+        layout = getattr(self._settings, "archive_layout", "v2")
+        layout_text = "简短 /115/Pron/日期/N" if layout == "v2" else "旧 archive/年/月/日"
+        return (
+            "⚙️ **设置**\n"
+            "──────────\n"
+            f"🔔 失败告警：`{label(on('alerts_enabled', True))}`\n"
+            f"📦 合集发布预览：`{label(on('collection_preview_enabled', True))}`\n"
+            f"🧹 每日清空任务：`{label(on('daily_cleanup_enabled', True))}`\n"
+            f"🗂 归档路径：`{layout_text}`（改布局需重启）\n"
+            "──────────\n"
+            "每日清空在 06:00（北京时间）执行：清空任务列表并复位编号、清理缓存与旧状态消息，保留日志与统计。"
+        )
+
+    def _settings_page_buttons(self):
+        flags = getattr(self, "_runtime_flags", None)
+
+        def on(key: str, default: bool = True) -> bool:
+            if flags is None:
+                return default
+            try:
+                return flags.bool(key, default)
+            except Exception:
+                return default
+
+        def toggle_label(value: bool) -> str:
+            return "✅ 开" if value else "⛔ 关"
+
+        return [
+            [
+                Button.inline(f"🔔 告警 {toggle_label(on('alerts_enabled', True))}", b"set:alerts_enabled"),
+                Button.inline(f"📦 预览 {toggle_label(on('collection_preview_enabled', True))}", b"set:collection_preview_enabled"),
+            ],
+            [
+                Button.inline(f"🧹 每日清空 {toggle_label(on('daily_cleanup_enabled', True))}", b"set:daily_cleanup_enabled"),
+            ],
+            [Button.inline("🔄 刷新", b"ui:settings"), Button.inline("🏠 首页", b"ui:home")],
         ]
 
     def _nav_buttons(self):

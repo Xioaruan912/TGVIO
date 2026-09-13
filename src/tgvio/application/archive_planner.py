@@ -17,6 +17,7 @@ from tgvio.domain.job import Job, MediaItem, MediaKind
 
 
 ARCHIVE_LAYOUT_VERSION = "tgvio.archive/v1"
+ARCHIVE_LAYOUT_VERSION_V2 = "tgvio.archive/v2"
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f/\\]+")
 
 
@@ -32,15 +33,30 @@ class ArchivePlanner:
         *,
         remote_root: str = "",
         profile: ArchiveProfileSnapshot | None = None,
+        layout: str = "v1",
     ) -> None:
         self._remote_root = self._normalize_remote_root(remote_root)
         self._profile = profile or ArchiveProfileSnapshot()
+        self._layout = "v2" if str(layout).lower() == "v2" else "v1"
+        self._layout_version = (
+            ARCHIVE_LAYOUT_VERSION_V2 if self._layout == "v2" else ARCHIVE_LAYOUT_VERSION
+        )
 
     @property
     def profile(self) -> ArchiveProfileSnapshot:
         return self._profile
 
-    def plan(self, job: Job) -> ArchivePlan:
+    @property
+    def layout(self) -> str:
+        return self._layout
+
+    def plan(
+        self,
+        job: Job,
+        *,
+        day: str | None = None,
+        day_seq: int | None = None,
+    ) -> ArchivePlan:
         candidates = [
             item
             for item in sorted(job.items, key=lambda current: current.index)
@@ -54,10 +70,13 @@ class ArchivePlanner:
         package_name = (
             f"{stamp.strftime('%Y%m%d-%H%M%S')}__media-{len(candidates):03d}__{job.id[:10]}"
         )
-        relative_remote_path = (
-            f"archive/{stamp.strftime('%Y')}/{stamp.strftime('%m')}/{stamp.strftime('%d')}/"
-            f"{package_name}"
-        )
+        if self._layout == "v2" and day and day_seq is not None:
+            relative_remote_path = f"{day}/{int(day_seq)}"
+        else:
+            relative_remote_path = (
+                f"archive/{stamp.strftime('%Y')}/{stamp.strftime('%m')}/{stamp.strftime('%d')}/"
+                f"{package_name}"
+            )
         remote_path = self._join_root(relative_remote_path)
         staging_path = self._join_root(f".staging/{package_id}")
 
@@ -70,8 +89,8 @@ class ArchivePlanner:
             if not item.sha256:
                 raise ArchivePlanningError(f"sha256 missing for item {item.index}")
             size = local.stat().st_size
-            remote_name = self._remote_name(object_index, item, local)
-            remote_relpath = f"media/{remote_name}"
+            remote_name = self._remote_name(object_index, item, local, layout=self._layout)
+            remote_relpath = remote_name if self._layout == "v2" else f"media/{remote_name}"
             objects.append(
                 ArchiveObject(
                     package_id=package_id,
@@ -87,7 +106,7 @@ class ArchivePlanner:
             media_manifest.append(self._manifest_item(item, remote_relpath, size))
 
         manifest = {
-            "schema": ARCHIVE_LAYOUT_VERSION,
+            "schema": self._layout_version,
             "package_id": package_id,
             "job_id": job.id,
             "created_at": stamp.isoformat().replace("+00:00", "Z"),
@@ -103,7 +122,7 @@ class ArchivePlanner:
         package = ArchivePackage(
             id=package_id,
             job_id=job.id,
-            layout_version=ARCHIVE_LAYOUT_VERSION,
+            layout_version=self._layout_version,
             remote_path=remote_path,
             staging_path=staging_path,
             state=ArchivePackageState.PLANNED,
@@ -129,6 +148,13 @@ class ArchivePlanner:
     @staticmethod
     def render_tree(plan: ArchivePlan) -> str:
         package = plan.package
+        if package.layout_version == ARCHIVE_LAYOUT_VERSION_V2:
+            lines = [f"{package.remote_path}/"]
+            for index, item in enumerate(package.objects):
+                branch = "└──" if index == len(package.objects) - 1 else "├──"
+                lines.append(f"{branch} {Path(item.remote_relpath).name}")
+            lines.extend(["├── manifest.json", "└── _COMPLETE.json"])
+            return "\n".join(lines)
         lines = [f"{package.remote_path}/", "├── media/"]
         for index, item in enumerate(package.objects):
             branch = "└──" if index == len(package.objects) - 1 else "├──"
@@ -145,10 +171,23 @@ class ArchivePlanner:
         return Path(value)
 
     @classmethod
-    def _remote_name(cls, object_index: int, item: MediaItem, local: Path) -> str:
+    def _remote_name(
+        cls,
+        object_index: int,
+        item: MediaItem,
+        local: Path,
+        *,
+        layout: str = "v1",
+    ) -> str:
         original = (item.name or local.name or f"media-{object_index + 1}").strip()
         name = Path(original).name
         name = _CONTROL_RE.sub("_", name).strip().strip(".")
+        if layout == "v2":
+            digest = (item.sha256 or "")[:12]
+            suffix = Path(name).suffix[:16]
+            if digest:
+                return f"{digest}{suffix}"
+            return f"media-{object_index + 1:03d}{suffix}"
         if not name or name in {".", ".."}:
             name = f"media-{object_index + 1:03d}.bin"
         return f"{object_index + 1:03d}__{name[:180]}"

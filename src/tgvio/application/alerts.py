@@ -28,6 +28,7 @@ class AlertRuntime:
         poll_seconds: float = 60.0,
         max_attempts: int = 5,
         now: Callable[[], float] | None = None,
+        enabled: Callable[[], bool] | None = None,
     ) -> None:
         self._repository = repository
         self._telegram_connected = telegram_connected
@@ -37,6 +38,7 @@ class AlertRuntime:
         self._poll_seconds = max(5.0, float(poll_seconds))
         self._max_attempts = max(1, int(max_attempts))
         self._now = now or time.time
+        self._enabled = enabled
         self._last_healthy: dict[str, bool] = {}
         self._last_bucket: dict[str, int] = {}
         self._task: asyncio.Task | None = None
@@ -56,6 +58,8 @@ class AlertRuntime:
         self._task = None
 
     async def run_once(self) -> dict[str, int]:
+        if self._enabled is not None and not self._enabled():
+            return {"enqueued": 0}
         now = float(self._now())
         enqueued = 0
         enqueued += await self._condition(

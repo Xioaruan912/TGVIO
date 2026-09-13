@@ -36,6 +36,8 @@ from tgvio.application.diagnostics import (
 )
 from tgvio.application.metrics import MetricsService
 from tgvio.application.alerts import AlertRuntime
+from tgvio.application.maintenance import DailyMaintenanceRuntime, DailyMaintenanceService
+from tgvio.application.runtime_flags import RuntimeFlags
 from tgvio.application.notifications import NotificationRuntime, Notifier, WebhookNotifier
 from tgvio.adapters.telegram.alerts import TelegramOwnerNotifier
 from tgvio.domain.notifications import ALERT_EVENT_TYPES
@@ -87,6 +89,8 @@ async def run(*, check_only: bool = False) -> None:
     try:
         schema_status = repository.schema_status()
         await repository.set_runtime_health("schema", "ready", detail=schema_status)
+        runtime_flags = RuntimeFlags()
+        await runtime_flags.load(repository)
         proxy_probe = (
             static_proxy_unchecked_status(settings.static_proxy_url)
             if check_only
@@ -160,6 +164,7 @@ async def run(*, check_only: bool = False) -> None:
                 repository,
                 ArchivePlanner(
                     remote_root=settings.archive_remote_root,
+                    layout=(runtime_flags.get("archive_layout") or settings.archive_layout),
                     profile=ArchiveProfileSnapshot(
                         profile_id=settings.archive_profile_id,
                         policy=ArchivePolicy(settings.archive_policy),
@@ -252,6 +257,7 @@ async def run(*, check_only: bool = False) -> None:
             settings,
             intake,
             runner,
+            flags=runtime_flags,
         )
         auto_recovery_runtime = AutoRecoveryRuntime(
             AutoRecoveryService(
@@ -298,6 +304,7 @@ async def run(*, check_only: bool = False) -> None:
         dashboard_server: DashboardServer | None = None
         notification_runtime: NotificationRuntime | None = None
         alert_runtime: AlertRuntime | None = None
+        maintenance_runtime: DailyMaintenanceRuntime | None = None
         dashboard_service: DashboardService | None = None
         if settings.dashboard_enabled:
             dashboard_service = DashboardService(
@@ -315,44 +322,49 @@ async def run(*, check_only: bool = False) -> None:
         primary_notifier: Notifier | None = None
         secondary_notifier: Notifier | None = None
         primary_accepts: frozenset[str] | None = None
-        if settings.alerts_enabled:
-            alert_user_id = settings.alert_user_id or settings.allowed_users[0]
-            primary_notifier = TelegramOwnerNotifier(
-                lambda text: gateway.client.send_message(
-                    alert_user_id,
-                    text,
-                    parse_mode="md",
-                )
-            )
-            primary_accepts = ALERT_EVENT_TYPES
+        alert_user_id = settings.alert_user_id or settings.allowed_users[0]
+        primary_notifier = TelegramOwnerNotifier(
+            lambda text: gateway.client.send_message(
+                alert_user_id,
+                text,
+                parse_mode="md",
+            ),
+            enabled=lambda: runtime_flags.bool("alerts_enabled", True),
+        )
+        primary_accepts = ALERT_EVENT_TYPES
         if settings.webhook_enabled:
             webhook_notifier = WebhookNotifier(
                 settings.webhook_url,
                 settings.webhook_token,
                 timeout_seconds=settings.webhook_timeout_seconds,
             )
-            if primary_notifier is None:
-                primary_notifier = webhook_notifier
-            else:
-                secondary_notifier = webhook_notifier
-        if primary_notifier is not None:
-            notification_runtime = NotificationRuntime(
+            secondary_notifier = webhook_notifier
+        notification_runtime = NotificationRuntime(
+            repository,
+            primary_notifier,
+            secondary_notifier=secondary_notifier,
+            primary_accepts=primary_accepts,
+            poll_seconds=settings.notification_poll_seconds,
+            max_attempts=settings.webhook_max_attempts,
+        )
+        alert_runtime = AlertRuntime(
+            repository,
+            telegram_connected=gateway.client.is_connected,
+            disk_free_bytes=lambda: _disk_free_bytes(settings.download_dir),
+            reserve_bytes=settings.disk_reserve_bytes,
+            cooldown_seconds=settings.alert_cooldown_seconds,
+            poll_seconds=settings.alert_poll_seconds,
+            enabled=lambda: runtime_flags.bool("alerts_enabled", True),
+        )
+        maintenance_runtime = DailyMaintenanceRuntime(
+            DailyMaintenanceService(
                 repository,
-                primary_notifier,
-                secondary_notifier=secondary_notifier,
-                primary_accepts=primary_accepts,
-                poll_seconds=settings.notification_poll_seconds,
-                max_attempts=settings.webhook_max_attempts,
-            )
-        if settings.alerts_enabled:
-            alert_runtime = AlertRuntime(
-                repository,
-                telegram_connected=gateway.client.is_connected,
-                disk_free_bytes=lambda: _disk_free_bytes(settings.download_dir),
-                reserve_bytes=settings.disk_reserve_bytes,
-                cooldown_seconds=settings.alert_cooldown_seconds,
-                poll_seconds=settings.alert_poll_seconds,
-            )
+                cache_operator=cache_runtime,
+                status_cleaner=TelethonPublishedMessageRemover(gateway.client),
+                log_dir=settings.log_dir,
+            ),
+            runtime_flags,
+        )
         bot_ui = TelethonBotUI(
             gateway.client,
             settings,
@@ -374,6 +386,7 @@ async def run(*, check_only: bool = False) -> None:
             undo_service=undo_service,
             operation_tokens=operation_tokens,
             diagnostic_service=diagnostic_service,
+            runtime_flags=runtime_flags,
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()
@@ -387,6 +400,8 @@ async def run(*, check_only: bool = False) -> None:
             await notification_runtime.start()
         if alert_runtime is not None:
             await alert_runtime.start()
+        if maintenance_runtime is not None:
+            await maintenance_runtime.start()
         recoverable = await repository.list_by_states(
             (
                 JobState.RECEIVED,
@@ -462,6 +477,8 @@ async def run(*, check_only: bool = False) -> None:
         finally:
             if alert_runtime is not None:
                 await alert_runtime.stop()
+            if maintenance_runtime is not None:
+                await maintenance_runtime.stop()
             if notification_runtime is not None:
                 await notification_runtime.stop()
             if dashboard_server is not None:

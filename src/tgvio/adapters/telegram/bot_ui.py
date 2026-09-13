@@ -89,6 +89,7 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
         undo_service: UndoService | None = None,
         operation_tokens: OperationTokenService | None = None,
         diagnostic_service: DiagnosticSnapshotService | None = None,
+        runtime_flags: object | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -103,6 +104,7 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
         self._undo_service = undo_service
         self._operation_tokens = operation_tokens
         self._diagnostic_service = diagnostic_service
+        self._runtime_flags = runtime_flags
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 
@@ -234,6 +236,12 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
             await event.respond(
                 text,
                 buttons=self._more_buttons(),
+                parse_mode="md",
+            )
+        elif command == "settings":
+            await event.respond(
+                self._settings_page_text(),
+                buttons=self._settings_page_buttons(),
                 parse_mode="md",
             )
         elif command == "retry":
@@ -392,6 +400,12 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
             return
         if action == "ui:more":
             await self._edit_page(event, self._more_text(), self._more_buttons())
+            return
+        if action == "ui:settings":
+            await self._edit_page(event, self._settings_page_text(), self._settings_page_buttons())
+            return
+        if action.startswith("set:"):
+            await self._toggle_setting_callback(event, action.split(":", 1)[1])
             return
         if action == "ui:stats":
             await self._edit_page(
@@ -609,6 +623,31 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
                 "Telegram callback acknowledgement failed",
                 exception_type=type(exc).__name__,
             )
+
+    async def _toggle_setting_callback(self, event, key: str) -> None:
+        allowed = {
+            "alerts_enabled",
+            "collection_preview_enabled",
+            "daily_cleanup_enabled",
+        }
+        if self._runtime_flags is None or key not in allowed:
+            await self._safe_answer(event, "设置不可用", alert=True)
+            return
+        current = self._runtime_flags.bool(key, True)
+        try:
+            await self._runtime_flags.set(self._repository, key, "false" if current else "true")
+        except Exception:
+            await self._safe_answer(event, "保存失败", alert=True)
+            return
+        await self._safe_answer(event, "已更新")
+        try:
+            await event.edit(
+                self._settings_page_text(),
+                buttons=self._settings_page_buttons(),
+                parse_mode="md",
+            )
+        except Exception:
+            pass
 
     async def _status_text(self, owner_id: int) -> str:
         counts = await self._repository.count_by_state(owner_id=owner_id)

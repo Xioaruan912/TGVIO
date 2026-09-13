@@ -142,6 +142,7 @@ class Settings:
     archive_response_timeout_seconds: int
     archive_verify_attempts: int
     archive_verify_interval_seconds: int
+    archive_layout: str
     vps_host: str
     vps_port: int
     vps_user: str
@@ -340,6 +341,9 @@ class Settings:
         archive_verify_interval_seconds = _int("TGVIO_ARCHIVE_VERIFY_INTERVAL_SECONDS", 20)
         if not 1 <= archive_verify_interval_seconds <= 600:
             raise ConfigError("TGVIO_ARCHIVE_VERIFY_INTERVAL_SECONDS out of range")
+        archive_layout = os.getenv("TGVIO_ARCHIVE_LAYOUT", "v2").strip().lower() or "v2"
+        if archive_layout not in {"v1", "v2"}:
+            raise ConfigError("TGVIO_ARCHIVE_LAYOUT must be v1/v2")
         if archive_enabled:
             parsed = urllib.parse.urlsplit(archive_url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -426,6 +430,7 @@ class Settings:
             archive_response_timeout_seconds=archive_response_timeout_seconds,
             archive_verify_attempts=archive_verify_attempts,
             archive_verify_interval_seconds=archive_verify_interval_seconds,
+            archive_layout=archive_layout,
             vps_host=os.getenv("VPS_HOST", "199.47.242.40").strip(),
             vps_port=_int("VPS_PORT", 22),
             vps_user=os.getenv("VPS_USER", "root").strip() or "root",
@@ -488,6 +493,7 @@ class Settings:
             "archive_response_timeout_seconds": self.archive_response_timeout_seconds,
             "archive_verify_attempts": self.archive_verify_attempts,
             "archive_verify_interval_seconds": self.archive_verify_interval_seconds,
+            "archive_layout": self.archive_layout,
             "vps_host_configured": bool(self.vps_host),
             "vps_ssh_key_configured": bool(str(self.vps_ssh_key)),
             "github_repo_configured": bool(self.github_repo),

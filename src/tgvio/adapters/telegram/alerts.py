@@ -70,12 +70,16 @@ class TelegramOwnerNotifier:
         self,
         sender: Callable[[str], Awaitable[object]],
         *,
+        enabled: Callable[[], bool] | None = None,
         log_name: str = "tgvio.alerts",
     ) -> None:
         self._sender = sender
+        self._enabled = enabled
         self._log = logging.getLogger(log_name)
 
     async def deliver(self, payload: dict[str, object]) -> None:
+        if self._enabled is not None and not self._enabled():
+            return
         text = render_alert(payload)
         try:
             await self._sender(text)

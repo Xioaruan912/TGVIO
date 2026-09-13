@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import logging
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from tgvio.application.archive_capabilities import (
     record_archive_probe_failure,
@@ -60,7 +62,7 @@ class ArchiveService:
                 archive_state=existing.state.value,
             )
             return existing
-        plan = self._planner.plan(job)
+        plan = await self._build_plan(job)
         package = await self._repository.save_archive_plan(plan)
         log_event(
             self._log,
@@ -75,6 +77,13 @@ class ArchiveService:
             archive_policy_version=package.archive_policy_version,
         )
         return package
+
+    async def _build_plan(self, job: Job):
+        if self._planner.layout == "v2":
+            day = _beijing_day(job.created_at)
+            day_seq = await self._repository.next_archive_day_seq(day)
+            return self._planner.plan(job, day=day, day_seq=day_seq)
+        return self._planner.plan(job)
 
     async def run_pending_once(self, *, limit: int = 10) -> int:
         packages = await self._repository.list_archive_packages_by_states(
@@ -286,3 +295,17 @@ class ArchiveRuntime:
                 await asyncio.wait_for(self._wake.wait(), timeout=self._poll_seconds)
             except TimeoutError:
                 pass
+
+
+def _beijing_day(value: str | None) -> str:
+    moment: datetime | None = None
+    if value:
+        try:
+            moment = datetime.fromisoformat(str(value).replace("Z", "+00:00"))
+            if moment.tzinfo is None:
+                moment = moment.replace(tzinfo=timezone.utc)
+        except ValueError:
+            moment = None
+    if moment is None:
+        moment = datetime.now(timezone.utc)
+    return moment.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%Y-%m-%d")
