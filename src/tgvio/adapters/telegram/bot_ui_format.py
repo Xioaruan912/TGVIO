@@ -765,4 +765,3 @@ class BotUIFormatMixin:
             [Button.inline("🔎 任务详情", self._callback_data("job", job.id))],
             [Button.inline("← 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
         ]
-

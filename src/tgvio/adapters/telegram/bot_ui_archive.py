@@ -594,4 +594,3 @@ class BotUIArchiveMixin:
             rows.append([Button.inline("🔌 检测连接", b"ui:archive-probe")])
         rows.extend(self._nav_buttons())
         return text, rows
-

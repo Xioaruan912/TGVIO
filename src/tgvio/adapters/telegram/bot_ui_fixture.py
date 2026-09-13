@@ -229,4 +229,3 @@ class BotUIFixtureMixin:
         if unsafe:
             return "fixture 不允许大文件分段/分卷策略"
         return None
-
