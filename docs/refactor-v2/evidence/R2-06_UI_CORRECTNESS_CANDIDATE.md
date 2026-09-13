@@ -1,6 +1,6 @@
 # R2-06 Task UI Correctness Hotfix Candidate
 
-> 状态：CANDIDATE
+> 状态：CANDIDATE — absorbed into the next R2-06 release; no standalone production cutover
 > 日期：2026-09-13
 > Base runtime commit：`424aba8fb3090033898844d9a1fd5d87904916d3`
 > Schema：unchanged (`user_version=4`)
@@ -40,4 +40,4 @@ git diff --check=passed
 
 ## 4. 发布边界
 
-这是 migration-free 查询/UI 正确性 hotfix。正式 release 仍须从 clean、已推送的 `origin/main` 构建并同步交付 HostDZire；生产后验必须确认 schema v4/hash 不变、单实例 healthy、restart=0、SQLite `quick_check=ok` 与全部业务 blocker=0。
+这组代码本身不需要 migration，但在候选完成期间 R2-06 operation-token/undo v5 release 已进入集成，因此不再单独做 migration-free production cutover。它将随下一次 R2-06 正式 release 一起交付，并由该 release 的完整 schema/health/postflight 门禁统一验收。
