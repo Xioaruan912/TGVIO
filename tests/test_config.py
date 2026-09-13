@@ -226,8 +226,12 @@ class SettingsTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertFalse(settings.archive_enabled)
         self.assertEqual(settings.archive_remote_root, "TGVIO")
+        self.assertEqual(settings.archive_profile_id, "primary")
+        self.assertEqual(settings.archive_policy, "required")
         self.assertEqual(settings.archive_poll_seconds, 10)
         self.assertNotIn("archive_password", settings.safe_summary())
+        self.assertEqual(settings.safe_summary()["archive_profile_id"], "primary")
+        self.assertEqual(settings.safe_summary()["archive_policy"], "required")
 
     def test_enabled_archive_requires_safe_absolute_webdav_url_and_user(self) -> None:
         with patch.dict(
@@ -267,6 +271,20 @@ class SettingsTests(unittest.TestCase):
         self.assertTrue(settings.archive_enabled)
         self.assertTrue(settings.safe_summary()["archive_configured"])
         self.assertNotIn("super-secret-password", repr(settings.safe_summary()))
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_ARCHIVE_PROFILE_ID": "../secret"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "ARCHIVE_PROFILE_ID"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_ARCHIVE_POLICY": "mirror_everything"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "ARCHIVE_POLICY"):
+                Settings.from_env()
         with patch.dict(
             os.environ,
             {**BASE_ENV, "TGVIO_UPLOAD_PART_MB": "1901"},

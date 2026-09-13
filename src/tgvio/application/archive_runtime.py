@@ -66,6 +66,9 @@ class ArchiveService:
             package_id=package.id,
             object_count=len(package.objects),
             total_bytes=sum(obj.size_bytes for obj in package.objects),
+            archive_profile_id=package.archive_profile_id,
+            archive_policy=package.archive_policy.value,
+            archive_policy_version=package.archive_policy_version,
         )
         return package
 

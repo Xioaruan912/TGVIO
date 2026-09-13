@@ -9,6 +9,7 @@ from tgvio.application.archive_planner import (
     ArchivePlanner,
     ArchivePlanningError,
 )
+from tgvio.domain.archive import ArchivePolicy, ArchiveProfileSnapshot
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
 
 
@@ -80,6 +81,30 @@ class ArchivePlannerTests(unittest.TestCase):
         self.assertIn("├── manifest.json", tree)
         self.assertIn("└── _COMPLETE.json", tree)
         self.assertIn("│   ├── 001__Original 1.jpg", tree)
+
+    def test_archive_profile_policy_is_frozen_into_package_and_manifest(self) -> None:
+        with TemporaryDirectory() as tmp:
+            profile = ArchiveProfileSnapshot(
+                profile_id="primary-v2",
+                policy=ArchivePolicy.BEST_EFFORT,
+                policy_version=2,
+            )
+            plan = ArchivePlanner(profile=profile).plan(self._job(Path(tmp), 1))
+        package = plan.package
+        self.assertEqual(package.archive_profile_id, "primary-v2")
+        self.assertEqual(package.archive_policy, ArchivePolicy.BEST_EFFORT)
+        self.assertEqual(package.archive_policy_version, 2)
+        self.assertEqual(
+            package.manifest["archive_profile"],
+            {"id": "primary-v2", "policy": "best_effort", "policy_version": 2},
+        )
+        self.assertEqual(plan.summary["archive_profile_id"], "primary-v2")
+        self.assertEqual(plan.summary["archive_policy"], "best_effort")
+
+    def test_archive_profile_id_rejects_unsafe_or_secret_like_freeform_values(self) -> None:
+        for value in ("", "../other", "profile/name", "profile name"):
+            with self.subTest(value=value), self.assertRaises(ValueError):
+                ArchiveProfileSnapshot(profile_id=value)
 
     def test_1_10_52_100_media_all_form_one_package_without_album_limit(self) -> None:
         for count in (1, 10, 52, 100):

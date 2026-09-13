@@ -8,6 +8,7 @@ import unittest
 from tgvio.application.archive_planner import ArchivePlanner
 from tgvio.application.cache_cleanup import CacheCleanupService
 from tgvio.application.intake import IncomingMedia, IntakeService
+from tgvio.domain.archive import ArchivePackageState, ArchivePolicy, ArchiveProfileSnapshot
 from tgvio.domain.job import JobState, MediaKind
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
@@ -93,6 +94,80 @@ class CacheCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.removed_jobs, 0)
         self.assertEqual(result.blocked_by_archive, 1)
         self.assertTrue(local.exists())
+
+    async def test_best_effort_archive_still_protects_cache_while_active(self) -> None:
+        job, local = await self._job_with_cache(JobState.SUCCEEDED)
+        package = await self.repo.save_archive_plan(
+            ArchivePlanner(
+                profile=ArchiveProfileSnapshot(policy=ArchivePolicy.BEST_EFFORT)
+            ).plan(job)
+        )
+        self.assertEqual(package.state, ArchivePackageState.PLANNED)
+        result = await CacheCleanupService(
+            self.repo,
+            self.downloads,
+            retention_hours=24,
+        ).cleanup(force=True)
+        self.assertEqual(result.removed_jobs, 0)
+        self.assertEqual(result.blocked_by_archive, 1)
+        self.assertTrue(local.exists())
+
+    async def test_failed_required_archive_keeps_cache_but_best_effort_can_release_after_recovery_decision(self) -> None:
+        required_job, required_path = await self._job_with_cache(
+            JobState.SUCCEEDED,
+            payload=b"required",
+        )
+        required = await self.repo.save_archive_plan(ArchivePlanner().plan(required_job))
+        await self.repo.update_archive_package_state(
+            required.id,
+            ArchivePackageState.FAILED,
+            event_type="archive_failed",
+            error_code="fixture",
+        )
+
+        best_job, best_path = await self._job_with_cache(
+            JobState.SUCCEEDED,
+            payload=b"best-effort",
+        )
+        best_job.policy["auto_recovery"] = {
+            "version": 1,
+            "enabled": True,
+            "max_attempts": 3,
+            "base_delay_seconds": 15,
+            "max_delay_seconds": 300,
+        }
+        await self.repo.save(best_job)
+        best = await self.repo.save_archive_plan(
+            ArchivePlanner(
+                profile=ArchiveProfileSnapshot(policy=ArchivePolicy.BEST_EFFORT)
+            ).plan(best_job)
+        )
+        await self.repo.update_archive_package_state(
+            best.id,
+            ArchivePackageState.FAILED,
+            event_type="archive_failed",
+            error_code="fixture",
+        )
+
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        waiting = await service.cleanup(force=True)
+        self.assertEqual(waiting.removed_jobs, 0)
+        self.assertEqual(waiting.blocked_by_archive, 2)
+        self.assertTrue(required_path.exists())
+        self.assertTrue(best_path.exists())
+
+        best_job = await self.repo.get(best_job.id)
+        assert best_job is not None
+        best_job.policy["auto_recovery_archive"] = {
+            "status": "exhausted",
+            "failure_id": "fixture",
+        }
+        await self.repo.save(best_job)
+        completed = await service.cleanup(force=True)
+        self.assertEqual(completed.removed_jobs, 1)
+        self.assertEqual(completed.blocked_by_archive, 1)
+        self.assertTrue(required_path.exists())
+        self.assertFalse(best_path.exists())
 
     async def test_non_force_cleanup_waits_for_retention_then_cleans(self) -> None:
         job, local = await self._job_with_cache(JobState.SUCCEEDED)

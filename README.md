@@ -209,7 +209,7 @@ databases may still contain historical `backup_attempts`/`backup_files` tables;
 they are intentionally left untouched for non-destructive compatibility and
 are no longer read by TGVIO.
 
-Configuration remains outside SQLite and Git and uses Archive V2 names only:
+Archive endpoint credentials remain outside SQLite and Git. Each durable package freezes only a non-secret single-profile identity and policy snapshot:
 
 ```text
 TGVIO_ARCHIVE_ENABLED=false  # source-safe default; production explicitly enables it
@@ -217,11 +217,15 @@ TGVIO_ARCHIVE_WEBDAV_URL=
 TGVIO_ARCHIVE_REMOTE_ROOT=TGVIO
 TGVIO_ARCHIVE_WEBDAV_USER=
 TGVIO_ARCHIVE_WEBDAV_PASSWORD=
+TGVIO_ARCHIVE_PROFILE_ID=primary
+TGVIO_ARCHIVE_POLICY=required  # required | best_effort
 TGVIO_ARCHIVE_POLL_SECONDS=10
 ```
 
-Credentials and the full WebDAV URL are never included in safe summaries,
-archive events, manifests, or user-facing status output.
+Credentials and the full WebDAV URL are never included in SQLite snapshots,
+safe summaries, archive events, manifests, or user-facing status output. The
+non-secret profile id, policy and policy version are persisted into each
+ArchivePackage so later default changes cannot reinterpret historical work.
 
 Production Archive V2 has passed real endpoint validation: scoped capability
 probing, staging + MOVE commit, canonical media verification, `manifest.json`,

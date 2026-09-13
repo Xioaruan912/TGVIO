@@ -6,17 +6,17 @@ from datetime import datetime, timezone
 from pathlib import Path
 import shutil
 
+from tgvio.application.auto_recovery import archive_failure_waits_for_recovery
 from tgvio.application.ports import JobRepository
-from tgvio.domain.archive import ArchivePackageState
+from tgvio.domain.archive import ArchivePackageState, ArchivePolicy
 from tgvio.domain.job import Job, JobState
 
 
-_ARCHIVE_BLOCKING = {
+_ARCHIVE_ACTIVE = {
     ArchivePackageState.PLANNED,
     ArchivePackageState.STAGING,
     ArchivePackageState.UPLOADING,
     ArchivePackageState.VERIFYING,
-    ArchivePackageState.FAILED,
 }
 _AUTO_CLEAN_STATES = (JobState.SUCCEEDED, JobState.CANCELLED)
 
@@ -128,7 +128,15 @@ class CacheCleanupService:
 
     async def _archive_blocks(self, job: Job) -> bool:
         package = await self._repository.get_archive_package_for_job(job.id)
-        return bool(package and package.state in _ARCHIVE_BLOCKING)
+        if package is None:
+            return False
+        if package.state in _ARCHIVE_ACTIVE:
+            return True
+        if package.state != ArchivePackageState.FAILED:
+            return False
+        if package.archive_policy == ArchivePolicy.REQUIRED:
+            return True
+        return archive_failure_waits_for_recovery(job, package)
 
     def _age_due(self, job: Job) -> bool:
         value = job.updated_at or job.created_at

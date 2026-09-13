@@ -107,6 +107,8 @@ class Settings:
     archive_remote_root: str
     archive_user: str
     archive_password: str
+    archive_profile_id: str
+    archive_policy: str
     archive_poll_seconds: int
     vps_host: str
     vps_port: int
@@ -213,6 +215,15 @@ class Settings:
         archive_remote_root = (
             os.getenv("TGVIO_ARCHIVE_REMOTE_ROOT", "TGVIO").strip().strip("/") or "TGVIO"
         )
+        archive_profile_id = os.getenv("TGVIO_ARCHIVE_PROFILE_ID", "primary").strip() or "primary"
+        if len(archive_profile_id) > 64 or any(
+            not (character.isalnum() or character in {"-", "_", "."})
+            for character in archive_profile_id
+        ):
+            raise ConfigError("TGVIO_ARCHIVE_PROFILE_ID contains unsafe characters")
+        archive_policy = os.getenv("TGVIO_ARCHIVE_POLICY", "required").strip().lower() or "required"
+        if archive_policy not in {"required", "best_effort"}:
+            raise ConfigError("TGVIO_ARCHIVE_POLICY must be required/best_effort")
         if any(
             part in {".", ".."} or "\\" in part
             for part in archive_remote_root.split("/")
@@ -284,6 +295,8 @@ class Settings:
             archive_remote_root=archive_remote_root,
             archive_user=archive_user,
             archive_password=archive_password,
+            archive_profile_id=archive_profile_id,
+            archive_policy=archive_policy,
             archive_poll_seconds=archive_poll_seconds,
             vps_host=os.getenv("VPS_HOST", "199.47.242.40").strip(),
             vps_port=_int("VPS_PORT", 22),
@@ -331,6 +344,8 @@ class Settings:
             "archive_enabled": self.archive_enabled,
             "archive_configured": bool(self.archive_url and self.archive_user),
             "archive_remote_root_configured": bool(self.archive_remote_root),
+            "archive_profile_id": self.archive_profile_id,
+            "archive_policy": self.archive_policy,
             "vps_host_configured": bool(self.vps_host),
             "vps_ssh_key_configured": bool(str(self.vps_ssh_key)),
             "github_repo_configured": bool(self.github_repo),

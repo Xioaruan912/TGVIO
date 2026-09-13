@@ -45,6 +45,7 @@ from tgvio.infrastructure.media_inspector import FFprobeMediaInspector
 from tgvio.infrastructure.log_reader import JsonlOperationalLogReader
 from tgvio.infrastructure.media_transformer import FFmpegMediaTransformer
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
+from tgvio.domain.archive import ArchivePolicy, ArchiveProfileSnapshot
 from tgvio.domain.job import JobState
 from tgvio.observability import configure_logging, log_event
 
@@ -114,7 +115,13 @@ async def run(*, check_only: bool = False) -> None:
         if settings.archive_enabled:
             archive_service = ArchiveService(
                 repository,
-                ArchivePlanner(remote_root=settings.archive_remote_root),
+                ArchivePlanner(
+                    remote_root=settings.archive_remote_root,
+                    profile=ArchiveProfileSnapshot(
+                        profile_id=settings.archive_profile_id,
+                        policy=ArchivePolicy(settings.archive_policy),
+                    ),
+                ),
                 WebDavArchiveTransport(
                     settings.archive_url,
                     settings.archive_user,

@@ -10,6 +10,7 @@ from tgvio.domain.archive import (
     ArchivePackage,
     ArchivePackageState,
     ArchivePlan,
+    ArchiveProfileSnapshot,
     archive_json_sha256,
 )
 from tgvio.domain.job import Job, MediaItem, MediaKind
@@ -26,8 +27,14 @@ class ArchivePlanningError(RuntimeError):
 class ArchivePlanner:
     """Build a deterministic, network-free WebDAV archive package."""
 
-    def __init__(self, *, remote_root: str = "") -> None:
+    def __init__(
+        self,
+        *,
+        remote_root: str = "",
+        profile: ArchiveProfileSnapshot | None = None,
+    ) -> None:
         self._remote_root = self._normalize_remote_root(remote_root)
+        self._profile = profile or ArchiveProfileSnapshot()
 
     def plan(self, job: Job) -> ArchivePlan:
         candidates = [
@@ -80,6 +87,11 @@ class ArchivePlanner:
             "package_id": package_id,
             "job_id": job.id,
             "created_at": stamp.isoformat().replace("+00:00", "Z"),
+            "archive_profile": {
+                "id": self._profile.profile_id,
+                "policy": self._profile.policy.value,
+                "policy_version": self._profile.policy_version,
+            },
             "media_count": len(objects),
             "media": media_manifest,
         }
@@ -94,6 +106,9 @@ class ArchivePlanner:
             manifest=manifest,
             objects=tuple(objects),
             manifest_sha256=manifest_sha256,
+            archive_profile_id=self._profile.profile_id,
+            archive_policy=self._profile.policy,
+            archive_policy_version=self._profile.policy_version,
         )
         summary = {
             "media_total": len(objects),
@@ -101,6 +116,9 @@ class ArchivePlanner:
             "remote_path": remote_path,
             "staging_path": staging_path,
             "manifest_sha256": manifest_sha256,
+            "archive_profile_id": self._profile.profile_id,
+            "archive_policy": self._profile.policy.value,
+            "archive_policy_version": self._profile.policy_version,
         }
         return ArchivePlan(package=package, summary=summary)
 

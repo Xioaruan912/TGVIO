@@ -5,7 +5,12 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from tgvio.application.archive_planner import ArchivePlanner
-from tgvio.domain.archive import ArchiveObjectState, ArchivePackageState
+from tgvio.domain.archive import (
+    ArchiveObjectState,
+    ArchivePackageState,
+    ArchivePolicy,
+    ArchiveProfileSnapshot,
+)
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
@@ -58,6 +63,25 @@ class ArchiveRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([event.event_type for event in events], ["archive_planned"])
         self.assertEqual(events[0].detail["media_total"], 1)
 
+    async def test_archive_profile_policy_round_trips_durably(self) -> None:
+        job = await self._job()
+        plan = ArchivePlanner(
+            profile=ArchiveProfileSnapshot(
+                profile_id="primary-v2",
+                policy=ArchivePolicy.BEST_EFFORT,
+                policy_version=2,
+            )
+        ).plan(job)
+        saved = await self.repo.save_archive_plan(plan)
+        self.assertEqual(saved.archive_profile_id, "primary-v2")
+        self.assertEqual(saved.archive_policy, ArchivePolicy.BEST_EFFORT)
+        self.assertEqual(saved.archive_policy_version, 2)
+        loaded = await self.repo.get_archive_package(saved.id)
+        assert loaded is not None
+        self.assertEqual(loaded.archive_profile_id, "primary-v2")
+        self.assertEqual(loaded.archive_policy, ArchivePolicy.BEST_EFFORT)
+        self.assertEqual(loaded.archive_policy_version, 2)
+
     async def test_replanning_while_planned_is_idempotent_not_attempt_sprawl(self) -> None:
         job = await self._job()
         plan = ArchivePlanner().plan(job)
@@ -67,6 +91,24 @@ class ArchiveRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(second.objects), 1)
         events = await self.repo.list_archive_events(second.id)
         self.assertEqual(len(events), 1)
+
+    async def test_planned_package_rejects_profile_or_policy_reinterpretation(self) -> None:
+        job = await self._job()
+        first = await self.repo.save_archive_plan(ArchivePlanner().plan(job))
+        changed = ArchivePlanner(
+            profile=ArchiveProfileSnapshot(
+                profile_id="other",
+                policy=ArchivePolicy.BEST_EFFORT,
+                policy_version=2,
+            )
+        ).plan(job)
+        with self.assertRaisesRegex(ValueError, "snapshot is already frozen"):
+            await self.repo.save_archive_plan(changed)
+        loaded = await self.repo.get_archive_package(first.id)
+        assert loaded is not None
+        self.assertEqual(loaded.archive_profile_id, "primary")
+        self.assertEqual(loaded.archive_policy, ArchivePolicy.REQUIRED)
+        self.assertEqual(loaded.archive_policy_version, 1)
 
     async def test_archive_state_transitions_are_durable_and_auditable(self) -> None:
         job = await self._job()

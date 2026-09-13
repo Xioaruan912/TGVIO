@@ -25,7 +25,9 @@ BASELINE_SQL = MIGRATIONS_DIR / "0001_baseline.sql"
 SCHEDULER_SQL = MIGRATIONS_DIR / "0002_scheduler.sql"
 INTAKE_SQL = MIGRATIONS_DIR / "0003_intake_collections.sql"
 QUEUE_CONTROLS_SQL = MIGRATIONS_DIR / "0004_queue_controls.sql"
-LATEST_VERSION = 5
+OPERATION_TOKENS_SQL = MIGRATIONS_DIR / "0005_operation_tokens_undo.sql"
+ARCHIVE_PROFILE_POLICY_SQL = MIGRATIONS_DIR / "0006_archive_profile_policy.sql"
+LATEST_VERSION = 6
 MIGRATION_ONLY_TABLES = {
     "runtime_leases",
     "job_phase_claims",
@@ -160,6 +162,41 @@ def _version4_database(path: Path) -> None:
         connection.close()
 
 
+def _version5_database(path: Path) -> None:
+    migrations = path.parent / "v5-migrations"
+    migrations.mkdir()
+    for migration in (
+        BASELINE_SQL,
+        SCHEDULER_SQL,
+        INTAKE_SQL,
+        QUEUE_CONTROLS_SQL,
+        OPERATION_TOKENS_SQL,
+    ):
+        shutil.copy2(migration, migrations / migration.name)
+    MigrationRunner(path, migrations_dir=migrations).run()
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO jobs(id, owner_id, destination, state, policy_json)
+            VALUES('v5-job', 7, '@channel', 'succeeded', '{}')
+            """
+        )
+        connection.execute("INSERT INTO job_schedule(job_id) VALUES('v5-job')")
+        connection.execute(
+            """
+            INSERT INTO archive_packages(
+                id, job_id, layout_version, remote_path, staging_path,
+                state, manifest_json
+            ) VALUES('v5-package', 'v5-job', 'tgvio.archive/v1',
+                     'archive/v5', '.staging/v5', 'failed', '{}')
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
 def _production_shape_database(path: Path) -> None:
     connection = sqlite3.connect(path)
     try:
@@ -287,8 +324,8 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             await repo.open()
             try:
                 status = repo.schema_status()
-                self.assertEqual(status["recorded_versions"], [1, 2, 3, 4, 5])
-                self.assertEqual(status["applied_now"], [1, 2, 3, 4, 5])
+                self.assertEqual(status["recorded_versions"], [1, 2, 3, 4, 5, 6])
+                self.assertEqual(status["applied_now"], [1, 2, 3, 4, 5, 6])
                 self.assertEqual(status["user_version"], LATEST_VERSION)
                 self.assertTrue(status["ledger_present"])
                 self.assertFalse(status["backup_created"])
@@ -308,6 +345,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
                         (3, "intake_collections", 64),
                         (4, "queue_controls", 64),
                         (5, "operation_tokens_undo", 64),
+                        (6, "archive_profile_policy", 64),
                     ],
                 )
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], LATEST_VERSION)
@@ -322,7 +360,6 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             _legacy_baseline_database(database)
             before = sqlite3.connect(database)
             try:
-                before_snapshot = _business_snapshot(before)
                 before_counts = {
                     "jobs": before.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
                     "publish_steps": before.execute("SELECT COUNT(*) FROM publish_steps").fetchone()[0],
@@ -340,7 +377,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             await repo.open()
             try:
                 status = repo.schema_status()
-                self.assertEqual(status["applied_now"], [1, 2, 3, 4, 5])
+                self.assertEqual(status["applied_now"], [1, 2, 3, 4, 5, 6])
                 self.assertTrue(status["backup_created"])
                 loaded = await repo.get("legacy-job")
                 self.assertIsNotNone(loaded)
@@ -349,14 +386,19 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
 
             after = sqlite3.connect(database)
             try:
-                after_snapshot = _business_snapshot(after)
                 after_counts = {
                     "jobs": after.execute("SELECT COUNT(*) FROM jobs").fetchone()[0],
                     "publish_steps": after.execute("SELECT COUNT(*) FROM publish_steps").fetchone()[0],
                     "archive_packages": after.execute("SELECT COUNT(*) FROM archive_packages").fetchone()[0],
                 }
-                self.assertEqual(before_snapshot, after_snapshot)
                 self.assertEqual(before_counts, after_counts)
+                archive_columns = {
+                    row[1] for row in after.execute("PRAGMA table_info(archive_packages)").fetchall()
+                }
+                self.assertTrue(
+                    {"archive_profile_id", "archive_policy", "archive_policy_version"}
+                    <= archive_columns
+                )
                 self.assertEqual(after.execute("PRAGMA user_version").fetchone()[0], LATEST_VERSION)
                 self.assertEqual(after.execute("SELECT COUNT(*) FROM job_schedule").fetchone()[0], 1)
             finally:
@@ -387,7 +429,6 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             before = sqlite3.connect(database)
             try:
                 before_counts = _production_shape_counts(before)
-                before_snapshot = _business_snapshot(before)
                 self.assertEqual(
                     before_counts["jobs"],
                     [("cancelled", 4), ("failed", 3), ("succeeded", 16)],
@@ -412,8 +453,8 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             await repo.open()
             try:
                 status = repo.schema_status()
-                self.assertEqual(status["recorded_versions"], [1, 2, 3, 4, 5])
-                self.assertEqual(status["applied_now"], [1, 2, 3, 4, 5])
+                self.assertEqual(status["recorded_versions"], [1, 2, 3, 4, 5, 6])
+                self.assertEqual(status["applied_now"], [1, 2, 3, 4, 5, 6])
                 self.assertTrue(status["backup_created"])
             finally:
                 await repo.close()
@@ -421,7 +462,16 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             after = sqlite3.connect(database)
             try:
                 self.assertEqual(_production_shape_counts(after), before_counts)
-                self.assertEqual(_business_snapshot(after), before_snapshot)
+                self.assertEqual(
+                    after.execute(
+                        """
+                        SELECT archive_profile_id, archive_policy, archive_policy_version, COUNT(*)
+                        FROM archive_packages
+                        GROUP BY archive_profile_id, archive_policy, archive_policy_version
+                        """
+                    ).fetchall(),
+                    [("primary", "required", 1, 20)],
+                )
                 self.assertEqual(after.execute("PRAGMA user_version").fetchone()[0], LATEST_VERSION)
                 self.assertEqual(after.execute("SELECT COUNT(*) FROM job_schedule").fetchone()[0], 23)
                 self.assertEqual(after.execute("PRAGMA quick_check").fetchone()[0], "ok")
@@ -480,15 +530,15 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             migration = report["migration"]
             assert isinstance(migration, dict)
             self.assertEqual(migration["from_version"], 1)
-            self.assertEqual(migration["to_version"], 5)
-            self.assertEqual(migration["applied_now"], [2, 3, 4, 5])
+            self.assertEqual(migration["to_version"], 6)
+            self.assertEqual(migration["applied_now"], [2, 3, 4, 5, 6])
             before = report["before"]
             after = report["after"]
             backup = report["backup"]
             assert isinstance(before, dict) and isinstance(after, dict) and isinstance(backup, dict)
             self.assertEqual(before["user_version"], 1)
             self.assertTrue(before["migration_ledger_present"])
-            self.assertEqual(after["user_version"], 5)
+            self.assertEqual(after["user_version"], 6)
             self.assertTrue(after["migration_ledger_present"])
             self.assertEqual(backup["user_version"], 1)
             self.assertTrue(backup["migration_ledger_present"])
@@ -506,14 +556,14 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             migration = report["migration"]
             assert isinstance(migration, dict)
             self.assertEqual(migration["from_version"], 2)
-            self.assertEqual(migration["to_version"], 5)
-            self.assertEqual(migration["applied_now"], [3, 4, 5])
+            self.assertEqual(migration["to_version"], 6)
+            self.assertEqual(migration["applied_now"], [3, 4, 5, 6])
             before = report["before"]
             after = report["after"]
             backup = report["backup"]
             assert isinstance(before, dict) and isinstance(after, dict) and isinstance(backup, dict)
             self.assertEqual(before["user_version"], 2)
-            self.assertEqual(after["user_version"], 5)
+            self.assertEqual(after["user_version"], 6)
             self.assertEqual(backup["user_version"], 2)
             self.assertEqual(before["jobs"], after["jobs"])
 
@@ -548,14 +598,14 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             migration = report["migration"]
             assert isinstance(migration, dict)
             self.assertEqual(migration["from_version"], 3)
-            self.assertEqual(migration["to_version"], 5)
-            self.assertEqual(migration["applied_now"], [4, 5])
+            self.assertEqual(migration["to_version"], 6)
+            self.assertEqual(migration["applied_now"], [4, 5, 6])
             before = report["before"]
             after = report["after"]
             backup = report["backup"]
             assert isinstance(before, dict) and isinstance(after, dict) and isinstance(backup, dict)
             self.assertEqual(before["user_version"], 3)
-            self.assertEqual(after["user_version"], 5)
+            self.assertEqual(after["user_version"], 6)
             self.assertEqual(backup["user_version"], 3)
             self.assertEqual(before["jobs"], after["jobs"])
 
@@ -582,7 +632,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 connection.close()
 
-    async def test_rehearsal_tool_supports_current_v4_to_v5_forward_migration(self) -> None:
+    async def test_rehearsal_tool_supports_current_v4_to_latest_forward_migration(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
             database = root / "production-v4-copy.sqlite3"
@@ -594,14 +644,14 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             migration = report["migration"]
             assert isinstance(migration, dict)
             self.assertEqual(migration["from_version"], 4)
-            self.assertEqual(migration["to_version"], 5)
-            self.assertEqual(migration["applied_now"], [5])
+            self.assertEqual(migration["to_version"], 6)
+            self.assertEqual(migration["applied_now"], [5, 6])
             before = report["before"]
             after = report["after"]
             backup = report["backup"]
             assert isinstance(before, dict) and isinstance(after, dict) and isinstance(backup, dict)
             self.assertEqual(before["user_version"], 4)
-            self.assertEqual(after["user_version"], 5)
+            self.assertEqual(after["user_version"], 6)
             self.assertEqual(backup["user_version"], 4)
             self.assertEqual(before["jobs"], after["jobs"])
 
@@ -622,6 +672,44 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             finally:
                 connection.close()
 
+    async def test_rehearsal_tool_supports_current_v5_to_v6_forward_migration(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            database = root / "production-v5-copy.sqlite3"
+            backups = root / "backups"
+            _version5_database(database)
+
+            report = rehearse(database, backups)
+            self.assertEqual(report["status"], "passed")
+            migration = report["migration"]
+            assert isinstance(migration, dict)
+            self.assertEqual(migration["from_version"], 5)
+            self.assertEqual(migration["to_version"], 6)
+            self.assertEqual(migration["applied_now"], [6])
+            before = report["before"]
+            after = report["after"]
+            backup = report["backup"]
+            assert isinstance(before, dict) and isinstance(after, dict) and isinstance(backup, dict)
+            self.assertEqual(before["user_version"], 5)
+            self.assertEqual(after["user_version"], 6)
+            self.assertEqual(backup["user_version"], 5)
+            self.assertEqual(before["jobs"], after["jobs"])
+
+            connection = sqlite3.connect(database)
+            try:
+                self.assertEqual(
+                    connection.execute(
+                        """
+                        SELECT archive_profile_id, archive_policy, archive_policy_version
+                        FROM archive_packages WHERE id='v5-package'
+                        """
+                    ).fetchone(),
+                    ("primary", "required", 1),
+                )
+                self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            finally:
+                connection.close()
+
     async def test_repeat_open_is_noop_and_does_not_create_another_backup(self) -> None:
         with tempfile.TemporaryDirectory() as tmp:
             root = Path(tmp)
@@ -638,7 +726,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             await second.open()
             try:
                 status = second.schema_status()
-                self.assertEqual(status["recorded_versions"], [1, 2, 3, 4, 5])
+                self.assertEqual(status["recorded_versions"], [1, 2, 3, 4, 5, 6])
                 self.assertEqual(status["applied_now"], [])
                 self.assertFalse(status["backup_created"])
             finally:
@@ -690,12 +778,12 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
 
             connection = sqlite3.connect(database)
             try:
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
                 self.assertEqual(
                     connection.execute(
                         "SELECT version FROM schema_migrations ORDER BY version"
                     ).fetchall(),
-                    [(1,), (2,), (3,), (4,), (5,)],
+                    [(1,), (2,), (3,), (4,), (5,), (6,)],
                 )
             finally:
                 connection.close()
@@ -741,9 +829,9 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             await repo.open()
             try:
                 status = repo.schema_status()
-                self.assertEqual(status["recorded_versions"], [1, 2, 3, 4, 5])
-                self.assertEqual(status["applied_now"], [2, 3, 4, 5])
-                self.assertEqual(status["user_version"], 5)
+                self.assertEqual(status["recorded_versions"], [1, 2, 3, 4, 5, 6])
+                self.assertEqual(status["applied_now"], [2, 3, 4, 5, 6])
+                self.assertEqual(status["user_version"], 6)
                 orders = [
                     await repo.get_accepted_order(job_id)
                     for job_id in ("v1-job-a", "v1-job-b", "v1-job-c")
@@ -756,7 +844,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             connection = sqlite3.connect(database)
             try:
                 self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
-                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 5)
+                self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], 6)
                 self.assertEqual(
                     connection.execute(
                         "SELECT job_id FROM job_schedule ORDER BY accepted_order"

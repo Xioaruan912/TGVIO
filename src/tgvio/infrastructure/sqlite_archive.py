@@ -14,6 +14,7 @@ from tgvio.domain.archive import (
     ArchivePackage,
     ArchivePackageState,
     ArchivePlan,
+    ArchivePolicy,
 )
 
 
@@ -22,7 +23,10 @@ class SQLiteArchiveRepositoryMixin:
         package = plan.package
         async with self._write_transaction() as conn:
             cursor = await conn.execute(
-                "SELECT state FROM archive_packages WHERE job_id=?",
+                """
+                SELECT state, archive_profile_id, archive_policy, archive_policy_version
+                FROM archive_packages WHERE job_id=?
+                """,
                 (package.job_id,),
             )
             existing = await cursor.fetchone()
@@ -31,6 +35,12 @@ class SQLiteArchiveRepositoryMixin:
                 raise ValueError(
                     f"archive package cannot be replanned from state {existing['state']}"
                 )
+            if existing is not None and (
+                str(existing["archive_profile_id"]) != package.archive_profile_id
+                or str(existing["archive_policy"]) != package.archive_policy.value
+                or int(existing["archive_policy_version"]) != package.archive_policy_version
+            ):
+                raise ValueError("archive package profile/policy snapshot is already frozen")
             if existing is not None:
                 await conn.execute(
                     "DELETE FROM archive_packages WHERE job_id=?",
@@ -40,8 +50,9 @@ class SQLiteArchiveRepositoryMixin:
                 """
                 INSERT INTO archive_packages(
                     id, job_id, layout_version, remote_path, staging_path,
-                    state, manifest_json, manifest_sha256, error_code, error_message
-                ) VALUES(?,?,?,?,?,?,?,?,?,?)
+                    state, manifest_json, manifest_sha256, error_code, error_message,
+                    archive_profile_id, archive_policy, archive_policy_version
+                ) VALUES(?,?,?,?,?,?,?,?,?,?,?,?,?)
                 """,
                 (
                     package.id,
@@ -54,6 +65,9 @@ class SQLiteArchiveRepositoryMixin:
                     package.manifest_sha256,
                     package.error_code,
                     package.error_message,
+                    package.archive_profile_id,
+                    package.archive_policy.value,
+                    package.archive_policy_version,
                 ),
             )
             for obj in package.objects:
@@ -448,6 +462,9 @@ class SQLiteArchiveRepositoryMixin:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
             committed_at=row["committed_at"],
+            archive_profile_id=str(row["archive_profile_id"]),
+            archive_policy=ArchivePolicy(row["archive_policy"]),
+            archive_policy_version=int(row["archive_policy_version"]),
         )
 
     @staticmethod

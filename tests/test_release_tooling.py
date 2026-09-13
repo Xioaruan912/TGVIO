@@ -327,6 +327,17 @@ class RemotePreflightSchemaTests(unittest.TestCase):
             )
         )
 
+    def test_known_v6_schema_requires_ledger(self) -> None:
+        self.assertTrue(
+            _database_schema_is_known(
+                {
+                    "user_version": 6,
+                    "migration_ledger_present": True,
+                    "schema_sql_sha256": "f4ac2877aa0379c249d703a908e4697ba4495ac183aa2450f7ffaa7897e0a244",
+                }
+            )
+        )
+
     def test_unknown_hash_or_ledger_mismatch_fails_closed(self) -> None:
         self.assertFalse(
             _database_schema_is_known(

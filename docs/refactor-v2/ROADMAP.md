@@ -32,7 +32,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-04 | IN PROGRESS | A-D durable scheduler / claim / strict FIFO 已交付；E 并发分片上传继续 | DB-03、PL-09、PL-10 |
 | R2-05 | DELIVERED | Durable intake/合集/文字/spoiler/状态消息已随 v3 正式发布 | IN-04～06、PL-06、ST-01 |
 | R2-06 | DELIVERED | 完整队列、自动恢复、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02～04、PL-13～14 |
-| R2-07 | NOT STARTED | Archive Profile/策略增强与安全诊断摘要；固定单目的地、静态环境代理 | AR-07、OB-01、ST-04 |
+| R2-07 | IN PROGRESS | A1 单一 Archive Profile/策略冻结候选已完成；后续 A2/A3 与安全诊断摘要继续 | AR-07、OB-01、ST-04 |
 | R2-08 | NOT STARTED | 拆分 Telegram/WebDAV/UI/SQLite 热点并清除兼容层 | 架构门禁 |
 | R2-09 | NOT STARTED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
 | R2-10 | NOT STARTED | 完整等价验收、灾难恢复演练、旧树退役 | 全合同 |
@@ -274,6 +274,8 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 增强 Archive 的可配置性、恢复安全和可诊断能力，不引入当前业务不需要的多目的地或动态代理状态机。
 
 ### 实施包
+
+2026-09-13 当前进度：A1 characterization + single Archive profile/policy candidate 已完成本地实现与 fresh-image foundation；新增 `0006_archive_profile_policy`，历史 package 默认冻结为 `primary / required / v1` 以保持既有生产语义。候选 v6 schema hash 为 `f4ac2877aa0379c249d703a908e4697ba4495ac183aa2450f7ffaa7897e0a244`；正式生产发布和 postflight 尚未完成，因此 R2-07 保持 `IN PROGRESS`。证据见 [R2-07A1_ARCHIVE_PROFILE_CANDIDATE.md](evidence/R2-07A1_ARCHIVE_PROFILE_CANDIDATE.md)。
 
 - **R2-07A — Archive Profile / 策略增强（保留）**：抽象单一 Archive endpoint 的非秘密引用与能力状态；支持 `required` / `best-effort` 策略；优化 durable retry，使已确认对象不重复上传；提供远端对象安全删除确认与逐对象审计；Archive 状态页区分计划、传输、提交、失败和待重试。
 - **R2-07B — Destination Profiles（退役）**：2026-09-13 用户明确决定保持固定发布目标，不实现 profile 创建、启停、默认选择或多频道 UI。既有 PublishPlan/effect/reference cache 仍冻结并校验固定 destination identity；未来确有多频道需求时另立设计阶段，不在 R2-07 预埋复杂状态。

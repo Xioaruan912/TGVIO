@@ -1,6 +1,6 @@
 # R2-07 Archive 与安全诊断技术方案
 
-> 状态：ACCEPTED SCOPE / NOT STARTED
+> 状态：IN PROGRESS — R2-07A1 candidate completed locally; production cutover pending
 > 决策日期：2026-09-13
 > 范围：R2-07A Archive Profile/策略增强；R2-07D Diagnostic Snapshot
 
@@ -84,7 +84,7 @@ Snapshot 只允许以下白名单字段及有界聚合：
 
 每个产生正式 build 的子包都必须独立测试、推送、部署 HostDZire 并后验：
 
-1. **R2-07A1 — characterization 与 profile/policy domain**：锁定现有 Archive receipt/retry/cache 行为；增加单 profile snapshot 和策略语义，不做远端删除。
+1. **R2-07A1 — characterization 与 profile/policy domain**：候选已完成；锁定现有 Archive receipt/retry/cache 行为，增加 single profile snapshot、`required/best_effort` 冻结语义与 `0006_archive_profile_policy`。正式生产 cutover/postflight 待完成，不做远端删除。
 2. **R2-07A2 — durable retry 与状态 UI**：有界自动恢复、精确对象复用、手机按钮和 Archive 状态页。
 3. **R2-07A3 — exact remote delete**：operation token、不可变 target set、提交边界失效、逐对象 checkpoint/audit 和 partial resume；使用 fake WebDAV 做完整故障矩阵，正式发布不删除现有用户归档。
 4. **R2-07D — Diagnostic Snapshot**：固定 DTO、SQL 聚合、启动代理检测状态、`/diag` 与 secret/path fixtures。

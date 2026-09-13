@@ -29,6 +29,32 @@ class ArchiveObjectRole(StrEnum):
     MEDIA = "media"
 
 
+class ArchivePolicy(StrEnum):
+    REQUIRED = "required"
+    BEST_EFFORT = "best_effort"
+
+
+ARCHIVE_POLICY_VERSION = 1
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveProfileSnapshot:
+    """Non-secret single-profile identity frozen into each ArchivePackage."""
+
+    profile_id: str = "primary"
+    policy: ArchivePolicy = ArchivePolicy.REQUIRED
+    policy_version: int = ARCHIVE_POLICY_VERSION
+
+    def __post_init__(self) -> None:
+        profile_id = self.profile_id.strip()
+        if not profile_id or len(profile_id) > 64:
+            raise ValueError("archive profile id must be 1..64 characters")
+        if any(not (character.isalnum() or character in {"-", "_", "."}) for character in profile_id):
+            raise ValueError("archive profile id contains unsafe characters")
+        if self.policy_version < 1:
+            raise ValueError("archive policy version must be >= 1")
+
+
 ARCHIVE_PACKAGE_TRANSITIONS: dict[ArchivePackageState, set[ArchivePackageState]] = {
     ArchivePackageState.PLANNED: {
         ArchivePackageState.STAGING,
@@ -166,6 +192,9 @@ class ArchivePackage:
     created_at: str | None = None
     updated_at: str | None = None
     committed_at: str | None = None
+    archive_profile_id: str = "primary"
+    archive_policy: ArchivePolicy = ArchivePolicy.REQUIRED
+    archive_policy_version: int = ARCHIVE_POLICY_VERSION
 
 
 @dataclass(frozen=True, slots=True)
