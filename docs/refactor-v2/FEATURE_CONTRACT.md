@@ -67,7 +67,7 @@
 | AR-04 | 崩溃恢复从已存对象继续，manifest/marker 确定性，不产生 attempt sprawl | COVERED | executor/runtime tests |
 | AR-05 | Archive 失败不回滚已成功 Telegram 发布，且未完成时保护 canonical cache | COVERED | runtime/cache tests |
 | AR-06 | 用户可查看、探测和显式重试失败 package；操作 owner-scoped | COVERED | R2-03A 增加按钮、二次确认和 durable Job owner 复核；仍需完整 callback 矩阵 |
-| AR-07 | 单一 Archive endpoint profile、best-effort/required 策略和已记录远端对象精确删除有安全 UI、确认与审计 | REQUIRED | R2-07A 保留；删除必须复用 operation token，只枚举 package/object receipt，禁止路径或用户目录递归。多 endpoint/profile 列表不在范围内 |
+| AR-07 | 单一 Archive endpoint profile、best-effort/required 策略和已记录远端对象精确删除有安全 UI、确认与审计 | REQUIRED | R2-07A1 已生产发布 single profile identity + required/best_effort durable snapshot 与 cache/recovery 边界（v6）；A2 状态/retry UI 与 A3 exact remote delete 尚未完成。删除必须复用 operation token，只枚举 package/object receipt，禁止路径或用户目录递归 |
 
 ## 6. 队列、控制与 UI
 
@@ -91,7 +91,7 @@
 | ID | 合同 | 当前状态 | 证据/缺口 |
 |---|---|---|---|
 | DB-01 | Job/Item/Event/Plan/Step/Effect/Archive/Control/Progress 均可持久恢复 | VERIFIED | repository tests 与生产 DB |
-| DB-02 | schema 使用不可变、有 checksum 的前向 migration，并在启动前备份和校验 | VERIFIED | R2-03B 接管 checksum ledger；`0002_scheduler`～`0005_operation_tokens_undo` 均先做生产派生 rehearsal 再正式发布。生产现为 `user_version=5`，SQLite backup API、schema fingerprint/checksum fail-closed、重复 no-op 与 rollback asset check 均通过 |
+| DB-02 | schema 使用不可变、有 checksum 的前向 migration，并在启动前备份和校验 | VERIFIED | R2-03B 接管 checksum ledger；`0002_scheduler`～`0006_archive_profile_policy` 均先做生产派生 rehearsal 再正式发布。生产现为 `user_version=6`，SQLite backup API、schema fingerprint/checksum fail-closed、重复 no-op 与 rollback asset check 均通过 |
 | DB-03 | worker 使用 durable claim/lease/heartbeat；意外双进程也不能重复执行一个 Job | VERIFIED | R2-04 A-D 已正式生产发布 singleton runtime lease、prepare/publish/archive generation-fenced claim、TTL watchdog 与跨独立 SQLite connection 竞争保护；独立 postflight 显示 runtime lease active=1、phase claim blocker=0 |
 | OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | COVERED | 当前 runtime health/logging/diagnostic tests 已覆盖基础视图；R2-07D 将补稳定 Diagnostic Snapshot：release/commit/manifest、schema/migration、lease/scheduler、Archive 聚合和非敏感 flags，禁止异常原文、peer/user、credential 和本地路径 |
 | OB-02 | JSONL 与 Docker logs 有界轮转，日志不含 URL、caption、peer/user、路径和凭据 | COVERED | logging tests；每次发布继续做 secret scan |

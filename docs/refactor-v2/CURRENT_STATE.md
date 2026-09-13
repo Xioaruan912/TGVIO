@@ -2,18 +2,18 @@
 
 > 审计时间：2026-09-13（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
-> 阶段说明：R2-03A/B、R2-05、R2-06 已交付；R2-04 A-E 已正式发布但 E 仍待 1～3 个真实大文件 performance acceptance。当前生产事实以 `r2-06-e065ad9-20260913T014301Z` / schema v5 为准；下一实施阶段为 R2-07。
+> 阶段说明：R2-03A/B、R2-05、R2-06 已交付；R2-04 A-E 已正式发布但 E 仍待 1～3 个真实大文件 performance acceptance。R2-07A1 已正式发布，R2-07 继续进行。当前生产事实以 `r2-07-eadd4c9-20260913T023949Z` / schema v6 为准。
 
 ## 1. 源码权威已经对齐
 
 | 范围 | 当前事实 | 结论 |
 |---|---|---|
-| Git runtime 基线 | `e065ad940a8549e4d378a9cf9e7a63a11cd058d4` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object |
+| Git runtime 基线 | `eadd4c9c315ac5d73c8b334e19eb5596d2c3d50b` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object |
 | 退役旧树 | annotated tag `legacy-telegram-video-forwarder-750b3c1` 指向 `750b3c1629a0d360df740337671b54b8749e2ce2` | 旧架构可追溯，但不再留在当前可启动树 |
 | HostDZire | shared root `/root/TGVIO`；current link `/root/TGVIO-current`；Compose service/container `tgvio` | 版本化 release 已接管，运行卷仍留在 shared root |
-| 生产 release | `r2-06-e065ad9-20260913T014301Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `e065ad940a8549e4d378a9cf9e7a63a11cd058d4` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
-| 生产 image | `sha256:f095d405ba145da66e2029e786a433cd59dd5fe7a6f7d50c5652754b4111ed51` | 正式 runtime image；上一个 v4 runtime 与匹配数据库备份均是可验证 rollback point |
-| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `c375520888d2a97d73b858eb8b158f5b4cff6b08e55f39bdc511c0cabb459bf6` | R2-06 operation-token/undo runtime 三方身份一致 |
+| 生产 release | `r2-07-eadd4c9-20260913T023949Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `eadd4c9c315ac5d73c8b334e19eb5596d2c3d50b` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
+| 生产 image | `sha256:d91fc1c9c10cfa96b8a5d8af28a0b5e95d09c341fa4b8a217d052be2a5bc9d82` | 正式 runtime image；匹配 v5 pre-migration DB/source/image 均是可验证 rollback point |
+| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `d0a3def5a53b88f55ca786d5ec1b0c7324ee0fb3688d1b07789903bbae243aa3` | R2-07A1 Archive profile/policy runtime 三方身份一致 |
 
 R2-00 记录的 `1da1d3d0…` 没有留下生成算法，已由 R2-01 的明确、可重复算法取代。原始 82 文件快照、逐文件 SHA-256、导入边界和发布记录见 [R2-01 evidence](evidence/R2-01_BASELINE.md)。
 
@@ -23,10 +23,10 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.1 运行状态
 
-- Release：`r2-06-e065ad9-20260913T014301Z`。
-- Source：`/root/TGVIO-releases/r2-06-e065ad9-20260913T014301Z/source`，由 `/root/TGVIO-current` 原子指向。
-- 容器 ID：`cd6d105190c803012ed9a976d50b3fababe66922e83beac7df6860af24d30192`。
-- Started-at：`2026-09-13T01:39:57.079263165Z`。
+- Release：`r2-07-eadd4c9-20260913T023949Z`。
+- Source：`/root/TGVIO-releases/r2-07-eadd4c9-20260913T023949Z/source`，由 `/root/TGVIO-current` 原子指向。
+- 容器 ID：`d33ebc0867e0cff322abc28da87cefd3735848d57abe718f13cb7db7613cd4c5`。
+- Started-at：`2026-09-13T02:36:47.672839208Z`。
 - 状态：`running`，Docker health=`healthy`，当前容器 restart count=0。
 - 同一 Compose project/service 下运行实例数为 1。
 - 启动日志有 bootstrap 与 Telegram-ready 标记，无 traceback/fatal/unhandled/exception marker。
@@ -41,22 +41,22 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - `quick_check=ok`，最新独立 postflight 报告数据库大小 974,848 bytes。
 - 24 个 Job；非终态 Job blocker 为 0。v3→v4 候选 rehearsal 对当时 23 Job / 42 PublishStep / 20 ArchivePackage / 179 ArchiveObject / 23 progress 保持不变；正式 cutover 前第 24 个 Job 已进入终态且所有 business blocker 归零。
 - Publish / Archive / progress / phase-claim / partial-uncertain blocker 在最新独立 postflight 中全部为 0；singleton `telegram-runtime` lease active=1 且不构成 blocker。
-- `PRAGMA user_version=5`，`schema_migrations` 已连续登记 `0001_baseline`～`0005_operation_tokens_undo`。
-- 规范化整库 schema SQL SHA-256 为 `c70f05023d89fb89127070a4cffb7f6232609b578eb9e47e4d20fc79afb879c2`。
-- R2-06 v5 cutover 在真实生产备份副本上完成 v4→v5 rehearsal：`applied_now=[5]`、重复运行 no-op、v4 backup identity 保持且 24 Job 业务计数不变。`rollback_hostdzire.sh --check r2-06-e065ad9-20260913T014301Z` 通过。
+- `PRAGMA user_version=6`，`schema_migrations` 已连续登记 `0001_baseline`～`0006_archive_profile_policy`。
+- 规范化整库 schema SQL SHA-256 为 `f4ac2877aa0379c249d703a908e4697ba4495ac183aa2450f7ffaa7897e0a244`。
+- R2-07A1 v6 cutover 在真实生产 SQLite Backup API 回滚点副本上完成 v5→v6 rehearsal；历史 ArchivePackage 默认保持 `primary / required / v1`，24 Job 业务事实不变。`rollback_hostdzire.sh --check r2-07-eadd4c9-20260913T023949Z` 通过。
 - 新增 `operation_tokens`、`publish_effect_revocations`、`publish_effect_revocation_events` 当前均为 0；历史 230 条 publish effect（42 commit marker、37 channel、151 discussion）完整保留。
 
 ### 2.3 代码、测试与镜像
 
-- 当前生产 R2-06 runtime：67 个 Python 源文件；schema 为 v5，`0005_operation_tokens_undo` 新增通用确认 token 与 append-only revocation audit，既有 migration 未被修改。
+- 当前生产 R2-07A1 runtime：67 个 Python 源文件；schema 为 v6，`0006_archive_profile_policy` 只为 ArchivePackage 新增非秘密 profile/policy snapshot 字段，既有 migration 未被修改。
 - 下载/分析保持有限并发，Telegram publish 由 durable accepted-order dispatcher 串行执行，prepare/publish/archive 都由 generation-fenced claim + heartbeat + TTL watchdog 保护。
 - 当前主要热点转为 `adapters/telegram/bot_ui.py`、Telegram publish 与 WebDAV adapter；repository 大文件热点已在 R2-03B 消除。
 - 当前生产的 domain/application AST 依赖边界与 67-file architecture gate 通过。
-- 当前生产 R2-06 正式 Docker test target 在 `--network none` 下通过 304 tests（30.559 秒），覆盖既有 scheduler/migration/upload/intake/release 合同，以及 operation token owner/revision/TTL/single-use、callback replay/stale-state、undo 部分恢复/超时/瞬时重试/审计/circuit、缓存精确候选和 UI 基础设施异常回归；没有启动第二个 Telegram Bot。
+- 当前生产 R2-07A1 正式 Docker test target 在 `--network none` 下通过 312 tests（32.282 秒），覆盖既有 scheduler/migration/upload/intake/release/undo 合同，并新增 Archive profile/policy freeze、required/best-effort cache boundary、v5→v6 rehearsal 与 v6 schema fail-closed 回归；没有启动第二个 Telegram Bot。
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 依赖已由 hashed lock 固定；多阶段 Dockerfile 的 test/runtime targets 共用固定 base digest，runtime 内精确安装 7 个锁定 Python 包。
-- 正式 runtime image `sha256:f095d405ba145da66e2029e786a433cd59dd5fe7a6f7d50c5652754b4111ed51` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
+- 正式 runtime image `sha256:d91fc1c9c10cfa96b8a5d8af28a0b5e95d09c341fa4b8a217d052be2a5bc9d82` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
 
 ## 3. 当前 TGVIO 已证明的能力
 
