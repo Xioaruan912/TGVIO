@@ -230,6 +230,9 @@ def git_source_manifest(repo: Path, commit: str) -> str:
     return _manifest_from_items(items)
 
 
+MAX_SOURCE_FILE_LINES = 1600
+
+
 def check_architecture(root: Path) -> dict[str, object]:
     source = root.resolve() / "src" / "tgvio"
     if not source.is_dir():
@@ -240,7 +243,14 @@ def check_architecture(root: Path) -> dict[str, object]:
         relative = path.relative_to(root.resolve()).as_posix()
         module_parts = path.relative_to(source).parts
         layer = module_parts[0] if len(module_parts) > 1 else "root"
-        tree = ast.parse(path.read_text(encoding="utf-8"), filename=relative)
+        source_text = path.read_text(encoding="utf-8")
+        line_count = source_text.count("\n") + 1
+        if line_count > MAX_SOURCE_FILE_LINES:
+            problems.append(
+                f"{relative}: {line_count} lines exceeds the "
+                f"{MAX_SOURCE_FILE_LINES}-line source budget"
+            )
+        tree = ast.parse(source_text, filename=relative)
         imports: list[str] = []
         for node in ast.walk(tree):
             if isinstance(node, ast.Import):
@@ -270,7 +280,11 @@ def check_architecture(root: Path) -> dict[str, object]:
         checked += 1
     if problems:
         raise GuardError("architecture boundary rejected:\n" + "\n".join(problems))
-    return {"status": "passed", "python_files": checked}
+    return {
+        "status": "passed",
+        "python_files": checked,
+        "max_source_file_lines": MAX_SOURCE_FILE_LINES,
+    }
 
 
 def verify_repository(

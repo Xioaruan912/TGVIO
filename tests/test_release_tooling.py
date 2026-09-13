@@ -105,7 +105,7 @@ class SourceGuardTests(unittest.TestCase):
 class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
-        self.assertEqual(result["python_files"], 79)
+        self.assertEqual(result["python_files"], 84)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -117,6 +117,18 @@ class ArchitectureGateTests(unittest.TestCase):
                 encoding="utf-8",
             )
             with self.assertRaisesRegex(GuardError, "domain imports"):
+                check_architecture(root)
+
+    def test_oversized_source_file_is_rejected(self) -> None:
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            package = root / "src" / "tgvio" / "domain"
+            package.mkdir(parents=True)
+            (package / "huge.py").write_text(
+                "value = 1\n" * 1700,
+                encoding="utf-8",
+            )
+            with self.assertRaisesRegex(GuardError, "source budget"):
                 check_architecture(root)
 
 
