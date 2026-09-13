@@ -390,9 +390,10 @@ deploy_release() {
       python3 "$source_dir/scripts/release_guard.py" sqlite-backup \
         "$rollback_dir/state-pre.sqlite3" "$rehearsal_dir/state-copy.sqlite3" \
         >"$evidence_dir/migration-rehearsal-copy.json"
-      python3 "$source_dir/scripts/rehearse_migration.py" \
+      PYTHONPATH="$source_dir/src" python3 "$source_dir/scripts/rehearse_migration.py" \
         "$rehearsal_dir/state-copy.sqlite3" \
-        --backup-dir "$rehearsal_dir/backups" >"$rehearsal_report"
+        --backup-dir "$rehearsal_dir/backups" >"$rehearsal_report" \
+        2> >(tee "$evidence_dir/migration-rehearsal.stderr.log" >&2)
       [[ "$(json_value "$rehearsal_report" status)" == passed ]] || die "migration rehearsal did not pass"
       [[ "$(json_value "$rehearsal_report" migration.from_version)" == "$(json_value "$preflight_backup" database.user_version)" ]] || die "migration rehearsal source version differs from production"
       [[ "$(json_value "$rehearsal_report" migration.to_version)" == "$expected_version" ]] || die "migration rehearsal target version differs from declared migration"

@@ -415,7 +415,11 @@ class BuildContractTests(unittest.TestCase):
         cutover = script.index("stage=preflight-before-cutover")
         self.assertLess(rehearsal, cutover)
         self.assertIn('"$rollback_dir/state-pre.sqlite3" "$rehearsal_dir/state-copy.sqlite3"', script)
-        self.assertIn('scripts/rehearse_migration.py', script)
+        self.assertIn(
+            'PYTHONPATH="$source_dir/src" python3 "$source_dir/scripts/rehearse_migration.py"',
+            script,
+        )
+        self.assertIn('migration-rehearsal.stderr.log', script)
         self.assertIn('migration.applied_now', script)
         self.assertIn('before.schema_sql_sha256', script)
         self.assertIn('backup.schema_sql_sha256', script)
