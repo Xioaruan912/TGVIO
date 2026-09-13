@@ -2,7 +2,7 @@
 
 > 审计时间：2026-09-13（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
-> 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-09 均已交付；R2-04 A-E 已正式发布但 E 仍待 1～3 个真实大文件 performance acceptance。R2-09 以 `0008_notification_outbox` 把生产推进到 schema v8，并交付只读 Dashboard/metrics 与脱敏通知 outbox。当前生产事实以 `r2-09-5ff2a61-20260913T092930Z` / schema v8 为准。
+> 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-08、R2-09 均已交付，R2-10 自动化收口已完成；所有 `REQUIRED` 合同为 `VERIFIED`。R2-09 以 `0008_notification_outbox` 把生产推进到 schema v8，R2-08 为行为等价的 Bot UI 拆分。当前生产事实以 `r2-08-c39fe9d-20260913T094000Z` / schema v8 为准。R2-04E 真实大文件性能、R2-05/06 真实 E2E 与破坏性回滚演练仍需 owner 窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。
 
 ## 1. 源码权威已经对齐
 

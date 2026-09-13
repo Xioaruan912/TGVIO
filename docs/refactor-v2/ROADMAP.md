@@ -35,7 +35,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-07 | DELIVERED | A1/A2/A3/D 已生产交付；Archive Profile/策略、exact remote delete 与安全 Diagnostic Snapshot 已完成 | AR-07、OB-01、ST-04 |
 | R2-08 | DELIVERED | 拆分 Telegram/WebDAV/UI/SQLite 热点并锁定文件大小预算 | 架构门禁 |
 | R2-09 | DELIVERED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
-| R2-10 | NOT STARTED | 完整等价验收、灾难恢复演练、旧树退役 | 全合同 |
+| R2-10 | CLOSED (automated) | 自动矩阵、旧树退役与 release 身份收口已交付；受控生产 smoke 与破坏性回滚演练待 owner 窗口 | 全合同 |
 
 阶段编号表达依赖顺序，不要求每阶段只有一个 commit。每个阶段应拆成可部署的小提交；如果单阶段超过约一周或同时修改多个外部副作用边界，应继续拆分。
 
@@ -351,6 +351,10 @@ R2-09 已随 `r2-09-5ff2a61-20260913T092930Z`（runtime commit `5ff2a61e6ca51a8f
 - 做一次 HostDZire 恢复演练：source/image/DB 三重回滚，恢复时间与数据边界有记录。
 - 清除旧包、过期脚本和过时文档入口；保留 Git tag/ADR，不保留可误启动的第二套 runtime。
 - README、AGENTS、运维手册、release manifest 与实际生产完全一致。
+
+### 交付结果（2026-09-13）
+
+R2-10 的自动化与文档部分已交付：`FEATURE_CONTRACT.md` 已无 `REQUIRED` 项；`c39fe9d` 上 368 tests 全绿；旧 runtime 不在可启动树中，仅由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留；当前 release 的 source/image/DB 回滚资产与单实例身份已只读验证。受控生产 smoke（单媒体/相册/合集/封面/评论区/spoiler/URL/>2GB、cancel/hold/retry/undo、Archive 精确删除）、1～3 个真实大文件性能观测，以及破坏性 HostDZire 回滚演练需要 owner 的 Telegram 会话与独立运维窗口，已在 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md) 列为明确的用户验证清单，不在此伪称完成。
 
 ## 14. 每阶段交付记录模板
 
