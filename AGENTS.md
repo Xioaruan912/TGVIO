@@ -1,19 +1,19 @@
 # 视频转发机器人 — 项目说明（供 Agent 参考）
 
 > 本文件面向后续接手该项目的开发/运维 Agent，说明生产事实、强制规则和历史背景。
-> 最后更新：2026-09-13（R2-06 operation token / undo 已交付）
+> 最后更新：2026-09-13（R2-07A2 Archive recovery/status 已交付）
 >
 > **阅读顺序**：先完整阅读第 0 节和 [`docs/refactor-v2/`](docs/refactor-v2/README.md)。第 1～21 节是旧 `telegram-video-forwarder` 架构及其执行历史，仅用于追溯；其中任何“当前”“下一步”“已部署”表述都不得覆盖 V2 文档与实时只读审计结果。
 
 ## 0. 当前基线与 Agent 强制规则（权威）
 
 - V2 权威入口：[`docs/refactor-v2/README.md`](docs/refactor-v2/README.md)。功能保证以 [`FEATURE_CONTRACT.md`](docs/refactor-v2/FEATURE_CONTRACT.md) 为验收合同；实施顺序以 [`ROADMAP.md`](docs/refactor-v2/ROADMAP.md) 为准；发布遵守 [`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md)，构建/交付入口见 [`RELEASE_TOOLING.md`](docs/refactor-v2/RELEASE_TOOLING.md)。
-- R2-01～R2-06 已恢复 Git 权威、可复现发布链、移动端 UX、checksum migration、durable scheduler/intake/control、自动恢复、SQL 任务/失败中心、通用 operation token 与可恢复撤销。R2-07A1 single Archive profile/policy 已于 2026-09-13 正式发布。生产 runtime full commit 为 `eadd4c9c315ac5d73c8b334e19eb5596d2c3d50b`，release 为 `r2-07-eadd4c9-20260913T023949Z`；退役旧树仍由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留。A1 证据见 [`R2-07A1_ARCHIVE_PROFILE_RELEASE.md`](docs/refactor-v2/evidence/R2-07A1_ARCHIVE_PROFILE_RELEASE.md)。后续 docs-only closure commit 可以领先生产 runtime commit，但不因此构建或重启。
-- HostDZire shared root 为 `/root/TGVIO`，current symlink 为 `/root/TGVIO-current`，Compose service/容器为 `tgvio`，包名为 `src/tgvio`。生产 `.release-commit` 与容器 `APP_COMMIT` 均为上述 full commit，runtime image ID 为 `sha256:f095d405ba145da66e2029e786a433cd59dd5fe7a6f7d50c5652754b4111ed51`；容器 `running`、health=`healthy`、restart=0、单实例。Git/宿主/容器规范化 Python 源码 manifest 均为 `c375520888d2a97d73b858eb8b158f5b4cff6b08e55f39bdc511c0cabb459bf6`。
+- R2-01～R2-06 已恢复 Git 权威、可复现发布链、移动端 UX、checksum migration、durable scheduler/intake/control、自动恢复、SQL 任务/失败中心、通用 operation token 与可恢复撤销。R2-07A1 single Archive profile/policy 与 A2 durable recovery/status UI 已于 2026-09-13 正式发布。生产 runtime full commit 为 `2a074702a668b02f042406bd6fa586f9c39b98f7`，release 为 `r2-07-2a07470-20260913T025845Z`；退役旧树仍由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留。证据见 [`R2-07A1_ARCHIVE_PROFILE_RELEASE.md`](docs/refactor-v2/evidence/R2-07A1_ARCHIVE_PROFILE_RELEASE.md) 与 [`R2-07A2_ARCHIVE_RECOVERY_RELEASE.md`](docs/refactor-v2/evidence/R2-07A2_ARCHIVE_RECOVERY_RELEASE.md)。后续 docs-only closure commit 可以领先生产 runtime commit，但不因此构建或重启。
+- HostDZire shared root 为 `/root/TGVIO`，current symlink 为 `/root/TGVIO-current`，Compose service/容器为 `tgvio`，包名为 `src/tgvio`。生产 `.release-commit` 与容器 `APP_COMMIT` 均为上述 full commit，runtime image ID 为 `sha256:0012ae4f0df48c91491f31b6e4d883be39e081ba23ec3209965933c88c62634f`；容器 `running`、health=`healthy`、restart=0、单实例。Git/宿主/容器规范化 Python 源码 manifest 均为 `7790da5b41e6f3fa9e88398b839e9a8f65fcd9abea692608f4651287b89ecd4f`。
 - 当前生产 SQLite 是 `/root/TGVIO/data/state.sqlite3`：`quick_check=ok`，24 个 Job（17 succeeded、4 cancelled、3 failed），所有业务 blocker 为 0；migration ledger 已连续登记 1～6，`PRAGMA user_version=6`，schema hash 为 `f4ac2877aa0379c249d703a908e4697ba4495ac183aa2450f7ffaa7897e0a244`。`0006_archive_profile_policy` 将历史 ArchivePackage 语义保持为 `primary / required / v1`。任何后续 schema 变化仍必须新增不可变 migration，并先做生产副本演练。
-- 精确 R2-06 正式 test image 在 `--network none` 下 **304 tests 全通过**（30.559s）；测试容器未启动 Bot。runtime image 的 74-file/7-package 离线检查通过，无 tests、bytecode、构建工具、秘密或运行数据。当前生产 Bot、发布、受控 fixture、URL 和 Archive 非敏感开关均为 enabled。
+- 当前 R2-07A2 正式 test image 在 `--network none` 下 **318 tests 全通过**（31.409s）；测试容器未启动 Bot。runtime image 离线检查继续通过，无 tests、bytecode、构建工具、秘密或运行数据。当前生产 Bot、发布、受控 fixture、URL 和 Archive 非敏感开关均为 enabled。
 - 日常入口已经收敛为 persistent 手机键盘、SQL 分页任务/失败中心和任务内联按钮；普通视图显示中文可执行错误。安全瞬时失败会 durable 有界自动重试，耗尽或不可重试失败自动释放后续 FIFO；partial/uncertain 永不盲目重发。危险操作使用 owner/revision/TTL/single-use token 二次确认；撤销按 durable effect 逐项审计并可从部分失败继续。已有会话需发送一次 `/start` 安装/刷新常驻键盘。
-- 正式发布只能从 clean、已推送的 `origin/main` 运行 `scripts/deploy_hostdzire.py`；dirty worktree 只能做无网络诊断构建。R2-07A1 已交付，下一包是 A2 durable Archive retry/status UI，之后 A3 exact remote delete 与 D Diagnostic Snapshot；固定单一发布目标，动态 Destination Profiles 与 Proxy Profiles 已由用户明确退役，代理只保留环境变量、启动检测和脱敏状态。R2-04E 大文件性能、R2-05 合集交互和 R2-06 真实撤销仍需受控生产验收。不得绕过 partial/uncertain 外部副作用保护。HostDZire 当前 `ntp_synchronized=no`，应在独立运维窗口修复。
+- 正式发布只能从 clean、已推送的 `origin/main` 运行 `scripts/deploy_hostdzire.py`；dirty worktree 只能做无网络诊断构建。R2-07A1/A2 已交付，下一包是 A3 exact remote Archive delete，之后 D Diagnostic Snapshot；固定单一发布目标，动态 Destination Profiles 与 Proxy Profiles 已由用户明确退役，代理只保留环境变量、启动检测和脱敏状态。R2-04E 大文件性能、R2-05 合集交互和 R2-06 真实撤销仍需受控生产验收。不得绕过 partial/uncertain 外部副作用保护。HostDZire 当前 `ntp_synchronized=no`，应在独立运维窗口修复。
 - 用户要求“以远端为准”的准确含义：生产 `.env`、`session/`、`data/`、`downloads/`、`logs/`、数据库及运行数据以 VPS 为准；代码差异先只读比对并保留生产新增逻辑，再合并回本地/GitHub。
 - `.env`、Telegram session、代理/WebDAV 密码、SSH 密码等任何秘密不得写入代码、提交、本文档、测试夹具或命令输出。本文档只记录位置和操作原则。
 - **严禁同时启动两个使用同一 BOT_TOKEN/session 的实例**。本地测试必须使用 fake client 或独立测试 Bot；不能复制正在运行的生产 Telethon session 后连接。

@@ -67,7 +67,7 @@
 | AR-04 | 崩溃恢复从已存对象继续，manifest/marker 确定性，不产生 attempt sprawl | COVERED | executor/runtime tests |
 | AR-05 | Archive 失败不回滚已成功 Telegram 发布，且未完成时保护 canonical cache | COVERED | runtime/cache tests |
 | AR-06 | 用户可查看、探测和显式重试失败 package；操作 owner-scoped | COVERED | R2-03A 增加按钮、二次确认和 durable Job owner 复核；仍需完整 callback 矩阵 |
-| AR-07 | 单一 Archive endpoint profile、best-effort/required 策略和已记录远端对象精确删除有安全 UI、确认与审计 | REQUIRED | R2-07A1 已生产发布 single profile identity + required/best_effort durable snapshot 与 cache/recovery 边界（v6）；A2 状态/retry UI 与 A3 exact remote delete 尚未完成。删除必须复用 operation token，只枚举 package/object receipt，禁止路径或用户目录递归 |
+| AR-07 | 单一 Archive endpoint profile、best-effort/required 策略和已记录远端对象精确删除有安全 UI、确认与审计 | REQUIRED | R2-07A1 已生产发布 single profile identity + required/best_effort durable snapshot；A2 已生产发布 probe failure durable checkpoint、capability freshness、精确 retry token object-set 绑定与 Archive 状态 UI。A3 exact remote delete 尚未完成；删除必须复用 operation token，只枚举 package/object receipt，禁止路径或用户目录递归 |
 
 ## 6. 队列、控制与 UI
 
