@@ -1,12 +1,12 @@
 # TGVIO 完全重构 V2
 
-> 状态：R2-00～R2-03、R2-05 已交付；R2-04 A-E 已正式发布但仍待 1～3 个真实大文件 performance acceptance；R2-06 automatic recovery 与 durable queue controls 已正式发布，分页 failure center / operation token / undo 继续（2026-09-12）
+> 状态：R2-00～R2-03、R2-05 已交付；R2-04 A-E 已正式发布但仍待 1～3 个真实大文件 performance acceptance；R2-06 automatic recovery、durable queue controls、SQL 分页与 failure center 已正式发布，operation token / undo 继续（2026-09-12）
 > 适用范围：`TG_Upload_bot` Git 仓库与 HostDZire 上的 TGVIO 生产实例
 > 权威性：从本文件建立之日起，新重构工作以本目录为准；旧 `docs/REFACTORING.md`、`docs/R0_BASELINE.md`、`todo.md` 和 `AGENTS.md` 的历史阶段记录仅用于追溯。
 
 ## 1. 结论
 
-本次不是在旧 `src/bot.py` 上继续拆 facade，也不是再写第三套实现。HostDZire 正在运行 clean-room rewrite（包名 `tgvio`），当前生产已具备 durable Job、PublishPlan、side-effect journal、Telegram 发布、Archive V2、恢复、诊断、singleton runtime lease、generation-fenced phase claim、strict FIFO ordered publish dispatcher、bounded concurrent Telegram upload、durable update 去重、合集/文字、spoiler 偏好、稳定状态消息，以及 durable automatic recovery、Job hold/resume 和 global queue pause/resume；最新正式 release gate 为 269 tests。V2 重构以这套生产源码为唯一代码基线，按可回滚阶段继续治理。
+本次不是在旧 `src/bot.py` 上继续拆 facade，也不是再写第三套实现。HostDZire 正在运行 clean-room rewrite（包名 `tgvio`），当前生产已具备 durable Job、PublishPlan、side-effect journal、Telegram 发布、Archive V2、恢复、诊断、singleton runtime lease、generation-fenced phase claim、strict FIFO ordered publish dispatcher、bounded concurrent Telegram upload、durable update 去重、合集/文字、spoiler 偏好、稳定状态消息，以及 durable automatic recovery、Job hold/resume、global queue pause/resume、SQL 分页任务查询和 failure center；最新正式 release gate 为 274 tests。V2 重构以这套生产源码为唯一代码基线，按可回滚阶段继续治理。
 
 生产源码与来源清单现已进入 Git；后续仍禁止把本地旧运行代码直接覆盖 `/root/TGVIO`，所有代码交付必须走版本化 release。
 
@@ -56,9 +56,9 @@
 ## 6. 当前工作纪律
 
 - R2-00 已完成规划文档交付；R2-01 已把生产 clean-room runtime 回收至 Git；R2-02 已完成可复现构建与强制交付链。
-- 当前生产 release 为 `r2-06-b59897a-20260912T142840Z`，runtime commit 为 `b59897a50a8551d4192f19d232755993f5b24ca3`；`0004_queue_controls` 已把生产推进到 `user_version=4`，269 tests、独立 postflight 与 rollback asset check 均通过。生产 schema hash 为 `9a3fab5f9fe18ac8f7c71b25c55e64fd98c333e6b31d1547c9817e7c310e7017`，24 Job，当前 blocker=0。证据见 [R2-06_CONTROLS_RELEASE.md](evidence/R2-06_CONTROLS_RELEASE.md)。
+- 当前生产 release 为 `r2-06-c0c06cc-20260912T143535Z`，runtime commit 为 `c0c06ccdae5772255bf9ab67f31de43564fbbc98`；生产仍为 `user_version=4` 和同一 schema hash `9a3fab5f9fe18ac8f7c71b25c55e64fd98c333e6b31d1547c9817e7c310e7017`，274 tests、独立 postflight 与 rollback asset check 均通过，24 Job、当前 blocker=0。证据见 [R2-06_JOB_QUERY_RELEASE.md](evidence/R2-06_JOB_QUERY_RELEASE.md)。
 - R2-03A 已交付无 schema 变更的移动端按钮、友好错误、下载回退和日志 wrapper 修复。R2-03B 已完成 baseline fingerprint、SQLite backup API、checksum migration runner、`schema_migrations`、fail-closed takeover、真实生产 DB 副本 rehearsal、Job/Publish/Archive/Control/Observability repository 拆分与 100/1000 query/event-loop 门禁；正式 schema-changing cutover 已把生产推进到 `user_version=1` 且 ledger 存在。首次 cutover 的 final report 暴露旧 schema-hash hardcode 后，hotfix `dd3fa0f` 以 `migration=none` 闭环，独立 postflight 为 `blockers=[]`、`quick_check=ok`、container healthy/restart=0，rollback asset check 通过。
 - R2-04 A-D 已通过 `0002_scheduler` 正式推进生产到 `user_version=2`，singleton runtime lease、generation-fenced prepare/publish/archive claim、durable `accepted_order` 与单 ordered publish dispatcher 已上线；100 Job 随机 readiness 仍严格按 accepted order 发布，`publish_partial/uncertain` 会阻塞后续自动发布。R2-04E 已以 `migration=none` 发布 `r2-04-05d4bf0-20260912T072358Z`，恢复 legacy 16 路 Telegram MTProto 分片上传，并增加全局并发上限、失败前置 fallback、吞吐日志与可见消息 exactly-once 回归。真实 1～3 个大文件吞吐/CPU/内存/FloodWait 仍需生产观测，所以 R2-04 总阶段和 PL-10 暂不标最终 VERIFIED。A-D 证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)，E release 证据见 [R2-04E_RELEASE.md](evidence/R2-04E_RELEASE.md)。
-- R2-06A durable automatic recovery 已先以 migration-free release 上线；R2-06 queue controls 随后通过 `0004_queue_controls` 把生产推进到 v4，Job hold/resume、global queue pause/resume、claim gate 与 safe-boundary checkpoint 正式生效。SQL paged `/jobs` + failure center 已在隔离 worktree 形成下一 migration-free 候选；operation token 与 undo 尚未开始生产交付。
+- R2-06A durable automatic recovery 已先以 migration-free release 上线；R2-06 queue controls 随后通过 `0004_queue_controls` 把生产推进到 v4，Job hold/resume、global queue pause/resume、claim gate 与 safe-boundary checkpoint 正式生效；R2-06C 又以 `migration=none` 发布 SQL paged `/jobs`、状态筛选与 failure center。operation token 与 undo 尚未开始生产交付。
 - 后续 docs-only 提交可以领先生产 runtime commit，但不因此构建或重启容器。
 - 文档中的密码、token、Authorization、代理/WebDAV 凭据一律视为缺陷；主机地址、端口、用户和目录不是秘密，可记录用于自动化。

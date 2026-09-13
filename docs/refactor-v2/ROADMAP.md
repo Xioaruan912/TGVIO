@@ -248,7 +248,7 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 
 ### 实施包
 
-2026-09-12 当前进度：durable automatic recovery 已随 `r2-06-2a00074-20260912T134944Z` 正式发布；durable Job hold/resume 与 global queue pause/resume 已随 `r2-06-b59897a-20260912T142840Z` + `0004_queue_controls` 正式把生产推进到 v4，证据见 [R2-06_CONTROLS_RELEASE.md](evidence/R2-06_CONTROLS_RELEASE.md)。SQL 分页 `/jobs`、状态筛选与 failure center 已形成 migration-free 候选，见 [R2-06_JOB_QUERY_CANDIDATE.md](evidence/R2-06_JOB_QUERY_CANDIDATE.md)，正在集成到 clean/pushed main 后单独发布。R2-06 整体仍为 `IN PROGRESS`。
+2026-09-12 当前进度：durable automatic recovery 已随 `r2-06-2a00074-20260912T134944Z` 正式发布；durable Job hold/resume 与 global queue pause/resume 已随 `r2-06-b59897a-20260912T142840Z` + `0004_queue_controls` 正式把生产推进到 v4；SQL 分页 `/jobs`、状态筛选与 failure center 又随 `r2-06-c0c06cc-20260912T143535Z` 以 `migration=none` 正式发布。证据见 [R2-06_CONTROLS_RELEASE.md](evidence/R2-06_CONTROLS_RELEASE.md) 与 [R2-06_JOB_QUERY_RELEASE.md](evidence/R2-06_JOB_QUERY_RELEASE.md)。operation token 与 undo 尚未交付，因此 R2-06 整体仍为 `IN PROGRESS`。
 
 - SQL 分页 `/jobs`、状态筛选、任务详情、计划详情和失败中心。
 - Job `pause/hold/resume`；全局暂停只阻止新 claim，外部 send 在安全边界停。

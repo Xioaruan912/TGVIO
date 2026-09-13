@@ -75,7 +75,7 @@
 |---|---|---|---|
 | UI-01 | 一个任务有稳定状态消息，展示阶段、总进度、当前项和速度；UI 失败不改变业务结果 | COVERED | R2-03A 提供按钮与友好错误；R2-05 已发布 durable message reference、重启复用和最多补发一次，完整进度视图仍继续治理 |
 | UI-02 | 首页、帮助、任务、计划、统计、健康、诊断、缓存和 Archive 都可通过按钮到达和返回 | COVERED | R2-03A 增加 persistent 手机键盘、任务直达按钮、确认页和重复刷新回归；仍需完整 view callback 遍历 |
-| UI-03 | `/jobs` 支持 SQL 分页、状态筛选、详情和失败中心，100+ Job 不超 Telegram 限制 | REQUIRED | 当前只取最近 8 项，无分页、筛选或独立失败中心 |
+| UI-03 | `/jobs` 支持 SQL 分页、状态筛选、详情和失败中心，100+ Job 不超 Telegram 限制 | VERIFIED | R2-06C 已以 migration-free release 正式生产发布 SQL `COUNT + LIMIT/OFFSET` 分页、all/active/held/failed/completed 筛选与 failure center；owner isolation、1000 Job 五行页面、callback 64-byte 与 auto-recovery pending 隐藏回归通过，生产 postflight v4/24 Job/healthy |
 | CT-01 | cancel 是 durable、幂等、owner-scoped，并在安全边界生效 | COVERED | job control tests |
 | CT-02 | 单 Job `pause/hold/resume` 保留缓存；全局暂停只停止新 claim | VERIFIED | R2-06 `0004_queue_controls` 已生产发布 durable Job hold/resume 与 global queue pause；下载/分析/PublishStep 在安全边界停，existing claim 可 heartbeat，resume 不重放已成功 PublishStep |
 | CT-03 | retry 从正确阶段恢复，不清空历史，不绕过 partial/uncertain 保护 | COVERED | job control tests |
