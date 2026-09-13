@@ -431,3 +431,36 @@ class DashboardWebhookSettingsTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ConfigError, "WEBHOOK_URL"):
                 Settings.from_env()
+
+
+class AlertPreviewSettingsTests(unittest.TestCase):
+    def test_alerts_and_preview_default_on(self) -> None:
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            settings = Settings.from_env()
+        self.assertTrue(settings.alerts_enabled)
+        self.assertTrue(settings.collection_preview_enabled)
+        self.assertIsNone(settings.alert_user_id)
+        self.assertEqual(settings.alert_cooldown_seconds, 3600)
+        self.assertEqual(settings.alert_poll_seconds, 60)
+        summary = settings.safe_summary()
+        self.assertTrue(summary["alerts_enabled"])
+        self.assertTrue(summary["collection_preview_enabled"])
+
+    def test_alert_user_must_be_integer_and_toggles_apply(self) -> None:
+        with patch.dict(os.environ, {**BASE_ENV, "TGVIO_ALERT_USER_ID": "not-a-number"}, clear=True):
+            with self.assertRaisesRegex(ConfigError, "ALERT_USER_ID"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_ALERTS_ENABLED": "false",
+                "TGVIO_COLLECTION_PREVIEW_ENABLED": "false",
+                "TGVIO_ALERT_USER_ID": "99",
+            },
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        self.assertFalse(settings.alerts_enabled)
+        self.assertFalse(settings.collection_preview_enabled)
+        self.assertEqual(settings.alert_user_id, 99)

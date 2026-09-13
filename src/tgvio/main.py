@@ -35,7 +35,10 @@ from tgvio.application.diagnostics import (
     static_proxy_health_detail,
 )
 from tgvio.application.metrics import MetricsService
-from tgvio.application.notifications import NotificationRuntime, WebhookNotifier
+from tgvio.application.alerts import AlertRuntime
+from tgvio.application.notifications import NotificationRuntime, Notifier, WebhookNotifier
+from tgvio.adapters.telegram.alerts import TelegramOwnerNotifier
+from tgvio.domain.notifications import ALERT_EVENT_TYPES
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
 from tgvio.application.job_diagnostics import JobDiagnosticService
@@ -292,15 +295,14 @@ async def run(*, check_only: bool = False) -> None:
         )
         dashboard_server: DashboardServer | None = None
         notification_runtime: NotificationRuntime | None = None
+        alert_runtime: AlertRuntime | None = None
         dashboard_service: DashboardService | None = None
-        if settings.dashboard_enabled or settings.webhook_enabled:
+        if settings.dashboard_enabled:
             dashboard_service = DashboardService(
                 repository,
                 diagnostic_service,
                 disk_usage=lambda: _disk_snapshot(settings.download_dir),
             )
-        if settings.dashboard_enabled:
-            assert dashboard_service is not None
             dashboard_server = DashboardServer(
                 dashboard_service,
                 MetricsService(repository, diagnostic_service),
@@ -308,16 +310,46 @@ async def run(*, check_only: bool = False) -> None:
                 port=settings.dashboard_port,
                 token=settings.dashboard_token,
             )
+        primary_notifier: Notifier | None = None
+        secondary_notifier: Notifier | None = None
+        primary_accepts: frozenset[str] | None = None
+        if settings.alerts_enabled:
+            alert_user_id = settings.alert_user_id or settings.allowed_users[0]
+            primary_notifier = TelegramOwnerNotifier(
+                lambda text: gateway.client.send_message(
+                    alert_user_id,
+                    text,
+                    parse_mode="md",
+                )
+            )
+            primary_accepts = ALERT_EVENT_TYPES
         if settings.webhook_enabled:
+            webhook_notifier = WebhookNotifier(
+                settings.webhook_url,
+                settings.webhook_token,
+                timeout_seconds=settings.webhook_timeout_seconds,
+            )
+            if primary_notifier is None:
+                primary_notifier = webhook_notifier
+            else:
+                secondary_notifier = webhook_notifier
+        if primary_notifier is not None:
             notification_runtime = NotificationRuntime(
                 repository,
-                WebhookNotifier(
-                    settings.webhook_url,
-                    settings.webhook_token,
-                    timeout_seconds=settings.webhook_timeout_seconds,
-                ),
+                primary_notifier,
+                secondary_notifier=secondary_notifier,
+                primary_accepts=primary_accepts,
                 poll_seconds=settings.notification_poll_seconds,
                 max_attempts=settings.webhook_max_attempts,
+            )
+        if settings.alerts_enabled:
+            alert_runtime = AlertRuntime(
+                repository,
+                telegram_connected=gateway.client.is_connected,
+                disk_free_bytes=lambda: _disk_free_bytes(settings.download_dir),
+                reserve_bytes=settings.disk_reserve_bytes,
+                cooldown_seconds=settings.alert_cooldown_seconds,
+                poll_seconds=settings.alert_poll_seconds,
             )
         bot_ui = TelethonBotUI(
             gateway.client,
@@ -351,6 +383,8 @@ async def run(*, check_only: bool = False) -> None:
             await dashboard_server.start()
         if notification_runtime is not None:
             await notification_runtime.start()
+        if alert_runtime is not None:
+            await alert_runtime.start()
         recoverable = await repository.list_by_states(
             (
                 JobState.RECEIVED,
@@ -424,6 +458,8 @@ async def run(*, check_only: bool = False) -> None:
                 for sig in registered_signals:
                     loop.remove_signal_handler(sig)
         finally:
+            if alert_runtime is not None:
+                await alert_runtime.stop()
             if notification_runtime is not None:
                 await notification_runtime.stop()
             if dashboard_server is not None:
@@ -442,6 +478,11 @@ async def run(*, check_only: bool = False) -> None:
         if runtime_lease is not None:
             await runtime_lease.stop()
         await repository.close()
+
+
+def _disk_free_bytes(path: Path) -> int | None:
+    snapshot = _disk_snapshot(path)
+    return None if snapshot is None else int(snapshot["free_bytes"])
 
 
 def _disk_snapshot(path: Path) -> dict[str, int] | None:

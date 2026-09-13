@@ -59,6 +59,41 @@ class IntakeCollectionMixin:
         if not bool(getattr(self._settings, "collections_enabled", True)):
             await self._safe_send(chat_id, "合集功能当前未启用。")
             return
+        if bool(getattr(self._settings, "collection_preview_enabled", True)):
+            await self._request_collection_preview(chat_id, owner_id)
+            return
+        await self._confirm_collection(chat_id, owner_id)
+
+    async def _request_collection_preview(self, chat_id: int, owner_id: int) -> None:
+        session = await self._open_collection(owner_id, chat_id)
+        if session is None:
+            await self._safe_send(chat_id, "当前没有正在收集的合集。")
+            return
+        preference = await self._intake.get_user_preference(owner_id)
+        preview = await self._intake.preview_collection(
+            owner_id=owner_id,
+            chat_id=int(chat_id),
+            cover_mode=bool(getattr(self._settings, "cover_mode", True)),
+        )
+        if preview is None or preview.media_count == 0:
+            await self._safe_send(chat_id, "合集里还没有媒体；继续发送媒体后再结束。")
+            return
+        text = self._collection_preview_text(preview, preference.spoiler_mode)
+        buttons = self._preview_buttons(session.id)
+        target_chat = int(session.status_chat_id or chat_id)
+        if session.status_message_id is not None:
+            await self._safe_edit(target_chat, int(session.status_message_id), text, buttons=buttons)
+            return
+        message = await self._safe_send(chat_id, text, buttons=buttons)
+        message_id = getattr(message, "id", None)
+        if message_id is not None:
+            await self._repository.set_collection_status_message(
+                session.id,
+                int(chat_id),
+                int(message_id),
+            )
+
+    async def _confirm_collection(self, chat_id: int, owner_id: int) -> None:
         preference = await self._intake.get_user_preference(owner_id)
         try:
             result = await self._intake.finalize_collection(
@@ -162,4 +197,40 @@ class IntakeCollectionMixin:
         return [
             [Button.inline("🛑 结束并发布", f"intake:end:{session_id}".encode("utf-8"))],
             [Button.inline("❌ 取消合集", f"intake:collection-cancel:{session_id}".encode("utf-8"))],
+        ]
+
+    def _collection_preview_text(self, preview, spoiler_mode) -> str:
+        labels = {
+            SpoilerMode.SOURCE: "跟随原消息",
+            SpoilerMode.ASK: "每次询问",
+            SpoilerMode.ALWAYS_SPOILER: "总是雪花",
+            SpoilerMode.ALWAYS_NORMAL: "总是正常",
+        }
+        lines = [
+            "📦 **合集发布预览**",
+            "──────────",
+            (
+                f"媒体：`{preview.media_count}`"
+                f"（图片 `{preview.photo_count}` · 视频 `{preview.video_count}` · 文件 `{preview.document_count}`）"
+            ),
+            f"体积：约 `{self._human_bytes(preview.total_bytes)}`",
+            f"封面：`{preview.cover_plan}`",
+        ]
+        if preview.discussion_groups:
+            lines.append(f"评论区：`{preview.discussion_groups}` 组")
+        lines.append(f"文案：`{preview.caption_lines}` 行 · `{preview.caption_chars}` 字")
+        lines.append(f"模式：`{labels.get(spoiler_mode, '未知')}`")
+        lines.append("──────────")
+        lines.append("确认后才会开始下载与发布。")
+        return "\n".join(lines)
+
+    @staticmethod
+    def _preview_buttons(session_id: str):
+        encoded = session_id.encode("utf-8")
+        return [
+            [
+                Button.inline("✅ 确认发布", b"intake:confirm:" + encoded),
+                Button.inline("🔞 显示模式", b"intake:prevmode:" + encoded),
+            ],
+            [Button.inline("❌ 放弃", b"intake:abandon:" + encoded)],
         ]

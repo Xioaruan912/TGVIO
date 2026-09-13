@@ -126,6 +126,11 @@ class Settings:
     webhook_timeout_seconds: int
     webhook_max_attempts: int
     notification_poll_seconds: int
+    alerts_enabled: bool
+    alert_user_id: int | None
+    alert_cooldown_seconds: int
+    alert_poll_seconds: int
+    collection_preview_enabled: bool
     archive_enabled: bool
     archive_url: str
     archive_remote_root: str
@@ -276,6 +281,21 @@ class Settings:
         notification_poll_seconds = _int("TGVIO_NOTIFICATION_POLL_SECONDS", 15)
         if not 1 <= notification_poll_seconds <= 3600:
             raise ConfigError("TGVIO_NOTIFICATION_POLL_SECONDS out of range")
+        alerts_enabled = _bool("TGVIO_ALERTS_ENABLED", True)
+        alert_user_raw = os.getenv("TGVIO_ALERT_USER_ID", "").strip()
+        alert_user_id: int | None = None
+        if alert_user_raw:
+            try:
+                alert_user_id = int(alert_user_raw)
+            except ValueError as exc:
+                raise ConfigError("TGVIO_ALERT_USER_ID must be an integer") from exc
+        alert_cooldown_seconds = _int("TGVIO_ALERT_COOLDOWN_SECONDS", 3600)
+        if not 60 <= alert_cooldown_seconds <= 86400:
+            raise ConfigError("TGVIO_ALERT_COOLDOWN_SECONDS out of range")
+        alert_poll_seconds = _int("TGVIO_ALERT_POLL_SECONDS", 60)
+        if not 5 <= alert_poll_seconds <= 3600:
+            raise ConfigError("TGVIO_ALERT_POLL_SECONDS out of range")
+        collection_preview_enabled = _bool("TGVIO_COLLECTION_PREVIEW_ENABLED", True)
         if webhook_enabled:
             parsed_webhook = urllib.parse.urlsplit(webhook_url)
             if parsed_webhook.scheme != "https" or not parsed_webhook.hostname:
@@ -378,6 +398,11 @@ class Settings:
             webhook_timeout_seconds=webhook_timeout_seconds,
             webhook_max_attempts=webhook_max_attempts,
             notification_poll_seconds=notification_poll_seconds,
+            alerts_enabled=alerts_enabled,
+            alert_user_id=alert_user_id,
+            alert_cooldown_seconds=alert_cooldown_seconds,
+            alert_poll_seconds=alert_poll_seconds,
+            collection_preview_enabled=collection_preview_enabled,
             archive_enabled=archive_enabled,
             archive_url=archive_url,
             archive_remote_root=archive_remote_root,
@@ -436,6 +461,10 @@ class Settings:
             "dashboard_port": self.dashboard_port,
             "webhook_enabled": self.webhook_enabled,
             "notification_poll_seconds": self.notification_poll_seconds,
+            "alerts_enabled": self.alerts_enabled,
+            "alert_cooldown_seconds": self.alert_cooldown_seconds,
+            "alert_poll_seconds": self.alert_poll_seconds,
+            "collection_preview_enabled": self.collection_preview_enabled,
             "archive_enabled": self.archive_enabled,
             "archive_configured": bool(self.archive_url and self.archive_user),
             "archive_remote_root_configured": bool(self.archive_remote_root),

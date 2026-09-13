@@ -8,7 +8,7 @@ import logging
 import time
 import urllib.parse
 from dataclasses import dataclass
-from typing import Callable
+from typing import Callable, Protocol
 
 from tgvio.application.ports import JobRepository
 from tgvio.domain.notifications import NotificationEvent, new_holder_id
@@ -22,6 +22,14 @@ class WebhookDeliveryError(RuntimeError):
     def __init__(self, code: str, message: str = "") -> None:
         super().__init__(message or code)
         self.code = code
+
+
+# Generic delivery failure for any outbox channel (Telegram owner DM, webhook).
+NotificationDeliveryError = WebhookDeliveryError
+
+
+class Notifier(Protocol):
+    async def deliver(self, payload: dict[str, object]) -> None: ...
 
 
 class WebhookNotifier:
@@ -118,8 +126,10 @@ class NotificationRuntime:
     def __init__(
         self,
         repository: JobRepository,
-        notifier: WebhookNotifier,
+        notifier: Notifier,
         *,
+        secondary_notifier: Notifier | None = None,
+        primary_accepts: frozenset[str] | None = None,
         poll_seconds: float = 15.0,
         max_attempts: int = 5,
         base_seconds: float = 30.0,
@@ -130,6 +140,8 @@ class NotificationRuntime:
     ) -> None:
         self._repository = repository
         self._notifier = notifier
+        self._secondary = secondary_notifier
+        self._primary_accepts = primary_accepts
         self._poll_seconds = max(1.0, float(poll_seconds))
         self._max_attempts = max(1, int(max_attempts))
         self._base_seconds = max(1.0, float(base_seconds))
@@ -165,7 +177,7 @@ class NotificationRuntime:
         failed = 0
         for entry in entries:
             try:
-                await self._notifier.deliver(entry.delivery_signature)
+                await self._deliver_entry(entry)
             except WebhookDeliveryError as exc:
                 failed += 1
                 await self._repository.fail_notification(
@@ -199,6 +211,37 @@ class NotificationRuntime:
                     event_type=entry.event_type,
                 )
         return {"claimed": len(entries), "sent": sent, "failed": failed}
+
+    async def _deliver_entry(self, entry) -> None:
+        """Deliver one outbox entry.
+
+        The primary channel is authoritative (its failure retries the entry).
+        The secondary channel is best-effort fire-and-forget so a webhook outage
+        never blocks the owner alert. Event scoping lets the owner channel carry
+        only failures/anomalies while a webhook can receive the full stream.
+        """
+        primary_accepts = (
+            self._primary_accepts is None or entry.event_type in self._primary_accepts
+        )
+        delivered = False
+        if primary_accepts:
+            await self._notifier.deliver(entry.delivery_signature)
+            delivered = True
+        if self._secondary is not None:
+            try:
+                await self._secondary.deliver(entry.delivery_signature)
+                delivered = True
+            except WebhookDeliveryError as exc:
+                log_event(
+                    self._log,
+                    logging.WARNING,
+                    "notification.secondary.failed",
+                    notification_id=entry.id,
+                    event_type=entry.event_type,
+                    error_code=exc.code,
+                )
+        # No channel accepted this event; nothing to deliver, so settle it.
+        _ = delivered
 
     async def _enqueue_feed(self, now: float) -> int:
         candidates = await self._repository.get_notification_candidates(

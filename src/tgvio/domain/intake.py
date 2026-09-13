@@ -63,6 +63,21 @@ class UserPreference:
 
 
 @dataclass(frozen=True, slots=True)
+class CollectionPreview:
+    """Read-only projection of an open collection, before any Job is created."""
+
+    media_count: int
+    photo_count: int
+    video_count: int
+    document_count: int
+    total_bytes: int
+    cover_plan: str
+    discussion_groups: int
+    caption_lines: int
+    caption_chars: int
+
+
+@dataclass(frozen=True, slots=True)
 class JobDisplayMessage:
     job_id: str
     chat_id: int

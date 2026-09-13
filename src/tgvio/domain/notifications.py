@@ -23,7 +23,24 @@ ALLOWED_NOTIFICATION_EVENTS = {
     "archive.committed",
     "archive.failed",
     "runtime.started",
+    "runtime.telegram_disconnected",
+    "runtime.telegram_recovered",
+    "runtime.disk_low",
+    "runtime.disk_recovered",
 }
+
+# Only failures/anomalies (and their recovery) are pushed to the owner's private
+# chat. Success events stay in the outbox for other delivery channels.
+ALERT_EVENT_TYPES = frozenset(
+    {
+        "job.failed",
+        "archive.failed",
+        "runtime.telegram_disconnected",
+        "runtime.telegram_recovered",
+        "runtime.disk_low",
+        "runtime.disk_recovered",
+    }
+)
 
 ALLOWED_PAYLOAD_KEYS = {
     "job_id",
@@ -34,6 +51,10 @@ ALLOWED_PAYLOAD_KEYS = {
     "bytes",
     "accepted_order",
     "occurred_at",
+    "component",
+    "condition",
+    "free_bytes",
+    "reserve_bytes",
 }
 
 

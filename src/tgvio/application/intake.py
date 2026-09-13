@@ -8,6 +8,7 @@ from tgvio.application.ports import JobRepository
 from tgvio.domain.intake import (
     CollectionEntry,
     CollectionEntryKind,
+    CollectionPreview,
     CollectionSession,
     IntakeEventKey,
     SpoilerMode,
@@ -226,6 +227,56 @@ class IntakeService:
         text_count = sum(entry.kind == CollectionEntryKind.TEXT for entry in entries)
         return int(media_count), int(text_count)
 
+    async def preview_collection(
+        self,
+        *,
+        owner_id: int,
+        chat_id: int,
+        cover_mode: bool = True,
+        cover_limit: int = 10,
+        album_limit: int = 10,
+    ) -> CollectionPreview | None:
+        """Read-only summary of the open collection; never creates a Job."""
+
+        session = await self._repository.get_open_collection(owner_id, chat_id)
+        if session is None:
+            return None
+        entries = await self._repository.list_collection_entries(session.id)
+        media = [self._media_from_payload(entry.payload) for entry in entries if entry.kind == CollectionEntryKind.MEDIA]
+        text_entries = [entry for entry in entries if entry.kind == CollectionEntryKind.TEXT]
+        photo_count = sum(item.kind == MediaKind.PHOTO for item in media)
+        video_count = sum(item.kind == MediaKind.VIDEO for item in media)
+        document_count = sum(item.kind == MediaKind.DOCUMENT for item in media)
+        total_bytes = sum(int(item.size_bytes) for item in media)
+        caption = self._join_collection_texts(text_entries)
+        caption_lines = len([line for line in caption.splitlines() if line.strip()])
+        if not cover_mode:
+            cover_plan = "直发频道（非封面模式）"
+            discussion_groups = 0
+        else:
+            cover_limit = max(1, int(cover_limit))
+            album_limit = max(1, int(album_limit))
+            overflow_photos = max(0, photo_count - cover_limit)
+            if photo_count:
+                cover_plan = f"前 {min(photo_count, cover_limit)} 张图片"
+            elif video_count:
+                cover_plan = "首个视频截帧"
+            else:
+                cover_plan = "无"
+            groups = _ceil_div(overflow_photos, album_limit) + _ceil_div(video_count, album_limit)
+            discussion_groups = int(groups)
+        return CollectionPreview(
+            media_count=len(media),
+            photo_count=int(photo_count),
+            video_count=int(video_count),
+            document_count=int(document_count),
+            total_bytes=int(total_bytes),
+            cover_plan=cover_plan,
+            discussion_groups=discussion_groups,
+            caption_lines=int(caption_lines),
+            caption_chars=len(caption),
+        )
+
     async def finalize_collection(
         self,
         *,
@@ -417,3 +468,9 @@ class IntakeService:
             text = str(entry.payload.get("text", "") or "")
             lines.extend(line.strip() for line in text.splitlines() if line.strip())
         return "\n".join(lines)
+
+
+def _ceil_div(value: int, divisor: int) -> int:
+    if divisor <= 0:
+        return 0
+    return (max(0, int(value)) + divisor - 1) // divisor

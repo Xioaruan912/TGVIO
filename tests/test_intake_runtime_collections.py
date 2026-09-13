@@ -103,6 +103,7 @@ def settings(**overrides):
         "allowed_users": (7,),
         "url_enabled": True,
         "collections_enabled": True,
+        "collection_preview_enabled": False,
         "spoiler_confirm_timeout_seconds": 60,
         "publish_enabled": False,
     }
@@ -417,6 +418,99 @@ class IntakeRuntimeCollectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(latest.message_id, ref.message_id)
         finally:
             await second.stop()
+
+
+class IntakeRuntimeCollectionPreviewTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.database = Path(self.tmp.name) / "state.sqlite3"
+        self.repo = SQLiteJobRepository(self.database)
+        await self.repo.open()
+        self.intake = IntakeService(self.repo)
+        self.client = FakeClient()
+        self.runner = RecordingRunner()
+        self.runtime = TelethonIntakeRuntime(
+            self.client,
+            settings(collection_preview_enabled=True),
+            self.intake,
+            self.runner,
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.runtime.stop()
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def test_preview_requires_confirmation_before_enqueue(self) -> None:
+        await self.runtime._begin_collection(42, 7)
+        await self.runtime._on_message(
+            FakeEvent(chat_id=42, sender_id=7, message=media_message(10))
+        )
+        await self.runtime._end_collection(42, 7)
+        await asyncio.sleep(0.05)
+
+        session = await self.intake.open_collection(owner_id=7, chat_id=42)
+        self.assertIsNotNone(session)
+        self.assertEqual(await self.repo.list_recent(owner_id=7, limit=10), [])
+        preview_texts = [entry["text"] for entry in self.client.edits] + [
+            entry["text"] for entry in self.client.sent
+        ]
+        self.assertTrue(any("合集发布预览" in text for text in preview_texts))
+        assert session is not None
+
+        await self.runtime._on_intake_callback(
+            FakeEvent(
+                chat_id=42,
+                sender_id=7,
+                data=b"intake:confirm:" + session.id.encode("utf-8"),
+            )
+        )
+        await asyncio.sleep(0.05)
+        self.assertIsNone(await self.intake.open_collection(owner_id=7, chat_id=42))
+        jobs = await self.repo.list_recent(owner_id=7, limit=10)
+        self.assertEqual(len(jobs), 1)
+
+    async def test_abandon_cancels_without_creating_job(self) -> None:
+        await self.runtime._begin_collection(42, 7)
+        await self.runtime._on_message(
+            FakeEvent(chat_id=42, sender_id=7, message=media_message(10))
+        )
+        await self.runtime._end_collection(42, 7)
+        await asyncio.sleep(0.05)
+        session = await self.intake.open_collection(owner_id=7, chat_id=42)
+        assert session is not None
+
+        await self.runtime._on_intake_callback(
+            FakeEvent(
+                chat_id=42,
+                sender_id=7,
+                data=b"intake:abandon:" + session.id.encode("utf-8"),
+            )
+        )
+        await asyncio.sleep(0.05)
+        self.assertIsNone(await self.intake.open_collection(owner_id=7, chat_id=42))
+        self.assertEqual(await self.repo.list_recent(owner_id=7, limit=10), [])
+
+    async def test_preview_projection_counts_and_cover_plan(self) -> None:
+        session = await self.intake.begin_collection(owner_id=7, chat_id=42)
+        await self.intake.add_collection_media(session, [incoming(1), incoming(2)])
+        await self.intake.add_collection_text(
+            session,
+            text="a\n\nb",
+            source_chat_id=42,
+            source_message_id=3,
+        )
+        preview = await self.intake.preview_collection(
+            owner_id=7,
+            chat_id=42,
+            cover_mode=True,
+        )
+        assert preview is not None
+        self.assertEqual(preview.media_count, 2)
+        self.assertEqual(preview.video_count, 2)
+        self.assertEqual(preview.cover_plan, "首个视频截帧")
+        self.assertEqual(preview.discussion_groups, 1)
+        self.assertEqual(preview.caption_lines, 2)
 
 
 if __name__ == "__main__":

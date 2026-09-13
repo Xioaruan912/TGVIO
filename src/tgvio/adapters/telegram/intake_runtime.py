@@ -245,8 +245,49 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
             if session is None or session.id != session_id:
                 await self._safe_answer(event, "合集已经结束或已失效", alert=True)
                 return
-            await self._safe_answer(event, "正在结束合集")
+            await self._safe_answer(event, "正在生成预览")
             await self._end_collection(event.chat_id, owner_id)
+            return
+        if action.startswith("intake:confirm:"):
+            session_id = action.split(":", 2)[2]
+            session = await self._open_collection(owner_id, event.chat_id)
+            if session is None or session.id != session_id:
+                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
+                return
+            await self._safe_answer(event, "正在发布合集")
+            await self._confirm_collection(event.chat_id, owner_id)
+            return
+        if action.startswith("intake:abandon:"):
+            session_id = action.split(":", 2)[2]
+            session = await self._open_collection(owner_id, event.chat_id)
+            if session is None or session.id != session_id:
+                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
+                return
+            await self._intake.cancel_collection(owner_id=owner_id, chat_id=int(event.chat_id))
+            await self._safe_answer(event, "合集已放弃")
+            if session.status_message_id is not None:
+                await self._safe_edit(
+                    int(event.chat_id),
+                    int(session.status_message_id),
+                    "⛔ **合集已放弃**",
+                )
+            return
+        if action.startswith("intake:prevmode:"):
+            session_id = action.split(":", 2)[2]
+            session = await self._open_collection(owner_id, event.chat_id)
+            if session is None or session.id != session_id:
+                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
+                return
+            preference = await self._intake.get_user_preference(owner_id)
+            await self._safe_answer(event, "选择显示模式")
+            try:
+                await event.edit(
+                    self._mode_text(preference.spoiler_mode),
+                    buttons=self._mode_buttons(),
+                    parse_mode="md",
+                )
+            except Exception:
+                pass
             return
         if action.startswith("intake:collection-cancel:"):
             session_id = action.split(":", 2)[2]
