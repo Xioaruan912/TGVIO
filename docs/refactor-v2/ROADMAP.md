@@ -32,7 +32,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-04 | IN PROGRESS | A-D durable scheduler / claim / strict FIFO 已交付；E 并发分片上传继续 | DB-03、PL-09、PL-10 |
 | R2-05 | DELIVERED | Durable intake/合集/文字/spoiler/状态消息已随 v3 正式发布 | IN-04～06、PL-06、ST-01 |
 | R2-06 | DELIVERED | 完整队列、自动恢复、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02～04、PL-13～14 |
-| R2-07 | IN PROGRESS | A1/A2/A3 已生产交付；Archive Profile/策略与 exact remote delete 已完成，后续只保留安全 Diagnostic Snapshot / 静态代理诊断 | AR-07、OB-01、ST-04 |
+| R2-07 | DELIVERED | A1/A2/A3/D 已生产交付；Archive Profile/策略、exact remote delete 与安全 Diagnostic Snapshot 已完成 | AR-07、OB-01、ST-04 |
 | R2-08 | NOT STARTED | 拆分 Telegram/WebDAV/UI/SQLite 热点并清除兼容层 | 架构门禁 |
 | R2-09 | NOT STARTED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
 | R2-10 | NOT STARTED | 完整等价验收、灾难恢复演练、旧树退役 | 全合同 |
@@ -275,12 +275,12 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 
 ### 实施包
 
-2026-09-13 当前进度：A1 characterization + single Archive profile/policy 已随 `r2-07-eadd4c9-20260913T023949Z` + `0006_archive_profile_policy` 正式把生产推进到 v6。A2 durable retry/status UI 已随 `r2-07-2a07470-20260913T025845Z` 以 migration-free 方式正式发布。A3 exact remote delete 已随 `r2-07a3-98e2aaa-20260913T072332Z` + `0007_archive_exact_delete` 正式把生产推进到 v7：owner-scoped 二次确认、immutable exact target set、marker-first / manifest-last、逐目标 audit/checkpoint、partial resume 与 WebDAV fail-closed 校验均已上线；正式 release gate 339 tests、独立 postflight 与 rollback-check 通过，schema hash 为 `9cf2d4008d4fb888f5affdffea1ccd413b51968d14d234e07d0769cfe60c6e90`，ledger `1..7`，三张 deletion 表初始为空。R2-07 继续 `IN PROGRESS`，只剩 R2-07D Diagnostic Snapshot / 静态代理脱敏诊断。证据见 [R2-07A1_ARCHIVE_PROFILE_RELEASE.md](evidence/R2-07A1_ARCHIVE_PROFILE_RELEASE.md)、[R2-07A2_ARCHIVE_RECOVERY_RELEASE.md](evidence/R2-07A2_ARCHIVE_RECOVERY_RELEASE.md) 与 [R2-07A3_ARCHIVE_DELETE_RELEASE.md](evidence/R2-07A3_ARCHIVE_DELETE_RELEASE.md)。
+2026-09-13 当前进度：A1 characterization + single Archive profile/policy 已随 `r2-07-eadd4c9-20260913T023949Z` + `0006_archive_profile_policy` 正式把生产推进到 v6。A2 durable retry/status UI 已随 `r2-07-2a07470-20260913T025845Z` 以 migration-free 方式正式发布。A3 exact remote delete 已随 `r2-07a3-98e2aaa-20260913T072332Z` + `0007_archive_exact_delete` 正式把生产推进到 v7：owner-scoped 二次确认、immutable exact target set、marker-first / manifest-last、逐目标 audit/checkpoint、partial resume 与 WebDAV fail-closed 校验均已上线；正式 release gate 339 tests、独立 postflight 与 rollback-check 通过，schema hash 为 `9cf2d4008d4fb888f5affdffea1ccd413b51968d14d234e07d0769cfe60c6e90`，ledger `1..7`，三张 deletion 表初始为空。R2-07D Diagnostic Snapshot 已随 `r2-07d-10b6dd5-20260913T091106Z`（migration=none）正式发布：固定白名单 DTO、3 条有界 SQL 聚合、1000+ Job 不加载历史、release/schema/lease/scheduler/Archive/feature 脱敏投影、静态代理有界 TCP 探测、离线 `--check` 的 `configured_unchecked` 与 secret/path fixture 拒绝；正式 gate 350 tests、schema 仍 v7、独立 postflight 与 rollback-check 通过。R2-07 已 `DELIVERED`。证据见 [R2-07A1_ARCHIVE_PROFILE_RELEASE.md](evidence/R2-07A1_ARCHIVE_PROFILE_RELEASE.md)、[R2-07A2_ARCHIVE_RECOVERY_RELEASE.md](evidence/R2-07A2_ARCHIVE_RECOVERY_RELEASE.md)、[R2-07A3_ARCHIVE_DELETE_RELEASE.md](evidence/R2-07A3_ARCHIVE_DELETE_RELEASE.md) 与 [R2-07D_RELEASE.md](evidence/R2-07D_RELEASE.md)。
 
 - **R2-07A — Archive Profile / 策略增强（保留）**：抽象单一 Archive endpoint 的非秘密引用与能力状态；支持 `required` / `best-effort` 策略；优化 durable retry，使已确认对象不重复上传；提供远端对象安全删除确认与逐对象审计；Archive 状态页区分计划、传输、提交、失败和待重试。
 - **R2-07B — Destination Profiles（退役）**：2026-09-13 用户明确决定保持固定发布目标，不实现 profile 创建、启停、默认选择或多频道 UI。既有 PublishPlan/effect/reference cache 仍冻结并校验固定 destination identity；未来确有多频道需求时另立设计阶段，不在 R2-07 预埋复杂状态。
 - **R2-07C — Proxy Profiles（退役）**：代理属于部署环境，不进入业务数据库；只保留环境变量静态配置、启动时有界检测，以及 `/diag` 的“启用/未启用/检测状态”布尔或枚举摘要。禁止输出地址或凭据，不做动态代理池、上传中切换或 proxy coordinator。
-- **R2-07D — Diagnostic Snapshot（保留，替代配置导出）**：新增稳定、只读、安全的诊断 DTO，包含当前 release/version、commit/source manifest、schema/migration 状态、runtime lease、scheduler、Archive 聚合状态和非敏感 feature flags。错误也只能返回归一化代码，不透传可能含秘密或本地路径的异常文本。
+- **R2-07D — Diagnostic Snapshot（保留，替代配置导出）**：已随 `r2-07d-10b6dd5-20260913T091106Z` 交付。新增稳定、只读、安全的诊断 DTO，包含当前 release/version、commit/source manifest、schema/migration 状态、runtime lease、scheduler、Archive 聚合状态和非敏感 feature flags。错误只能返回归一化代码，不透传可能含秘密或本地路径的异常文本。
 
 ### 验收与回滚
 

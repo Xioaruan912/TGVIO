@@ -83,7 +83,7 @@
 | ST-01 | spoiler、进度、完成消息和 collection 等偏好持久化且只影响声明的范围 | COVERED | R2-05 已发布 spoiler preference 与 durable collection；进度/完成消息偏好仍待后续补齐 |
 | ST-02 | 动态多目的地 Profile、选择和切换 | RETIRED FOR NOW | 2026-09-13 用户明确决定保持固定单一发布目标；既有 Job/plan/effect/reference cache 仍冻结 destination identity，未来真实出现多频道需求时另立设计阶段 |
 | ST-03 | 动态 Proxy Profiles、代理池、任务中切换和 coordinator | RETIRED | 2026-09-13 用户明确决定代理属于部署环境，不进入业务状态 |
-| ST-04 | 静态环境代理配置启动时有界检测，`/diag` 只显示启用与检测状态，不暴露地址或凭据 | REQUIRED | 纳入精简 R2-07D；不得因检测新增动态切换或输出代理 URL |
+| ST-04 | 静态环境代理配置启动时有界检测，`/diag` 只显示启用与检测状态，不暴露地址或凭据 | VERIFIED | R2-07D 已随 `r2-07d-10b6dd5-20260913T091106Z` 交付：`TGVIO_STATIC_PROXY_URL` 仅启动时有界 TCP 探测，`/diag` 只显示 `disabled/configured_unchecked/reachable/unreachable` 与检测时间，端点/凭据不入结果；离线 `--check` 记录 `configured_unchecked` 且不连网，不新增动态切换或 coordinator |
 | WB-01 | 只读 Dashboard、认证 metrics 和脱敏通知 outbox 在明确开关下可用 | REQUIRED | 旧系统已有，当前 TGVIO 没有 Web/Dashboard/Webhook 模块 |
 
 ## 7. 可靠性、安全和运维
@@ -93,7 +93,7 @@
 | DB-01 | Job/Item/Event/Plan/Step/Effect/Archive/Control/Progress 均可持久恢复 | VERIFIED | repository tests 与生产 DB |
 | DB-02 | schema 使用不可变、有 checksum 的前向 migration，并在启动前备份和校验 | VERIFIED | R2-03B 接管 checksum ledger；`0002_scheduler`～`0007_archive_exact_delete` 均纳入 checksum/forward migration 链。A3 在 cutover 前完成 v6→v7 production-backup-copy rehearsal，生产现为 `user_version=7`、ledger `1..7`、schema hash `9cf2d4008d4fb888f5affdffea1ccd413b51968d14d234e07d0769cfe60c6e90`；SQLite backup API、schema fingerprint/checksum fail-closed、重复 no-op 与 rollback asset check 均通过 |
 | DB-03 | worker 使用 durable claim/lease/heartbeat；意外双进程也不能重复执行一个 Job | VERIFIED | R2-04 A-D 已正式生产发布 singleton runtime lease、prepare/publish/archive generation-fenced claim、TTL watchdog 与跨独立 SQLite connection 竞争保护；独立 postflight 显示 runtime lease active=1、phase claim blocker=0 |
-| OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | COVERED | 当前 runtime health/logging/diagnostic tests 已覆盖基础视图；R2-07D 将补稳定 Diagnostic Snapshot：release/commit/manifest、schema/migration、lease/scheduler、Archive 聚合和非敏感 flags，禁止异常原文、peer/user、credential 和本地路径 |
+| OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | VERIFIED | R2-07D 已交付稳定 `DiagnosticSnapshot`：release/commit/manifest、schema/migration、lease/scheduler、Archive 聚合与非敏感 flags，由 3 条有界 SQL 聚合生成且 1000+ Job 不加载历史；异常归一为组件状态、secret/path fixture 拒绝；`/diag` 不发起 Telegram/WebDAV/代理请求 |
 | OB-02 | JSONL 与 Docker logs 有界轮转，日志不含 URL、caption、peer/user、路径和凭据 | COVERED | logging tests；每次发布继续做 secret scan |
 | DP-01 | 每个 release build 可追溯到 full Git commit、source manifest、image digest 和 DB schema | VERIFIED | R2-01 建立源码权威；R2-02 machine manifest 与 HostDZire 后验验证完整链路 |
 | DP-02 | 每个通过门禁的 release build 都在同阶段交付 HostDZire，并完成回滚点与后验 | VERIFIED | R2-02 release `r2-02-569926b-20260911T063133Z` 已由唯一入口完成构建、三重回滚点、单实例切换与强制后验；见 [交付记录](evidence/R2-02_RELEASE.md) |
