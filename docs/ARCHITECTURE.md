@@ -192,6 +192,18 @@ paths. Existing owner-scoped `/diag job <id>` remains a separate bounded task
 diagnostic path. None of these routes performs Telegram send probes, WebDAV
 requests, cache deletion, or external proxy probes.
 
+When `TGVIO_DASHBOARD_ENABLED=true`, a separate loopback-only read-only HTTP
+adapter serves an anonymous HTML shell plus Bearer-protected JSON DTOs
+(`/api/v1/overview|jobs|routing|storage|health`) and low-cardinality Prometheus
+`/metrics`. Only GET/HEAD are accepted; query tokens, request bodies and
+oversized headers are rejected; every response carries strict security headers.
+The DTOs exclude owners, peers, captions, URLs, paths and credentials. When
+`TGVIO_WEBHOOK_ENABLED=true`, the durable `notification_outbox` idempotently
+mirrors terminal Job/Archive events and dispatches them over HTTPS with an
+HMAC-SHA256 signature and bounded exponential retry; payloads use a fixed
+allowlist and never include captions, identifiers or credentials. Both surfaces
+are disabled by default and never run a second Telegram session.
+
 `job_progress` is a small durable read model for UI progress. The downloader
 adapters emit byte callbacks into `JobDownloader`, which throttles writes; the
 analyzer and execution engine checkpoint item/step counters. This survives Bot

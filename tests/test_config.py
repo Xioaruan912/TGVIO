@@ -345,3 +345,89 @@ class SettingsTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ConfigError, "LIVE_FIXTURE_MAX_MB"):
                 Settings.from_env()
+
+
+class DashboardWebhookSettingsTests(unittest.TestCase):
+    def test_defaults_keep_operations_surface_disabled(self) -> None:
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            settings = Settings.from_env()
+        self.assertFalse(settings.dashboard_enabled)
+        self.assertEqual(settings.dashboard_host, "127.0.0.1")
+        self.assertEqual(settings.dashboard_port, 8787)
+        self.assertFalse(settings.webhook_enabled)
+        self.assertEqual(settings.notification_poll_seconds, 15)
+        summary = settings.safe_summary()
+        self.assertFalse(summary["dashboard_enabled"])
+        self.assertFalse(summary["webhook_enabled"])
+        self.assertNotIn("dashboard_token", summary)
+
+    def test_dashboard_requires_loopback_and_strong_token(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_DASHBOARD_ENABLED": "true", "TGVIO_DASHBOARD_TOKEN": "short"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "DASHBOARD_TOKEN"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_DASHBOARD_ENABLED": "true",
+                "TGVIO_DASHBOARD_TOKEN": "a" * 40,
+                "TGVIO_DASHBOARD_HOST": "0.0.0.0",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "DASHBOARD_HOST"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_DASHBOARD_ENABLED": "true",
+                "TGVIO_DASHBOARD_TOKEN": "a" * 40,
+            },
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        self.assertTrue(settings.dashboard_enabled)
+        self.assertEqual(settings.safe_summary()["dashboard_host_class"], "loopback")
+        self.assertNotIn("a" * 40, repr(settings.safe_summary()))
+
+    def test_webhook_requires_https_and_token(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_WEBHOOK_ENABLED": "true",
+                "TGVIO_WEBHOOK_URL": "http://example.test/hook",
+                "TGVIO_WEBHOOK_TOKEN": "token",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "WEBHOOK_URL"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_WEBHOOK_ENABLED": "true",
+                "TGVIO_WEBHOOK_URL": "https://example.test/hook",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "WEBHOOK_TOKEN"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_WEBHOOK_ENABLED": "true",
+                "TGVIO_WEBHOOK_URL": "https://user:pw@example.test/hook",
+                "TGVIO_WEBHOOK_TOKEN": "token",
+            },
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "WEBHOOK_URL"):
+                Settings.from_env()

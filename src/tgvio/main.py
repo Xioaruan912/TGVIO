@@ -5,6 +5,7 @@ import asyncio
 import logging
 import os
 from pathlib import Path
+import shutil
 import signal
 
 from tgvio.adapters.telegram.bot_ui import TelethonBotUI
@@ -26,11 +27,15 @@ from tgvio.application.auto_recovery import (
     AutoRecoveryService,
 )
 from tgvio.application.cache_cleanup import CacheCleanupRuntime, CacheCleanupService
+from tgvio.adapters.web.dashboard import DashboardServer
+from tgvio.application.dashboard import DashboardService
 from tgvio.application.diagnostics import (
     DiagnosticFeatureConfig,
     DiagnosticSnapshotService,
     static_proxy_health_detail,
 )
+from tgvio.application.metrics import MetricsService
+from tgvio.application.notifications import NotificationRuntime, WebhookNotifier
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
 from tgvio.application.job_diagnostics import JobDiagnosticService
@@ -285,6 +290,35 @@ async def run(*, check_only: bool = False) -> None:
             ),
             schema_status=repository.schema_status,
         )
+        dashboard_server: DashboardServer | None = None
+        notification_runtime: NotificationRuntime | None = None
+        dashboard_service: DashboardService | None = None
+        if settings.dashboard_enabled or settings.webhook_enabled:
+            dashboard_service = DashboardService(
+                repository,
+                diagnostic_service,
+                disk_usage=lambda: _disk_snapshot(settings.download_dir),
+            )
+        if settings.dashboard_enabled:
+            assert dashboard_service is not None
+            dashboard_server = DashboardServer(
+                dashboard_service,
+                MetricsService(repository, diagnostic_service),
+                host=settings.dashboard_host,
+                port=settings.dashboard_port,
+                token=settings.dashboard_token,
+            )
+        if settings.webhook_enabled:
+            notification_runtime = NotificationRuntime(
+                repository,
+                WebhookNotifier(
+                    settings.webhook_url,
+                    settings.webhook_token,
+                    timeout_seconds=settings.webhook_timeout_seconds,
+                ),
+                poll_seconds=settings.notification_poll_seconds,
+                max_attempts=settings.webhook_max_attempts,
+            )
         bot_ui = TelethonBotUI(
             gateway.client,
             settings,
@@ -313,6 +347,10 @@ async def run(*, check_only: bool = False) -> None:
         intake_runtime.register()
         if archive_runtime is not None:
             await archive_runtime.start()
+        if dashboard_server is not None:
+            await dashboard_server.start()
+        if notification_runtime is not None:
+            await notification_runtime.start()
         recoverable = await repository.list_by_states(
             (
                 JobState.RECEIVED,
@@ -386,6 +424,10 @@ async def run(*, check_only: bool = False) -> None:
                 for sig in registered_signals:
                     loop.remove_signal_handler(sig)
         finally:
+            if notification_runtime is not None:
+                await notification_runtime.stop()
+            if dashboard_server is not None:
+                await dashboard_server.stop()
             await auto_recovery_runtime.stop()
             await intake_runtime.stop()
             await bot_ui.stop()
@@ -400,6 +442,18 @@ async def run(*, check_only: bool = False) -> None:
         if runtime_lease is not None:
             await runtime_lease.stop()
         await repository.close()
+
+
+def _disk_snapshot(path: Path) -> dict[str, int] | None:
+    try:
+        usage = shutil.disk_usage(path if path.exists() else path.parent)
+    except OSError:
+        return None
+    return {
+        "total_bytes": int(usage.total),
+        "used_bytes": int(usage.used),
+        "free_bytes": int(usage.free),
+    }
 
 
 def main() -> None:

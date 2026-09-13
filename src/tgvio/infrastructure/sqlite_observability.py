@@ -201,6 +201,47 @@ class SQLiteObservabilityRepositoryMixin:
             )
         return result
 
+    async def get_admin_job_page(
+        self,
+        *,
+        states: tuple[str, ...] = (),
+        page: int = 0,
+        page_size: int = 20,
+    ) -> dict[str, object]:
+        """Bounded, owner-agnostic job listing for the read-only dashboard."""
+
+        conn = self._require()
+        page = max(0, int(page))
+        page_size = max(1, min(100, int(page_size)))
+        where = ""
+        params: list[object] = []
+        if states:
+            placeholders = ",".join("?" for _ in states)
+            where = f"WHERE j.state IN ({placeholders})"
+            params.extend(str(state) for state in states)
+        cursor = await conn.execute(f"SELECT COUNT(*) AS total FROM jobs j {where}", tuple(params))
+        total = int((await cursor.fetchone())["total"])
+        await cursor.close()
+        cursor = await conn.execute(
+            f"""
+            SELECT j.id AS job_id,
+                   j.state AS state,
+                   j.error_code AS error_code,
+                   j.updated_at AS updated_at,
+                   (SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id) AS media_count,
+                   (SELECT COALESCE(SUM(i.size_bytes),0) FROM job_items i WHERE i.job_id=j.id) AS bytes,
+                   (SELECT s.accepted_order FROM job_schedule s WHERE s.job_id=j.id) AS accepted_order
+            FROM jobs j
+            {where}
+            ORDER BY j.updated_at DESC, j.id DESC
+            LIMIT ? OFFSET ?
+            """,
+            (*params, page_size, page * page_size),
+        )
+        rows = [dict(row) for row in await cursor.fetchall()]
+        await cursor.close()
+        return {"total": total, "page": page, "page_size": page_size, "entries": rows}
+
     async def quick_check(self) -> bool:
         conn = self._require()
         cursor = await conn.execute("PRAGMA quick_check")

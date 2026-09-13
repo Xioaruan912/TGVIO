@@ -39,6 +39,7 @@ from tgvio.domain.publish import (
     PublishStepState,
 )
 from tgvio.domain.progress import JobProgress
+from tgvio.domain.notifications import NotificationEvent, OutboxEntry
 from tgvio.domain.scheduler import PhaseClaim, PublishGate, RuntimeLease
 
 
@@ -174,6 +175,54 @@ class JobRepository(Protocol):
     ) -> dict[str, int]: ...
 
     async def get_diagnostic_aggregates(self) -> dict[str, object]: ...
+
+    async def get_admin_job_page(
+        self,
+        *,
+        states: tuple[str, ...] = (),
+        page: int = 0,
+        page_size: int = 20,
+    ) -> dict[str, object]: ...
+
+    async def enqueue_notification(self, event: NotificationEvent, *, now: float) -> bool: ...
+
+    async def claim_due_notifications(
+        self,
+        *,
+        now: float,
+        holder_id: str,
+        limit: int = 10,
+        lease_seconds: float = 120.0,
+    ) -> list[OutboxEntry]: ...
+
+    async def complete_notification(
+        self,
+        notification_id: int,
+        *,
+        holder_id: str,
+        now: float,
+    ) -> bool: ...
+
+    async def fail_notification(
+        self,
+        notification_id: int,
+        *,
+        holder_id: str,
+        error_code: str,
+        now: float,
+        base_seconds: float = 30.0,
+        cap_seconds: float = 3600.0,
+        jitter: float = 0.0,
+    ) -> OutboxEntry | None: ...
+
+    async def count_notification_outbox(self) -> dict[str, int]: ...
+
+    async def get_notification_candidates(
+        self,
+        *,
+        since_epoch: int,
+        limit: int = 100,
+    ) -> list[dict[str, object]]: ...
 
     async def quick_check(self) -> bool: ...
 

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import ipaddress
 import os
 from pathlib import Path
 import urllib.parse
@@ -41,8 +42,19 @@ def _int(name: str, default: int | None = None) -> int:
         raise ConfigError(f"invalid integer environment variable: {name}") from exc
 
 
+def _is_loopback_host(host: str) -> bool:
+    candidate = (host or "").strip().lower()
+    if candidate in {"localhost", "127.0.0.1", "::1"}:
+        return True
+    try:
+        return ipaddress.ip_address(candidate).is_loopback
+    except ValueError:
+        return False
+
+
 def load_dotenv(path: str | Path = ".env") -> None:
     """Minimal .env loader so configuration does not depend on import-time magic."""
+
     env_path = Path(path)
     if not env_path.is_file():
         return
@@ -104,6 +116,16 @@ class Settings:
     url_private_network_policy: str
     static_proxy_url: str = field(repr=False)
     static_proxy_probe_timeout_seconds: int
+    dashboard_enabled: bool
+    dashboard_host: str
+    dashboard_port: int
+    dashboard_token: str = field(repr=False)
+    webhook_enabled: bool
+    webhook_url: str = field(repr=False)
+    webhook_token: str = field(repr=False)
+    webhook_timeout_seconds: int
+    webhook_max_attempts: int
+    notification_poll_seconds: int
     archive_enabled: bool
     archive_url: str
     archive_remote_root: str
@@ -231,6 +253,37 @@ class Settings:
                 raise ConfigError("TGVIO_STATIC_PROXY_URL must not contain a path")
             if proxy_port is not None and not 1 <= proxy_port <= 65535:
                 raise ConfigError("TGVIO_STATIC_PROXY_URL has an invalid port")
+        dashboard_enabled = _bool("TGVIO_DASHBOARD_ENABLED", False)
+        dashboard_host = os.getenv("TGVIO_DASHBOARD_HOST", "127.0.0.1").strip() or "127.0.0.1"
+        dashboard_port = _int("TGVIO_DASHBOARD_PORT", 8787)
+        if not 1 <= dashboard_port <= 65535:
+            raise ConfigError("TGVIO_DASHBOARD_PORT out of range")
+        dashboard_token = os.getenv("TGVIO_DASHBOARD_TOKEN", "").strip()
+        if dashboard_enabled:
+            if not _is_loopback_host(dashboard_host):
+                raise ConfigError("TGVIO_DASHBOARD_HOST must be a loopback address")
+            if len(dashboard_token) < 32:
+                raise ConfigError("TGVIO_DASHBOARD_TOKEN must be at least 32 characters")
+        webhook_enabled = _bool("TGVIO_WEBHOOK_ENABLED", False)
+        webhook_url = os.getenv("TGVIO_WEBHOOK_URL", "").strip()
+        webhook_token = os.getenv("TGVIO_WEBHOOK_TOKEN", "")
+        webhook_timeout_seconds = _int("TGVIO_WEBHOOK_TIMEOUT_SECONDS", 10)
+        if not 1 <= webhook_timeout_seconds <= 60:
+            raise ConfigError("TGVIO_WEBHOOK_TIMEOUT_SECONDS out of range")
+        webhook_max_attempts = _int("TGVIO_WEBHOOK_MAX_ATTEMPTS", 5)
+        if not 1 <= webhook_max_attempts <= 20:
+            raise ConfigError("TGVIO_WEBHOOK_MAX_ATTEMPTS out of range")
+        notification_poll_seconds = _int("TGVIO_NOTIFICATION_POLL_SECONDS", 15)
+        if not 1 <= notification_poll_seconds <= 3600:
+            raise ConfigError("TGVIO_NOTIFICATION_POLL_SECONDS out of range")
+        if webhook_enabled:
+            parsed_webhook = urllib.parse.urlsplit(webhook_url)
+            if parsed_webhook.scheme != "https" or not parsed_webhook.hostname:
+                raise ConfigError("TGVIO_WEBHOOK_URL must be an absolute HTTPS URL")
+            if parsed_webhook.username or parsed_webhook.password:
+                raise ConfigError("TGVIO_WEBHOOK_URL must not contain embedded credentials")
+            if not webhook_token:
+                raise ConfigError("TGVIO_WEBHOOK_TOKEN is required when the webhook is enabled")
         archive_enabled = _bool("TGVIO_ARCHIVE_ENABLED", False)
         archive_url = os.getenv("TGVIO_ARCHIVE_WEBDAV_URL", "").strip()
         archive_user = os.getenv("TGVIO_ARCHIVE_WEBDAV_USER", "").strip()
@@ -315,6 +368,16 @@ class Settings:
             url_private_network_policy=url_private_network_policy,
             static_proxy_url=static_proxy_url,
             static_proxy_probe_timeout_seconds=static_proxy_probe_timeout_seconds,
+            dashboard_enabled=dashboard_enabled,
+            dashboard_host=dashboard_host,
+            dashboard_port=dashboard_port,
+            dashboard_token=dashboard_token,
+            webhook_enabled=webhook_enabled,
+            webhook_url=webhook_url,
+            webhook_token=webhook_token,
+            webhook_timeout_seconds=webhook_timeout_seconds,
+            webhook_max_attempts=webhook_max_attempts,
+            notification_poll_seconds=notification_poll_seconds,
             archive_enabled=archive_enabled,
             archive_url=archive_url,
             archive_remote_root=archive_remote_root,
@@ -368,6 +431,11 @@ class Settings:
             "url_private_network_policy": self.url_private_network_policy,
             "static_proxy_configured": bool(self.static_proxy_url),
             "static_proxy_probe_timeout_seconds": self.static_proxy_probe_timeout_seconds,
+            "dashboard_enabled": self.dashboard_enabled,
+            "dashboard_host_class": "loopback" if _is_loopback_host(self.dashboard_host) else "other",
+            "dashboard_port": self.dashboard_port,
+            "webhook_enabled": self.webhook_enabled,
+            "notification_poll_seconds": self.notification_poll_seconds,
             "archive_enabled": self.archive_enabled,
             "archive_configured": bool(self.archive_url and self.archive_user),
             "archive_remote_root_configured": bool(self.archive_remote_root),
