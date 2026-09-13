@@ -54,8 +54,8 @@
 | PL-10 | 下载可并行，但 Telegram upload 有明确并发/带宽策略且不会降低旧并发分片上传能力 | COVERED | R2-04E 已以 `migration=none` 正式发布 legacy 16 路 `SaveFilePart/SaveBigFilePart`、单文件/全局并发上限、约 8 MiB 默认 part-payload 内存界、cancel/fallback 和 exactly-once visible-send 回归；214 项正式 release gate 与独立 postflight/rollback-check 通过。待观察 1～3 个真实大文件的吞吐/CPU/内存/FloodWait 后再升 VERIFIED |
 | PL-11 | 每个已确认可见消息先写 receipt/effect；partial/uncertain 永不盲目重发 | VERIFIED | publish pipeline tests；生产有 succeeded/failed step evidence |
 | PL-12 | SHA-256 + destination + kind 的媒体引用复用；stale 引用在任何可见副作用前回退本地上传 | VERIFIED | reference cache/transport tests；生产 cache 有数据 |
-| PL-13 | 发布失败按阶段安全重试；有 partial/uncertain 证据时进入人工处理 | COVERED | job control/diagnostics tests |
-| PL-14 | 用户可二次确认撤销发布，逐 peer 删除频道和讨论组消息并审计部分失败 | REQUIRED | 当前 TGVIO 没有 undo/delete-published command |
+| PL-13 | 发布失败按阶段安全重试；有 partial/uncertain 证据时进入人工处理 | COVERED | R2-06 durable automatic recovery 已生产发布：安全瞬时失败按阶段有界退避，耗尽/未知错误自动释放 FIFO；partial/uncertain 隔离且不盲目重发。仍需最终故障注入 smoke |
+| PL-14 | 用户可二次确认撤销发布，逐 peer 删除频道和讨论组消息并审计部分失败 | COVERED | `r2-06-e065ad9-20260913T014301Z` 已生产部署 effect-driven undo、discussion-first、逐项 checkpoint/audit、超时/瞬时重试/circuit 与部分失败继续；304 tests、v5 migration/postflight 通过，真实 destructive smoke 留给 R2-10 |
 
 ## 5. Archive / WebDAV
 
@@ -67,7 +67,7 @@
 | AR-04 | 崩溃恢复从已存对象继续，manifest/marker 确定性，不产生 attempt sprawl | COVERED | executor/runtime tests |
 | AR-05 | Archive 失败不回滚已成功 Telegram 发布，且未完成时保护 canonical cache | COVERED | runtime/cache tests |
 | AR-06 | 用户可查看、探测和显式重试失败 package；操作 owner-scoped | COVERED | R2-03A 增加按钮、二次确认和 durable Job owner 复核；仍需完整 callback 矩阵 |
-| AR-07 | 动态配置、best-effort/required 策略和远端精确删除有安全 UI、确认与审计 | REQUIRED | 当前 Archive 只用 env，且没有旧策略或删除交互的完整等价 |
+| AR-07 | 单一 Archive endpoint profile、best-effort/required 策略和已记录远端对象精确删除有安全 UI、确认与审计 | REQUIRED | R2-07A 保留；删除必须复用 operation token，只枚举 package/object receipt，禁止路径或用户目录递归。多 endpoint/profile 列表不在范围内 |
 
 ## 6. 队列、控制与 UI
 
@@ -75,14 +75,15 @@
 |---|---|---|---|
 | UI-01 | 一个任务有稳定状态消息，展示阶段、总进度、当前项和速度；UI 失败不改变业务结果 | COVERED | R2-03A 提供按钮与友好错误；R2-05 已发布 durable message reference、重启复用和最多补发一次，完整进度视图仍继续治理 |
 | UI-02 | 首页、帮助、任务、计划、统计、健康、诊断、缓存和 Archive 都可通过按钮到达和返回 | COVERED | R2-03A 增加 persistent 手机键盘、任务直达按钮、确认页和重复刷新回归；仍需完整 view callback 遍历 |
-| UI-03 | `/jobs` 支持 SQL 分页、状态筛选、详情和失败中心，100+ Job 不超 Telegram 限制 | VERIFIED | R2-06C 已以 migration-free release 正式生产发布 SQL `COUNT + LIMIT/OFFSET` 分页、all/active/held/failed/completed 筛选与 failure center；随后 `r2-06-424aba8-20260913T002401Z` 将用户可见身份统一为 durable `任务 #N` + 时间/媒体摘要，普通详情隐藏 UUID、技术详情保留完整内部 ID，并支持 owner-scoped `#N` 命令解析；275 tests 与生产 v4/24 Job/healthy postflight 通过 |
-| CT-01 | cancel 是 durable、幂等、owner-scoped，并在安全边界生效 | COVERED | job control tests |
+| UI-03 | `/jobs` 支持 SQL 分页、状态筛选、详情和失败中心，100+ Job 不超 Telegram 限制 | VERIFIED | R2-06C 已生产发布 SQL `COUNT + LIMIT/OFFSET` 分页、all/active/held/failed/completed 筛选与 failure center；后续 release 统一为 durable `任务 #N` + 时间/媒体摘要、普通详情隐藏 UUID、技术详情保留内部 ID，并支持 owner-scoped `#N` 解析。最终 R2-06 v5 release 的 304 tests 与 24 Job/healthy postflight 通过 |
+| CT-01 | cancel 是 durable、幂等、owner-scoped，并在安全边界生效 | COVERED | job control tests；R2-06 v5 已让 Bot cancel 二次确认使用 owner/revision/TTL/single-use operation token |
 | CT-02 | 单 Job `pause/hold/resume` 保留缓存；全局暂停只停止新 claim | VERIFIED | R2-06 `0004_queue_controls` 已生产发布 durable Job hold/resume 与 global queue pause；下载/分析/PublishStep 在安全边界停，existing claim 可 heartbeat，resume 不重放已成功 PublishStep |
-| CT-03 | retry 从正确阶段恢复，不清空历史，不绕过 partial/uncertain 保护 | COVERED | job control tests |
-| CT-04 | destructive callback 有 owner/revision/过期/单次消费二次确认 | REQUIRED | live fixture 有确认，但未形成通用 Operation 模型 |
+| CT-03 | retry 从正确阶段恢复，不清空历史，不绕过 partial/uncertain 保护 | COVERED | job control/automatic recovery tests；R2-06 v5 已为 Job retry、Archive retry 和受控 fixture 回调部署通用确认 token |
+| CT-04 | destructive callback 有 owner/revision/过期/单次消费二次确认 | COVERED | R2-06 v5 已部署通用 durable operation token，覆盖 retry/cancel/Archive retry/cache cleanup/fixture/undo；owner、过期、兄弟失效、重放和 stale revision/payload tests 通过，待最终真实回调矩阵 |
 | ST-01 | spoiler、进度、完成消息和 collection 等偏好持久化且只影响声明的范围 | COVERED | R2-05 已发布 spoiler preference 与 durable collection；进度/完成消息偏好仍待后续补齐 |
-| ST-02 | 多目的地 Profile 可验证、启停、设默认；Job 接受时冻结目的地快照 | REQUIRED | 当前只有单一 env destination |
-| ST-03 | HTTP 代理列表、连通测试和集中故障切换不会让并发任务反复断线 | REQUIRED | TGVIO 没有代理协调器 |
+| ST-02 | 动态多目的地 Profile、选择和切换 | RETIRED FOR NOW | 2026-09-13 用户明确决定保持固定单一发布目标；既有 Job/plan/effect/reference cache 仍冻结 destination identity，未来真实出现多频道需求时另立设计阶段 |
+| ST-03 | 动态 Proxy Profiles、代理池、任务中切换和 coordinator | RETIRED | 2026-09-13 用户明确决定代理属于部署环境，不进入业务状态 |
+| ST-04 | 静态环境代理配置启动时有界检测，`/diag` 只显示启用与检测状态，不暴露地址或凭据 | REQUIRED | 纳入精简 R2-07D；不得因检测新增动态切换或输出代理 URL |
 | WB-01 | 只读 Dashboard、认证 metrics 和脱敏通知 outbox 在明确开关下可用 | REQUIRED | 旧系统已有，当前 TGVIO 没有 Web/Dashboard/Webhook 模块 |
 
 ## 7. 可靠性、安全和运维
@@ -90,9 +91,9 @@
 | ID | 合同 | 当前状态 | 证据/缺口 |
 |---|---|---|---|
 | DB-01 | Job/Item/Event/Plan/Step/Effect/Archive/Control/Progress 均可持久恢复 | VERIFIED | repository tests 与生产 DB |
-| DB-02 | schema 使用不可变、有 checksum 的前向 migration，并在启动前备份和校验 | VERIFIED | R2-03B 接管 checksum ledger；R2-04 `0002_scheduler`、R2-05 `0003_intake_collections` 与 R2-06 `0004_queue_controls` 均先 rehearsal 后正式发布，生产现为 `user_version=4`，SQLite backup API、schema fingerprint/checksum fail-closed 与 rollback asset check 均通过 |
+| DB-02 | schema 使用不可变、有 checksum 的前向 migration，并在启动前备份和校验 | VERIFIED | R2-03B 接管 checksum ledger；`0002_scheduler`～`0005_operation_tokens_undo` 均先做生产派生 rehearsal 再正式发布。生产现为 `user_version=5`，SQLite backup API、schema fingerprint/checksum fail-closed、重复 no-op 与 rollback asset check 均通过 |
 | DB-03 | worker 使用 durable claim/lease/heartbeat；意外双进程也不能重复执行一个 Job | VERIFIED | R2-04 A-D 已正式生产发布 singleton runtime lease、prepare/publish/archive generation-fenced claim、TTL watchdog 与跨独立 SQLite connection 竞争保护；独立 postflight 显示 runtime lease active=1、phase claim blocker=0 |
-| OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | COVERED | runtime health/logging/diagnostic tests |
+| OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | COVERED | 当前 runtime health/logging/diagnostic tests 已覆盖基础视图；R2-07D 将补稳定 Diagnostic Snapshot：release/commit/manifest、schema/migration、lease/scheduler、Archive 聚合和非敏感 flags，禁止异常原文、peer/user、credential 和本地路径 |
 | OB-02 | JSONL 与 Docker logs 有界轮转，日志不含 URL、caption、peer/user、路径和凭据 | COVERED | logging tests；每次发布继续做 secret scan |
 | DP-01 | 每个 release build 可追溯到 full Git commit、source manifest、image digest 和 DB schema | VERIFIED | R2-01 建立源码权威；R2-02 machine manifest 与 HostDZire 后验验证完整链路 |
 | DP-02 | 每个通过门禁的 release build 都在同阶段交付 HostDZire，并完成回滚点与后验 | VERIFIED | R2-02 release `r2-02-569926b-20260911T063133Z` 已由唯一入口完成构建、三重回滚点、单实例切换与强制后验；见 [交付记录](evidence/R2-02_RELEASE.md) |

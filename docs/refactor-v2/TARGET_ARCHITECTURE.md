@@ -41,7 +41,7 @@ src/tgvio/
     publication.py          # PublishPlan/Step/Effect/Receipt
     archive.py              # ArchivePackage/Object/Event
     controls.py             # pause/cancel/retry/operation token
-    policies.py             # spoiler/caption/destination 快照
+    policies.py             # spoiler/caption/固定 destination/Archive 策略快照
     errors.py               # 稳定错误码与安全摘要
 
   application/
@@ -50,7 +50,7 @@ src/tgvio/
       job_control.py        # pause/resume/cancel/retry/undo request
       publication.py        # plan、claim、execute、reconcile
       archive.py            # plan、claim、execute、retry/delete
-      settings.py           # runtime preferences/profiles/proxy
+      settings.py           # runtime preferences/单 Archive profile/静态代理状态
     queries/
       jobs.py               # page/detail/failure center
       health.py
@@ -162,10 +162,11 @@ src/tgvio/
 - `intake_events`：source type/chat/message/update key，唯一约束防重复 update。
 - `collection_sessions` / `collection_entries`：显式合集和文字，按 ordinal 持久化。
 - `user_preferences`：spoiler/progress/completion/collection 偏好。
-- `destination_profiles`：目的地与讨论组/cover/caption/archive 快照来源。
+- PublishPlan 内的固定 destination snapshot：保留目的地、讨论组、cover/caption 与 reference-cache 隔离身份；2026-09-13 已明确退役动态 destination profile CRUD/选择。
+- ArchivePackage 内的单一 Archive profile/policy snapshot：只保存非秘密 identity、policy version、`required|best_effort` 与 capability 状态；endpoint credential 继续留在部署 secret。
 - `operation_tokens`：危险操作的 owner/revision/过期/单次消费 payload。
 - `status_messages` 或 Job 上的 status ref：稳定状态消息恢复。
-- `proxy_profiles`：只保存受控配置引用；含秘密字段继续留在权限受限配置存储，或明确加密后再入库。
+- 静态代理只来自部署环境；业务数据库不新增 `proxy_profiles`。启动时有界检测结果只以脱敏枚举供 Diagnostic Snapshot 读取。
 
 部署工具配置（VPS host/user/key/app dir/GitHub）不属于应用 Settings，不进入业务进程。
 

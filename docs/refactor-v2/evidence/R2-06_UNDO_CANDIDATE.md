@@ -82,6 +82,6 @@ No caption, URL, local path, credential, or message content is stored in operati
 
 The remote schema-release pipeline now creates a SQLite Backup API rollback point, copies that rollback database into an ephemeral rehearsal directory, runs the candidate migration there, verifies source/target versions, applied migration set and before/backup schema identity, then deletes the rehearsal database directory before cutover. The formal release will therefore execute the production-derived v4 -> v5 rehearsal and fail closed before cutover if it differs from the declared migration.
 
-Formal production release and postflight are still pending at this candidate stage. No real Telegram message is deleted during candidate validation.
+The candidate was subsequently released as `r2-06-e065ad9-20260913T014301Z`. The formal production-derived v4 -> v5 rehearsal, 304-test network-disabled image gate, independent postflight and rollback asset check passed; see [R2-06_UNDO_RELEASE.md](R2-06_UNDO_RELEASE.md). No real Telegram message was deleted during candidate or release validation.
 
 A read-only production-shape check found 188 valid visible Telegram effect rows across 19 Jobs, no malformed peer/message IDs and no duplicate targets; the largest current Job has 36 unique delete targets. Only aggregate counts were recorded.

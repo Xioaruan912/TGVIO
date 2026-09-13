@@ -31,8 +31,8 @@ characterization -> implementation -> offline gates -> Git push
 | R2-03 | DELIVERED | 生产反馈修复；接管 migration ledger 并拆分 repository | DL-01、UI-01～02、AR-06、DB-02 |
 | R2-04 | IN PROGRESS | A-D durable scheduler / claim / strict FIFO 已交付；E 并发分片上传继续 | DB-03、PL-09、PL-10 |
 | R2-05 | DELIVERED | Durable intake/合集/文字/spoiler/状态消息已随 v3 正式发布 | IN-04～06、PL-06、ST-01 |
-| R2-06 | IN PROGRESS | 完整队列、自动恢复、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02～04、PL-13～14 |
-| R2-07 | NOT STARTED | 动态 Archive、目的地 Profile、代理协调 | AR-07、ST-02、ST-03 |
+| R2-06 | DELIVERED | 完整队列、自动恢复、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02～04、PL-13～14 |
+| R2-07 | NOT STARTED | Archive Profile/策略增强与安全诊断摘要；固定单目的地、静态环境代理 | AR-07、OB-01、ST-04 |
 | R2-08 | NOT STARTED | 拆分 Telegram/WebDAV/UI/SQLite 热点并清除兼容层 | 架构门禁 |
 | R2-09 | NOT STARTED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
 | R2-10 | NOT STARTED | 完整等价验收、灾难恢复演练、旧树退役 | 全合同 |
@@ -248,7 +248,7 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 
 ### 实施包
 
-2026-09-13 当前进度：durable automatic recovery 已随 `r2-06-2a00074-20260912T134944Z` 正式发布；durable Job hold/resume 与 global queue pause/resume 已随 `r2-06-b59897a-20260912T142840Z` + `0004_queue_controls` 正式把生产推进到 v4；SQL 分页 `/jobs`、状态筛选与 failure center 又随 `r2-06-c0c06cc-20260912T143535Z` 以 `migration=none` 正式发布；随后 `r2-06-424aba8-20260913T002401Z` 把用户可见短 UUID 替换为 durable `任务 #N` + 时间/媒体摘要，并让高级命令支持 `#N`，schema 仍保持 v4。证据见 [R2-06_CONTROLS_RELEASE.md](evidence/R2-06_CONTROLS_RELEASE.md)、[R2-06_JOB_QUERY_RELEASE.md](evidence/R2-06_JOB_QUERY_RELEASE.md) 与 [R2-06_HUMAN_JOB_IDENTITY_RELEASE.md](evidence/R2-06_HUMAN_JOB_IDENTITY_RELEASE.md)。operation token 与 undo 尚未交付，因此 R2-06 整体仍为 `IN PROGRESS`。
+2026-09-13 交付结果：durable automatic recovery 已随 `r2-06-2a00074-20260912T134944Z` 正式发布；durable Job hold/resume 与 global queue pause/resume 已随 `r2-06-b59897a-20260912T142840Z` + `0004_queue_controls` 正式把生产推进到 v4；SQL 分页 `/jobs`、状态筛选与 failure center 又随 `r2-06-c0c06cc-20260912T143535Z` 以 `migration=none` 正式发布；`r2-06-424aba8-20260913T002401Z` 随后交付 durable `任务 #N`。最终 `r2-06-e065ad9-20260913T014301Z` + `0005_operation_tokens_undo` 已把 owner/revision/TTL/single-use operation token、effect-driven undo、逐项审计和部分失败恢复部署到生产 v5。304 项 network-disabled release gate、生产派生 v4→v5 rehearsal、独立 postflight 与 rollback asset check 均通过，R2-06 标记 `DELIVERED`。证据见 [R2-06_UNDO_RELEASE.md](evidence/R2-06_UNDO_RELEASE.md)。发布验收没有删除用户现有 Telegram 消息，真实 destructive undo 留给 R2-10 受控 smoke。
 
 - SQL 分页 `/jobs`、状态筛选、任务详情、计划详情和失败中心。
 - Job `pause/hold/resume`；全局暂停只阻止新 claim，外部 send 在安全边界停。
@@ -265,25 +265,29 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 - undo 必须二次确认，不能删除非该 Job effect；部分失败不伪装全部成功。
 - UI 编辑失败不改变业务终态。
 
-## 10. R2-07：Archive、目的地与网络配置
+## 10. R2-07：Archive 与运维能力增强（精简版）
+
+详细技术边界见 [R2-07_ARCHIVE_DIAGNOSTICS_PLAN.md](R2-07_ARCHIVE_DIAGNOSTICS_PLAN.md)。
 
 ### 目标
 
-恢复动态能力而不把秘密和网络切换逻辑重新塞进 Bot UI 或全局常量。
+增强 Archive 的可配置性、恢复安全和可诊断能力，不引入当前业务不需要的多目的地或动态代理状态机。
 
 ### 实施包
 
-- R2-07A：Archive endpoint 配置引用、能力探测、best-effort/required、失败重试和精确远端删除确认。
-- R2-07B：destination profiles；创建/验证/启停/默认，Job intake 时冻结不可变快照。
-- R2-07C：proxy profiles 与单一 coordinator；连通测试、冷却、主动任务保护和受控切换。
-- R2-07D：配置导出只含非秘密元数据，日志和 `/diag` 永不输出 URL credentials、token 或真实 peer。
+- **R2-07A — Archive Profile / 策略增强（保留）**：抽象单一 Archive endpoint 的非秘密引用与能力状态；支持 `required` / `best-effort` 策略；优化 durable retry，使已确认对象不重复上传；提供远端对象安全删除确认与逐对象审计；Archive 状态页区分计划、传输、提交、失败和待重试。
+- **R2-07B — Destination Profiles（退役）**：2026-09-13 用户明确决定保持固定发布目标，不实现 profile 创建、启停、默认选择或多频道 UI。既有 PublishPlan/effect/reference cache 仍冻结并校验固定 destination identity；未来确有多频道需求时另立设计阶段，不在 R2-07 预埋复杂状态。
+- **R2-07C — Proxy Profiles（退役）**：代理属于部署环境，不进入业务数据库；只保留环境变量静态配置、启动时有界检测，以及 `/diag` 的“启用/未启用/检测状态”布尔或枚举摘要。禁止输出地址或凭据，不做动态代理池、上传中切换或 proxy coordinator。
+- **R2-07D — Diagnostic Snapshot（保留，替代配置导出）**：新增稳定、只读、安全的诊断 DTO，包含当前 release/version、commit/source manifest、schema/migration 状态、runtime lease、scheduler、Archive 聚合状态和非敏感 feature flags。错误也只能返回归一化代码，不透传可能含秘密或本地路径的异常文本。
 
 ### 验收与回滚
 
-- 修改默认 profile 不影响已接受 Job；不同 destination 的 reference cache 不串用。
-- required Archive 的未完成状态明确可见，但不删除已经发布的 Telegram 消息。
-- 远端删除只针对 package 已记录对象，拒绝递归用户目录。
-- 代理切换不会同时断开多条正在进行的 Telegram upload。
+- 已完成 Telegram 发布的 Job 不因 Archive 失败回滚；`required` 影响 Archive 完成语义、状态提示和缓存保护，不撤销已发布 Telegram effect。
+- Archive retry 复用 durable object receipt，不重复上传已经远端确认的对象；重启后 package/object/attempt 状态可恢复。
+- 远端删除必须使用 R2-06 operation token 二次确认，只能枚举并删除该 package 已记录的 object/manifest/commit marker；拒绝路径前缀递归、用户目录递归、未记录对象和跨 package 目标。每项成功/失败均可审计，部分失败可安全继续。
+- `/diag` 不产生 Telegram/WebDAV 业务副作用，不做写探测，不加载全量 Job；输出有大小上限并通过 token/session/password/credential/peer/user/local-path secret fixture 扫描。
+- 默认不新增公网 listener 或端口；静态代理检测有超时且只报告脱敏状态，不在任务进行中切换连接。
+- 若 A/D 需要 schema 变化，仍使用新的 checksum migration、生产副本 rehearsal 和匹配 DB/source/image 回滚点；不得修改既有 migration。
 
 ## 11. R2-08：热点拆分与兼容层清理
 
