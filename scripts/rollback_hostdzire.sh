@@ -16,7 +16,7 @@ usage() {
 mode=$1
 release_id=$2
 restore=${3:-}
-[[ "$release_id" =~ ^r2-[0-9]{2}-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z$ ]] || {
+[[ "$release_id" =~ ^r2-[0-9]{2}([a-z][0-9]+)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z$ ]] || {
   printf 'invalid release id\n' >&2
   exit 2
 }

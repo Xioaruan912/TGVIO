@@ -463,6 +463,17 @@ class BuildContractTests(unittest.TestCase):
         self.assertTrue(lines[0].startswith("HostDZire ssh-ed25519 "))
 
 
+    def test_release_id_guards_accept_optional_work_package_suffix(self) -> None:
+        deploy = (ROOT / "scripts" / "deploy_hostdzire.py").read_text(encoding="utf-8")
+        remote = (ROOT / "scripts" / "remote_release.sh").read_text(encoding="utf-8")
+        rollback = (ROOT / "scripts" / "rollback_hostdzire.sh").read_text(encoding="utf-8")
+
+        self.assertIn(r'r2-[0-9]{2}(?:[a-z][0-9]+)?-[0-9a-f]{7}', deploy)
+        shell_pattern = r'r2-[0-9]{2}([a-z][0-9]+)?-[0-9a-f]{7}'
+        self.assertIn(shell_pattern, remote)
+        self.assertIn(shell_pattern, rollback)
+
+
 class GitGateTests(unittest.TestCase):
     def test_dirty_repository_is_rejected(self) -> None:
         def fake_run(args: list[str], **_kwargs: object) -> subprocess.CompletedProcess[str]:
