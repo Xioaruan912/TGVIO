@@ -19,13 +19,14 @@ of growing behavior inside one large bot runtime.
 ## Current phase
 
 TGVIO is the active production runtime. R2-01 restored source authority, R2-02
-established the reproducible fail-closed delivery chain, and R2-03 through R2-09
+established the reproducible fail-closed delivery chain, and R2-03 through R2-11
 added the migration ledger, durable scheduler/claim/FIFO, durable intake and
 collections, full queue control and undo, Archive V2 with exact remote delete,
-the redacted Diagnostic Snapshot, and the read-only operations surface
-(Dashboard, metrics, notification outbox). The current production release is
-`r2-08b-52f39ca-20260913T101837Z` at full commit
-`52f39cad6c33614daaa742ed2f07dea0c4a6011d` (schema v8), healthy on HostDZire.
+the redacted Diagnostic Snapshot, the read-only operations surface
+(Dashboard, metrics, notification outbox), owner failure alerts, and collection
+preview. The current production release is
+`r2-11-7101d2a-20260913T122158Z` at full commit
+`7101d2a5c660ddd64cf08f41c68f8be650a6e291` (schema v8), healthy on HostDZire.
 
 The authoritative refactoring plan, feature contract, and per-stage evidence
 live under [`docs/refactor-v2/`](docs/refactor-v2/README.md). The implemented
@@ -64,6 +65,13 @@ The read-only operations surface (`TGVIO_DASHBOARD_ENABLED`,
 `TGVIO_WEBHOOK_ENABLED`) is also disabled by default; the audited production
 deployment currently leaves both off, so there is no extra listener and no
 second Telegram session.
+
+Owner failure alerts are on by default: the Bot sends a redacted private-chat
+message for failed jobs (including partial/uncertain), failed Archive packages,
+Telegram disconnection, and low disk space, and a short recovery note when the
+condition clears. The collection flow shows a preview card before publishing
+(`TGVIO_COLLECTION_PREVIEW_ENABLED=true`) with confirm / show-mode / abandon
+actions; nothing is downloaded until the owner confirms.
 
 ## Bot controls
 

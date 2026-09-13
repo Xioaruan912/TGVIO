@@ -23,6 +23,7 @@
 | IN-06 | 合集期间纯文字按顺序合成封面 caption，严格满足 Telegram caption 限制 | COVERED | R2-05 已发布 ordinal text entry、第一可见 step caption 冻结及 1024 字符测试；待真实合集验收 |
 | IN-07 | URL intake 使用 yt-dlp、路径受控、拒绝凭据 URL/私网风险，错误不回显源 URL | COVERED | `test_url_download.py`、`test_telegram_adapters.py` |
 | IN-08 | 命令消息不被普通 intake 再处理 | COVERED | runtime 显式排除 `/`；需保留回归 |
+| IN-09 | 合集在 `/end` 后展示发布预览，确认前不创建 Job、不下载 | VERIFIED | R2-11 已随 `r2-11-7101d2a-20260913T122158Z` 交付：预览卡（计数/体积/封面计划/评论区组数/文案统计/模式）+ `[确认发布][显示模式][放弃]`，回调 ≤64 字节，默认开启 |
 
 ## 3. 下载、分析与缓存
 
@@ -76,6 +77,7 @@
 | UI-01 | 一个任务有稳定状态消息，展示阶段、总进度、当前项和速度；UI 失败不改变业务结果 | COVERED | R2-03A 提供按钮与友好错误；R2-05 已发布 durable message reference、重启复用和最多补发一次，完整进度视图仍继续治理 |
 | UI-02 | 首页、帮助、任务、计划、统计、健康、诊断、缓存和 Archive 都可通过按钮到达和返回 | COVERED | R2-03A 增加 persistent 手机键盘、任务直达按钮、确认页和重复刷新回归；仍需完整 view callback 遍历 |
 | UI-03 | `/jobs` 支持 SQL 分页、状态筛选、详情和失败中心，100+ Job 不超 Telegram 限制 | VERIFIED | R2-06C 已生产发布 SQL `COUNT + LIMIT/OFFSET` 分页、all/active/held/failed/completed 筛选与 failure center；后续 release 统一为 durable `任务 #N` + 时间/媒体摘要、普通详情隐藏 UUID、技术详情保留内部 ID，并支持 owner-scoped `#N` 解析。最终 R2-06 v5 release 的 304 tests 与 24 Job/healthy postflight 通过 |
+| UI-04 | owner 通过私聊收到失败/异常告警，含去重/冷却/脱敏 | VERIFIED | R2-11 已随 `r2-11-7101d2a-20260913T122158Z` 交付：`job.failed`（含 partial/uncertain）、`archive.failed`、Telegram 断连与磁盘低水位及恢复；复用 outbox claim/去重/退避；仅失败/异常推送，冷却窗口 3600s；payload 脱敏；webhook 为全量 best-effort 次渠道 |
 | CT-01 | cancel 是 durable、幂等、owner-scoped，并在安全边界生效 | COVERED | job control tests；R2-06 v5 已让 Bot cancel 二次确认使用 owner/revision/TTL/single-use operation token |
 | CT-02 | 单 Job `pause/hold/resume` 保留缓存；全局暂停只停止新 claim | VERIFIED | R2-06 `0004_queue_controls` 已生产发布 durable Job hold/resume 与 global queue pause；下载/分析/PublishStep 在安全边界停，existing claim 可 heartbeat，resume 不重放已成功 PublishStep |
 | CT-03 | retry 从正确阶段恢复，不清空历史，不绕过 partial/uncertain 保护 | COVERED | job control/automatic recovery tests；R2-06 v5 已为 Job retry、Archive retry 和受控 fixture 回调部署通用确认 token |

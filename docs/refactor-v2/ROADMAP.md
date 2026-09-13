@@ -36,6 +36,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-08 | DELIVERED | 拆分 Telegram/WebDAV/UI/SQLite 热点并锁定文件大小预算 | 架构门禁 |
 | R2-09 | DELIVERED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
 | R2-10 | CLOSED (automated) | 自动矩阵、旧树退役与 release 身份收口已交付；受控生产 smoke 与破坏性回滚演练待 owner 窗口 | 全合同 |
+| R2-11 | DELIVERED | 产品增强：owner 失败/异常私聊告警 + 合集发布前预览 | UI-04、IN-09 |
 
 阶段编号表达依赖顺序，不要求每阶段只有一个 commit。每个阶段应拆成可部署的小提交；如果单阶段超过约一周或同时修改多个外部副作用边界，应继续拆分。
 
@@ -356,7 +357,22 @@ R2-09 已随 `r2-09-5ff2a61-20260913T092930Z`（runtime commit `5ff2a61e6ca51a8f
 
 R2-10 的自动化与文档部分已交付：`FEATURE_CONTRACT.md` 已无 `REQUIRED` 项；`52f39ca` 上 368 tests 全绿；R2-08B 已完成全部热点拆分并把源文件预算收紧到 1000 行；旧 runtime 不在可启动树中，仅由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留；当前 release 的 source/image/DB 回滚资产与单实例身份已只读验证。受控生产 smoke（单媒体/相册/合集/封面/评论区/spoiler/URL/>2GB、cancel/hold/retry/undo、Archive 精确删除）、1～3 个真实大文件性能观测，以及破坏性 HostDZire 回滚演练需要 owner 的 Telegram 会话与独立运维窗口，已在 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md) 列为明确的用户验证清单，不在此伪称完成。
 
-## 14. 每阶段交付记录模板
+## 14. R2-11：产品增强（告警 + 合集预览）
+
+### 目标
+
+在 R2 重构与合同收口后，按 owner 决策补齐两项低风险产品能力，不改 schema、不改状态机、不改 callback 合同。
+
+### 范围
+
+- **Owner 失败告警（默认开启）**：Bot 私聊接收 `job.failed`（含 partial/uncertain）、`archive.failed`、Telegram 断连、磁盘低水位及其恢复；复用 `notification_outbox` 的 claim/去重/退避；webhook 若启用则作为全量次渠道 best-effort。
+- **合集发布前预览（默认开启）**：`/end` 先展示预览卡（媒体计数/体积/封面计划/评论区组数/文案统计/显示模式），`[确认发布] [显示模式] [放弃]` 三键；确认前不创建 Job、不下载。
+
+### 交付结果（2026-09-13）
+
+已随 `r2-11-7101d2a-20260913T122158Z`（runtime commit `7101d2a5c660ddd64cf08f41c68f8be650a6e291`，source manifest `932cad1e7df3a2a76098f214d73188ed6ecfa4323131c5f5d52951dc44c44c8f`，migration=none）正式交付，380 tests 全绿。首次发布调用因生产存在活动 2.5GB Archive 而被 fail-closed 拒绝（`database-activity-or-integrity`），归档结束后重试完成，未使用任何旁路。证据见 [R2-11_RELEASE.md](evidence/R2-11_RELEASE.md)。
+
+## 15. 每阶段交付记录模板
 
 ```text
 阶段：R2-xx
