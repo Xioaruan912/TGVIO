@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 from types import SimpleNamespace
 import unittest
 
@@ -14,7 +15,13 @@ from tgvio.adapters.telegram.bot_ui import (
 from tgvio.application.job_control import RetryDecision
 from tgvio.application.operation_tokens import OperationTokenInvalidError
 from tgvio.application.undo import UndoOperationInvalidError
-from tgvio.domain.archive import ArchivePackage, ArchivePackageState
+from tgvio.domain.archive import (
+    ArchiveObject,
+    ArchiveObjectRole,
+    ArchiveObjectState,
+    ArchivePackage,
+    ArchivePackageState,
+)
 from tgvio.domain.control import JobControlState, QueueControlState
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
 from tgvio.domain.job_query import JobListFilter
@@ -42,6 +49,10 @@ class FakeRepository:
         self.controls = {job.id: JobControlState(job_id=job.id) for job in jobs}
         self.accepted_orders = {job.id: index for index, job in enumerate(jobs, start=1)}
         self.queue_control = QueueControlState()
+        self.runtime_health = {
+            "telegram": {"status": "connected", "detail": {}, "updated_at": "fixture"},
+            "runtime": {"status": "alive", "detail": {}, "updated_at": "fixture"},
+        }
 
     async def list_recent(self, *, owner_id, limit):
         return [
@@ -74,8 +85,15 @@ class FakeRepository:
             counts[value.state] = counts.get(value.state, 0) + 1
         return counts
 
+    async def set_runtime_health(self, component, status, *, detail=None):
+        self.runtime_health[component] = {
+            "status": status,
+            "detail": dict(detail or {}),
+            "updated_at": "fixture",
+        }
+
     async def get_runtime_health(self):
-        return {"telegram": {"status": "connected"}, "runtime": {"status": "alive"}}
+        return dict(self.runtime_health)
 
     async def get_job_progress(self, job_id):
         return None
@@ -88,6 +106,15 @@ class FakeRepository:
         return [
             package for package in self.archives.values() if package.job_id in owned
         ][:limit]
+
+    async def count_archive_packages_by_state(self, *, owner_id=None):
+        counts = {}
+        for package in self.archives.values():
+            job = self.jobs.get(package.job_id)
+            if owner_id is not None and (job is None or job.owner_id != owner_id):
+                continue
+            counts[package.state] = counts.get(package.state, 0) + 1
+        return counts
 
     async def get_publish_plan(self, job_id):
         return self.plans.get(job_id)
@@ -1087,6 +1114,123 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(confirm)
         self.assertEqual(operations.consume_calls, 1)
         self.assertEqual(archive.retry_calls, [package.id])
+
+    async def test_archive_retry_token_fails_closed_when_object_set_changes(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        failed_object = ArchiveObject(
+            package_id=f"arc_{completed.id}",
+            object_index=0,
+            item_index=0,
+            role=ArchiveObjectRole.MEDIA,
+            local_path="/fixture/media.bin",
+            remote_relpath="media/001__media.bin",
+            size_bytes=7,
+            sha256="a" * 64,
+            state=ArchiveObjectState.FAILED,
+            retry_count=1,
+        )
+        package = ArchivePackage(
+            id=f"arc_{completed.id}",
+            job_id=completed.id,
+            layout_version="v1",
+            remote_path="archive/x",
+            staging_path=".staging/x",
+            state=ArchivePackageState.FAILED,
+            manifest={},
+            objects=(failed_object,),
+            error_code="archive_execution_failed",
+        )
+        repository = FakeRepository([completed], archives=[package])
+        archive = FakeArchiveOperator()
+        operations = FakeOperationTokens()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            archive_operator=archive,
+            operation_tokens=operations,  # type: ignore[arg-type]
+        )
+
+        request = FakeEvent(data=f"ui:archive-retry:{completed.id}".encode())
+        await ui._on_callback(request)
+        repository.archives[completed.id] = replace(
+            package,
+            objects=(replace(failed_object, retry_count=2),),
+        )
+
+        confirm = FakeEvent(data=b"ui:archive-retry-confirm:op-archive_retry")
+        await ui._on_callback(confirm)
+
+        self.assertEqual(operations.consume_calls, 0)
+        self.assertFalse(archive.retry_calls)
+        self.assertIn("确认操作已过期", confirm.answers[0][0])
+
+    async def test_archive_page_shows_policy_capability_and_object_recovery_counts(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        stored_object = ArchiveObject(
+            package_id=f"arc_{completed.id}",
+            object_index=0,
+            item_index=0,
+            role=ArchiveObjectRole.MEDIA,
+            local_path="/fixture/stored.bin",
+            remote_relpath="media/001__stored.bin",
+            size_bytes=7,
+            sha256="a" * 64,
+            state=ArchiveObjectState.STORED,
+        )
+        failed_object = ArchiveObject(
+            package_id=f"arc_{completed.id}",
+            object_index=1,
+            item_index=1,
+            role=ArchiveObjectRole.MEDIA,
+            local_path="/fixture/failed.bin",
+            remote_relpath="media/002__failed.bin",
+            size_bytes=9,
+            sha256="b" * 64,
+            state=ArchiveObjectState.FAILED,
+            retry_count=1,
+        )
+        package = ArchivePackage(
+            id=f"arc_{completed.id}",
+            job_id=completed.id,
+            layout_version="v1",
+            remote_path="archive/x",
+            staging_path=".staging/x",
+            state=ArchivePackageState.FAILED,
+            manifest={},
+            objects=(stored_object, failed_object),
+            error_code="archive_execution_failed",
+        )
+        repository = FakeRepository([completed], archives=[package])
+        repository.runtime_health["archive_capability"] = {
+            "status": "confirmed",
+            "detail": {
+                "profile_id": "primary",
+                "confirmed_at_epoch": 1789264800,
+                "expires_at_epoch": 4102444800,
+                "commit_mode": "move",
+            },
+            "updated_at": "fixture",
+        }
+        repository.runtime_health["archive_probe"] = {
+            "status": "unreachable",
+            "detail": {
+                "profile_id": "primary",
+                "last_probe_at_epoch": 1789264801,
+                "error_code": "probe_failed",
+            },
+            "updated_at": "fixture",
+        }
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+
+        text = await ui._archive_text(completed.owner_id)
+
+        self.assertIn("Profile：`primary`", text)
+        self.assertIn("策略：**必须归档**", text)
+        self.assertIn("commit `move`", text)
+        self.assertIn("失败（保留上次确认能力）", text)
+        self.assertIn("`1/2` 已存", text)
+        self.assertIn("失败 `1`", text)
 
     async def test_cache_cleanup_button_requires_confirmation(self) -> None:
         cache = FakeCacheOperator()

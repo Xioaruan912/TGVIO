@@ -6,6 +6,10 @@ import logging
 from pathlib import Path
 import time
 
+from tgvio.application.archive_capabilities import (
+    record_archive_probe_failure,
+    record_archive_probe_success,
+)
 from tgvio.application.ports import ArchiveTransport, JobRepository
 from tgvio.domain.archive import (
     ArchiveCapabilities,
@@ -46,7 +50,17 @@ class ArchiveExecutor:
         if current.state == ArchivePackageState.CANCELLED:
             raise ArchiveExecutionError("cancelled archive package cannot execute")
 
-        capabilities = await self._transport.probe()
+        try:
+            capabilities = await self._transport.probe()
+        except Exception as exc:
+            await self._fail_package(
+                current,
+                code="archive_probe_failed",
+                exc=exc,
+            )
+            await self._record_probe_failure(current)
+            raise
+        await self._record_probe_success(current, capabilities)
         log_event(
             self._log,
             logging.INFO,
@@ -471,6 +485,46 @@ class ArchiveExecutor:
             )
             if remote != payload:
                 raise ArchiveExecutionError("archive metadata content verification failed")
+
+    async def _record_probe_success(
+        self,
+        package: ArchivePackage,
+        capabilities: ArchiveCapabilities,
+    ) -> None:
+        try:
+            await record_archive_probe_success(
+                self._repository,
+                profile_id=package.archive_profile_id,
+                capabilities=capabilities,
+            )
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "archive.capability.persist_failed",
+                "Archive capability snapshot could not be persisted",
+                package_id=package.id,
+                job_id=package.job_id,
+                exception_type=type(exc).__name__,
+            )
+
+    async def _record_probe_failure(self, package: ArchivePackage) -> None:
+        try:
+            await record_archive_probe_failure(
+                self._repository,
+                profile_id=package.archive_profile_id,
+                error_code="probe_failed",
+            )
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "archive.probe_status.persist_failed",
+                "Archive probe failure status could not be persisted",
+                package_id=package.id,
+                job_id=package.job_id,
+                exception_type=type(exc).__name__,
+            )
 
     async def _fail_package(
         self,

@@ -36,6 +36,10 @@ class ArchivePlanner:
         self._remote_root = self._normalize_remote_root(remote_root)
         self._profile = profile or ArchiveProfileSnapshot()
 
+    @property
+    def profile(self) -> ArchiveProfileSnapshot:
+        return self._profile
+
     def plan(self, job: Job) -> ArchivePlan:
         candidates = [
             item

@@ -275,7 +275,7 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 
 ### 实施包
 
-2026-09-13 当前进度：A1 characterization + single Archive profile/policy 已随 `r2-07-eadd4c9-20260913T023949Z` + `0006_archive_profile_policy` 正式把生产推进到 v6。历史 package 默认冻结为 `primary / required / v1`，生产 v5→v6 rehearsal、312 项正式 release gate、独立 postflight 与 rollback-check 均通过；schema hash 为 `f4ac2877aa0379c249d703a908e4697ba4495ac183aa2450f7ffaa7897e0a244`。R2-07 继续 `IN PROGRESS`，下一包为 A2 durable retry/status UI。证据见 [R2-07A1_ARCHIVE_PROFILE_RELEASE.md](evidence/R2-07A1_ARCHIVE_PROFILE_RELEASE.md)。
+2026-09-13 当前进度：A1 characterization + single Archive profile/policy 已随 `r2-07-eadd4c9-20260913T023949Z` + `0006_archive_profile_policy` 正式把生产推进到 v6。历史 package 默认冻结为 `primary / required / v1`，生产 v5→v6 rehearsal、312 项正式 release gate、独立 postflight 与 rollback-check 均通过；schema hash 为 `f4ac2877aa0379c249d703a908e4697ba4495ac183aa2450f7ffaa7897e0a244`。A2 durable retry/status UI 候选也已完成：probe failure durable checkpoint、最后成功 capability freshness、精确失败对象 token 绑定与 Archive 手机状态页已通过 fresh-image 318 tests；该包 migration-free，正式生产 cutover/postflight 待完成。R2-07 继续 `IN PROGRESS`。证据见 [R2-07A1_ARCHIVE_PROFILE_RELEASE.md](evidence/R2-07A1_ARCHIVE_PROFILE_RELEASE.md) 与 [R2-07A2_ARCHIVE_RECOVERY_CANDIDATE.md](evidence/R2-07A2_ARCHIVE_RECOVERY_CANDIDATE.md)。
 
 - **R2-07A — Archive Profile / 策略增强（保留）**：抽象单一 Archive endpoint 的非秘密引用与能力状态；支持 `required` / `best-effort` 策略；优化 durable retry，使已确认对象不重复上传；提供远端对象安全删除确认与逐对象审计；Archive 状态页区分计划、传输、提交、失败和待重试。
 - **R2-07B — Destination Profiles（退役）**：2026-09-13 用户明确决定保持固定发布目标，不实现 profile 创建、启停、默认选择或多频道 UI。既有 PublishPlan/effect/reference cache 仍冻结并校验固定 destination identity；未来确有多频道需求时另立设计阶段，不在 R2-07 预埋复杂状态。

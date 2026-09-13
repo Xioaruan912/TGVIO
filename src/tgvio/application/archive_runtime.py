@@ -4,6 +4,10 @@ import asyncio
 import logging
 from pathlib import Path
 
+from tgvio.application.archive_capabilities import (
+    record_archive_probe_failure,
+    record_archive_probe_success,
+)
 from tgvio.application.archive_executor import ArchiveExecutor
 from tgvio.application.archive_planner import ArchivePlanner
 from tgvio.application.ports import ArchiveTransport, JobRepository
@@ -138,6 +142,9 @@ class ArchiveService:
                 raise ArchiveCanonicalCacheUnavailable(
                     f"canonical cache unavailable for archive object {obj.object_index}"
                 )
+        stored_count = sum(1 for obj in package.objects if obj.state.value == "stored")
+        failed_count = sum(1 for obj in package.objects if obj.state.value == "failed")
+        remaining_count = max(0, len(package.objects) - stored_count - failed_count)
         reset = await self._repository.update_archive_package_state(
             package.id,
             ArchivePackageState.STAGING,
@@ -148,6 +155,12 @@ class ArchiveService:
             ),
             detail={
                 "object_count": len(package.objects),
+                "stored_count": stored_count,
+                "failed_count": failed_count,
+                "remaining_count": remaining_count,
+                "archive_profile_id": package.archive_profile_id,
+                "archive_policy": package.archive_policy.value,
+                "archive_policy_version": package.archive_policy_version,
                 "automatic": bool(automatic),
             },
             error_code=None,
@@ -160,12 +173,50 @@ class ArchiveService:
             package_id=package.id,
             job_id=package.job_id,
             object_count=len(package.objects),
+            stored_count=stored_count,
+            failed_count=failed_count,
+            remaining_count=remaining_count,
+            archive_profile_id=package.archive_profile_id,
+            archive_policy=package.archive_policy.value,
             automatic=bool(automatic),
         )
         return reset
 
     async def probe(self) -> ArchiveCapabilities:
-        return await self._transport.probe()
+        profile_id = self._planner.profile.profile_id
+        try:
+            capabilities = await self._transport.probe()
+        except Exception as exc:
+            try:
+                await record_archive_probe_failure(
+                    self._repository,
+                    profile_id=profile_id,
+                    error_code="probe_failed",
+                )
+            except Exception as persist_exc:
+                log_event(
+                    self._log,
+                    logging.WARNING,
+                    "archive.probe_status.persist_failed",
+                    "Archive probe failure status could not be persisted",
+                    exception_type=type(persist_exc).__name__,
+                )
+            raise exc
+        try:
+            await record_archive_probe_success(
+                self._repository,
+                profile_id=profile_id,
+                capabilities=capabilities,
+            )
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "archive.capability.persist_failed",
+                "Archive capability snapshot could not be persisted",
+                exception_type=type(exc).__name__,
+            )
+        return capabilities
 
 
 class ArchiveRuntime:

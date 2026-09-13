@@ -102,6 +102,11 @@ class MemoryArchiveTransport:
         self.files.update(moved)
 
 
+class ProbeFailArchiveTransport(MemoryArchiveTransport):
+    async def probe(self):
+        raise TimeoutError("fixture probe timeout")
+
+
 class ArchiveExecutorTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = TemporaryDirectory()
@@ -140,6 +145,31 @@ class ArchiveExecutorTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.repo.create(job)
         return await self.repo.save_archive_plan(ArchivePlanner().plan(job))
+
+    async def test_probe_failure_is_checkpointed_as_failed_and_durable_probe_status(self) -> None:
+        package = await self._package()
+        transport = ProbeFailArchiveTransport()
+        with self.assertRaises(TimeoutError):
+            await ArchiveExecutor(self.repo, transport).execute(package)
+
+        failed = await self.repo.get_archive_package(package.id)
+        assert failed is not None
+        self.assertEqual(failed.state, ArchivePackageState.FAILED)
+        self.assertEqual(failed.error_code, "archive_probe_failed")
+        health = await self.repo.get_runtime_health()
+        self.assertEqual(health["archive_probe"]["status"], "unreachable")
+        self.assertEqual(health["archive_probe"]["detail"]["profile_id"], "primary")
+        self.assertNotIn("archive_capability", health)
+
+    async def test_successful_execution_persists_capability_snapshot(self) -> None:
+        package = await self._package()
+        transport = MemoryArchiveTransport(move=True)
+        await ArchiveExecutor(self.repo, transport).execute(package)
+        health = await self.repo.get_runtime_health()
+        self.assertEqual(health["archive_capability"]["status"], "confirmed")
+        self.assertEqual(health["archive_capability"]["detail"]["profile_id"], "primary")
+        self.assertEqual(health["archive_capability"]["detail"]["commit_mode"], "move")
+        self.assertEqual(health["archive_probe"]["status"], "reachable")
 
     async def test_marker_commit_writes_final_tree_and_complete_marker_last(self) -> None:
         package = await self._package()

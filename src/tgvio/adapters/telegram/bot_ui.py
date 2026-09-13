@@ -15,6 +15,10 @@ from tgvio.adapters.telegram.user_messages import (
     describe_archive_failure,
     describe_job_failure,
 )
+from tgvio.application.archive_capabilities import (
+    ArchiveCapabilityStatus,
+    get_archive_capability_status,
+)
 from tgvio.application.auto_recovery import (
     archive_failure_waits_for_recovery,
     archive_recovery_state,
@@ -35,7 +39,7 @@ from tgvio.application.undo import (
     UndoUnavailableError,
 )
 from tgvio.config import Settings
-from tgvio.domain.archive import ArchivePackageState
+from tgvio.domain.archive import ArchivePackage, ArchivePackageState
 from tgvio.domain.job import Job, JobState, MediaKind
 from tgvio.domain.job_query import (
     FailurePage,
@@ -948,13 +952,11 @@ class TelethonBotUI:
             return
         issue = describe_archive_failure(package.error_code)
         archive_events = await self._repository.list_archive_events(package.id)
-        payload = {
-            "job_id": job.id,
-            "package_id": package.id,
-            "state": package.state.value,
-            "error_code": package.error_code or "",
-            "event_count": len(archive_events),
-        }
+        payload = self._archive_retry_operation_payload(
+            job,
+            package,
+            event_count=len(archive_events),
+        )
         confirmation_ref = await self._issue_job_operation(
             job,
             owner_id=owner_id,
@@ -963,10 +965,14 @@ class TelethonBotUI:
             payload=payload,
         )
         label = await self._job_label(job)
+        stored = sum(1 for obj in package.objects if obj.state.value == "stored")
+        failed_objects = sum(1 for obj in package.objects if obj.state.value == "failed")
         await self._edit_page(
             event,
             (
                 f"**确认重传归档 · {label}**\n\n"
+                f"Profile：`{package.archive_profile_id}` · 策略：**{self._archive_policy_label(package.archive_policy.value)}**\n"
+                f"已确认：`{stored}/{len(package.objects)}` · 失败对象：`{failed_objects}`\n\n"
                 f"{issue.explanation}\n\n"
                 "已在远端确认的文件会被复用，不会重新发布 Telegram 消息。"
             ),
@@ -1005,13 +1011,11 @@ class TelethonBotUI:
             await self._safe_answer(event, "归档状态已变化，请重新打开任务", alert=True)
             return
         archive_events = await self._repository.list_archive_events(package.id)
-        payload = {
-            "job_id": job.id,
-            "package_id": package.id,
-            "state": package.state.value,
-            "error_code": package.error_code or "",
-            "event_count": len(archive_events),
-        }
+        payload = self._archive_retry_operation_payload(
+            job,
+            package,
+            event_count=len(archive_events),
+        )
         if not await self._consume_job_operation(
             owner_id,
             reference,
@@ -1528,11 +1532,20 @@ class TelethonBotUI:
 
     async def _archive_text(self, owner_id: int) -> str:
         enabled = bool(getattr(self._settings, "archive_enabled", False))
+        profile_id = str(getattr(self._settings, "archive_profile_id", "primary"))
+        policy = str(getattr(self._settings, "archive_policy", "required"))
+        policy_label = self._archive_policy_label(policy)
+        capability = await get_archive_capability_status(
+            self._repository,
+            profile_id=profile_id,
+        )
         lines = [
             "**WebDAV 归档**",
             "",
             f"状态：`{'开启' if enabled else '关闭'}`",
+            f"Profile：`{profile_id}` · 策略：**{policy_label}**",
             f"远端根目录：`{getattr(self._settings, 'archive_remote_root', 'TGVIO')}`",
+            self._archive_capability_summary(capability),
         ]
         counts = await self._repository.count_archive_packages_by_state(owner_id=owner_id)
         if counts:
@@ -1548,21 +1561,27 @@ class TelethonBotUI:
             lines.extend(["", "**最近归档**"])
             for package in recent:
                 stored = sum(1 for obj in package.objects if obj.state.value == "stored")
+                failed_objects = sum(1 for obj in package.objects if obj.state.value == "failed")
+                remaining = max(0, len(package.objects) - stored - failed_objects)
                 total_bytes = sum(obj.size_bytes for obj in package.objects)
                 job = await self._repository.get(package.job_id)
                 label = await self._job_label(job) if job is not None else "任务"
+                package_policy = self._archive_policy_label(package.archive_policy.value)
                 lines.append(
-                    f"• {label} · {ARCHIVE_STATE_LABELS[package.state]} · "
-                    f"`{stored}/{len(package.objects)}` 文件 · {self._human_bytes(total_bytes)}"
+                    f"• {label} · {ARCHIVE_STATE_LABELS[package.state]} · {package_policy} · "
+                    f"`{stored}/{len(package.objects)}` 已存 · "
+                    f"待处理 `{remaining}` · 失败 `{failed_objects}` · {self._human_bytes(total_bytes)}"
                 )
                 if package.state == ArchivePackageState.FAILED:
                     issue = describe_archive_failure(package.error_code)
                     if job is not None and archive_failure_waits_for_recovery(job, package):
                         recovery = archive_recovery_state(job)
                         if recovery.get("status") == "scheduled":
+                            retry_at = self._epoch_local_text(recovery.get("next_retry_epoch"))
+                            suffix = f" · 计划 {retry_at}" if retry_at else ""
                             lines.append(
                                 f"  ↳ 系统将自动续传第 {recovery.get('next_attempt', '?')}/"
-                                f"{recovery.get('max_attempts', '?')} 次，无需操作。"
+                                f"{recovery.get('max_attempts', '?')} 次{suffix}，无需操作。"
                             )
                         else:
                             lines.append("  ↳ 系统正在自动判断续传方式，无需操作。")
@@ -2069,6 +2088,7 @@ class TelethonBotUI:
                     "",
                     "**WebDAV 归档**",
                     f"状态：{ARCHIVE_STATE_LABELS[archive.state]} · 文件：`{stored}/{len(archive.objects)}` · `{self._human_bytes(sum(obj.size_bytes for obj in archive.objects))}`",
+                    f"Profile：`{archive.archive_profile_id}` · 策略：**{self._archive_policy_label(archive.archive_policy.value)}** · policy v`{archive.archive_policy_version}`",
                 ]
             )
             if archive.state == ArchivePackageState.FAILED:
@@ -2076,10 +2096,12 @@ class TelethonBotUI:
                 recovery = archive_recovery_state(job)
                 status = str(recovery.get("status", ""))
                 if status == "scheduled":
+                    retry_at = self._epoch_local_text(recovery.get("next_retry_epoch"))
+                    retry_text = f" · 计划 `{retry_at}`" if retry_at else ""
                     lines.extend(
                         [
                             issue.explanation,
-                            f"系统将自动进行第 `{recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')}` 次续传，无需操作。",
+                            f"系统将自动进行第 `{recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')}` 次续传{retry_text}，无需操作。",
                         ]
                     )
                 elif status in {"exhausted", "abandoned"}:
@@ -2197,6 +2219,64 @@ class TelethonBotUI:
         if snapshot.archive.state == ArchivePackageState.CANCELLED:
             return "⛔"
         return "⏳"
+
+    @staticmethod
+    def _archive_policy_label(policy: str) -> str:
+        return "尽力归档" if policy == "best_effort" else "必须归档"
+
+    @staticmethod
+    def _archive_retry_operation_payload(
+        job: Job,
+        package: ArchivePackage,
+        *,
+        event_count: int,
+    ) -> dict[str, object]:
+        objects = sorted(package.objects, key=lambda value: value.object_index)
+        return {
+            "job_id": job.id,
+            "package_id": package.id,
+            "state": package.state.value,
+            "error_code": package.error_code or "",
+            "event_count": int(event_count),
+            "archive_profile_id": package.archive_profile_id,
+            "archive_policy": package.archive_policy.value,
+            "archive_policy_version": package.archive_policy_version,
+            "object_states": [
+                {
+                    "index": obj.object_index,
+                    "state": obj.state.value,
+                    "retry_count": obj.retry_count,
+                }
+                for obj in objects
+            ],
+            "failed_object_indexes": [
+                obj.object_index for obj in objects if obj.state.value == "failed"
+            ],
+        }
+
+    @classmethod
+    def _archive_capability_summary(cls, status: ArchiveCapabilityStatus) -> str:
+        if status.freshness == "unknown":
+            base = "能力：`未确认`"
+        else:
+            freshness = "已确认" if status.freshness == "fresh" else "已过期"
+            commit_mode = status.commit_mode or "unknown"
+            confirmed = cls._epoch_local_text(status.confirmed_at_epoch)
+            time_text = f" · {confirmed}" if confirmed else ""
+            base = f"能力：`{freshness}` · commit `{commit_mode}`{time_text}"
+        if status.last_probe_status == "unreachable":
+            return base + " · 最近检测：`失败（保留上次确认能力）`"
+        if status.last_probe_status == "reachable":
+            return base + " · 最近检测：`可达`"
+        return base + " · 最近检测：`未知`"
+
+    @staticmethod
+    def _epoch_local_text(value: object) -> str | None:
+        if isinstance(value, bool) or not isinstance(value, int):
+            return None
+        return datetime.fromtimestamp(value, tz=timezone.utc).astimezone(
+            ZoneInfo("Asia/Shanghai")
+        ).strftime("%m-%d %H:%M")
 
     def _progress_text(self, progress: JobProgress) -> str:
         phase_labels = {
