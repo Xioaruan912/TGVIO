@@ -139,6 +139,9 @@ class Settings:
     archive_profile_id: str
     archive_policy: str
     archive_poll_seconds: int
+    archive_response_timeout_seconds: int
+    archive_verify_attempts: int
+    archive_verify_interval_seconds: int
     vps_host: str
     vps_port: int
     vps_user: str
@@ -328,6 +331,15 @@ class Settings:
         archive_poll_seconds = _int("TGVIO_ARCHIVE_POLL_SECONDS", 10)
         if not 1 <= archive_poll_seconds <= 300:
             raise ConfigError("TGVIO_ARCHIVE_POLL_SECONDS out of range")
+        archive_response_timeout_seconds = _int("TGVIO_ARCHIVE_RESPONSE_TIMEOUT_SECONDS", 3600)
+        if not 60 <= archive_response_timeout_seconds <= 86400:
+            raise ConfigError("TGVIO_ARCHIVE_RESPONSE_TIMEOUT_SECONDS out of range")
+        archive_verify_attempts = _int("TGVIO_ARCHIVE_VERIFY_ATTEMPTS", 120)
+        if not 1 <= archive_verify_attempts <= 1000:
+            raise ConfigError("TGVIO_ARCHIVE_VERIFY_ATTEMPTS out of range")
+        archive_verify_interval_seconds = _int("TGVIO_ARCHIVE_VERIFY_INTERVAL_SECONDS", 20)
+        if not 1 <= archive_verify_interval_seconds <= 600:
+            raise ConfigError("TGVIO_ARCHIVE_VERIFY_INTERVAL_SECONDS out of range")
         if archive_enabled:
             parsed = urllib.parse.urlsplit(archive_url)
             if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -411,6 +423,9 @@ class Settings:
             archive_profile_id=archive_profile_id,
             archive_policy=archive_policy,
             archive_poll_seconds=archive_poll_seconds,
+            archive_response_timeout_seconds=archive_response_timeout_seconds,
+            archive_verify_attempts=archive_verify_attempts,
+            archive_verify_interval_seconds=archive_verify_interval_seconds,
             vps_host=os.getenv("VPS_HOST", "199.47.242.40").strip(),
             vps_port=_int("VPS_PORT", 22),
             vps_user=os.getenv("VPS_USER", "root").strip() or "root",
@@ -470,6 +485,9 @@ class Settings:
             "archive_remote_root_configured": bool(self.archive_remote_root),
             "archive_profile_id": self.archive_profile_id,
             "archive_policy": self.archive_policy,
+            "archive_response_timeout_seconds": self.archive_response_timeout_seconds,
+            "archive_verify_attempts": self.archive_verify_attempts,
+            "archive_verify_interval_seconds": self.archive_verify_interval_seconds,
             "vps_host_configured": bool(self.vps_host),
             "vps_ssh_key_configured": bool(str(self.vps_ssh_key)),
             "github_repo_configured": bool(self.github_repo),

@@ -301,6 +301,7 @@ class ArchiveExecutor(ArchiveCommitMixin, ArchiveProbeMixin):
                 error_message=None,
                 detail={"object_index": obj.object_index},
             )
+        store_started = time.monotonic()
         try:
             await self._verify_local_object(local, obj)
             receipt = await self._transport.put_file(
@@ -328,6 +329,9 @@ class ArchiveExecutor(ArchiveCommitMixin, ArchiveProbeMixin):
                 object_index=obj.object_index,
                 error_code="archive_object_transfer_failed",
                 exception_type=type(exc).__name__,
+                http_status=getattr(exc, "status", None),
+                bytes_total=obj.size_bytes,
+                duration_ms=int((time.monotonic() - store_started) * 1000),
             )
             raise
         await self._repository.update_archive_object_state(

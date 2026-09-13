@@ -152,7 +152,9 @@ async def run(*, check_only: bool = False) -> None:
                 settings.archive_user,
                 settings.archive_password,
                 capability_root=settings.archive_remote_root,
-                response_timeout=600.0,
+                response_timeout=float(settings.archive_response_timeout_seconds),
+                verify_attempts=settings.archive_verify_attempts,
+                verify_interval_seconds=float(settings.archive_verify_interval_seconds),
             )
             archive_service = ArchiveService(
                 repository,

@@ -464,3 +464,30 @@ class AlertPreviewSettingsTests(unittest.TestCase):
         self.assertFalse(settings.alerts_enabled)
         self.assertFalse(settings.collection_preview_enabled)
         self.assertEqual(settings.alert_user_id, 99)
+
+
+class ArchiveTimeoutSettingsTests(unittest.TestCase):
+    def test_archive_timeouts_default_to_slow_backend_tolerant(self) -> None:
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.archive_response_timeout_seconds, 3600)
+        self.assertEqual(settings.archive_verify_attempts, 120)
+        self.assertEqual(settings.archive_verify_interval_seconds, 20)
+        summary = settings.safe_summary()
+        self.assertEqual(summary["archive_response_timeout_seconds"], 3600)
+
+    def test_archive_timeouts_validate_range(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_ARCHIVE_RESPONSE_TIMEOUT_SECONDS": "10"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "ARCHIVE_RESPONSE_TIMEOUT_SECONDS"):
+                Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_ARCHIVE_VERIFY_ATTEMPTS": "0"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "ARCHIVE_VERIFY_ATTEMPTS"):
+                Settings.from_env()
