@@ -2,18 +2,18 @@
 
 > 审计时间：2026-09-13（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
-> 阶段说明：R2-03A/B、R2-05、R2-06 已交付；R2-04 A-E 已正式发布但 E 仍待 1～3 个真实大文件 performance acceptance。R2-07A1/A2 已正式发布，R2-07 继续进行。当前生产事实以 `r2-07-2a07470-20260913T025845Z` / schema v6 为准。
+> 阶段说明：R2-03A/B、R2-05、R2-06 已交付；R2-04 A-E 已正式发布但 E 仍待 1～3 个真实大文件 performance acceptance。R2-07A1/A2/A3 已正式发布，R2-07 继续进行且只剩 D Diagnostic Snapshot / 静态代理脱敏诊断。当前生产事实以 `r2-07a3-98e2aaa-20260913T072332Z` / schema v7 为准。
 
 ## 1. 源码权威已经对齐
 
 | 范围 | 当前事实 | 结论 |
 |---|---|---|
-| Git runtime 基线 | `2a074702a668b02f042406bd6fa586f9c39b98f7` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object |
+| Git runtime 基线 | `98e2aaac4598315b23e8224d4e6c888db155aef0` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object；A3 业务实现位于其父提交 `6c3d9a93cc0b45aca13d243c247386fbbb5e93cd`，随后只追加 release-ID 兼容修复 |
 | 退役旧树 | annotated tag `legacy-telegram-video-forwarder-750b3c1` 指向 `750b3c1629a0d360df740337671b54b8749e2ce2` | 旧架构可追溯，但不再留在当前可启动树 |
 | HostDZire | shared root `/root/TGVIO`；current link `/root/TGVIO-current`；Compose service/container `tgvio` | 版本化 release 已接管，运行卷仍留在 shared root |
-| 生产 release | `r2-07-2a07470-20260913T025845Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `2a074702a668b02f042406bd6fa586f9c39b98f7` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
-| 生产 image | `sha256:0012ae4f0df48c91491f31b6e4d883be39e081ba23ec3209965933c88c62634f` | 正式 runtime image；匹配 A2 source/image 与既有 v6 DB rollback point 均可验证 |
-| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `7790da5b41e6f3fa9e88398b839e9a8f65fcd9abea692608f4651287b89ecd4f` | R2-07A2 Archive recovery/status runtime 三方身份一致 |
+| 生产 release | `r2-07a3-98e2aaa-20260913T072332Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `98e2aaac4598315b23e8224d4e6c888db155aef0` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
+| 生产 image | `sha256:c432d3aaf8314214a37a321c5e58a43a21e0fe728f89cb1b994d70d40aad7eee` | 正式 A3 runtime image；匹配 source manifest、v7 DB 与 rollback point 均可验证 |
+| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `37cac7ac97c6ad1bbfc2403e0f3719ecc33b0b2016de2afd51da49a3fd1421a0` | R2-07A3 exact remote Archive delete runtime 三方身份一致 |
 
 R2-00 记录的 `1da1d3d0…` 没有留下生成算法，已由 R2-01 的明确、可重复算法取代。原始 82 文件快照、逐文件 SHA-256、导入边界和发布记录见 [R2-01 evidence](evidence/R2-01_BASELINE.md)。
 
@@ -23,10 +23,10 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.1 运行状态
 
-- Release：`r2-07-2a07470-20260913T025845Z`。
-- Source：`/root/TGVIO-releases/r2-07-2a07470-20260913T025845Z/source`，由 `/root/TGVIO-current` 原子指向。
-- 容器 ID：`e0de64fd9690be984f4f90e6336ac1d03accc1c237fcb29da4c7928e4d86da04`。
-- Started-at：`2026-09-13T02:55:42.168068782Z`。
+- Release：`r2-07a3-98e2aaa-20260913T072332Z`。
+- Source：`/root/TGVIO-releases/r2-07a3-98e2aaa-20260913T072332Z/source`，由 `/root/TGVIO-current` 原子指向。
+- 容器 ID：`6dcde8c7b230010f3b403404f3cde6290b913350d2a5f5aef804642cbc496714`。
+- Started-at：`2026-09-13T07:20:30.693640511Z`。
 - 状态：`running`，Docker health=`healthy`，当前容器 restart count=0。
 - 同一 Compose project/service 下运行实例数为 1。
 - 启动日志有 bootstrap 与 Telegram-ready 标记，无 traceback/fatal/unhandled/exception marker。
@@ -38,25 +38,25 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 生产数据库仍为 `/root/TGVIO/data/state.sqlite3`（容器内 `/app/data/state.sqlite3`）。
 
-- `quick_check=ok`，最新独立 postflight 报告数据库大小 974,848 bytes。
+- `quick_check=ok`，最新独立 postflight 报告数据库大小 1,019,904 bytes。
 - 24 个 Job；非终态 Job blocker 为 0。v3→v4 候选 rehearsal 对当时 23 Job / 42 PublishStep / 20 ArchivePackage / 179 ArchiveObject / 23 progress 保持不变；正式 cutover 前第 24 个 Job 已进入终态且所有 business blocker 归零。
 - Publish / Archive / progress / phase-claim / partial-uncertain blocker 在最新独立 postflight 中全部为 0；singleton `telegram-runtime` lease active=1 且不构成 blocker。
-- `PRAGMA user_version=6`，`schema_migrations` 已连续登记 `0001_baseline`～`0006_archive_profile_policy`。
-- 规范化整库 schema SQL SHA-256 为 `f4ac2877aa0379c249d703a908e4697ba4495ac183aa2450f7ffaa7897e0a244`。
-- R2-07A1 v6 cutover 在真实生产 SQLite Backup API 回滚点副本上完成 v5→v6 rehearsal；历史 ArchivePackage 默认保持 `primary / required / v1`，24 Job 业务事实不变。A2 为 migration-free runtime cutover，v6 hash 保持完全一致。`rollback_hostdzire.sh --check r2-07-2a07470-20260913T025845Z` 通过。
-- 新增 `operation_tokens`、`publish_effect_revocations`、`publish_effect_revocation_events` 当前均为 0；历史 230 条 publish effect（42 commit marker、37 channel、151 discussion）完整保留。
+- `PRAGMA user_version=7`，`schema_migrations` 已连续登记 `0001_baseline`～`0007_archive_exact_delete`，只读核验 ledger 精确为 `[1,2,3,4,5,6,7]`。
+- 规范化整库 schema SQL SHA-256 为 `9cf2d4008d4fb888f5affdffea1ccd413b51968d14d234e07d0769cfe60c6e90`。
+- R2-07A3 cutover 在生产 SQLite Backup API 回滚点副本上完成 v6→v7 rehearsal，再执行受控单实例迁移；24 Job 与既有 Archive 业务事实保持，`rollback_hostdzire.sh --check r2-07a3-98e2aaa-20260913T072332Z` 通过。
+- A3 新增 `archive_deletions`、`archive_deletion_targets`、`archive_deletion_events`，部署后只读聚合核验三表均为 0；没有对现存用户 Archive 做 destructive smoke，也没有人为生成删除记录。
 
 ### 2.3 代码、测试与镜像
 
-- 当前生产 R2-07A2 runtime：68 个 Python 源文件；schema 仍为 v6，A2 复用 `runtime_health` 保存非秘密 capability freshness/probe 状态，migrations 目录零改动。
+- 当前生产 R2-07A3 runtime：69 个 Python 源文件；schema 为 v7，新增 exact Archive deletion service、WebDAV exact-file DELETE 安全边界与 `0007_archive_exact_delete` durable audit/checkpoint schema。
 - 下载/分析保持有限并发，Telegram publish 由 durable accepted-order dispatcher 串行执行，prepare/publish/archive 都由 generation-fenced claim + heartbeat + TTL watchdog 保护。
 - 当前主要热点转为 `adapters/telegram/bot_ui.py`、Telegram publish 与 WebDAV adapter；repository 大文件热点已在 R2-03B 消除。
-- 当前生产的 domain/application AST 依赖边界与 68-file architecture gate 通过。
-- 当前生产 R2-07A2 正式 Docker test target 在 `--network none` 下通过 318 tests（31.409 秒），覆盖既有 scheduler/migration/upload/intake/release/undo 合同，以及 Archive profile/policy freeze、probe failure durable checkpoint、capability freshness preservation、精确 retry token object-set 绑定与状态 UI；没有启动第二个 Telegram Bot。
+- 当前生产的 domain/application AST 依赖边界与 69-file architecture gate 通过。
+- 当前生产 R2-07A3 正式 clean/pushed Docker test target 在 `--network none` 下通过 339 tests（38.201 秒），覆盖既有 scheduler/migration/upload/intake/release/undo 合同，以及 Archive owner/second-confirmation、replay/stale、partial resume、marker-first/manifest-last、deleted monotonicity、WebDAV SHA-unreadable zero-DELETE 与 v6→v7 rehearsal；没有启动第二个 Telegram Bot。
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 依赖已由 hashed lock 固定；多阶段 Dockerfile 的 test/runtime targets 共用固定 base digest，runtime 内精确安装 7 个锁定 Python 包。
-- 正式 runtime image `sha256:0012ae4f0df48c91491f31b6e4d883be39e081ba23ec3209965933c88c62634f` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
+- 正式 runtime image `sha256:c432d3aaf8314214a37a321c5e58a43a21e0fe728f89cb1b994d70d40aad7eee` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
 
 ## 3. 当前 TGVIO 已证明的能力
 
@@ -68,7 +68,7 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - ffprobe 分析、faststart/remux、黑帧缩略图、可播放视频分段、二进制分卷。
 - 持久 PublishPlan、step/effect journal、partial/uncertain fail-closed 恢复。
 - cover/direct 计划、评论区根解析、spoiler、caption/footer 和媒体引用复用。
-- Archive V2 计划、能力探测、PUT 校验、MOVE/commit marker、恢复和显式重试。
+- Archive V2 计划、能力探测、PUT 校验、MOVE/commit marker、恢复和显式重试；R2-07A3 进一步上线只按 durable receipt 枚举的远端精确删除：owner-scoped 二次确认、marker-first/manifest-last、逐目标 checkpoint/audit、partial resume 与 WebDAV fail-closed 校验。
 - Job cancel/retry、durable automatic recovery、Job hold/resume、global queue pause/resume、持久进度、缓存清理、stats/health/diag 和脱敏结构化日志；安全瞬时失败有界重试，耗尽/不可重试错误不阻塞后续 FIFO，partial/uncertain 保持人工隔离。
 - Persistent 手机键盘、SQL-paged 任务列表、状态筛选、独立 failure center、`任务 #N` + 时间/媒体内容摘要、`#N` 高级命令解析、任务直达、按钮化安全重试/取消/归档重传/缓存清理/连接检测，以及普通用户友好的失败解释。
 - 危险按钮使用 durable owner/revision/payload/TTL/single-use token 二次确认；发布撤销只依据 durable Telegram effects，逐 peer/message 删除并审计，部分失败可只继续剩余项。
