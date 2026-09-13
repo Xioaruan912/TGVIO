@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import hashlib
 import http.client
 from pathlib import Path
 import re
@@ -13,6 +14,7 @@ import uuid
 
 from tgvio.domain.archive import (
     ArchiveCapabilities,
+    ArchiveDeleteReceipt,
     ArchiveRemoteStat,
     ArchiveStoreReceipt,
 )
@@ -22,6 +24,10 @@ class WebDavArchiveError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None) -> None:
         super().__init__(message)
         self.status = status
+
+
+class WebDavArchiveSafetyError(WebDavArchiveError):
+    """The exact remote target no longer matches its durable receipt."""
 
 
 class WebDavArchiveTransport:
@@ -102,6 +108,22 @@ class WebDavArchiveTransport:
 
     async def move_collection(self, source_path: str, destination_path: str) -> None:
         await asyncio.to_thread(self._move_collection_sync, source_path, destination_path)
+
+    async def delete_file(
+        self,
+        remote_path: str,
+        *,
+        expected_size: int,
+        expected_etag: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> ArchiveDeleteReceipt:
+        return await asyncio.to_thread(
+            self._delete_file_sync,
+            remote_path,
+            int(expected_size),
+            expected_etag,
+            expected_sha256,
+        )
 
     def _probe_sync(self) -> ArchiveCapabilities:
         probe_path = (
@@ -375,6 +397,95 @@ class WebDavArchiveTransport:
         )
         if status not in {201, 204}:
             raise WebDavArchiveError("WebDAV collection MOVE failed", status=status)
+
+    def _delete_file_sync(
+        self,
+        remote_path: str,
+        expected_size: int,
+        expected_etag: str | None,
+        expected_sha256: str | None,
+    ) -> ArchiveDeleteReceipt:
+        if not self._relative_parts(remote_path):
+            raise WebDavArchiveSafetyError("refusing to delete the WebDAV root")
+        if expected_size < 0:
+            raise ValueError("expected archive deletion size must be >= 0")
+        current = self._stat_sync(remote_path)
+        if not current.exists:
+            return ArchiveDeleteReceipt(
+                remote_path=remote_path,
+                verification_method="already_absent",
+                already_missing=True,
+            )
+        if current.is_collection:
+            raise WebDavArchiveSafetyError("refusing to delete a WebDAV collection")
+        if current.size_bytes != expected_size:
+            raise WebDavArchiveSafetyError("remote archive deletion target size changed")
+        if expected_etag is not None and current.etag != expected_etag:
+            raise WebDavArchiveSafetyError("remote archive deletion target ETag changed")
+        if expected_sha256:
+            payload = self._get_bytes_sync(
+                remote_path,
+                max_bytes=max(1, expected_size),
+            )
+            if payload is None:
+                raise WebDavArchiveSafetyError(
+                    "remote archive deletion target content could not be verified"
+                )
+            if hashlib.sha256(payload).hexdigest() != expected_sha256:
+                raise WebDavArchiveSafetyError("remote archive deletion target content changed")
+
+        headers = {"If-Match": current.etag} if current.etag else None
+        try:
+            status, _headers, _body = self._request_sync(
+                "DELETE",
+                self._absolute_path(remote_path),
+                headers=headers,
+            )
+        except Exception as exc:
+            if self._wait_for_absent_sync(remote_path):
+                return ArchiveDeleteReceipt(
+                    remote_path=remote_path,
+                    verification_method="absent_after_lost_response",
+                )
+            if isinstance(exc, WebDavArchiveError):
+                raise
+            raise WebDavArchiveError("WebDAV file DELETE result was not verifiable") from exc
+
+        if status not in {200, 202, 204, 404}:
+            if self._wait_for_absent_sync(remote_path):
+                return ArchiveDeleteReceipt(
+                    remote_path=remote_path,
+                    verification_method="absent_after_error_response",
+                )
+            raise WebDavArchiveError("WebDAV file DELETE failed", status=status)
+        if not self._wait_for_absent_sync(remote_path):
+            raise WebDavArchiveError(
+                "WebDAV file DELETE could not be verified",
+                status=status,
+            )
+        return ArchiveDeleteReceipt(
+            remote_path=remote_path,
+            verification_method="absent_after_delete",
+            already_missing=status == 404,
+        )
+
+    def _wait_for_absent_sync(self, remote_path: str) -> bool:
+        observed = False
+        last_error: Exception | None = None
+        for attempt in range(self._verify_attempts):
+            try:
+                current = self._stat_sync(remote_path)
+            except Exception as exc:
+                last_error = exc
+            else:
+                observed = True
+                if not current.exists:
+                    return True
+            if attempt + 1 < self._verify_attempts and self._verify_interval_seconds > 0:
+                time.sleep(self._verify_interval_seconds)
+        if not observed and last_error is not None:
+            raise WebDavArchiveError("WebDAV file DELETE verification was unavailable") from last_error
+        return False
 
     def _stream_put_sync(self, local: Path, absolute_path: str, size: int) -> int:
         conn = self._connect()

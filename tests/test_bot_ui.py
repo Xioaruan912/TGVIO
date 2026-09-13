@@ -12,6 +12,7 @@ from tgvio.adapters.telegram.bot_ui import (
     NAV_BUTTONS,
     TelethonBotUI,
 )
+from tgvio.application.archive_deletion import ArchiveDeletionOperationInvalidError
 from tgvio.application.job_control import RetryDecision
 from tgvio.application.operation_tokens import OperationTokenInvalidError
 from tgvio.application.undo import UndoOperationInvalidError
@@ -365,6 +366,66 @@ class FakeUndoService:
         )
 
 
+class FakeArchiveDeletionService:
+    def __init__(self, *, partial: bool = False) -> None:
+        self.prepare_calls = 0
+        self.confirm_calls = 0
+        self.partial = partial
+        self.completed = False
+        self.invalid_tokens: set[str] = set()
+        self.status_value = None
+
+    async def status(self, package):
+        if self.completed:
+            return SimpleNamespace(complete=True, remaining_count=0)
+        return self.status_value
+
+    async def prepare(self, job, *, owner_id):
+        self.prepare_calls += 1
+        status = SimpleNamespace(
+            complete=False,
+            remaining_count=2,
+            remaining_objects=1,
+            commit_boundary_invalidated=False,
+        )
+        self.status_value = status
+        return SimpleNamespace(
+            operation=SimpleNamespace(token="archive-delete-token"),
+            status=status,
+        )
+
+    async def confirm(self, *, owner_id, token):
+        self.confirm_calls += 1
+        if token in self.invalid_tokens or token != "archive-delete-token":
+            raise ArchiveDeletionOperationInvalidError("expired or stale")
+        self.invalid_tokens.add(token)
+        if self.partial:
+            self.status_value = SimpleNamespace(
+                complete=False,
+                remaining_count=1,
+                remaining_objects=0,
+                commit_boundary_invalidated=True,
+            )
+            return SimpleNamespace(
+                job_id="a" * 32,
+                complete=False,
+                deleted_now=1,
+                deleted_total=1,
+                total_targets=2,
+                remaining_targets=1,
+            )
+        self.completed = True
+        self.status_value = SimpleNamespace(complete=True, remaining_count=0)
+        return SimpleNamespace(
+            job_id="a" * 32,
+            complete=True,
+            deleted_now=2,
+            deleted_total=2,
+            total_targets=2,
+            remaining_targets=0,
+        )
+
+
 class FakeCacheOperator:
     def __init__(self) -> None:
         self.cleanup_calls = 0
@@ -506,6 +567,8 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             "archive-retry-confirm",
             "undo",
             "undo-confirm",
+            "archive-delete",
+            "archive-delete-confirm",
         ):
             payload = ui._callback_data(action, "f" * 32)
             self.assertLessEqual(len(payload), 64)
@@ -609,6 +672,166 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         event = FakeEvent(data=b"ui:undo-confirm:broken-token")
         await ui._on_callback(event)
         self.assertIn("撤销暂未完成", event.edits[0][0])
+
+    async def test_archive_delete_committed_terminal_job_requires_confirmation(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        package = ArchivePackage(
+            id=f"arc_{completed.id}",
+            job_id=completed.id,
+            layout_version="v1",
+            remote_path="archive/x",
+            staging_path=".staging/x",
+            state=ArchivePackageState.COMMITTED,
+            manifest={},
+            objects=(),
+        )
+        repository = FakeRepository([completed], archives=[package])
+        deletion = FakeArchiveDeletionService()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            archive_deletion_service=deletion,  # type: ignore[arg-type]
+        )
+
+        buttons = await ui._job_buttons(completed)
+        payloads = [
+            button.data
+            for row in buttons
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(f"ui:archive-delete:{completed.id}".encode(), payloads)
+
+        request = FakeEvent(data=f"ui:archive-delete:{completed.id}".encode())
+        await ui._on_callback(request)
+
+        self.assertEqual(deletion.prepare_calls, 1)
+        self.assertEqual(deletion.confirm_calls, 0)
+        self.assertIn("确认删除远端归档", request.edits[0][0])
+        confirm_payloads = [
+            button.data
+            for row in request.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(b"ui:archive-delete-confirm:archive-delete-token", confirm_payloads)
+
+        confirm = FakeEvent(data=b"ui:archive-delete-confirm:archive-delete-token")
+        await ui._on_callback(confirm)
+        self.assertEqual(deletion.confirm_calls, 1)
+        self.assertIn("远端归档已删除", confirm.edits[0][0])
+
+        final_buttons = await ui._job_buttons(completed)
+        final_payloads = [
+            button.data
+            for row in final_buttons
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertNotIn(f"ui:archive-delete:{completed.id}".encode(), final_payloads)
+
+    async def test_archive_delete_cross_owner_is_rejected_before_prepare(self) -> None:
+        completed = job(owner_id=7, state=JobState.SUCCEEDED, error_code=None)
+        package = ArchivePackage(
+            id=f"arc_{completed.id}",
+            job_id=completed.id,
+            layout_version="v1",
+            remote_path="archive/x",
+            staging_path=".staging/x",
+            state=ArchivePackageState.COMMITTED,
+            manifest={},
+            objects=(),
+        )
+        deletion = FakeArchiveDeletionService()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            FakeRepository([completed], archives=[package]),
+            archive_deletion_service=deletion,  # type: ignore[arg-type]
+        )
+        event = FakeEvent(sender_id=42, data=f"ui:archive-delete:{completed.id}".encode())
+
+        await ui._on_callback(event)
+
+        self.assertEqual(deletion.prepare_calls, 0)
+        self.assertEqual(deletion.confirm_calls, 0)
+        self.assertIn("任务不存在或无权限", event.answers[0][0])
+
+    async def test_archive_delete_replay_and_stale_confirmation_fail_closed(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        package = ArchivePackage(
+            id=f"arc_{completed.id}",
+            job_id=completed.id,
+            layout_version="v1",
+            remote_path="archive/x",
+            staging_path=".staging/x",
+            state=ArchivePackageState.COMMITTED,
+            manifest={},
+            objects=(),
+        )
+        repository = FakeRepository([completed], archives=[package])
+        deletion = FakeArchiveDeletionService()
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            archive_deletion_service=deletion,  # type: ignore[arg-type]
+        )
+
+        stale = FakeEvent(data=b"ui:archive-delete-confirm:stale-token")
+        await ui._on_callback(stale)
+        self.assertEqual(deletion.confirm_calls, 1)
+        self.assertIn("删除确认已失效", stale.edits[0][0])
+
+        first = FakeEvent(data=f"ui:archive-delete:{completed.id}".encode())
+        await ui._on_callback(first)
+        confirm = FakeEvent(data=b"ui:archive-delete-confirm:archive-delete-token")
+        await ui._on_callback(confirm)
+        replay = FakeEvent(data=b"ui:archive-delete-confirm:archive-delete-token")
+        await ui._on_callback(replay)
+
+        self.assertEqual(deletion.confirm_calls, 3)
+        self.assertIn("删除确认已失效", replay.edits[0][0])
+
+    async def test_partial_archive_delete_offers_continue_and_only_hides_after_complete(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        package = ArchivePackage(
+            id=f"arc_{completed.id}",
+            job_id=completed.id,
+            layout_version="v1",
+            remote_path="archive/x",
+            staging_path=".staging/x",
+            state=ArchivePackageState.COMMITTED,
+            manifest={},
+            objects=(),
+        )
+        repository = FakeRepository([completed], archives=[package])
+        deletion = FakeArchiveDeletionService(partial=True)
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            repository,
+            archive_deletion_service=deletion,  # type: ignore[arg-type]
+        )
+
+        prepare = FakeEvent(data=f"ui:archive-delete:{completed.id}".encode())
+        await ui._on_callback(prepare)
+        confirm = FakeEvent(data=b"ui:archive-delete-confirm:archive-delete-token")
+        await ui._on_callback(confirm)
+
+        self.assertIn("仅完成部分清理", confirm.edits[0][0])
+        payloads = [
+            button.data
+            for row in confirm.edits[0][1]["buttons"]
+            for button in row
+            if getattr(button, "data", None)
+        ]
+        self.assertIn(f"ui:archive-delete:{completed.id}".encode(), payloads)
+
+        buttons = await ui._job_buttons(completed)
+        labels = [button.text for row in buttons for button in row]
+        self.assertIn("🧹 继续清理远端归档", labels)
 
     async def test_jobs_page_uses_direct_buttons_and_friendly_failure_text(self) -> None:
         failed = job()

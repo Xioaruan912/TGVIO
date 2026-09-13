@@ -5,6 +5,11 @@ from typing import Callable, Protocol
 
 from tgvio.domain.archive import (
     ArchiveCapabilities,
+    ArchiveDeleteReceipt,
+    ArchiveDeletion,
+    ArchiveDeletionEvent,
+    ArchiveDeletionTarget,
+    ArchiveDeletionTargetState,
     ArchiveEvent,
     ArchiveObject,
     ArchiveObjectState,
@@ -334,6 +339,47 @@ class JobRepository(Protocol):
 
     async def list_archive_events(self, package_id: str) -> list[ArchiveEvent]: ...
 
+    async def ensure_archive_deletion(
+        self,
+        package_id: str,
+        *,
+        target_set_hash: str,
+        targets: tuple[ArchiveDeletionTarget, ...],
+    ) -> ArchiveDeletion: ...
+
+    async def get_archive_deletion(self, package_id: str) -> ArchiveDeletion | None: ...
+
+    async def begin_archive_deletion(
+        self,
+        package_id: str,
+        *,
+        expected_revision: int,
+    ) -> ArchiveDeletion: ...
+
+    async def begin_archive_deletion_target(
+        self,
+        package_id: str,
+        target_id: int,
+    ) -> ArchiveDeletionTarget: ...
+
+    async def checkpoint_archive_deletion_target(
+        self,
+        package_id: str,
+        target_id: int,
+        *,
+        state: ArchiveDeletionTargetState,
+        error_code: str | None = None,
+        verification_method: str | None = None,
+        already_missing: bool = False,
+    ) -> ArchiveDeletion: ...
+
+    async def finalize_archive_deletion(self, package_id: str) -> ArchiveDeletion: ...
+
+    async def list_archive_deletion_events(
+        self,
+        package_id: str,
+    ) -> list[ArchiveDeletionEvent]: ...
+
     async def update_archive_package_state(
         self,
         package_id: str,
@@ -475,6 +521,15 @@ class ArchiveTransport(Protocol):
     async def get_bytes(self, remote_path: str, *, max_bytes: int) -> bytes | None: ...
 
     async def move_collection(self, source_path: str, destination_path: str) -> None: ...
+
+    async def delete_file(
+        self,
+        remote_path: str,
+        *,
+        expected_size: int,
+        expected_etag: str | None = None,
+        expected_sha256: str | None = None,
+    ) -> ArchiveDeleteReceipt: ...
 
 
 class ArchiveEnqueuer(Protocol):

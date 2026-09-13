@@ -19,6 +19,11 @@ from tgvio.application.archive_capabilities import (
     ArchiveCapabilityStatus,
     get_archive_capability_status,
 )
+from tgvio.application.archive_deletion import (
+    ArchiveDeletionOperationInvalidError,
+    ArchiveDeletionService,
+    ArchiveDeletionUnavailableError,
+)
 from tgvio.application.auto_recovery import (
     archive_failure_waits_for_recovery,
     archive_recovery_state,
@@ -39,7 +44,11 @@ from tgvio.application.undo import (
     UndoUnavailableError,
 )
 from tgvio.config import Settings
-from tgvio.domain.archive import ArchivePackage, ArchivePackageState
+from tgvio.domain.archive import (
+    ArchiveDeletionStatus,
+    ArchivePackage,
+    ArchivePackageState,
+)
 from tgvio.domain.job import Job, JobState, MediaKind
 from tgvio.domain.job_query import (
     FailurePage,
@@ -136,6 +145,7 @@ class TelethonBotUI:
         control: JobControlService | None = None,
         schedule_job: Callable | None = None,
         archive_operator: ArchiveOperator | None = None,
+        archive_deletion_service: ArchiveDeletionService | None = None,
         cache_operator: CacheOperator | None = None,
         job_diagnostics: JobDiagnosticService | None = None,
         undo_service: UndoService | None = None,
@@ -148,6 +158,7 @@ class TelethonBotUI:
         self._control = control
         self._schedule_job = schedule_job
         self._archive_operator = archive_operator
+        self._archive_deletion_service = archive_deletion_service
         self._cache_operator = cache_operator
         self._job_diagnostics = job_diagnostics or JobDiagnosticService(repository)
         self._undo_service = undo_service
@@ -537,6 +548,8 @@ class TelethonBotUI:
         job_actions = (
             ("ui:undo-confirm:", self._run_undo_callback),
             ("ui:undo:", self._confirm_undo_callback),
+            ("ui:archive-delete-confirm:", self._run_archive_delete_callback),
+            ("ui:archive-delete:", self._confirm_archive_delete_callback),
             ("ui:archive-retry-confirm:", self._run_archive_retry_callback),
             ("ui:archive-retry:", self._confirm_archive_retry_callback),
             ("ui:retry-confirm:", self._run_retry_callback),
@@ -936,6 +949,148 @@ class TelethonBotUI:
             ]
         await self._edit_page(event, text, buttons)
 
+    async def _confirm_archive_delete_callback(
+        self,
+        event,
+        owner_id: int,
+        job_id: str,
+    ) -> None:
+        if self._archive_deletion_service is None:
+            await self._safe_answer(event, "远端归档删除服务未启用", alert=True)
+            return
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "任务不存在或无权限", alert=True)
+            return
+        try:
+            confirmation = await self._archive_deletion_service.prepare(
+                job,
+                owner_id=owner_id,
+            )
+        except ArchiveDeletionUnavailableError:
+            await self._safe_answer(event, "当前没有可删除的已提交归档", alert=True)
+            return
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.ERROR,
+                "telegram.archive.delete_prepare_failed",
+                "Unable to prepare exact Archive deletion",
+                job_id=job.id,
+                exception_type=type(exc).__name__,
+                exc_info=True,
+            )
+            await self._safe_answer(event, "归档记录校验未通过，未执行任何删除", alert=True)
+            return
+
+        status = confirmation.status
+        label = await self._job_label(job)
+        boundary_text = (
+            "完整标记已失效；确认后只继续剩余文件。"
+            if status.commit_boundary_invalidated
+            else "系统会先删除完整标记，再处理内容文件。"
+        )
+        await self._edit_page(
+            event,
+            (
+                f"**⚠️ 确认删除远端归档 · {label}**\n\n"
+                f"精确目标：`{status.remaining_count}` 个文件\n"
+                f"其中媒体：`{status.remaining_objects}` 个\n"
+                f"{boundary_text}\n\n"
+                "只会逐个删除这个 ArchivePackage 已记录的文件，绝不会删除目录、父路径或其它任务。\n"
+                "Telegram 消息、任务历史和本地审计不会被删除。确认令牌 5 分钟内有效且只能使用一次。"
+            ),
+            [
+                [
+                    Button.inline(
+                        "⚠️ 确认删除远端文件",
+                        self._callback_data(
+                            "archive-delete-confirm",
+                            confirmation.operation.token,
+                        ),
+                    ),
+                    Button.inline("返回", self._callback_data("job", job.id)),
+                ]
+            ],
+        )
+
+    async def _run_archive_delete_callback(
+        self,
+        event,
+        owner_id: int,
+        token: str,
+    ) -> None:
+        if self._archive_deletion_service is None:
+            await self._safe_answer(event, "远端归档删除服务未启用", alert=True)
+            return
+        await self._safe_answer(event, "正在按记录逐个清理远端文件…")
+        try:
+            result = await self._archive_deletion_service.confirm(
+                owner_id=owner_id,
+                token=token,
+            )
+        except ArchiveDeletionOperationInvalidError:
+            await self._edit_page(
+                event,
+                (
+                    "**删除确认已失效**\n\n"
+                    "归档状态、目标集合或确认令牌已经变化。请重新打开任务详情；系统没有扩大删除范围。"
+                ),
+                self._nav_buttons(),
+            )
+            return
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.ERROR,
+                "telegram.archive.delete_execution_failed",
+                "Exact Archive deletion did not complete",
+                exception_type=type(exc).__name__,
+                exc_info=True,
+            )
+            await self._edit_page(
+                event,
+                (
+                    "**远端归档清理暂未完成**\n\n"
+                    "每个已尝试文件都有持久记录；已确认删除的文件不会重复处理。\n\n"
+                    "请重新打开任务详情，只会继续剩余的精确目标。Telegram 发布不受影响。"
+                ),
+                self._nav_buttons(),
+            )
+            return
+
+        job = await self._owned_job(owner_id, result.job_id)
+        label = await self._job_label(job) if job is not None else "任务"
+        if result.complete:
+            text = (
+                f"**✅ 远端归档已删除 · {label}**\n\n"
+                f"已按记录删除 `{result.deleted_total}/{result.total_targets}` 个精确文件。\n"
+                "Telegram 消息、任务历史和删除审计仍完整保留；没有执行目录递归删除。"
+            )
+            buttons = (
+                await self._job_buttons(job)
+                if job is not None
+                else self._nav_buttons()
+            )
+        else:
+            text = (
+                f"**⚠️ 远端归档仅完成部分清理 · {label}**\n\n"
+                f"本次删除：`{result.deleted_now}` 个\n"
+                f"累计删除：`{result.deleted_total}/{result.total_targets}` 个\n"
+                f"仍需处理：`{result.remaining_targets}` 个\n\n"
+                "已成功项不会重复删除；再次确认时只会处理剩余的精确文件。"
+            )
+            buttons = [
+                [
+                    Button.inline(
+                        "🧹 继续清理剩余文件",
+                        self._callback_data("archive-delete", result.job_id),
+                    )
+                ],
+                [Button.inline("🔎 任务详情", self._callback_data("job", result.job_id))],
+            ]
+        await self._edit_page(event, text, buttons)
+
     async def _confirm_archive_retry_callback(
         self,
         event,
@@ -1225,6 +1380,26 @@ class TelethonBotUI:
                 "telegram.undo.status_failed",
                 "Unable to read durable publish undo status",
                 job_id=job.id,
+                exception_type=type(exc).__name__,
+            )
+            return None
+
+    async def _safe_archive_deletion_status(
+        self,
+        package: ArchivePackage,
+    ) -> ArchiveDeletionStatus | None:
+        if self._archive_deletion_service is None:
+            return None
+        try:
+            return await self._archive_deletion_service.status(package)
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "telegram.archive.delete_status_failed",
+                "Unable to read durable Archive deletion status",
+                package_id=package.id,
+                job_id=package.job_id,
                 exception_type=type(exc).__name__,
             )
             return None
@@ -1572,6 +1747,19 @@ class TelethonBotUI:
                     f"`{stored}/{len(package.objects)}` 已存 · "
                     f"待处理 `{remaining}` · 失败 `{failed_objects}` · {self._human_bytes(total_bytes)}"
                 )
+                deletion = await self._safe_archive_deletion_status(package)
+                if deletion is not None:
+                    if deletion.complete:
+                        lines.append("  ↳ 远端归档文件已删除；Telegram 与本地审计仍保留。")
+                    elif deletion.commit_boundary_invalidated:
+                        lines.append(
+                            f"  ↳ 完整标记已失效，已删 `{deletion.deleted_targets}/"
+                            f"{deletion.total_targets}`，剩余 `{deletion.remaining_count}`。"
+                        )
+                    else:
+                        lines.append(
+                            f"  ↳ 远端删除待确认，精确目标 `{deletion.remaining_count}` 个。"
+                        )
                 if package.state == ArchivePackageState.FAILED:
                     issue = describe_archive_failure(package.error_code)
                     if job is not None and archive_failure_waits_for_recovery(job, package):
@@ -1962,6 +2150,30 @@ class TelethonBotUI:
                         )
                     ]
                 )
+            deletable = []
+            if self._archive_deletion_service is not None:
+                for package in recent:
+                    if package.state != ArchivePackageState.COMMITTED:
+                        continue
+                    job = await self._repository.get(package.job_id)
+                    if job is None or not job.terminal:
+                        continue
+                    deletion = await self._safe_archive_deletion_status(package)
+                    if deletion is None or not deletion.complete:
+                        deletable.append((package, job, deletion))
+                    if len(deletable) >= 3:
+                        break
+            for package, job, deletion in deletable:
+                label = await self._job_label(job)
+                action = "🧹 继续清理" if deletion is not None else "🗑 删除归档"
+                rows.append(
+                    [
+                        Button.inline(
+                            f"{action} {label}",
+                            self._callback_data("archive-delete", package.job_id),
+                        )
+                    ]
+                )
             rows.append([Button.inline("🔌 检测连接", b"ui:archive-probe")])
         rows.extend(self._nav_buttons())
         return text, rows
@@ -1999,6 +2211,25 @@ class TelethonBotUI:
                     text += (
                         f"\n\n↩️ **发布撤销** · 已删除 `{undo_status.deleted_messages}/"
                         f"{undo_status.total_messages}`，仍需处理 `{undo_status.remaining_messages}` 条。"
+                    )
+        package = await self._repository.get_archive_package_for_job(job.id)
+        if package is not None:
+            deletion = await self._safe_archive_deletion_status(package)
+            if deletion is not None:
+                if deletion.complete:
+                    text += (
+                        "\n\n🗑 **远端归档** · 已按记录删除全部文件；"
+                        "Telegram 与删除审计仍保留。"
+                    )
+                elif deletion.commit_boundary_invalidated:
+                    text += (
+                        f"\n\n🧹 **远端归档清理** · 已删 `{deletion.deleted_targets}/"
+                        f"{deletion.total_targets}`，剩余 `{deletion.remaining_count}` 个精确文件。"
+                    )
+                else:
+                    text += (
+                        f"\n\n⚠️ **远端归档删除待确认** · 精确目标 "
+                        f"`{deletion.remaining_count}` 个，尚未开始删除内容。"
                     )
         control = await self._repository.get_job_control(job.id)
         if control.hold_requested and not job.terminal:
@@ -2955,6 +3186,27 @@ class TelethonBotUI:
                     )
                 ]
             )
+
+        if (
+            package is not None
+            and package.state == ArchivePackageState.COMMITTED
+            and job.terminal
+            and self._archive_deletion_service is not None
+        ):
+            deletion = await self._safe_archive_deletion_status(package)
+            if deletion is None or not deletion.complete:
+                rows.append(
+                    [
+                        Button.inline(
+                            (
+                                "🧹 继续清理远端归档"
+                                if deletion is not None
+                                else "🗑 删除远端归档"
+                            ),
+                            self._callback_data("archive-delete", job.id),
+                        )
+                    ]
+                )
 
         if self._undo_service is not None and job.terminal:
             undo_status = await self._safe_undo_status(job)

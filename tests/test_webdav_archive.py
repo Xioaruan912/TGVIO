@@ -2,9 +2,14 @@ from __future__ import annotations
 
 from pathlib import Path
 from tempfile import TemporaryDirectory
+import hashlib
 import unittest
 
-from tgvio.adapters.webdav_archive import WebDavArchiveError, WebDavArchiveTransport
+from tgvio.adapters.webdav_archive import (
+    WebDavArchiveError,
+    WebDavArchiveSafetyError,
+    WebDavArchiveTransport,
+)
 from tgvio.domain.archive import ArchiveRemoteStat
 
 
@@ -177,3 +182,216 @@ class WebDavArchiveTransportTests(unittest.TestCase):
             self.assertEqual(receipt.size_bytes, 7)
             self.assertEqual(receipt.etag, '"late"')
 
+    def test_exact_file_delete_verifies_receipt_and_uses_if_match(self) -> None:
+        class DeleteTransport(ProbeFixtureTransport):
+            def __init__(self) -> None:
+                super().__init__(allow="DELETE, GET, PUT, PROPFIND, MKCOL")
+                self.present = True
+                self.calls = []
+                self._verify_attempts = 1
+                self._verify_interval_seconds = 0
+
+            def _stat_sync(self, remote_path):
+                if not self.present:
+                    return ArchiveRemoteStat(exists=False)
+                return ArchiveRemoteStat(
+                    exists=True,
+                    size_bytes=7,
+                    etag='"file-etag"',
+                    is_collection=False,
+                )
+
+            def _get_bytes_sync(self, remote_path, max_bytes):
+                return b"payload"
+
+            def _request_sync(self, method, absolute_path, *, body=None, headers=None):
+                self.calls.append((method, absolute_path, headers))
+                if method != "DELETE":
+                    raise AssertionError(f"unexpected method {method}")
+                self.present = False
+                return 204, {}, b""
+
+        transport = DeleteTransport()
+        receipt = transport._delete_file_sync(
+            "archive/package/media/file.bin",
+            7,
+            '"file-etag"',
+            hashlib.sha256(b"payload").hexdigest(),
+        )
+        self.assertEqual(receipt.remote_path, "archive/package/media/file.bin")
+        self.assertEqual(receipt.verification_method, "absent_after_delete")
+        self.assertFalse(receipt.already_missing)
+        self.assertEqual(
+            transport.calls,
+            [
+                (
+                    "DELETE",
+                    "/root/archive/package/media/file.bin",
+                    {"If-Match": '"file-etag"'},
+                )
+            ],
+        )
+
+    def test_missing_exact_file_is_idempotent_without_sending_delete(self) -> None:
+        class MissingTransport(ProbeFixtureTransport):
+            def __init__(self) -> None:
+                super().__init__(allow="DELETE, PROPFIND")
+                self.calls = []
+
+            def _stat_sync(self, remote_path):
+                return ArchiveRemoteStat(exists=False)
+
+            def _request_sync(self, method, absolute_path, *, body=None, headers=None):
+                self.calls.append((method, absolute_path))
+                raise AssertionError("DELETE must not be sent for an already absent file")
+
+        transport = MissingTransport()
+        receipt = transport._delete_file_sync("archive/package/manifest.json", 12, None, None)
+        self.assertTrue(receipt.already_missing)
+        self.assertEqual(receipt.verification_method, "already_absent")
+        self.assertEqual(transport.calls, [])
+
+    def test_delete_refuses_collection_size_etag_and_content_conflicts(self) -> None:
+        class ConflictTransport(ProbeFixtureTransport):
+            def __init__(self) -> None:
+                super().__init__(allow="DELETE, GET, PROPFIND")
+                self.stat_value = ArchiveRemoteStat(
+                    exists=True,
+                    size_bytes=7,
+                    etag='"etag"',
+                )
+                self.payload = b"payload"
+                self.delete_calls = 0
+
+            def _stat_sync(self, remote_path):
+                return self.stat_value
+
+            def _get_bytes_sync(self, remote_path, max_bytes):
+                return self.payload
+
+            def _request_sync(self, method, absolute_path, *, body=None, headers=None):
+                self.delete_calls += 1
+                raise AssertionError("unsafe target must never reach DELETE")
+
+        transport = ConflictTransport()
+        transport.stat_value = ArchiveRemoteStat(
+            exists=True,
+            size_bytes=0,
+            etag='"directory"',
+            is_collection=True,
+        )
+        with self.assertRaisesRegex(WebDavArchiveSafetyError, "collection"):
+            transport._delete_file_sync("archive/package/media", 0, None, None)
+
+        transport.stat_value = ArchiveRemoteStat(exists=True, size_bytes=8, etag='"etag"')
+        with self.assertRaisesRegex(WebDavArchiveSafetyError, "size"):
+            transport._delete_file_sync("archive/package/file.bin", 7, None, None)
+
+        transport.stat_value = ArchiveRemoteStat(exists=True, size_bytes=7, etag='"changed"')
+        with self.assertRaisesRegex(WebDavArchiveSafetyError, "ETag"):
+            transport._delete_file_sync(
+                "archive/package/file.bin",
+                7,
+                '"expected"',
+                None,
+            )
+
+        transport.stat_value = ArchiveRemoteStat(exists=True, size_bytes=7, etag='"etag"')
+        transport.payload = b"changed"
+        with self.assertRaisesRegex(WebDavArchiveSafetyError, "content"):
+            transport._delete_file_sync(
+                "archive/package/manifest.json",
+                7,
+                None,
+                hashlib.sha256(b"payload").hexdigest(),
+            )
+        self.assertEqual(transport.delete_calls, 0)
+
+    def test_expected_sha256_unreadable_never_sends_delete(self) -> None:
+        class UnreadableTransport(ProbeFixtureTransport):
+            def __init__(self) -> None:
+                super().__init__(allow="DELETE, GET, PROPFIND")
+                self.delete_calls = 0
+
+            def _stat_sync(self, remote_path):
+                return ArchiveRemoteStat(
+                    exists=True,
+                    size_bytes=7,
+                    etag='"etag"',
+                    is_collection=False,
+                )
+
+            def _get_bytes_sync(self, remote_path, max_bytes):
+                return None
+
+            def _request_sync(self, method, absolute_path, *, body=None, headers=None):
+                if method == "DELETE":
+                    self.delete_calls += 1
+                raise AssertionError("DELETE must not be sent when content cannot be verified")
+
+        transport = UnreadableTransport()
+        with self.assertRaisesRegex(WebDavArchiveSafetyError, "could not be verified"):
+            transport._delete_file_sync(
+                "archive/package/manifest.json",
+                7,
+                '"etag"',
+                hashlib.sha256(b"payload").hexdigest(),
+            )
+        self.assertEqual(transport.delete_calls, 0)
+
+    def test_lost_delete_response_is_success_only_after_absence_is_confirmed(self) -> None:
+        class LostDeleteTransport(ProbeFixtureTransport):
+            def __init__(self, *, removed: bool) -> None:
+                super().__init__(allow="DELETE, PROPFIND")
+                self.present = True
+                self.removed = removed
+                self._verify_attempts = 1
+                self._verify_interval_seconds = 0
+
+            def _stat_sync(self, remote_path):
+                return ArchiveRemoteStat(
+                    exists=self.present,
+                    size_bytes=7 if self.present else None,
+                    etag='"etag"' if self.present else None,
+                )
+
+            def _request_sync(self, method, absolute_path, *, body=None, headers=None):
+                if self.removed:
+                    self.present = False
+                raise TimeoutError("fixture response lost")
+
+        receipt = LostDeleteTransport(removed=True)._delete_file_sync(
+            "archive/package/file.bin",
+            7,
+            None,
+            None,
+        )
+        self.assertEqual(receipt.verification_method, "absent_after_lost_response")
+        with self.assertRaises(WebDavArchiveError):
+            LostDeleteTransport(removed=False)._delete_file_sync(
+                "archive/package/file.bin",
+                7,
+                None,
+                None,
+            )
+
+    def test_delete_rejects_root_traversal_and_unverified_success(self) -> None:
+        class StickyTransport(ProbeFixtureTransport):
+            def __init__(self) -> None:
+                super().__init__(allow="DELETE, PROPFIND")
+                self._verify_attempts = 1
+                self._verify_interval_seconds = 0
+
+            def _stat_sync(self, remote_path):
+                return ArchiveRemoteStat(exists=True, size_bytes=7, etag=None)
+
+            def _request_sync(self, method, absolute_path, *, body=None, headers=None):
+                return 204, {}, b""
+
+        transport = StickyTransport()
+        for unsafe in ("", "/", "../file", "archive/%2e%2e/file"):
+            with self.subTest(path=unsafe):
+                with self.assertRaises((ValueError, WebDavArchiveSafetyError)):
+                    transport._delete_file_sync(unsafe, 7, None, None)
+        with self.assertRaisesRegex(WebDavArchiveError, "verified"):
+            transport._delete_file_sync("archive/package/file.bin", 7, None, None)

@@ -16,6 +16,7 @@ from tgvio.adapters.telegram.publish_transport import TelethonPublishTransport
 from tgvio.adapters.telegram.telethon_gateway import TelethonGateway
 from tgvio.adapters.url_downloader import UrlMediaDownloader
 from tgvio.adapters.webdav_archive import WebDavArchiveTransport
+from tgvio.application.archive_deletion import ArchiveDeletionService
 from tgvio.application.archive_planner import ArchivePlanner
 from tgvio.application.archive_runtime import ArchiveRuntime, ArchiveService
 from tgvio.application.auto_recovery import (
@@ -112,7 +113,15 @@ async def run(*, check_only: bool = False) -> None:
         )
         await cache_runtime.start()
         archive_runtime = None
+        archive_transport = None
         if settings.archive_enabled:
+            archive_transport = WebDavArchiveTransport(
+                settings.archive_url,
+                settings.archive_user,
+                settings.archive_password,
+                capability_root=settings.archive_remote_root,
+                response_timeout=600.0,
+            )
             archive_service = ArchiveService(
                 repository,
                 ArchivePlanner(
@@ -122,13 +131,7 @@ async def run(*, check_only: bool = False) -> None:
                         policy=ArchivePolicy(settings.archive_policy),
                     ),
                 ),
-                WebDavArchiveTransport(
-                    settings.archive_url,
-                    settings.archive_user,
-                    settings.archive_password,
-                    capability_root=settings.archive_remote_root,
-                    response_timeout=600.0,
-                ),
+                archive_transport,
             )
             archive_runtime = ArchiveRuntime(
                 archive_service,
@@ -227,6 +230,15 @@ async def run(*, check_only: bool = False) -> None:
             poll_seconds=settings.auto_retry_poll_seconds,
         )
         operation_tokens = OperationTokenService(repository)
+        archive_deletion_service = (
+            ArchiveDeletionService(
+                repository,
+                archive_transport,
+                operation_tokens=operation_tokens,
+            )
+            if archive_transport is not None
+            else None
+        )
         undo_service = UndoService(
             repository,
             TelethonPublishedMessageRemover(gateway.client),
@@ -242,6 +254,7 @@ async def run(*, check_only: bool = False) -> None:
             control=control,
             schedule_job=intake_runtime.schedule,
             archive_operator=archive_runtime,
+            archive_deletion_service=archive_deletion_service,
             cache_operator=cache_runtime,
             job_diagnostics=JobDiagnosticService(
                 repository,

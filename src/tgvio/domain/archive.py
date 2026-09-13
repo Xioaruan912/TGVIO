@@ -34,6 +34,25 @@ class ArchivePolicy(StrEnum):
     BEST_EFFORT = "best_effort"
 
 
+class ArchiveDeletionState(StrEnum):
+    PREPARED = "prepared"
+    DELETING = "deleting"
+    PARTIAL_FAILED = "partial_failed"
+    DELETED = "deleted"
+
+
+class ArchiveDeletionTargetState(StrEnum):
+    PENDING = "pending"
+    FAILED = "failed"
+    DELETED = "deleted"
+
+
+class ArchiveDeletionTargetKind(StrEnum):
+    COMMIT_MARKER = "commit_marker"
+    OBJECT = "object"
+    MANIFEST = "manifest"
+
+
 ARCHIVE_POLICY_VERSION = 1
 
 
@@ -144,6 +163,13 @@ class ArchiveStoreReceipt:
 
 
 @dataclass(frozen=True, slots=True)
+class ArchiveDeleteReceipt:
+    remote_path: str
+    verification_method: str
+    already_missing: bool = False
+
+
+@dataclass(frozen=True, slots=True)
 class ArchiveObject:
     package_id: str
     object_index: int
@@ -211,6 +237,110 @@ class ArchiveEvent:
     object_id: int | None = None
     detail: dict[str, Any] = field(default_factory=dict)
     created_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDeletionTarget:
+    package_id: str
+    target_index: int
+    kind: ArchiveDeletionTargetKind
+    remote_path: str
+    expected_size_bytes: int
+    archive_object_id: int | None = None
+    expected_sha256: str | None = None
+    expected_etag: str | None = None
+    state: ArchiveDeletionTargetState = ArchiveDeletionTargetState.PENDING
+    id: int | None = None
+    attempt_count: int = 0
+    error_code: str | None = None
+    verification_method: str | None = None
+    already_missing: bool = False
+    deleted_at: str | None = None
+    updated_at: str | None = None
+
+    def __post_init__(self) -> None:
+        if self.target_index < 0:
+            raise ValueError("archive deletion target index must be >= 0")
+        if self.expected_size_bytes < 0:
+            raise ValueError("archive deletion target size must be >= 0")
+        if not self.remote_path or self.remote_path.startswith("/"):
+            raise ValueError("archive deletion target path must be relative")
+        if self.kind == ArchiveDeletionTargetKind.OBJECT and self.archive_object_id is None:
+            raise ValueError("archive object deletion target requires an object id")
+        if self.kind != ArchiveDeletionTargetKind.OBJECT and self.archive_object_id is not None:
+            raise ValueError("archive metadata deletion target cannot reference an object id")
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDeletion:
+    package_id: str
+    state: ArchiveDeletionState
+    revision: int
+    target_set_hash: str
+    targets: tuple[ArchiveDeletionTarget, ...]
+    created_at: str | None = None
+    updated_at: str | None = None
+    deleted_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDeletionEvent:
+    id: int | None
+    package_id: str
+    event_type: str
+    target_id: int | None = None
+    error_code: str | None = None
+    created_at: str | None = None
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDeletionStatus:
+    package_id: str
+    state: ArchiveDeletionState
+    total_targets: int
+    deleted_targets: int
+    failed_targets: int
+    remaining_targets: tuple[ArchiveDeletionTarget, ...]
+    expected_revision: int
+    payload_hash: str
+    commit_boundary_invalidated: bool = False
+
+    @property
+    def remaining_count(self) -> int:
+        return len(self.remaining_targets)
+
+    @property
+    def complete(self) -> bool:
+        return self.state == ArchiveDeletionState.DELETED and not self.remaining_targets
+
+    @property
+    def remaining_objects(self) -> int:
+        return sum(
+            1
+            for target in self.remaining_targets
+            if target.kind == ArchiveDeletionTargetKind.OBJECT
+        )
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDeletionConfirmation:
+    operation: Any
+    status: ArchiveDeletionStatus
+
+
+@dataclass(frozen=True, slots=True)
+class ArchiveDeletionResult:
+    job_id: str
+    package_id: str
+    total_targets: int
+    deleted_now: int
+    deleted_total: int
+    failed_now: int
+    remaining_targets: int
+
+    @property
+    def complete(self) -> bool:
+        return self.total_targets > 0 and self.remaining_targets == 0
 
 
 def archive_json_bytes(payload: dict[str, Any]) -> bytes:
