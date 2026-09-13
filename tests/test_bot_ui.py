@@ -24,6 +24,19 @@ from tgvio.domain.archive import (
     ArchivePackageState,
 )
 from tgvio.domain.control import JobControlState, QueueControlState
+from tgvio.domain.diagnostics import (
+    ArchiveDiagnostic,
+    DiagnosticAvailability,
+    DiagnosticSnapshot,
+    FeatureDiagnostics,
+    LeaseFreshness,
+    MigrationVerification,
+    RuntimeLeaseDiagnostic,
+    SchedulerDiagnostic,
+    SchemaDiagnostic,
+    StaticProxyDiagnostic,
+    StaticProxyState,
+)
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
 from tgvio.domain.job_query import JobListFilter
 from tgvio.domain.publish import PublishPlan, PublishStep, PublishStepKind, PublishTarget
@@ -450,6 +463,62 @@ class FakeCacheOperator:
         )
 
 
+class FakeDiagnosticService:
+    def __init__(self) -> None:
+        self.calls = 0
+
+    async def snapshot(self):
+        self.calls += 1
+        return DiagnosticSnapshot(
+            release_id="r2-07d-abcdef0-20260913T090000Z",
+            app_version="0.1.0-dev",
+            commit="a" * 40,
+            source_manifest="b" * 64,
+            aggregate_status=DiagnosticAvailability.READY,
+            schema=SchemaDiagnostic(
+                user_version=7,
+                latest_version=7,
+                ledger_contiguous=True,
+                verification=MigrationVerification.VERIFIED,
+            ),
+            runtime_lease=RuntimeLeaseDiagnostic(
+                unique=True,
+                generation=4,
+                freshness=LeaseFreshness.FRESH,
+            ),
+            scheduler=SchedulerDiagnostic(
+                paused=False,
+                active=2,
+                held=1,
+                ready=1,
+                blocked=0,
+            ),
+            archive=ArchiveDiagnostic(
+                planned=1,
+                transferring=2,
+                committed=20,
+                failed=1,
+                retry_wait=1,
+                capability_freshness="fresh",
+            ),
+            features=FeatureDiagnostics(
+                run_bot=True,
+                publish_enabled=True,
+                url_enabled=True,
+                url_private_network_policy="block",
+                archive_enabled=True,
+                archive_policy="required",
+                collections_enabled=True,
+                auto_retry_enabled=True,
+                live_fixture_enabled=False,
+            ),
+            static_proxy=StaticProxyDiagnostic(
+                state=StaticProxyState.REACHABLE,
+                checked_at_epoch=1_789_000_000,
+            ),
+        )
+
+
 def settings(**overrides):
     values = {
         "allowed_users": (42,),
@@ -572,6 +641,40 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         ):
             payload = ui._callback_data(action, "f" * 32)
             self.assertLessEqual(len(payload), 64)
+
+    async def test_diag_uses_fixed_snapshot_without_cache_or_runtime_probe(self) -> None:
+        class ForbiddenCache:
+            async def stats(self):
+                raise AssertionError("/diag must not scan cache")
+
+        repository = FakeRepository()
+
+        async def forbidden_runtime_health():
+            raise AssertionError("UI must use the diagnostic snapshot service")
+
+        repository.get_runtime_health = forbidden_runtime_health  # type: ignore[method-assign]
+        diagnostic = FakeDiagnosticService()
+        client = FakeClient()
+        ui = TelethonBotUI(
+            client,
+            settings(),
+            repository,
+            cache_operator=ForbiddenCache(),  # type: ignore[arg-type]
+            diagnostic_service=diagnostic,  # type: ignore[arg-type]
+        )
+
+        text = await ui._diag_text()
+
+        self.assertEqual(diagnostic.calls, 1)
+        self.assertEqual(client.requests, [])
+        self.assertLess(len(text), 4096)
+        self.assertIn("Diagnostic Snapshot", text)
+        self.assertIn("Schema：`v7` / latest `v7`", text)
+        self.assertIn("Runtime lease：unique `yes`", text)
+        self.assertIn("Static proxy", text)
+        self.assertIn("State：`reachable`", text)
+        for forbidden in ("token", "password", "/root/", "http://", "@channel"):
+            self.assertNotIn(forbidden, text.lower())
 
     async def test_undo_requires_confirmation_before_service_confirm(self) -> None:
         completed = job(state=JobState.SUCCEEDED, error_code=None)

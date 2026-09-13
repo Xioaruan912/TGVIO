@@ -1,6 +1,6 @@
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import os
 from pathlib import Path
 import urllib.parse
@@ -102,6 +102,8 @@ class Settings:
     auto_retry_poll_seconds: int
     url_enabled: bool
     url_private_network_policy: str
+    static_proxy_url: str = field(repr=False)
+    static_proxy_probe_timeout_seconds: int
     archive_enabled: bool
     archive_url: str
     archive_remote_root: str
@@ -208,6 +210,27 @@ class Settings:
         ).strip().lower() or "block"
         if url_private_network_policy not in {"allow", "warn", "block"}:
             raise ConfigError("TGVIO_URL_PRIVATE_NETWORK_POLICY must be allow/warn/block")
+        static_proxy_url = os.getenv("TGVIO_STATIC_PROXY_URL", "").strip()
+        static_proxy_probe_timeout_seconds = _int(
+            "TGVIO_STATIC_PROXY_PROBE_TIMEOUT_SECONDS",
+            2,
+        )
+        if not 1 <= static_proxy_probe_timeout_seconds <= 10:
+            raise ConfigError("TGVIO_STATIC_PROXY_PROBE_TIMEOUT_SECONDS out of range")
+        if static_proxy_url:
+            try:
+                parsed_proxy = urllib.parse.urlsplit(static_proxy_url)
+                proxy_port = parsed_proxy.port
+            except ValueError as exc:
+                raise ConfigError("TGVIO_STATIC_PROXY_URL is malformed") from exc
+            if parsed_proxy.scheme.lower() not in {"http", "https", "socks5", "socks5h"}:
+                raise ConfigError("TGVIO_STATIC_PROXY_URL uses an unsupported scheme")
+            if not parsed_proxy.hostname or parsed_proxy.query or parsed_proxy.fragment:
+                raise ConfigError("TGVIO_STATIC_PROXY_URL must be an absolute proxy URL")
+            if parsed_proxy.path not in {"", "/"}:
+                raise ConfigError("TGVIO_STATIC_PROXY_URL must not contain a path")
+            if proxy_port is not None and not 1 <= proxy_port <= 65535:
+                raise ConfigError("TGVIO_STATIC_PROXY_URL has an invalid port")
         archive_enabled = _bool("TGVIO_ARCHIVE_ENABLED", False)
         archive_url = os.getenv("TGVIO_ARCHIVE_WEBDAV_URL", "").strip()
         archive_user = os.getenv("TGVIO_ARCHIVE_WEBDAV_USER", "").strip()
@@ -290,6 +313,8 @@ class Settings:
             auto_retry_poll_seconds=auto_retry_poll_seconds,
             url_enabled=_bool("TGVIO_URL_ENABLED", False),
             url_private_network_policy=url_private_network_policy,
+            static_proxy_url=static_proxy_url,
+            static_proxy_probe_timeout_seconds=static_proxy_probe_timeout_seconds,
             archive_enabled=archive_enabled,
             archive_url=archive_url,
             archive_remote_root=archive_remote_root,
@@ -341,6 +366,8 @@ class Settings:
             "log_backup_count": self.log_backup_count,
             "url_enabled": self.url_enabled,
             "url_private_network_policy": self.url_private_network_policy,
+            "static_proxy_configured": bool(self.static_proxy_url),
+            "static_proxy_probe_timeout_seconds": self.static_proxy_probe_timeout_seconds,
             "archive_enabled": self.archive_enabled,
             "archive_configured": bool(self.archive_url and self.archive_user),
             "archive_remote_root_configured": bool(self.archive_remote_root),

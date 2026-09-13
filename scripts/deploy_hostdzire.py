@@ -264,15 +264,15 @@ def deploy(args: argparse.Namespace) -> int:
     lock_sha = sha256_file(repo / "requirements.lock")
     dockerfile_sha = sha256_file(repo / "Dockerfile")
     phase = args.phase.lower()
-    if not re.fullmatch(r"r2-[0-9]{2}(?:[a-z][0-9]+)?", phase):
-        raise DeployError("phase must match R2-NN or R2-NNAX")
+    if not re.fullmatch(r"r2-[0-9]{2}(?:[a-z][0-9]*)?", phase):
+        raise DeployError("phase must match R2-NN or an R2-NN work-package suffix")
     migration = args.migration.strip().lower()
     if migration != "none" and not re.fullmatch(r"[0-9]{4}_[a-z0-9_]+", migration):
         raise DeployError("migration must be 'none' or match NNNN_name")
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     release_id = f"{phase}-{head[:7]}-{timestamp}"
     if not re.fullmatch(
-        r"r2-[0-9]{2}(?:[a-z][0-9]+)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z",
+        r"r2-[0-9]{2}(?:[a-z][0-9]*)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z",
         release_id,
     ):
         raise DeployError("generated release id is invalid")

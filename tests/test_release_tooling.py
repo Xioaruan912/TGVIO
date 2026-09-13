@@ -105,7 +105,7 @@ class SourceGuardTests(unittest.TestCase):
 class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
-        self.assertEqual(result["python_files"], 69)
+        self.assertEqual(result["python_files"], 72)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -401,11 +401,17 @@ class BuildContractTests(unittest.TestCase):
         self.assertIn("AS runtime", dockerfile)
         self.assertIn("--require-hashes", dockerfile)
         self.assertIn("python:3.11-slim@sha256:", dockerfile)
+        self.assertIn("RELEASE_ID=${RELEASE_ID}", dockerfile)
+        self.assertIn("SOURCE_MANIFEST=${SOURCE_MANIFEST}", dockerfile)
         runtime = dockerfile.split("FROM runtime-base AS runtime", 1)[1]
         self.assertNotIn("COPY tests", runtime)
         self.assertNotIn("build-essential", runtime)
         self.assertIn("**/__pycache__", dockerignore)
         self.assertIn("**/*.pyc", dockerignore)
+
+    def test_foundation_gate_does_not_inherit_a_deployment_proxy(self) -> None:
+        foundation = (ROOT / "scripts" / "check_foundation.sh").read_text(encoding="utf-8")
+        self.assertIn("export TGVIO_STATIC_PROXY_URL=", foundation)
 
     def test_compose_requires_release_identity_and_shared_volume_paths(self) -> None:
         compose = (ROOT / "docker-compose.yml").read_text(encoding="utf-8")
@@ -468,8 +474,9 @@ class BuildContractTests(unittest.TestCase):
         remote = (ROOT / "scripts" / "remote_release.sh").read_text(encoding="utf-8")
         rollback = (ROOT / "scripts" / "rollback_hostdzire.sh").read_text(encoding="utf-8")
 
-        self.assertIn(r'r2-[0-9]{2}(?:[a-z][0-9]+)?-[0-9a-f]{7}', deploy)
-        shell_pattern = r'r2-[0-9]{2}([a-z][0-9]+)?-[0-9a-f]{7}'
+        self.assertIn(r'r2-[0-9]{2}(?:[a-z][0-9]*)?-[0-9a-f]{7}', deploy)
+        self.assertIn("R2-07A3", deploy)
+        shell_pattern = r'r2-[0-9]{2}([a-z][0-9]*)?-[0-9a-f]{7}'
         self.assertIn(shell_pattern, remote)
         self.assertIn(shell_pattern, rollback)
 

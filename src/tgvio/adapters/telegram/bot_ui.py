@@ -3,7 +3,6 @@ from __future__ import annotations
 import asyncio
 from datetime import datetime, timezone
 import logging
-import os
 import shutil
 from typing import Callable
 from zoneinfo import ZoneInfo
@@ -30,6 +29,7 @@ from tgvio.application.auto_recovery import (
     job_failure_waits_for_recovery,
     job_recovery_state,
 )
+from tgvio.application.diagnostics import DiagnosticSnapshotService
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
@@ -49,6 +49,7 @@ from tgvio.domain.archive import (
     ArchivePackage,
     ArchivePackageState,
 )
+from tgvio.domain.diagnostics import DiagnosticSnapshot
 from tgvio.domain.job import Job, JobState, MediaKind
 from tgvio.domain.job_query import (
     FailurePage,
@@ -150,6 +151,7 @@ class TelethonBotUI:
         job_diagnostics: JobDiagnosticService | None = None,
         undo_service: UndoService | None = None,
         operation_tokens: OperationTokenService | None = None,
+        diagnostic_service: DiagnosticSnapshotService | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -163,6 +165,7 @@ class TelethonBotUI:
         self._job_diagnostics = job_diagnostics or JobDiagnosticService(repository)
         self._undo_service = undo_service
         self._operation_tokens = operation_tokens
+        self._diagnostic_service = diagnostic_service
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 
@@ -1638,32 +1641,95 @@ class TelethonBotUI:
         return "\n".join(lines)
 
     async def _diag_text(self) -> str:
-        runtime = await self._repository.get_runtime_health()
-        cache = await self._cache_operator.stats() if self._cache_operator is not None else None
-        summary = self._settings.safe_summary()
-        lines = [
-            "**TGVIO Diagnostics**",
-            "",
-            f"Commit：`{os.getenv('APP_COMMIT', 'unknown')}`",
-            f"Environment：`{summary.get('environment', 'unknown')}`",
-            f"Telegram：`{runtime.get('telegram', {}).get('status', 'unknown')}`",
-            f"Publish：`{'on' if summary.get('publish_enabled') else 'off'}`",
-            f"URL：`{'on' if summary.get('url_enabled') else 'off'}` / `{summary.get('url_private_network_policy', 'unknown')}`",
-            f"Archive：`{'on' if summary.get('archive_enabled') else 'off'}`",
-            f"Logs：`JSONL/{summary.get('log_level', 'INFO')}` · file `{'on' if summary.get('log_file_enabled') else 'off'}`",
-            f"Workers：`{summary.get('worker_concurrency', 0)}`",
-            f"Disk reserve：`{summary.get('disk_reserve_mb', 0)} MiB`",
-        ]
-        if cache is not None:
-            lines.append(
-                f"Managed cache：`{self._human_bytes(cache.bytes_used)}` / `{cache.managed_dirs}` dirs"
+        if self._diagnostic_service is None:
+            return (
+                "**TGVIO Diagnostic Snapshot**\n\n"
+                "诊断快照服务未启用。\n\n"
+                "本页不会主动连接 Telegram、WebDAV 或代理，也不会执行写探测。"
             )
-        lines.extend(
-            [
-                "",
-                "诊断输出不包含 Bot Token、API Hash、用户 ID、caption、完整 URL、WebDAV 凭据或本地媒体路径。",
-            ]
+        snapshot = await self._diagnostic_service.snapshot()
+        return self._render_diagnostic_snapshot(snapshot)
+
+    @staticmethod
+    def _render_diagnostic_snapshot(snapshot: DiagnosticSnapshot) -> str:
+        proxy_checked = (
+            "未检测"
+            if snapshot.static_proxy.checked_at_epoch is None
+            else datetime.fromtimestamp(
+                snapshot.static_proxy.checked_at_epoch,
+                tz=timezone.utc,
+            ).strftime("%Y-%m-%d %H:%M:%S UTC")
         )
+        schema_version = (
+            "unknown"
+            if snapshot.schema.user_version is None
+            else str(snapshot.schema.user_version)
+        )
+        latest_version = (
+            "unknown"
+            if snapshot.schema.latest_version is None
+            else str(snapshot.schema.latest_version)
+        )
+        generation = (
+            "unknown"
+            if snapshot.runtime_lease.generation is None
+            else str(snapshot.runtime_lease.generation)
+        )
+        yes_no = lambda value: "yes" if value else "no"
+        on_off = lambda value: "on" if value else "off"
+        lines = [
+            "**TGVIO Diagnostic Snapshot**",
+            "",
+            "**Release identity**",
+            f"Release：`{snapshot.release_id}`",
+            f"Version：`{snapshot.app_version}`",
+            f"Commit：`{snapshot.commit}`",
+            f"Source manifest：`{snapshot.source_manifest}`",
+            "",
+            "**Schema / runtime**",
+            (
+                f"Schema：`v{schema_version}` / latest `v{latest_version}` · "
+                f"ledger contiguous `{yes_no(snapshot.schema.ledger_contiguous)}` · "
+                f"verification `{snapshot.schema.verification.value}`"
+            ),
+            (
+                f"Runtime lease：unique `{yes_no(snapshot.runtime_lease.unique)}` · "
+                f"generation `{generation}` · `{snapshot.runtime_lease.freshness.value}`"
+            ),
+            f"Aggregate query：`{snapshot.aggregate_status.value}`",
+            "",
+            "**Scheduler**",
+            f"Queue paused：`{yes_no(snapshot.scheduler.paused)}`",
+            (
+                f"Active `{snapshot.scheduler.active}` · Held `{snapshot.scheduler.held}` · "
+                f"Ready `{snapshot.scheduler.ready}` · Blocked `{snapshot.scheduler.blocked}`"
+            ),
+            "",
+            "**Archive**",
+            (
+                f"Planned `{snapshot.archive.planned}` · Transferring `{snapshot.archive.transferring}` · "
+                f"Committed `{snapshot.archive.committed}` · Failed `{snapshot.archive.failed}` · "
+                f"Retry-wait `{snapshot.archive.retry_wait}`"
+            ),
+            f"Capability freshness：`{snapshot.archive.capability_freshness}`",
+            "",
+            "**Feature flags**",
+            (
+                f"Bot `{on_off(snapshot.features.run_bot)}` · Publish `{on_off(snapshot.features.publish_enabled)}` · "
+                f"URL `{on_off(snapshot.features.url_enabled)}`/`{snapshot.features.url_private_network_policy}`"
+            ),
+            (
+                f"Archive `{on_off(snapshot.features.archive_enabled)}`/`{snapshot.features.archive_policy}` · "
+                f"Collections `{on_off(snapshot.features.collections_enabled)}` · "
+                f"Auto-retry `{on_off(snapshot.features.auto_retry_enabled)}` · "
+                f"Fixture `{on_off(snapshot.features.live_fixture_enabled)}`"
+            ),
+            "",
+            "**Static proxy**",
+            f"State：`{snapshot.static_proxy.state.value}` · Last check：`{proxy_checked}`",
+            "",
+            "只读本地 SQLite 与脱敏启动状态；不会主动连接 Telegram、WebDAV、代理或其它外部服务。",
+        ]
         return "\n".join(lines)
 
     async def _cache_text(self) -> str:

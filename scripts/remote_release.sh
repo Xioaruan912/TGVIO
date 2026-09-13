@@ -23,7 +23,7 @@ require_command() {
 }
 
 valid_release_id() {
-  [[ "$1" =~ ^r2-[0-9]{2}([a-z][0-9]+)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z$ ]]
+  [[ "$1" =~ ^r2-[0-9]{2}([a-z][0-9]*)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z$ ]]
 }
 
 valid_commit() {
@@ -511,7 +511,7 @@ rollback_release() {
   valid_sha256 "$current_manifest" || die "invalid current rollback source manifest"
   valid_sha256 "$previous_manifest" || die "invalid previous rollback source manifest"
   [[ "$previous_image" =~ ^sha256:[0-9a-f]{64}$ ]] || die "invalid previous rollback image"
-  [[ "$previous_source" == "$APP_ROOT" || "$previous_source" =~ ^${RELEASE_ROOT}/r2-[0-9]{2}([a-z][0-9]+)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z/source$ ]] || die "unsafe previous source path"
+  [[ "$previous_source" == "$APP_ROOT" || "$previous_source" =~ ^${RELEASE_ROOT}/r2-[0-9]{2}([a-z][0-9]*)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z/source$ ]] || die "unsafe previous source path"
   [[ -d "$previous_source" ]] || die "previous source path is missing"
   [[ "$(python3 "$source_dir/scripts/release_guard.py" source-manifest "$previous_source")" == "$previous_manifest" ]] || die "previous source manifest mismatch"
   docker image inspect "$previous_image" >/dev/null
@@ -603,7 +603,7 @@ rollback_check() {
   previous_source=$(json_value "$previous_json" source_root)
   previous_image=$(json_value "$previous_json" image_id)
   previous_manifest=$(json_value "$previous_json" source_manifest)
-  [[ "$previous_source" == "$APP_ROOT" || "$previous_source" =~ ^${RELEASE_ROOT}/r2-[0-9]{2}([a-z][0-9]+)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z/source$ ]] || die "unsafe previous source path"
+  [[ "$previous_source" == "$APP_ROOT" || "$previous_source" =~ ^${RELEASE_ROOT}/r2-[0-9]{2}([a-z][0-9]*)?-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z/source$ ]] || die "unsafe previous source path"
   [[ -d "$previous_source" ]] || die "previous source is missing"
   valid_sha256 "$previous_manifest" || die "invalid previous source manifest"
   [[ "$(python3 "$release_dir/source/scripts/release_guard.py" source-manifest "$previous_source")" == "$previous_manifest" ]] || die "previous source manifest mismatch"

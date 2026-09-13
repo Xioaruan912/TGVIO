@@ -88,6 +88,119 @@ class SQLiteObservabilityRepositoryMixin:
         await cursor.close()
         return {str(row["event_type"]): int(row["count"]) for row in rows}
 
+    async def get_diagnostic_aggregates(self) -> dict[str, object]:
+        conn = self._require()
+        cursor = await conn.execute(
+            """
+            SELECT
+                COALESCE((SELECT paused FROM queue_controls WHERE singleton=1), 0)
+                    AS queue_paused,
+                COALESCE(SUM(CASE
+                    WHEN j.state NOT IN ('succeeded','failed','cancelled')
+                     AND COALESCE(c.hold_requested,0)=0 THEN 1 ELSE 0 END), 0)
+                    AS scheduler_active,
+                COALESCE(SUM(CASE
+                    WHEN j.state NOT IN ('succeeded','failed','cancelled')
+                     AND COALESCE(c.hold_requested,0)=1 THEN 1 ELSE 0 END), 0)
+                    AS scheduler_held,
+                COALESCE(SUM(CASE
+                    WHEN j.state IN ('planned','publishing')
+                     AND COALESCE(c.hold_requested,0)=0 THEN 1 ELSE 0 END), 0)
+                    AS scheduler_ready,
+                COALESCE(SUM(CASE
+                    WHEN j.state='failed' AND (
+                        COALESCE(j.error_code,'') IN ('publish_partial','publish_uncertain')
+                        OR COALESCE(
+                            json_extract(j.policy_json, '$.auto_recovery_job.status'),
+                            ''
+                        )='quarantined'
+                    ) THEN 1 ELSE 0 END), 0)
+                    AS scheduler_blocked
+            FROM jobs j
+            LEFT JOIN job_controls c ON c.job_id=j.id
+            """
+        )
+        scheduler_row = await cursor.fetchone()
+        await cursor.close()
+
+        cursor = await conn.execute(
+            """
+            SELECT
+                COALESCE(SUM(CASE WHEN a.state='planned' THEN 1 ELSE 0 END), 0)
+                    AS archive_planned,
+                COALESCE(SUM(CASE
+                    WHEN a.state IN ('staging','uploading','verifying') THEN 1 ELSE 0 END), 0)
+                    AS archive_transferring,
+                COALESCE(SUM(CASE WHEN a.state='committed' THEN 1 ELSE 0 END), 0)
+                    AS archive_committed,
+                COALESCE(SUM(CASE WHEN a.state='failed' THEN 1 ELSE 0 END), 0)
+                    AS archive_failed,
+                COALESCE(SUM(CASE
+                    WHEN a.state='failed'
+                     AND COALESCE(
+                        json_extract(j.policy_json, '$.auto_recovery_archive.status'),
+                        ''
+                     )='scheduled'
+                    THEN 1 ELSE 0 END), 0)
+                    AS archive_retry_wait
+            FROM archive_packages a
+            JOIN jobs j ON j.id=a.job_id
+            """
+        )
+        archive_row = await cursor.fetchone()
+        await cursor.close()
+
+        cursor = await conn.execute(
+            """
+            SELECT
+                CAST(strftime('%s','now') AS INTEGER) AS database_now_epoch,
+                COUNT(CASE WHEN expires_at > CAST(strftime('%s','now') AS INTEGER)
+                           THEN 1 END) AS runtime_lease_active_count,
+                MAX(generation) AS runtime_lease_generation,
+                MAX(expires_at) AS runtime_lease_expires_at
+            FROM runtime_leases
+            WHERE lease_name='telegram-runtime'
+            """
+        )
+        lease_row = await cursor.fetchone()
+        await cursor.close()
+
+        result: dict[str, object] = {}
+        if scheduler_row is not None:
+            for key in (
+                "queue_paused",
+                "scheduler_active",
+                "scheduler_held",
+                "scheduler_ready",
+                "scheduler_blocked",
+            ):
+                result[key] = int(scheduler_row[key] or 0)
+        if archive_row is not None:
+            for key in (
+                "archive_planned",
+                "archive_transferring",
+                "archive_committed",
+                "archive_failed",
+                "archive_retry_wait",
+            ):
+                result[key] = int(archive_row[key] or 0)
+        if lease_row is not None:
+            result["database_now_epoch"] = int(lease_row["database_now_epoch"] or 0)
+            result["runtime_lease_active_count"] = int(
+                lease_row["runtime_lease_active_count"] or 0
+            )
+            result["runtime_lease_generation"] = (
+                None
+                if lease_row["runtime_lease_generation"] is None
+                else int(lease_row["runtime_lease_generation"])
+            )
+            result["runtime_lease_expires_at"] = (
+                None
+                if lease_row["runtime_lease_expires_at"] is None
+                else int(lease_row["runtime_lease_expires_at"])
+            )
+        return result
+
     async def quick_check(self) -> bool:
         conn = self._require()
         cursor = await conn.execute("PRAGMA quick_check")

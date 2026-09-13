@@ -26,6 +26,11 @@ from tgvio.application.auto_recovery import (
     AutoRecoveryService,
 )
 from tgvio.application.cache_cleanup import CacheCleanupRuntime, CacheCleanupService
+from tgvio.application.diagnostics import (
+    DiagnosticFeatureConfig,
+    DiagnosticSnapshotService,
+    static_proxy_health_detail,
+)
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
 from tgvio.application.job_diagnostics import JobDiagnosticService
@@ -45,6 +50,10 @@ from tgvio.config import Settings, load_dotenv
 from tgvio.infrastructure.media_inspector import FFprobeMediaInspector
 from tgvio.infrastructure.log_reader import JsonlOperationalLogReader
 from tgvio.infrastructure.media_transformer import FFmpegMediaTransformer
+from tgvio.infrastructure.proxy_probe import (
+    probe_static_proxy_endpoint,
+    static_proxy_unchecked_status,
+)
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 from tgvio.domain.archive import ArchivePolicy, ArchiveProfileSnapshot
 from tgvio.domain.job import JobState
@@ -70,6 +79,21 @@ async def run(*, check_only: bool = False) -> None:
     try:
         schema_status = repository.schema_status()
         await repository.set_runtime_health("schema", "ready", detail=schema_status)
+        proxy_probe = (
+            static_proxy_unchecked_status(settings.static_proxy_url)
+            if check_only
+            else await probe_static_proxy_endpoint(
+                settings.static_proxy_url,
+                timeout_seconds=settings.static_proxy_probe_timeout_seconds,
+            )
+        )
+        await repository.set_runtime_health(
+            "static_proxy",
+            proxy_probe.state.value,
+            detail=static_proxy_health_detail(
+                checked_at_epoch=proxy_probe.checked_at_epoch,
+            ),
+        )
         log_event(
             logger,
             logging.INFO,
@@ -244,6 +268,23 @@ async def run(*, check_only: bool = False) -> None:
             TelethonPublishedMessageRemover(gateway.client),
             operation_tokens=operation_tokens,
         )
+        diagnostic_service = DiagnosticSnapshotService(
+            repository,
+            features=DiagnosticFeatureConfig(
+                run_bot=settings.run_bot,
+                publish_enabled=settings.publish_enabled,
+                url_enabled=settings.url_enabled,
+                url_private_network_policy=settings.url_private_network_policy,
+                archive_enabled=settings.archive_enabled,
+                archive_profile_id=settings.archive_profile_id,
+                archive_policy=settings.archive_policy,
+                collections_enabled=settings.collections_enabled,
+                auto_retry_enabled=settings.auto_retry_enabled,
+                live_fixture_enabled=settings.live_fixture_enabled,
+                static_proxy_configured=bool(settings.static_proxy_url),
+            ),
+            schema_status=repository.schema_status,
+        )
         bot_ui = TelethonBotUI(
             gateway.client,
             settings,
@@ -264,6 +305,7 @@ async def run(*, check_only: bool = False) -> None:
             ),
             undo_service=undo_service,
             operation_tokens=operation_tokens,
+            diagnostic_service=diagnostic_service,
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()

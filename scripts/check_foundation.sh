@@ -20,6 +20,8 @@ export TGVIO_PUBLISH_ENABLED=false
 export TGVIO_LIVE_FIXTURE_ENABLED=false
 export TGVIO_ARCHIVE_ENABLED=false
 export TGVIO_URL_ENABLED=false
+# Do not inherit a deployment proxy into the offline foundation gate.
+export TGVIO_STATIC_PROXY_URL=
 export TGVIO_LOG_FILE_ENABLED=false
 export TGVIO_DATA_DIR="$check_root/data"
 export TGVIO_DOWNLOAD_DIR="$check_root/downloads"

@@ -53,12 +53,58 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.log_backup_count, 5)
         self.assertFalse(settings.url_enabled)
         self.assertEqual(settings.url_private_network_policy, "block")
+        self.assertEqual(settings.static_proxy_url, "")
+        self.assertEqual(settings.static_proxy_probe_timeout_seconds, 2)
         summary = settings.safe_summary()
         self.assertNotIn("bot-token", repr(summary))
         self.assertNotIn("hash-value", repr(summary))
         self.assertTrue(summary["log_file_enabled"])
         self.assertTrue(summary["auto_retry_enabled"])
         self.assertEqual(summary["auto_retry_max_attempts"], 3)
+        self.assertFalse(summary["static_proxy_configured"])
+
+    def test_static_proxy_is_deployment_only_and_never_exposed_in_summary(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_STATIC_PROXY_URL": "http://alice:super-secret@proxy.example.test:8080",
+                "TGVIO_STATIC_PROXY_PROBE_TIMEOUT_SECONDS": "3",
+            },
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        self.assertEqual(settings.static_proxy_probe_timeout_seconds, 3)
+        self.assertTrue(settings.safe_summary()["static_proxy_configured"])
+        self.assertNotIn("alice", repr(settings.safe_summary()))
+        self.assertNotIn("super-secret", repr(settings.safe_summary()))
+        self.assertNotIn("proxy.example.test", repr(settings.safe_summary()))
+        self.assertNotIn("alice", repr(settings))
+        self.assertNotIn("super-secret", repr(settings))
+        self.assertNotIn("proxy.example.test", repr(settings))
+
+        for value in (
+            "relative-proxy",
+            "ftp://proxy.example.test:21",
+            "http://proxy.example.test:8080/private",
+            "http://proxy.example.test:bad",
+            "http://proxy.example.test:0",
+            "http://[malformed",
+        ):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {**BASE_ENV, "TGVIO_STATIC_PROXY_URL": value},
+                clear=True,
+            ):
+                with self.assertRaisesRegex(ConfigError, "STATIC_PROXY_URL"):
+                    Settings.from_env()
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_STATIC_PROXY_PROBE_TIMEOUT_SECONDS": "11"},
+            clear=True,
+        ):
+            with self.assertRaisesRegex(ConfigError, "STATIC_PROXY_PROBE_TIMEOUT_SECONDS"):
+                Settings.from_env()
 
     def test_url_policy_is_explicit_and_validated(self) -> None:
         with patch.dict(

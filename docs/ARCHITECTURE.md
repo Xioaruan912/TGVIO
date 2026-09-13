@@ -184,9 +184,13 @@ package, any package that is not `committed`/`cancelled` also vetoes deletion.
 
 Operational reads stay side-effect free. `/stats` aggregates only owner-scoped
 job/item counts and recent event *types*; `/health` consumes local SQLite and
-durable heartbeat state; `/diag` uses `Settings.safe_summary()` plus the image
-`APP_COMMIT`. None of these routes performs Telegram send probes, WebDAV
-requests, cache deletion, or exposes captions/URLs/paths/credentials.
+durable heartbeat state; bare `/diag` renders a fixed `DiagnosticSnapshot`
+allowlist (release identity, migration/lease/scheduler/Archive aggregates,
+feature flags, and redacted static-proxy state). The snapshot never renders
+runtime-health details wholesale, endpoints, credentials, captions, IDs, or
+paths. Existing owner-scoped `/diag job <id>` remains a separate bounded task
+diagnostic path. None of these routes performs Telegram send probes, WebDAV
+requests, cache deletion, or external proxy probes.
 
 `job_progress` is a small durable read model for UI progress. The downloader
 adapters emit byte callbacks into `JobDownloader`, which throttles writes; the
