@@ -34,7 +34,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-06 | DELIVERED | 完整队列、自动恢复、暂停/恢复、失败中心、撤销与确认令牌 | UI-01、UI-03、CT-02～04、PL-13～14 |
 | R2-07 | DELIVERED | A1/A2/A3/D 已生产交付；Archive Profile/策略、exact remote delete 与安全 Diagnostic Snapshot 已完成 | AR-07、OB-01、ST-04 |
 | R2-08 | NOT STARTED | 拆分 Telegram/WebDAV/UI/SQLite 热点并清除兼容层 | 架构门禁 |
-| R2-09 | NOT STARTED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
+| R2-09 | DELIVERED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
 | R2-10 | NOT STARTED | 完整等价验收、灾难恢复演练、旧树退役 | 全合同 |
 
 阶段编号表达依赖顺序，不要求每阶段只有一个 commit。每个阶段应拆成可部署的小提交；如果单阶段超过约一周或同时修改多个外部副作用边界，应继续拆分。
@@ -325,6 +325,10 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 - SQLite outbox、lease、有限重试、HMAC-SHA256 的 HTTPS webhook。
 - 所有 DTO 排除用户/peer、caption、源 URL、本地路径和凭据。
 - Web mutation 继续延期，除非用户另行授权。
+
+### 交付结果（2026-09-13）
+
+R2-09 已随 `r2-09-5ff2a61-20260913T092930Z`（runtime commit `5ff2a61e6ca51a8faaf6960d78ea34a6dbeb45af`，source manifest `1d97e920a4f14d7320778dc15d75066e482e6823ac5edc92575c0f11bbdeb2e3`）正式交付。`0008_notification_outbox` 把生产推进到 v8（schema hash `5b80e9d9aa0abe258883e5eb8b26d54ce2481b4e03daa3ee45f75e477423f76a`）；正式 gate 367 tests、生产副本 v7→v8 rehearsal、独立 postflight 与 rollback-check 通过。首次 schema-changing 调用的 final report 因 `remote_preflight.py` 的已知 schema-hash 表未含 v8 而误报 `database-schema`，生产实际已健康迁移到 v8 且业务 blocker 为 0；`5ff2a61` 扩展该表后以 `migration=none` 闭环，未使用任何手工旁路。证据见 [R2-09_RELEASE.md](evidence/R2-09_RELEASE.md)。
 
 ### 验收与回滚
 

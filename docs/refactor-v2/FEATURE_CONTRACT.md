@@ -84,7 +84,7 @@
 | ST-02 | 动态多目的地 Profile、选择和切换 | RETIRED FOR NOW | 2026-09-13 用户明确决定保持固定单一发布目标；既有 Job/plan/effect/reference cache 仍冻结 destination identity，未来真实出现多频道需求时另立设计阶段 |
 | ST-03 | 动态 Proxy Profiles、代理池、任务中切换和 coordinator | RETIRED | 2026-09-13 用户明确决定代理属于部署环境，不进入业务状态 |
 | ST-04 | 静态环境代理配置启动时有界检测，`/diag` 只显示启用与检测状态，不暴露地址或凭据 | VERIFIED | R2-07D 已随 `r2-07d-10b6dd5-20260913T091106Z` 交付：`TGVIO_STATIC_PROXY_URL` 仅启动时有界 TCP 探测，`/diag` 只显示 `disabled/configured_unchecked/reachable/unreachable` 与检测时间，端点/凭据不入结果；离线 `--check` 记录 `configured_unchecked` 且不连网，不新增动态切换或 coordinator |
-| WB-01 | 只读 Dashboard、认证 metrics 和脱敏通知 outbox 在明确开关下可用 | REQUIRED | 旧系统已有，当前 TGVIO 没有 Web/Dashboard/Webhook 模块 |
+| WB-01 | 只读 Dashboard、认证 metrics 和脱敏通知 outbox 在明确开关下可用 | VERIFIED | R2-09 已随 `r2-09-5ff2a61-20260913T092930Z` + `0008_notification_outbox` 交付：loopback-only `GET/HEAD` Dashboard、恒定时间 Bearer 校验（拒绝 query token/body/超长 header）与安全响应头；低基数 Prometheus metrics；durable outbox 幂等 `dedupe_key`、claim lease、HMAC-SHA256、有限退避与 dead-letter。DTO/通知 payload 排除 owner/peer/caption/URL/path/credential，生产默认关闭且无监听端口 |
 
 ## 7. 可靠性、安全和运维
 
