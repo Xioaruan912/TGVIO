@@ -89,7 +89,7 @@ Rollback asset validation passed:
 
 ## Residual hotspots
 
-`adapters/telegram/intake_runtime.py` (1467 lines) and
-`infrastructure/sqlite_archive.py` (958 lines) remain the largest files and are
-now bounded by the 1600-line budget. Further Telegram/WebDAV/Archive executor
-splitting belongs to the ongoing R2-08/R2-10 governance work.
+Superseded by R2-08B, which completed the remaining splits. The largest source
+file is now `adapters/telegram/intake_runtime.py` at 945 lines, and the
+architecture gate enforces `MAX_SOURCE_FILE_LINES=1000`. See
+[R2-08B_RELEASE.md](R2-08B_RELEASE.md).

@@ -129,6 +129,16 @@ src/tgvio/
 
 迁移时允许原文件暂时 re-export；但兼容层只能委托新实现，不能继续保存第二份业务状态。
 
+### 2.1 已实现布局（2026-09-13）
+
+上面的树是目标方向；当前生产源码的实际热点边界如下（`MAX_SOURCE_FILE_LINES=1000` 由架构门禁强制）：
+
+- `adapters/telegram/`：`bot_ui.py` 只保留组装与事件分派，表现为 `bot_ui_format.py`、动作在 `bot_ui_jobs.py` + `bot_ui_job_actions.py`，Archive 在 `bot_ui_archive.py`，fixture 在 `bot_ui_fixture.py`，共享常量在 `bot_ui_support.py`；intake 为 `intake_runtime.py` + `intake_status.py` + `intake_collection.py`；publish 为 `publish_transport.py` + `publish_albums.py` + `publish_references.py` + `publish_large_files.py`，上传在 `uploads.py`，讨论区在 `discussion_resolver.py`。
+- `adapters/`：`webdav_archive.py` 为高层操作、`webdav_client.py` 为 HTTP/DAV 与路径策略、`webdav_archive_support.py` 共享异常；`web/dashboard.py` 为 loopback-only 只读 HTTP 适配器。
+- `application/`：`archive_executor.py` + `archive_commit.py` + `archive_probe.py`；只读运维面为 `dashboard.py`、`metrics.py`、`notifications.py`；成功/终止事件通过 `domain/notifications.py` 白名单进入 outbox。
+- `infrastructure/`：`sqlite_*` 按域拆分（新增 `sqlite_notifications.py`、`sqlite_archive_deletion.py`），`sqlite.py` 只做 mixin 组装。
+- `application/commands` 与 `application/queries` 未做物理目录重排：command 由 application service 承担，query 由 `application/ports.py` 的只读方法 + repository 读模型承担。
+
 ## 3. 可自动检查的依赖规则
 
 | 层 | 可以依赖 | 禁止依赖 |

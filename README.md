@@ -18,21 +18,29 @@ of growing behavior inside one large bot runtime.
 
 ## Current phase
 
-TGVIO is now the active production runtime. R2-01 restored source authority and
-R2-02 established the reproducible, fail-closed delivery chain. Production
-release `r2-02-569926b-20260911T063133Z` at full commit
-`569926b53af19539b118daa93f95c58da2001637` is healthy on HostDZire. The current
-implemented path is:
+TGVIO is the active production runtime. R2-01 restored source authority, R2-02
+established the reproducible fail-closed delivery chain, and R2-03 through R2-09
+added the migration ledger, durable scheduler/claim/FIFO, durable intake and
+collections, full queue control and undo, Archive V2 with exact remote delete,
+the redacted Diagnostic Snapshot, and the read-only operations surface
+(Dashboard, metrics, notification outbox). The current production release is
+`r2-08b-52f39ca-20260913T101837Z` at full commit
+`52f39cad6c33614daaa742ed2f07dea0c4a6011d` (schema v8), healthy on HostDZire.
+
+The authoritative refactoring plan, feature contract, and per-stage evidence
+live under [`docs/refactor-v2/`](docs/refactor-v2/README.md). The implemented
+path is:
 
 ```text
-Telegram media / album
+Telegram media / album / URL
   -> allowlist
-  -> durable job
+  -> durable job (SQLite)
   -> local download
   -> ffprobe/media analysis
   -> PublishPlan v2
-  -> side-effect-aware Telegram publish
+  -> side-effect-aware ordered Telegram publish
   -> independent WebDAV Archive lifecycle
+  -> read-only diagnostics / Dashboard / metrics / redacted notifications
 ```
 
 PublishPlan persistence and the generic side-effect-aware Execution Engine are
@@ -51,6 +59,11 @@ The controlled fixture path has its own source-safe, disabled-by-default gate
 enables it. It remains independent from automatic publishing and only exposes
 the hidden `/publish <job>` flow with a second confirmation and strict
 item/size/strategy limits.
+
+The read-only operations surface (`TGVIO_DASHBOARD_ENABLED`,
+`TGVIO_WEBHOOK_ENABLED`) is also disabled by default; the audited production
+deployment currently leaves both off, so there is no extra listener and no
+second Telegram session.
 
 ## Bot controls
 

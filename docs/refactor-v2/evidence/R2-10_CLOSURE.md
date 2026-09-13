@@ -1,8 +1,8 @@
 # R2-10 Closure Report
 
 > Date: 2026-09-13
-> Runtime commit: `c39fe9d579d86e73c1505741606221408e0b5fd2`
-> Production release: `r2-08-c39fe9d-20260913T094000Z`
+> Runtime commit: `52f39cad6c33614daaa742ed2f07dea0c4a6011d`
+> Production release: `r2-08b-52f39ca-20260913T101837Z`
 > Schema: v8 / `5b80e9d9aa0abe258883e5eb8b26d54ce2481b4e03daa3ee45f75e477423f76a`
 
 ## Status
@@ -24,7 +24,7 @@ the destructive undo/Archive actions) and a destructive HostDZire rollback drill
 require the owner's Telegram session, so they are listed below as explicit
 user-verification steps rather than silently claimed.
 
-## Automated acceptance matrix (on `c39fe9d`)
+## Automated acceptance matrix (on `52f39ca`)
 
 | Area | Evidence |
 |---|---|
@@ -38,17 +38,17 @@ user-verification steps rather than silently claimed.
 | Archive lost-response + exact delete | `test_webdav_archive`, `test_archive_deletion` |
 | UI owner/callback + 64-byte | `test_bot_ui`, `test_dashboard` |
 | Read-only ops surface | `test_dashboard`, `test_notifications`, `test_metrics` |
-| Architecture/source budget | `release_guard architecture` (84 files, max 1600 lines) |
+| Architecture/source budget | `release_guard architecture` (98 files, max 1000 lines) |
 
 ## Production state (read-only verified)
 
 - Single `tgvio` container, `running`/`healthy`, restart count 0, one instance.
-- `APP_COMMIT` = `c39fe9d579d86e73c1505741606221408e0b5fd2`; source manifest
-  `ba8ad0406e1a32d1a921dd98a0860f860731b006e5fc0f32e37dbb23e94982c0`; image
-  `sha256:1f931e65a76d5ad3c90cc81ccdd3a07fce10034d7c6ea802b2ba0d494e44111f`.
+- `APP_COMMIT` = `52f39cad6c33614daaa742ed2f07dea0c4a6011d`; source manifest
+  `9d2b27c3b058c5ee2de70a34e4472eab3c6bdc354fd882bb2c2b3342fe394fb9`; image
+  `sha256:507d38f97c3d5d3d60d2d2295ec2c5e850d053554e70cc6af73d9ea6bdf3bd0e`.
 - SQLite `quick_check=ok`, `user_version=8`, ledger `[1..8]`, 24 Jobs, all
   business blockers 0; `notification_outbox` present and empty.
-- `bash scripts/rollback_hostdzire.sh --check r2-08-c39fe9d-20260913T094000Z`
+- `bash scripts/rollback_hostdzire.sh --check r2-08b-52f39ca-20260913T101837Z`
   passed.
 - No second Bot/session, no test artifacts in the runtime image, no public
   listener (dashboard/webhook unset).

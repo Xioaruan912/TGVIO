@@ -308,7 +308,7 @@ A-D 交付证据见 [R2-04_RELEASE.md](evidence/R2-04_RELEASE.md)；A-D 发布�
 
 ### 交付结果（2026-09-13）
 
-R2-08 已随 `r2-08-c39fe9d-20260913T094000Z`（runtime commit `c39fe9d579d86e73c1505741606221408e0b5fd2`，source manifest `ba8ad0406e1a32d1a921dd98a0860f860731b006e5fc0f32e37dbb23e94982c0`，migration=none）交付。`bot_ui.py` 由 3324 行拆为 867 行，表现层与动作回调移入 `bot_ui_format/jobs/archive/fixture/support` mixins，行为、文案与 callback 一律不变，368 tests 全绿；SQLite repository 拆分已在 R2-03B 完成。`check_architecture` 新增 `MAX_SOURCE_FILE_LINES=1600` 源文件大小预算，超标即 fail closed。剩余 `intake_runtime.py`(1467) 与 `sqlite_archive.py`(958) 已受预算约束，进一步拆分留给 R2-10。证据见 [R2-08_RELEASE.md](evidence/R2-08_RELEASE.md)。
+R2-08 分两次正式发布完成：`r2-08-c39fe9d-20260913T094000Z` 先把 `bot_ui.py` 由 3324 行降到 867 行并引入 1600 行预算；`r2-08b-52f39ca-20260913T101837Z`（runtime commit `52f39cad6c33614daaa742ed2f07dea0c4a6011d`，source manifest `9d2b27c3b058c5ee2de70a34e4472eab3c6bdc354fd882bb2c2b3342fe394fb9`，migration=none）再把 publish transport、WebDAV client、Archive executor、intake runtime、bot_ui jobs 与 SQLite archive deletion 拆为 cohesive mixins，并把 `MAX_SOURCE_FILE_LINES` 收紧到 1000。全部拆分保持行为、文案与 callback 不变，368 tests 全绿。`application/commands`/`queries` 未做物理目录重排（按设计已由 service command 与 ports query 分离）。两次 release 均通过独立 postflight 与 rollback-check。证据见 [R2-08_RELEASE.md](evidence/R2-08_RELEASE.md) 与 [R2-08B_RELEASE.md](evidence/R2-08B_RELEASE.md)。
 
 ### 验收与回滚
 
@@ -354,7 +354,7 @@ R2-09 已随 `r2-09-5ff2a61-20260913T092930Z`（runtime commit `5ff2a61e6ca51a8f
 
 ### 交付结果（2026-09-13）
 
-R2-10 的自动化与文档部分已交付：`FEATURE_CONTRACT.md` 已无 `REQUIRED` 项；`c39fe9d` 上 368 tests 全绿；旧 runtime 不在可启动树中，仅由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留；当前 release 的 source/image/DB 回滚资产与单实例身份已只读验证。受控生产 smoke（单媒体/相册/合集/封面/评论区/spoiler/URL/>2GB、cancel/hold/retry/undo、Archive 精确删除）、1～3 个真实大文件性能观测，以及破坏性 HostDZire 回滚演练需要 owner 的 Telegram 会话与独立运维窗口，已在 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md) 列为明确的用户验证清单，不在此伪称完成。
+R2-10 的自动化与文档部分已交付：`FEATURE_CONTRACT.md` 已无 `REQUIRED` 项；`52f39ca` 上 368 tests 全绿；R2-08B 已完成全部热点拆分并把源文件预算收紧到 1000 行；旧 runtime 不在可启动树中，仅由 annotated tag `legacy-telegram-video-forwarder-750b3c1` 保留；当前 release 的 source/image/DB 回滚资产与单实例身份已只读验证。受控生产 smoke（单媒体/相册/合集/封面/评论区/spoiler/URL/>2GB、cancel/hold/retry/undo、Archive 精确删除）、1～3 个真实大文件性能观测，以及破坏性 HostDZire 回滚演练需要 owner 的 Telegram 会话与独立运维窗口，已在 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md) 列为明确的用户验证清单，不在此伪称完成。
 
 ## 14. 每阶段交付记录模板
 
