@@ -1,0 +1,102 @@
+from __future__ import annotations
+
+from tgvio.adapters.telegram.publish_transport_support import *  # noqa: F401,F403
+
+
+class PublishReferenceMixin:
+    async def _resolve_reusable_media(self, item: MediaItem):
+        reference = item.telegram_ref or ""
+        parts = reference.split(":", 2)
+        if len(parts) != 3 or parts[0] != "telegram":
+            return None
+        try:
+            chat_id = int(parts[1])
+            message_id = int(parts[2])
+        except ValueError:
+            return None
+        try:
+            message = await self._client.get_messages(chat_id, ids=message_id)
+        except Exception:
+            return None
+        if message is None:
+            return None
+        try:
+            if item.kind == MediaKind.PHOTO and getattr(message, "photo", None) is not None:
+                return types.InputMediaPhoto(
+                    id=utils.get_input_photo(message.photo),
+                    spoiler=item.spoiler or None,
+                )
+            document = getattr(message, "document", None)
+            if document is not None:
+                return types.InputMediaDocument(
+                    id=utils.get_input_document(document),
+                    spoiler=item.spoiler or None,
+                )
+        except Exception:
+            return None
+        return None
+
+    async def _prepare_local_media(
+        self,
+        source: Path,
+        *,
+        kind: MediaKind,
+        force_document: bool,
+        supports_streaming: bool,
+        spoiler: bool,
+        thumbnail: Path | None = None,
+        force_upload: bool = False,
+        job_id: str | None = None,
+        item_index: int | None = None,
+    ):
+        if (
+            kind == MediaKind.PHOTO
+            and not force_document
+            and not spoiler
+            and thumbnail is None
+            and not force_upload
+        ):
+            return str(source)
+        uploaded = await self._upload_local_file(
+            source,
+            job_id=job_id,
+            item_index=item_index,
+        )
+        if kind == MediaKind.PHOTO and not force_document:
+            return types.InputMediaUploadedPhoto(
+                file=uploaded,
+                spoiler=spoiler or None,
+            )
+        attributes, mime_type = utils.get_attributes(
+            str(source),
+            force_document=force_document,
+            supports_streaming=supports_streaming,
+        )
+        if kind == MediaKind.VIDEO and not force_document:
+            has_video_attr = any(isinstance(a, types.DocumentAttributeVideo) for a in attributes)
+            if not has_video_attr:
+                attributes.append(
+                    types.DocumentAttributeVideo(
+                        duration=0,
+                        w=1,
+                        h=1,
+                        supports_streaming=supports_streaming
+                    )
+                )
+        uploaded_thumb = (
+            await self._upload_local_file(
+                thumbnail,
+                job_id=job_id,
+                item_index=item_index,
+            )
+            if thumbnail is not None
+            else None
+        )
+        return types.InputMediaUploadedDocument(
+            file=uploaded,
+            mime_type=mime_type,
+            attributes=attributes,
+            force_file=force_document or None,
+            spoiler=spoiler or None,
+            thumb=uploaded_thumb,
+        )

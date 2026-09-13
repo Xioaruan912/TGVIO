@@ -230,7 +230,7 @@ def git_source_manifest(repo: Path, commit: str) -> str:
     return _manifest_from_items(items)
 
 
-MAX_SOURCE_FILE_LINES = 1600
+MAX_SOURCE_FILE_LINES = 1000
 
 
 def check_architecture(root: Path) -> dict[str, object]:

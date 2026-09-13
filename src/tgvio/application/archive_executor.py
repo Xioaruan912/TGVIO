@@ -1,38 +1,11 @@
 from __future__ import annotations
 
-import asyncio
-import hashlib
-import logging
-from pathlib import Path
-import time
-
-from tgvio.application.archive_capabilities import (
-    record_archive_probe_failure,
-    record_archive_probe_success,
-)
-from tgvio.application.ports import ArchiveTransport, JobRepository
-from tgvio.domain.archive import (
-    ArchiveCapabilities,
-    ArchiveObject,
-    ArchiveObjectState,
-    ArchivePackage,
-    ArchivePackageState,
-    archive_complete_marker,
-    archive_json_bytes,
-    archive_json_sha256,
-)
-from tgvio.observability import log_event
+from tgvio.application.archive_executor_support import *  # noqa: F401,F403
+from tgvio.application.archive_commit import ArchiveCommitMixin
+from tgvio.application.archive_probe import ArchiveProbeMixin
 
 
-class ArchiveCapabilityError(RuntimeError):
-    pass
-
-
-class ArchiveExecutionError(RuntimeError):
-    pass
-
-
-class ArchiveExecutor:
+class ArchiveExecutor(ArchiveCommitMixin, ArchiveProbeMixin):
     """Durably materialize one ArchivePackage and commit it exactly once."""
 
     def __init__(self, repository: JobRepository, transport: ArchiveTransport) -> None:
@@ -186,20 +159,6 @@ class ArchiveExecutor:
                 exc_info=True,
             )
             raise
-
-    @staticmethod
-    def _validate_capabilities(capabilities: ArchiveCapabilities) -> None:
-        missing: list[str] = []
-        if not capabilities.supports_propfind:
-            missing.append("PROPFIND")
-        if not capabilities.supports_mkcol:
-            missing.append("MKCOL")
-        if not capabilities.supports_put:
-            missing.append("PUT")
-        if missing:
-            raise ArchiveCapabilityError(
-                "required WebDAV methods unavailable: " + ",".join(missing)
-            )
 
     async def _enter_uploading(
         self,
@@ -396,135 +355,6 @@ class ArchiveExecutor:
             verification_method=receipt.verification_method,
             reused_remote=receipt.reused_remote,
         )
-
-    async def _write_manifest(
-        self,
-        package: ArchivePackage,
-        work_root: str,
-        capabilities: ArchiveCapabilities,
-    ) -> None:
-        payload = archive_json_bytes(package.manifest)
-        expected_hash = package.manifest_sha256 or archive_json_sha256(package.manifest)
-        if hashlib.sha256(payload).hexdigest() != expected_hash:
-            raise ArchiveExecutionError("archive manifest hash changed after planning")
-        await self._transport.put_bytes(
-            payload,
-            f"{work_root}/manifest.json",
-            content_type="application/json; charset=utf-8",
-        )
-        await self._verify_exact_metadata(
-            f"{work_root}/manifest.json",
-            payload,
-            capabilities,
-        )
-
-    async def _write_complete_marker(
-        self,
-        package: ArchivePackage,
-        capabilities: ArchiveCapabilities,
-    ) -> None:
-        payload = archive_json_bytes(archive_complete_marker(package))
-        path = f"{package.remote_path}/_COMPLETE.json"
-        await self._transport.put_bytes(
-            payload,
-            path,
-            content_type="application/json; charset=utf-8",
-        )
-        await self._verify_exact_metadata(path, payload, capabilities)
-
-    async def _verify_final_package(
-        self,
-        package: ArchivePackage,
-        capabilities: ArchiveCapabilities,
-    ) -> None:
-        for obj in package.objects:
-            stat = await self._transport.stat(
-                f"{package.remote_path}/{obj.remote_relpath}"
-            )
-            if not stat.exists or stat.size_bytes != obj.size_bytes:
-                raise ArchiveExecutionError(
-                    f"archive final object verification failed at index {obj.object_index}"
-                )
-        manifest = archive_json_bytes(package.manifest)
-        await self._verify_exact_metadata(
-            f"{package.remote_path}/manifest.json",
-            manifest,
-            capabilities,
-        )
-
-    async def _committed_remote_is_valid(
-        self,
-        package: ArchivePackage,
-        capabilities: ArchiveCapabilities,
-    ) -> bool:
-        marker = archive_json_bytes(archive_complete_marker(package))
-        remote = await self._transport.get_bytes(
-            f"{package.remote_path}/_COMPLETE.json",
-            max_bytes=max(4096, len(marker) * 2),
-        )
-        if remote is None:
-            return False
-        if remote != marker:
-            raise ArchiveExecutionError("archive commit marker conflicts with durable package")
-        await self._verify_final_package(package, capabilities)
-        return True
-
-    async def _verify_exact_metadata(
-        self,
-        remote_path: str,
-        payload: bytes,
-        capabilities: ArchiveCapabilities,
-    ) -> None:
-        stat = await self._transport.stat(remote_path)
-        if not stat.exists or stat.size_bytes != len(payload):
-            raise ArchiveExecutionError("archive metadata size verification failed")
-        if capabilities.supports_get:
-            remote = await self._transport.get_bytes(
-                remote_path,
-                max_bytes=max(4096, len(payload) * 2),
-            )
-            if remote != payload:
-                raise ArchiveExecutionError("archive metadata content verification failed")
-
-    async def _record_probe_success(
-        self,
-        package: ArchivePackage,
-        capabilities: ArchiveCapabilities,
-    ) -> None:
-        try:
-            await record_archive_probe_success(
-                self._repository,
-                profile_id=package.archive_profile_id,
-                capabilities=capabilities,
-            )
-        except Exception as exc:
-            log_event(
-                self._log,
-                logging.WARNING,
-                "archive.capability.persist_failed",
-                "Archive capability snapshot could not be persisted",
-                package_id=package.id,
-                job_id=package.job_id,
-                exception_type=type(exc).__name__,
-            )
-
-    async def _record_probe_failure(self, package: ArchivePackage) -> None:
-        try:
-            await record_archive_probe_failure(
-                self._repository,
-                profile_id=package.archive_profile_id,
-                error_code="probe_failed",
-            )
-        except Exception as exc:
-            log_event(
-                self._log,
-                logging.WARNING,
-                "archive.probe_status.persist_failed",
-                "Archive probe failure status could not be persisted",
-                package_id=package.id,
-                job_id=package.job_id,
-                exception_type=type(exc).__name__,
-            )
 
     async def _fail_package(
         self,
