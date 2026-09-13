@@ -1246,7 +1246,7 @@ class TelethonBotUI:
             get_control = getattr(self._repository, "get_job_control", None)
             if callable(get_control):
                 control = await get_control(job.id)
-            held = bool(getattr(control, "hold_requested", False))
+            held = bool(getattr(control, "hold_requested", False)) and not job.terminal
             if filter == JobListFilter.ACTIVE and (job.terminal or held):
                 continue
             if filter == JobListFilter.HELD and not held:
@@ -1812,9 +1812,8 @@ class TelethonBotUI:
         if numeric.isdigit():
             get_by_order = getattr(self._repository, "get_by_accepted_order", None)
             if callable(get_by_order):
-                exact = await get_by_order(int(owner_id), int(numeric))
-                if exact is not None:
-                    return exact
+                return await get_by_order(int(owner_id), int(numeric))
+            return None
         if len(normalized) == 32:
             exact = await self._repository.get(normalized)
             if exact is not None and int(exact.owner_id) == int(owner_id):

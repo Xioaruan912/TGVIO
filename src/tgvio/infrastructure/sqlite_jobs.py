@@ -340,7 +340,12 @@ class SQLiteJobRepositoryMixin:
                 ]
             )
         elif filter == JobListFilter.HELD:
-            conditions.append("COALESCE(c.hold_requested,0)=1")
+            conditions.extend(
+                [
+                    "j.state NOT IN ('succeeded','failed','cancelled')",
+                    "COALESCE(c.hold_requested,0)=1",
+                ]
+            )
         elif filter == JobListFilter.FAILED:
             conditions.append("j.state='failed'")
         elif filter == JobListFilter.COMPLETED:
@@ -385,7 +390,7 @@ class SQLiteJobRepositoryMixin:
                 entries.append(
                     JobListEntry(
                         job=job,
-                        held=bool(row["held"]),
+                        held=bool(row["held"]) and not job.terminal,
                         accepted_order=(
                             None
                             if row["accepted_order"] is None

@@ -15,6 +15,7 @@ from tgvio.application.job_control import RetryDecision
 from tgvio.domain.archive import ArchivePackage, ArchivePackageState
 from tgvio.domain.control import JobControlState, QueueControlState
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
+from tgvio.domain.job_query import JobListFilter
 from tgvio.domain.publish import PublishPlan, PublishStep, PublishStepKind, PublishTarget
 
 
@@ -457,6 +458,37 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(by_hash_number)
         self.assertEqual(by_hash_number.id, second.id)
         self.assertEqual(by_plain_number.id, second.id)
+
+    async def test_missing_numeric_task_number_never_matches_uuid_prefix(self) -> None:
+        numeric_prefix = Job(
+            id="24" + "a" * 30,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.SUCCEEDED,
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
+        )
+        ui = TelethonBotUI(FakeClient(), settings(), FakeRepository([numeric_prefix]))
+
+        self.assertIsNone(await ui._resolve_job(42, "24"))
+        self.assertIsNone(await ui._resolve_job(42, "#24"))
+
+    async def test_terminal_job_with_stale_hold_flag_is_not_rendered_as_held(self) -> None:
+        completed = job(state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([completed])
+        repository.controls[completed.id] = JobControlState(
+            job_id=completed.id,
+            hold_requested=True,
+            hold_reason="stale",
+            hold_revision=1,
+        )
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+
+        all_text, _ = await ui._jobs_page(42)
+        held_text, _ = await ui._jobs_page(42, filter=JobListFilter.HELD)
+
+        self.assertIn("已完成", all_text)
+        self.assertNotIn("已暂停", all_text)
+        self.assertIn("共 `0` 个任务", held_text)
 
     async def test_normal_job_detail_hides_internal_code_but_deep_view_keeps_it(self) -> None:
         failed = job()

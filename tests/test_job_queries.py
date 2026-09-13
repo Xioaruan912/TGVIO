@@ -232,6 +232,31 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(archive.archive_actionable)
         self.assertEqual(archive.archive_package_id, "arc_archive-final")
 
+    async def test_held_filter_ignores_stale_hold_flag_on_terminal_job(self) -> None:
+        await self._insert_job(
+            "active-held",
+            state="planned",
+            held=True,
+            ordinal=1,
+        )
+        await self._insert_job(
+            "terminal-held",
+            state="succeeded",
+            held=True,
+            ordinal=2,
+        )
+
+        held = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.HELD)
+        all_jobs = await self.repo.page_jobs(
+            owner_id=42,
+            filter=JobListFilter.ALL,
+            page_size=10,
+        )
+
+        self.assertEqual([entry.job.id for entry in held.entries], ["active-held"])
+        terminal = next(entry for entry in all_jobs.entries if entry.job.id == "terminal-held")
+        self.assertFalse(terminal.held)
+
 
 if __name__ == "__main__":
     unittest.main()
