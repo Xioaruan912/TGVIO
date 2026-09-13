@@ -86,9 +86,11 @@ class TelegramIntakeMappingTests(unittest.TestCase):
             items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture", size_bytes=7)],
         )
 
-        text = runtime._render_live_status(failed, None, None)
+        text = runtime._render_live_status(failed, None, None, accepted_order=24)
         buttons = runtime._status_buttons(failed, None)
 
+        self.assertIn("任务 #24", text)
+        self.assertNotIn(failed.id[:10], text)
         self.assertIn("暂时无法读取原媒体", text)
         self.assertIn("尚未向目标频道发布", text)
         self.assertNotIn("download_failed", text)

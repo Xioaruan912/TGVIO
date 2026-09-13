@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime, timezone
 import logging
 import os
 import shutil
 from typing import Callable
+from zoneinfo import ZoneInfo
 
 from telethon import Button, TelegramClient, events
 from telethon.tl import functions, types
@@ -25,7 +27,7 @@ from tgvio.application.job_control import JobControlService, UnsafeRetryError
 from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepository
 from tgvio.config import Settings
 from tgvio.domain.archive import ArchivePackageState
-from tgvio.domain.job import Job, JobState
+from tgvio.domain.job import Job, JobState, MediaKind
 from tgvio.domain.job_query import (
     FailurePage,
     FailureSummary,
@@ -597,10 +599,11 @@ class TelethonBotUI:
                 await self._job_buttons(job),
             )
             return
+        label = await self._job_label(job)
         await self._edit_page(
             event,
             (
-                f"**确认重试任务 `{job.id[:10]}`**\n\n"
+                f"**确认重试{label}**\n\n"
                 f"{issue.explanation}\n\n"
                 "系统会再次检查已记录的发布结果，只在确认安全时继续。"
             ),
@@ -633,10 +636,11 @@ class TelethonBotUI:
         if job.terminal:
             await self._safe_answer(event, "任务已经结束，不能取消", alert=True)
             return
+        label = await self._job_label(job)
         await self._edit_page(
             event,
             (
-                f"**确认取消任务 `{job.id[:10]}`**\n\n"
+                f"**确认取消{label}**\n\n"
                 "取消请求会持久保存，任务将在下一个安全边界停止。"
             ),
             [
@@ -695,10 +699,11 @@ class TelethonBotUI:
             await self._safe_answer(event, "归档状态已变化，请刷新", alert=True)
             return
         issue = describe_archive_failure(package.error_code)
+        label = await self._job_label(job)
         await self._edit_page(
             event,
             (
-                f"**确认重传归档 `{job.id[:10]}`**\n\n"
+                f"**确认重传归档 · {label}**\n\n"
                 f"{issue.explanation}\n\n"
                 "已在远端确认的文件会被复用，不会重新发布 Telegram 消息。"
             ),
@@ -816,7 +821,7 @@ class TelethonBotUI:
         else:
             suffix = "已恢复到等待发布；当前自动发布关闭，不会产生频道消息。"
         return (
-            f"🔁 任务 `{job.id[:10]}` 已开始第 `{decision.retry_count}` 次安全重试。\n"
+            f"🔁 {await self._job_label(job)} 已开始第 `{decision.retry_count}` 次安全重试。\n"
             f"{suffix}"
         )
 
@@ -830,9 +835,10 @@ class TelethonBotUI:
             )
         except ValueError:
             return "🛡️ 任务已经结束或状态已变化，无法再取消。"
+        label = await self._job_label(job)
         if current.state == JobState.CANCELLED:
-            return f"⛔ 任务 `{job.id[:10]}` 已取消。"
-        return f"⏳ 任务 `{job.id[:10]}` 已记录取消请求，将在下一个安全边界停止。"
+            return f"⛔ {label} 已取消。"
+        return f"⏳ {label} 已记录取消请求，将在下一个安全边界停止。"
 
     async def _archive_retry_exact(self, job: Job) -> str:
         if not getattr(self._settings, "archive_enabled", False) or self._archive_operator is None:
@@ -859,9 +865,14 @@ class TelethonBotUI:
             )
             return "❌ 归档重传没有启动。Telegram 发布不受影响，请稍后再试。"
         return (
-            f"🔁 任务 `{job.id[:10]}` 的归档已重新排队。\n"
+            f"🔁 {await self._job_label(job)} 的归档已重新排队。\n"
             "系统会复用远端已确认文件，并从未完成的位置继续。"
         )
+
+    async def _job_label(self, job: Job) -> str:
+        get_order = getattr(self._repository, "get_accepted_order", None)
+        accepted_order = await get_order(job.id) if callable(get_order) else None
+        return self._job_number(accepted_order)
 
     async def _owned_job(self, owner_id: int, job_id: str) -> Job | None:
         if not job_id or len(job_id) > 40:
@@ -926,7 +937,7 @@ class TelethonBotUI:
             text += "\n🔗 也可直接发送一个 HTTP(S) 媒体/站点链接，由 yt-dlp 下载后进入同一流水线。"
         if getattr(self._settings, "live_fixture_enabled", False):
             text += (
-                "\n\n🧪 受控发布已启用：`/publish 任务ID`。"
+                "\n\n🧪 受控发布已启用：`/publish #任务序号`，例如 `/publish #24`。"
                 "该命令需要二次确认，且只允许小型安全 fixture。"
             )
         return text
@@ -1116,13 +1127,14 @@ class TelethonBotUI:
             for package in recent:
                 stored = sum(1 for obj in package.objects if obj.state.value == "stored")
                 total_bytes = sum(obj.size_bytes for obj in package.objects)
+                job = await self._repository.get(package.job_id)
+                label = await self._job_label(job) if job is not None else "任务"
                 lines.append(
-                    f"• `{package.job_id[:10]}` · {ARCHIVE_STATE_LABELS[package.state]} · "
+                    f"• {label} · {ARCHIVE_STATE_LABELS[package.state]} · "
                     f"`{stored}/{len(package.objects)}` 文件 · {self._human_bytes(total_bytes)}"
                 )
                 if package.state == ArchivePackageState.FAILED:
                     issue = describe_archive_failure(package.error_code)
-                    job = await self._repository.get(package.job_id)
                     if job is not None and archive_failure_waits_for_recovery(job, package):
                         recovery = archive_recovery_state(job)
                         if recovery.get("status") == "scheduled":
@@ -1191,7 +1203,7 @@ class TelethonBotUI:
             return
         if action != "retry" or len(parts) != 2:
             await event.respond(
-                "用法：`/archive`、`/archive probe` 或 `/archive retry 任务ID`",
+                "用法：`/archive`、`/archive probe` 或 `/archive retry #任务序号`",
                 parse_mode="md",
             )
             return
@@ -1246,7 +1258,15 @@ class TelethonBotUI:
                 JobState.CANCELLED,
             }:
                 continue
-            entries.append(JobListEntry(job=job, held=held))
+            get_order = getattr(self._repository, "get_accepted_order", None)
+            accepted_order = await get_order(job.id) if callable(get_order) else None
+            entries.append(
+                JobListEntry(
+                    job=job,
+                    held=held,
+                    accepted_order=accepted_order,
+                )
+            )
         total = len(entries)
         page_size = max(1, int(page_size))
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -1282,13 +1302,16 @@ class TelethonBotUI:
                 size = sum(item.size_bytes for item in job.items)
                 state_label = "已暂停" if entry.held else STATE_LABELS[job.state]
                 icon = "⏸" if entry.held else self._job_state_icon(job.state)
-                line = (
-                    f"{position}. {icon} `{job.id[:10]}` · {state_label} · "
-                    f"{len(job.items)} 项 · {self._human_bytes(size)}"
+                lines.append(
+                    f"{position}. {icon} {self._job_number(entry.accepted_order)} · "
+                    f"{state_label} · {self._job_local_time(job)}"
+                )
+                lines.append(
+                    f"  {self._job_content_summary(job)} · "
+                    f"{self._job_media_counts(job)} · {self._human_bytes(size)}"
                 )
                 if job.state == JobState.FAILED:
-                    line += f" · {describe_job_failure(job.error_code).title}"
-                lines.append(line)
+                    lines.append(f"  ⚠️ {describe_job_failure(job.error_code).title}")
                 progress = await self._repository.get_job_progress(job.id)
                 if progress is not None and not job.terminal and not entry.held:
                     lines.append(f"  {self._progress_text(progress)}")
@@ -1299,7 +1322,14 @@ class TelethonBotUI:
             rows.append(
                 [
                     Button.inline(
-                        f"{position} {self._job_state_icon(entry.job.state, held=entry.held)} 详情",
+                        (
+                            f"{position} {self._job_state_icon(entry.job.state, held=entry.held)} "
+                            + (
+                                f"任务 #{entry.accepted_order}"
+                                if entry.accepted_order is not None
+                                else "查看任务"
+                            )
+                        ),
                         self._callback_data("job", entry.job.id),
                     )
                 ]
@@ -1372,6 +1402,8 @@ class TelethonBotUI:
             )
             if not job_actionable and not archive_actionable:
                 continue
+            get_order = getattr(self._repository, "get_accepted_order", None)
+            accepted_order = await get_order(job.id) if callable(get_order) else None
             entries.append(
                 FailureSummary(
                     job=job,
@@ -1379,6 +1411,7 @@ class TelethonBotUI:
                     archive_actionable=archive_actionable,
                     archive_package_id=archive.id if archive is not None else None,
                     archive_error_code=archive.error_code if archive is not None else None,
+                    accepted_order=accepted_order,
                 )
             )
         total = len(entries)
@@ -1405,7 +1438,15 @@ class TelethonBotUI:
         else:
             for position, entry in enumerate(result.entries, start=1):
                 job = entry.job
-                lines.append(f"{position}. `{job.id[:10]}`")
+                size = sum(item.size_bytes for item in job.items)
+                lines.append(
+                    f"{position}. {self._job_number(entry.accepted_order)} · "
+                    f"{self._job_local_time(job)}"
+                )
+                lines.append(
+                    f"  {self._job_content_summary(job)} · "
+                    f"{self._job_media_counts(job)} · {self._human_bytes(size)}"
+                )
                 if entry.job_actionable:
                     issue = describe_job_failure(job.error_code)
                     lines.append(f"  ❌ Telegram/任务：{issue.title} · {issue.action}")
@@ -1419,7 +1460,11 @@ class TelethonBotUI:
             rows.append(
                 [
                     Button.inline(
-                        f"{position} 🔎 查看任务",
+                        (
+                            f"{position} 🔎 任务 #{entry.accepted_order}"
+                            if entry.accepted_order is not None
+                            else f"{position} 🔎 查看任务"
+                        ),
                         self._callback_data("job", entry.job.id),
                     )
                 ]
@@ -1466,10 +1511,12 @@ class TelethonBotUI:
                     continue
                 failed.append(package)
             for position, package in enumerate(failed, start=1):
+                job = await self._repository.get(package.job_id)
+                label = await self._job_label(job) if job is not None else f"失败归档 {position}"
                 rows.append(
                     [
                         Button.inline(
-                            f"🔁 重传失败归档 {position} · {package.job_id[:8]}",
+                            f"🔁 重传 {label}",
                             self._callback_data("archive-retry", package.job_id),
                         )
                     ]
@@ -1492,7 +1539,13 @@ class TelethonBotUI:
             job,
             log_limit=60 if deep else 16,
         )
-        text = self._render_job_diagnostic(snapshot, deep=deep)
+        get_order = getattr(self._repository, "get_accepted_order", None)
+        accepted_order = await get_order(job.id) if callable(get_order) else None
+        text = self._render_job_diagnostic(
+            snapshot,
+            deep=deep,
+            accepted_order=accepted_order,
+        )
         control = await self._repository.get_job_control(job.id)
         if control.hold_requested and not job.terminal:
             text += "\n\n⏸ **任务已暂停** · 当前缓存已保留，恢复后从安全边界继续。"
@@ -1503,20 +1556,25 @@ class TelethonBotUI:
         snapshot: JobDiagnosticSnapshot,
         *,
         deep: bool,
+        accepted_order: int | None = None,
     ) -> str:
         job = snapshot.job
         size = sum(item.size_bytes for item in job.items)
         event_types = {event.event_type for event in snapshot.events}
         lines = [
-            f"**任务诊断 `{job.id[:10]}`**",
+            f"**{self._job_number(accepted_order)} · 任务详情**",
             "",
             f"状态：**{STATE_LABELS[job.state]}**",
-            f"媒体：`{len(job.items)}` 项 · `{self._human_bytes(size)}`",
+            f"时间：{self._job_local_time(job)}",
+            f"媒体：{self._job_media_counts(job)} · `{self._human_bytes(size)}`",
+            self._job_content_summary(job),
         ]
-        if job.created_at:
-            lines.append(f"创建：`{job.created_at}` UTC")
-        if job.updated_at:
-            lines.append(f"更新：`{job.updated_at}` UTC")
+        if deep:
+            lines.append(f"内部 Job ID：`{job.id}`")
+            if job.created_at:
+                lines.append(f"创建（UTC）：`{job.created_at}`")
+            if job.updated_at:
+                lines.append(f"更新（UTC）：`{job.updated_at}`")
         if job.error_code:
             issue = describe_job_failure(job.error_code)
             lines.extend([f"原因：**{issue.title}**", issue.explanation])
@@ -1737,16 +1795,26 @@ class TelethonBotUI:
         if job is None:
             return "**发布计划**\n\n没有找到对应任务。"
         plan = await self._repository.get_publish_plan(job.id)
+        label = await self._job_label(job)
         if plan is None:
             return (
-                f"**发布计划 `{job.id[:10]}`**\n\n"
+                f"**{label} · 发布计划**\n\n"
                 f"当前状态：{STATE_LABELS[job.state]}\n"
                 "该任务还没有生成 PublishPlan。"
             )
-        return self._render_plan(job, plan)
+        get_order = getattr(self._repository, "get_accepted_order", None)
+        accepted_order = await get_order(job.id) if callable(get_order) else None
+        return self._render_plan(job, plan, accepted_order=accepted_order)
 
     async def _resolve_job(self, owner_id: int, prefix: str | None) -> Job | None:
         normalized = prefix.strip().lower() if prefix else ""
+        numeric = normalized.removeprefix("#")
+        if numeric.isdigit():
+            get_by_order = getattr(self._repository, "get_by_accepted_order", None)
+            if callable(get_by_order):
+                exact = await get_by_order(int(owner_id), int(numeric))
+                if exact is not None:
+                    return exact
         if len(normalized) == 32:
             exact = await self._repository.get(normalized)
             if exact is not None and int(exact.owner_id) == int(owner_id):
@@ -1795,7 +1863,7 @@ class TelethonBotUI:
             await event.respond("任务控制服务未启用。")
             return
         if not prefix:
-            await event.respond("请使用 `/cancel 任务ID`，取消操作必须显式指定任务。", parse_mode="md")
+            await event.respond("请使用 `/cancel #任务序号`，例如 `/cancel #24`。也可直接在任务详情点取消按钮。", parse_mode="md")
             return
         job = await self._resolve_job(owner_id, prefix)
         if job is None:
@@ -1817,7 +1885,7 @@ class TelethonBotUI:
         except ValueError:
             return "🛡️ 任务已经结束或状态已变化，无法暂停。"
         return (
-            f"⏸ 任务 `{job.id[:10]}` 已暂停（revision `{control.hold_revision}`）。\n"
+            f"⏸ {await self._job_label(job)} 已暂停（revision `{control.hold_revision}`）。\n"
             "当前正在执行的安全单元会先结束；后续 prepare / publish / archive claim 不会再取得。"
         )
 
@@ -1838,7 +1906,7 @@ class TelethonBotUI:
                 )
             else:
                 self._schedule_job(job)
-        return f"▶️ 任务 `{job.id[:10]}` 已恢复（revision `{control.hold_revision}`），将从 durable 状态继续。"
+        return f"▶️ {await self._job_label(job)} 已恢复（revision `{control.hold_revision}`），将从 durable 状态继续。"
 
     async def _pause_queue_exact(self, *, owner_id: int) -> None:
         if self._control is None:
@@ -1881,7 +1949,7 @@ class TelethonBotUI:
             await event.respond("任务控制服务未启用。")
             return
         if not prefix:
-            await event.respond("请使用 `/retry 任务ID`，重试操作必须显式指定任务。", parse_mode="md")
+            await event.respond("请使用 `/retry #任务序号`，例如 `/retry #24`。也可直接在任务详情点重试按钮。", parse_mode="md")
             return
         job = await self._resolve_job(owner_id, prefix)
         if job is None:
@@ -1915,9 +1983,10 @@ class TelethonBotUI:
         if error:
             await event.respond(f"🛡️ 不能用于受控发布：{error}")
             return
+        label = await self._job_label(job)
         await event.respond(
             (
-                f"**受控真实发布确认** `{job.id[:10]}`\n\n"
+                f"**{label} · 受控真实发布确认**\n\n"
                 f"媒体：`{len(job.items)}` 项\n"
                 f"总大小：`{self._human_bytes(sum(item.size_bytes for item in job.items))}`\n"
                 "确认后会对真实目标频道产生 Telegram 消息。"
@@ -1954,7 +2023,7 @@ class TelethonBotUI:
             return
         await event.answer("受控发布已开始")
         await event.edit(
-            f"🧪 任务 `{job.id[:10]}` 正在执行受控真实发布……",
+            f"🧪 {await self._job_label(job)} 正在执行受控真实发布……",
             buttons=self._home_buttons(),
             parse_mode="md",
         )
@@ -1984,13 +2053,13 @@ class TelethonBotUI:
             )
             await self._client.send_message(
                 chat_id,
-                f"❌ 受控发布 `{job.id[:10]}` 失败：`{type(exc).__name__}`",
+                f"❌ {await self._job_label(job)} 受控发布失败：`{type(exc).__name__}`",
                 parse_mode="md",
             )
             return
         await self._client.send_message(
             chat_id,
-            f"✅ 受控发布 `{completed.id[:10]}` 完成。",
+            f"✅ {await self._job_label(completed)} 受控发布完成。",
             parse_mode="md",
         )
 
@@ -2012,10 +2081,16 @@ class TelethonBotUI:
             return "fixture 不允许大文件分段/分卷策略"
         return None
 
-    def _render_plan(self, job: Job, plan: PublishPlan) -> str:
+    def _render_plan(
+        self,
+        job: Job,
+        plan: PublishPlan,
+        *,
+        accepted_order: int | None = None,
+    ) -> str:
         summary = plan.summary
         lines = [
-            f"**PublishPlan `{job.id[:10]}` · v{plan.version}**",
+            f"**{self._job_number(accepted_order)} · 发布计划 v{plan.version}**",
             "",
             f"媒体：`{summary.get('media_total', len(job.items))}` · "
             f"图片 `{summary.get('photos', 0)}` · 视频 `{summary.get('videos', 0)}` · 文件 `{summary.get('documents', 0)}`",
@@ -2098,6 +2173,115 @@ class TelethonBotUI:
                 return f"{amount:.1f}{unit}" if unit != "B" else f"{int(amount)}B"
             amount /= 1024
         return f"{amount:.1f}TB"
+
+    @staticmethod
+    def _md_text(value: object, *, limit: int = 56) -> str:
+        text = " ".join(str(value or "").strip().split())
+        if not text:
+            return ""
+        if len(text) > limit:
+            text = text[: max(1, limit - 1)].rstrip() + "…"
+        for marker in ("\\", "`", "*", "_", "[", "]"):
+            text = text.replace(marker, f"\\{marker}")
+        return text
+
+    @staticmethod
+    def _job_number(accepted_order: int | None) -> str:
+        return f"任务 #{accepted_order}" if accepted_order is not None else "任务"
+
+    @staticmethod
+    def _job_local_time(job: Job) -> str:
+        raw = str(job.created_at or "").strip()
+        if not raw:
+            return "时间未知"
+        candidate = raw.replace("Z", "+00:00")
+        try:
+            parsed = datetime.fromisoformat(candidate)
+        except ValueError:
+            for fmt in ("%Y-%m-%d %H:%M:%S", "%Y-%m-%d %H:%M:%S.%f"):
+                try:
+                    parsed = datetime.strptime(raw, fmt).replace(tzinfo=timezone.utc)
+                    break
+                except ValueError:
+                    continue
+            else:
+                return raw[:16]
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+        local = parsed.astimezone(ZoneInfo("Asia/Shanghai"))
+        return local.strftime("%m-%d %H:%M")
+
+    @staticmethod
+    def _job_media_counts(job: Job) -> str:
+        labels = {
+            MediaKind.VIDEO: "视频",
+            MediaKind.PHOTO: "图片",
+            MediaKind.DOCUMENT: "文件",
+            MediaKind.TEXT: "文字",
+        }
+        parts: list[str] = []
+        for kind in (MediaKind.VIDEO, MediaKind.PHOTO, MediaKind.DOCUMENT, MediaKind.TEXT):
+            count = sum(1 for item in job.items if item.kind == kind)
+            if count:
+                parts.append(f"{count} 个{labels[kind]}")
+        return " · ".join(parts) if parts else f"{len(job.items)} 项"
+
+    def _job_content_summary(self, job: Job) -> str:
+        names = [self._md_text(item.name) for item in job.items if item.name]
+        names = [name for name in names if name]
+        if names:
+            suffix = f" 等 {len(job.items)} 项" if len(job.items) > 1 else ""
+            return f"🎬 {names[0]}{suffix}"
+
+        captions = [
+            self._md_text(item.caption)
+            for item in job.items
+            if str(item.caption or "").strip()
+        ]
+        captions = [caption for caption in captions if caption]
+        collection_caption = self._md_text(job.policy.get("collection_caption", ""))
+        if captions or collection_caption:
+            return f"📝 {captions[0] if captions else collection_caption}"
+
+        for item in job.items:
+            host = self._md_text(item.metadata.get("url_hostname", ""), limit=42)
+            if host:
+                return f"🔗 {host}"
+
+        first = job.items[0] if job.items else None
+        if first is not None and first.kind == MediaKind.VIDEO:
+            details: list[str] = []
+            if first.duration_seconds:
+                seconds = max(0, int(first.duration_seconds))
+                minutes, seconds = divmod(seconds, 60)
+                hours, minutes = divmod(minutes, 60)
+                duration = (
+                    f"{hours}:{minutes:02d}:{seconds:02d}"
+                    if hours
+                    else f"{minutes}:{seconds:02d}"
+                )
+                details.append(duration)
+            if first.width and first.height:
+                details.append(f"{first.width}×{first.height}")
+            if details:
+                return "🎬 视频 · " + " · ".join(details)
+        return "🎬 " + self._job_media_counts(job)
+
+    def _job_identity_lines(
+        self,
+        job: Job,
+        *,
+        accepted_order: int | None,
+        prefix: str = "",
+    ) -> list[str]:
+        size = sum(item.size_bytes for item in job.items)
+        title = self._job_number(accepted_order)
+        if prefix:
+            title = f"{prefix}{title}"
+        return [
+            f"{title} · {self._job_local_time(job)} · {self._job_media_counts(job)} · {self._human_bytes(size)}",
+            f"  {self._job_content_summary(job)}",
+        ]
 
     def _home_buttons(self):
         return [

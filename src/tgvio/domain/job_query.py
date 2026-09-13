@@ -18,6 +18,7 @@ class JobListFilter(StrEnum):
 class JobListEntry:
     job: Job
     held: bool = False
+    accepted_order: int | None = None
 
 
 @dataclass(frozen=True, slots=True)
@@ -42,6 +43,7 @@ class FailureSummary:
     archive_actionable: bool
     archive_package_id: str | None = None
     archive_error_code: str | None = None
+    accepted_order: int | None = None
 
 
 @dataclass(frozen=True, slots=True)

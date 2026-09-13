@@ -631,7 +631,7 @@ class TelethonIntakeRuntime:
             return
 
         if status_message_id is None:
-            status_message = await self._safe_send(chat_id, self._accepted_status_text(job))
+            status_message = await self._safe_send(chat_id, await self._accepted_status_text(job))
             status_message_id = getattr(status_message, "id", None)
             if status_message_id is not None:
                 await self._save_display_message(job.id, chat_id, int(status_message_id))
@@ -639,7 +639,7 @@ class TelethonIntakeRuntime:
             await self._safe_edit(
                 chat_id,
                 int(status_message_id),
-                self._accepted_status_text(job),
+                await self._accepted_status_text(job),
             )
         self.schedule(
             job,
@@ -647,10 +647,20 @@ class TelethonIntakeRuntime:
             status_message_id=(int(status_message_id) if status_message_id is not None else None),
         )
 
-    @staticmethod
-    def _accepted_status_text(job: Job) -> str:
+    async def _accepted_order(self, job_id: str) -> int | None:
+        repository = self._repository
+        if repository is None or not hasattr(repository, "get_accepted_order"):
+            return None
+        return await repository.get_accepted_order(job_id)
+
+    async def _job_label(self, job_id: str) -> str:
+        accepted_order = await self._accepted_order(job_id)
+        return f"任务 #{accepted_order}" if accepted_order is not None else "任务"
+
+    async def _accepted_status_text(self, job: Job) -> str:
+        label = await self._job_label(job.id)
         return (
-            f"✅ 已接收任务 `{job.id[:10]}`\n"
+            f"✅ 已接收 · **{label}**\n"
             f"媒体：{len(job.items)}\n"
             "正在下载和分析。"
         )
@@ -691,7 +701,7 @@ class TelethonIntakeRuntime:
             and chat_id is not None
             and not job.terminal
         ):
-            message = await self._safe_send(int(chat_id), self._accepted_status_text(job))
+            message = await self._safe_send(int(chat_id), await self._accepted_status_text(job))
             message_id = getattr(message, "id", None)
             if message_id is not None:
                 await self._save_display_message(job.id, int(chat_id), int(message_id))
@@ -700,7 +710,7 @@ class TelethonIntakeRuntime:
             ref = await self._edit_or_replace_display(
                 job.id,
                 ref,
-                self._accepted_status_text(job),
+                await self._accepted_status_text(job),
             )
         self.schedule(
             job,
@@ -729,8 +739,9 @@ class TelethonIntakeRuntime:
                 status_message_id = ref.message_id
         if chat_id is None:
             return
+        label = await self._job_label(job.id)
         prompt = (
-            f"❓ **任务 `{job.id[:10]}` 如何显示？**\n\n"
+            f"❓ **{label} 如何显示？**\n\n"
             f"媒体：`{len(job.items)}`\n"
             "请选择雪花遮挡或正常显示；超时会自动按正常显示处理。"
         )
@@ -839,7 +850,8 @@ class TelethonIntakeRuntime:
         if resolved is None:
             ref = await self._repository.get_job_display_message(job_id)
             if ref is not None:
-                await self._safe_edit(ref.chat_id, ref.message_id, f"⛔ 任务 `{job_id[:10]}` 已取消。")
+                label = await self._job_label(job_id)
+                await self._safe_edit(ref.chat_id, ref.message_id, f"⛔ {label} 已取消。")
             await self._safe_answer(event, "任务已取消")
             return
         await self._safe_answer(event, "已确认")
@@ -864,7 +876,7 @@ class TelethonIntakeRuntime:
             ref = await self._edit_or_replace_display(
                 job.id,
                 ref,
-                self._accepted_status_text(job),
+                await self._accepted_status_text(job),
             )
         self.schedule(
             job,
@@ -987,7 +999,7 @@ class TelethonIntakeRuntime:
                         job_id=job.id,
                     )
                     if chat_id is not None and status_message_id is None:
-                        await self._safe_send(chat_id, f"⛔ 任务 `{job.id[:10]}` 已取消。")
+                        await self._safe_send(chat_id, f"⛔ {await self._job_label(job.id)} 已取消。")
                     return
                 except JobHoldRequested:
                     log_event(
@@ -1009,7 +1021,10 @@ class TelethonIntakeRuntime:
                         exc_info=True,
                     )
                     if chat_id is not None and status_message_id is None:
-                        await self._safe_send(chat_id, f"❌ 任务 `{job.id[:10]}` 下载/分析失败。")
+                        await self._safe_send(
+                            chat_id,
+                            f"❌ {await self._job_label(job.id)} 下载/分析失败。",
+                        )
                     return
             finally:
                 await claim.stop()
@@ -1030,7 +1045,7 @@ class TelethonIntakeRuntime:
             ):
                 await self._safe_send(
                     chat_id,
-                    f"🧠 任务 `{completed.id[:10]}` 已完成分析与发布规划。\n"
+                    f"🧠 {await self._job_label(completed.id)} 已完成分析与发布规划。\n"
                     "打开“📋 我的任务”即可查看发布计划。",
                 )
 
@@ -1041,6 +1056,7 @@ class TelethonIntakeRuntime:
         previous_item: int | None = None
         previous_current = 0
         previous_time = time.monotonic()
+        accepted_order = await self._accepted_order(job_id)
         try:
             while True:
                 job = await self._intake.repository.get(job_id) if hasattr(self._intake, "repository") else None
@@ -1084,6 +1100,7 @@ class TelethonIntakeRuntime:
                     archive,
                     speed_bps=speed_bps,
                     held=held,
+                    accepted_order=accepted_order,
                 )
                 if text != last_text:
                     if await self._safe_edit(
@@ -1117,10 +1134,12 @@ class TelethonIntakeRuntime:
         *,
         speed_bps: float | None = None,
         held: bool = False,
+        accepted_order: int | None = None,
     ) -> str:
         total_bytes = sum(max(0, int(item.size_bytes or 0)) for item in job.items)
+        label = f"任务 #{accepted_order}" if accepted_order is not None else "任务"
         lines = [
-            f"✅ 已接收任务 `{job.id[:10]}`",
+            f"✅ 已接收 · **{label}**",
             f"媒体：`{len(job.items)}` · `{self._human_bytes(total_bytes)}`",
         ]
 

@@ -37,6 +37,7 @@ class FakeRepository:
         self.archives = {package.job_id: package for package in archives}
         self.plans = {plan.job_id: plan for plan in plans}
         self.controls = {job.id: JobControlState(job_id=job.id) for job in jobs}
+        self.accepted_orders = {job.id: index for index, job in enumerate(jobs, start=1)}
         self.queue_control = QueueControlState()
 
     async def list_recent(self, *, owner_id, limit):
@@ -51,6 +52,16 @@ class FakeRepository:
 
     async def get(self, job_id):
         return self.jobs.get(job_id)
+
+    async def get_accepted_order(self, job_id):
+        return self.accepted_orders.get(job_id)
+
+    async def get_by_accepted_order(self, owner_id, accepted_order):
+        for job_id, order in self.accepted_orders.items():
+            job = self.jobs.get(job_id)
+            if order == accepted_order and job is not None and job.owner_id == owner_id:
+                return job
+        return None
 
     async def count_by_state(self, *, owner_id=None):
         counts = {}
@@ -238,7 +249,16 @@ def job(*, owner_id=42, state=JobState.FAILED, error_code="download_failed"):
         destination="@channel",
         state=state,
         error_code=error_code,
-        items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture", size_bytes=7)],
+        created_at="2026-09-12 23:42:00",
+        items=[
+            MediaItem(
+                index=0,
+                kind=MediaKind.VIDEO,
+                source="fixture",
+                name="旅行_01.mp4",
+                size_bytes=7,
+            )
+        ],
     )
 
 
@@ -331,6 +351,10 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         text, buttons = await ui._jobs_page(42)
 
         self.assertIn("暂时无法读取原媒体", text)
+        self.assertIn("任务 #1", text)
+        self.assertIn("09-13 07:42", text)
+        self.assertIn("旅行\\_01.mp4", text)
+        self.assertNotIn(failed.id[:10], text)
         self.assertNotIn("download_failed", text)
         self.assertNotIn("/job", text)
         payloads = [
@@ -365,7 +389,8 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         text = event.edits[0][0]
         self.assertIn("完成", text)
-        self.assertIn(completed.id[:10], text)
+        self.assertIn("任务 #2", text)
+        self.assertNotIn(completed.id[:10], text)
         self.assertNotIn(active.id[:10], text)
         payloads = [
             button.data
@@ -408,9 +433,30 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(event)
 
         text = event.edits[0][0]
-        self.assertIn(failed.id[:10], text)
+        self.assertIn("任务 #1", text)
+        self.assertNotIn("任务 #2", text)
+        self.assertNotIn(failed.id[:10], text)
         self.assertNotIn(pending.id[:10], text)
         self.assertIn("需要处理", text)
+
+    async def test_task_number_resolves_without_uuid_memory(self) -> None:
+        first = job(state=JobState.SUCCEEDED, error_code=None)
+        second = Job(
+            id="b" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.FAILED,
+            error_code="download_failed",
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
+        )
+        ui = TelethonBotUI(FakeClient(), settings(), FakeRepository([first, second]))
+
+        by_hash_number = await ui._resolve_job(42, "#2")
+        by_plain_number = await ui._resolve_job(42, "2")
+
+        self.assertIsNotNone(by_hash_number)
+        self.assertEqual(by_hash_number.id, second.id)
+        self.assertEqual(by_plain_number.id, second.id)
 
     async def test_normal_job_detail_hides_internal_code_but_deep_view_keeps_it(self) -> None:
         failed = job()
@@ -419,8 +465,12 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         normal = await ui._job_text(42, failed.id)
         deep = await ui._job_text(42, failed.id, deep=True)
 
+        self.assertIn("任务 #1", normal)
+        self.assertIn("旅行\\_01.mp4", normal)
         self.assertIn("暂时无法读取原媒体", normal)
+        self.assertNotIn(failed.id, normal)
         self.assertNotIn("`download_failed`", normal)
+        self.assertIn(f"内部 Job ID：`{failed.id}`", deep)
         self.assertIn("内部错误码：`download_failed`", deep)
 
     async def test_uncertain_publish_never_gets_retry_button(self) -> None:

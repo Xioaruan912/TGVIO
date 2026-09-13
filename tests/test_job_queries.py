@@ -53,6 +53,10 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
                 "INSERT INTO job_controls(job_id, hold_requested) VALUES(?,?)",
                 (job_id, int(held)),
             )
+            await conn.execute(
+                "INSERT INTO job_schedule(job_id, accepted_at) VALUES(?,datetime('2026-09-12', ?))",
+                (job_id, f"+{ordinal} seconds"),
+            )
 
     async def _insert_failed_archive(
         self,
@@ -105,6 +109,7 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(all_page.total, 6)
         self.assertEqual(len(all_page.entries), 3)
         self.assertTrue(all(entry.job.owner_id == 42 for entry in all_page.entries))
+        self.assertTrue(all(entry.accepted_order is not None for entry in all_page.entries))
 
         active = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.ACTIVE)
         self.assertEqual(
@@ -130,6 +135,14 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(clamped.page, 1)
         self.assertEqual(len(clamped.entries), 3)
+
+        held_order = held.entries[0].accepted_order
+        assert held_order is not None
+        resolved = await self.repo.get_by_accepted_order(42, held_order)
+        foreign = await self.repo.get_by_accepted_order(7, held_order)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.id, "job-held")
+        self.assertIsNone(foreign)
 
     async def test_failure_center_excludes_auto_recovery_pending_and_prioritizes_publish_review(self) -> None:
         recovery = {
@@ -205,6 +218,7 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(page.total, 5)
         ids = [entry.job.id for entry in page.entries]
         self.assertEqual(ids[0], "publish-review")
+        self.assertTrue(all(entry.accepted_order is not None for entry in page.entries))
         self.assertNotIn("retry-pending", ids)
         self.assertNotIn("archive-pending", ids)
         self.assertNotIn("foreign-failure", ids)

@@ -178,6 +178,27 @@ class SQLiteJobRepositoryMixin:
             updated_at=row["updated_at"],
         )
 
+    async def get_by_accepted_order(
+        self,
+        owner_id: int,
+        accepted_order: int,
+    ) -> Job | None:
+        conn = self._require()
+        cursor = await conn.execute(
+            """
+            SELECT s.job_id
+            FROM job_schedule s
+            JOIN jobs j ON j.id=s.job_id
+            WHERE j.owner_id=? AND s.accepted_order=?
+            """,
+            (int(owner_id), int(accepted_order)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return None
+        return await self.get(str(row["job_id"]))
+
     async def list_items(self, job_id: str) -> list[MediaItem]:
         conn = self._require()
         cursor = await conn.execute(
@@ -342,9 +363,13 @@ class SQLiteJobRepositoryMixin:
         current_page = min(requested_page, total_pages - 1)
         cursor = await conn.execute(
             f"""
-            SELECT j.id, COALESCE(c.hold_requested,0) AS held
+            SELECT
+                j.id,
+                COALESCE(c.hold_requested,0) AS held,
+                s.accepted_order AS accepted_order
             FROM jobs j
             LEFT JOIN job_controls c ON c.job_id=j.id
+            LEFT JOIN job_schedule s ON s.job_id=j.id
             WHERE {where}
             ORDER BY j.created_at DESC, j.rowid DESC
             LIMIT ? OFFSET ?
@@ -357,7 +382,17 @@ class SQLiteJobRepositoryMixin:
         for row in rows:
             job = await self.get(str(row["id"]))
             if job is not None:
-                entries.append(JobListEntry(job=job, held=bool(row["held"])))
+                entries.append(
+                    JobListEntry(
+                        job=job,
+                        held=bool(row["held"]),
+                        accepted_order=(
+                            None
+                            if row["accepted_order"] is None
+                            else int(row["accepted_order"])
+                        ),
+                    )
+                )
         return JobPage(
             entries=tuple(entries),
             filter=filter,
@@ -422,9 +457,11 @@ class SQLiteJobRepositoryMixin:
                 CASE WHEN ({job_actionable}) THEN 1 ELSE 0 END AS job_actionable,
                 CASE WHEN ({archive_actionable}) THEN 1 ELSE 0 END AS archive_actionable,
                 a.id AS archive_package_id,
-                a.error_code AS archive_error_code
+                a.error_code AS archive_error_code,
+                s.accepted_order AS accepted_order
             FROM jobs j
             LEFT JOIN archive_packages a ON a.job_id=j.id
+            LEFT JOIN job_schedule s ON s.job_id=j.id
             WHERE j.owner_id=?
               AND (({job_actionable}) OR ({archive_actionable}))
             ORDER BY
@@ -453,6 +490,11 @@ class SQLiteJobRepositoryMixin:
                     archive_actionable=bool(row["archive_actionable"]),
                     archive_package_id=row["archive_package_id"],
                     archive_error_code=row["archive_error_code"],
+                    accepted_order=(
+                        None
+                        if row["accepted_order"] is None
+                        else int(row["accepted_order"])
+                    ),
                 )
             )
         return FailurePage(
