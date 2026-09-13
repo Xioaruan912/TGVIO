@@ -62,7 +62,7 @@
 
 | ID | 合同 | 当前状态 | 证据/缺口 |
 |---|---|---|---|
-| AR-01 | 每个 Job 对应一个 plan-first ArchivePackage，只归档 canonical media | VERIFIED | Archive planner/repository tests；生产有 committed package |
+| AR-01 | 每个 Job 对应一个 plan-first ArchivePackage，只归档 canonical media | VERIFIED | Archive planner/repository tests；生产有 committed package。R2-13 起新包使用短路径布局 `<root>/YYYY-MM-DD/<N>/<sha256[:12]>.<ext>`（持久化每日序号，保留 manifest/_COMPLETE）；v1 历史包不变 |
 | AR-02 | PUT 后验证远端事实；慢或丢响应先轮询确认，避免重复大文件上传 | COVERED | WebDAV adapter/executor tests |
 | AR-03 | 支持 staging+MOVE；无 MOVE 时以 `_COMPLETE.json` 为唯一提交边界 | VERIFIED | executor tests；生产有 committed evidence |
 | AR-04 | 崩溃恢复从已存对象继续，manifest/marker 确定性，不产生 attempt sprawl | COVERED | executor/runtime tests |
@@ -78,6 +78,7 @@
 | UI-02 | 首页、帮助、任务、计划、统计、健康、诊断、缓存和 Archive 都可通过按钮到达和返回 | COVERED | R2-03A 增加 persistent 手机键盘、任务直达按钮、确认页和重复刷新回归；仍需完整 view callback 遍历 |
 | UI-03 | `/jobs` 支持 SQL 分页、状态筛选、详情和失败中心，100+ Job 不超 Telegram 限制 | VERIFIED | R2-06C 已生产发布 SQL `COUNT + LIMIT/OFFSET` 分页、all/active/held/failed/completed 筛选与 failure center；后续 release 统一为 durable `任务 #N` + 时间/媒体摘要、普通详情隐藏 UUID、技术详情保留内部 ID，并支持 owner-scoped `#N` 解析。最终 R2-06 v5 release 的 304 tests 与 24 Job/healthy postflight 通过 |
 | UI-04 | owner 通过私聊收到失败/异常告警，含去重/冷却/脱敏 | VERIFIED | R2-11 已随 `r2-11-7101d2a-20260913T122158Z` 交付：`job.failed`（含 partial/uncertain）、`archive.failed`、Telegram 断连与磁盘低水位及恢复；复用 outbox claim/去重/退避；仅失败/异常推送，冷却窗口 3600s；payload 脱敏；webhook 为全量 best-effort 次渠道 |
+| UI-05 | 每天 06:00（北京时间）清空任务列表/缓存/旧状态消息并复位编号；保留日志与统计；Bot 内可开关 | VERIFIED | R2-13 已随 `r2-13-9f0eb94-20260913T135837Z` + `0009_archive_layout_flags` 交付：`DailyMaintenanceRuntime` 06:00 执行，清终态 Job+级联/操作令牌/已结算 outbox/缓存/状态消息，编号复位为 `任务 #1`，日志按 3 天轮转保留、`daily_stats` 保留；`/settings` 提供告警/预览/每日清空开关（durable `runtime_flags`），默认开启 |
 | CT-01 | cancel 是 durable、幂等、owner-scoped，并在安全边界生效 | COVERED | job control tests；R2-06 v5 已让 Bot cancel 二次确认使用 owner/revision/TTL/single-use operation token |
 | CT-02 | 单 Job `pause/hold/resume` 保留缓存；全局暂停只停止新 claim | VERIFIED | R2-06 `0004_queue_controls` 已生产发布 durable Job hold/resume 与 global queue pause；下载/分析/PublishStep 在安全边界停，existing claim 可 heartbeat，resume 不重放已成功 PublishStep |
 | CT-03 | retry 从正确阶段恢复，不清空历史，不绕过 partial/uncertain 保护 | COVERED | job control/automatic recovery tests；R2-06 v5 已为 Job retry、Archive retry 和受控 fixture 回调部署通用确认 token |

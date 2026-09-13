@@ -19,14 +19,15 @@ of growing behavior inside one large bot runtime.
 ## Current phase
 
 TGVIO is the active production runtime. R2-01 restored source authority, R2-02
-established the reproducible fail-closed delivery chain, and R2-03 through R2-11
+established the reproducible fail-closed delivery chain, and R2-03 through R2-13
 added the migration ledger, durable scheduler/claim/FIFO, durable intake and
 collections, full queue control and undo, Archive V2 with exact remote delete,
 the redacted Diagnostic Snapshot, the read-only operations surface
-(Dashboard, metrics, notification outbox), owner failure alerts, and collection
-preview. The current production release is
-`r2-11-7101d2a-20260913T122158Z` at full commit
-`7101d2a5c660ddd64cf08f41c68f8be650a6e291` (schema v8), healthy on HostDZire.
+(Dashboard, metrics, notification outbox), owner failure alerts, collection
+preview, slow-backend Archive tolerance, a short dated Archive layout, and a
+daily 06:00 task-list/cache reset with `/settings` toggles. The current
+production release is `r2-13-9f0eb94-20260913T135837Z` at full commit
+`9f0eb946c2aa036cc203816ea5484e0bc1a884a3` (schema v9), healthy on HostDZire.
 
 The authoritative refactoring plan, feature contract, and per-stage evidence
 live under [`docs/refactor-v2/`](docs/refactor-v2/README.md). The implemented
@@ -72,6 +73,13 @@ Telegram disconnection, and low disk space, and a short recovery note when the
 condition clears. The collection flow shows a preview card before publishing
 (`TGVIO_COLLECTION_PREVIEW_ENABLED=true`) with confirm / show-mode / abandon
 actions; nothing is downloaded until the owner confirms.
+
+Every day at 06:00 (Asia/Shanghai) TGVIO clears the visible task list, the
+download cache, and the Bot's tracked status messages, and resets task numbering
+to `任务 #1`; operational JSONL logs (3-day retention) and aggregate statistics
+are kept. `TGVIO_ARCHIVE_LAYOUT=v2` stores new archives under
+`<root>/<YYYY-MM-DD>/<N>/`. All three behaviours (alerts, preview, daily reset)
+can be toggled from `/settings`.
 
 ## Bot controls
 

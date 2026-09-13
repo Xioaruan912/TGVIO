@@ -37,6 +37,8 @@ characterization -> implementation -> offline gates -> Git push
 | R2-09 | DELIVERED | 恢复只读 Dashboard、metrics、通知 outbox | WB-01 |
 | R2-10 | CLOSED (automated) | 自动矩阵、旧树退役与 release 身份收口已交付；受控生产 smoke 与破坏性回滚演练待 owner 窗口 | 全合同 |
 | R2-11 | DELIVERED | 产品增强：owner 失败/异常私聊告警 + 合集发布前预览 | UI-04、IN-09 |
+| R2-12 | DELIVERED | 归档大文件传输容错（慢 WebDAV 后端）+ 发布竞态修复 | AR-02、PL-11 |
+| R2-13 | DELIVERED | 短路径归档布局、每日 06:00 清空任务/缓存/状态消息、Bot 内开关 | AR-01、UI-05 |
 
 阶段编号表达依赖顺序，不要求每阶段只有一个 commit。每个阶段应拆成可部署的小提交；如果单阶段超过约一周或同时修改多个外部副作用边界，应继续拆分。
 
@@ -371,6 +373,13 @@ R2-10 的自动化与文档部分已交付：`FEATURE_CONTRACT.md` 已无 `REQUI
 ### 交付结果（2026-09-13）
 
 已随 `r2-11-7101d2a-20260913T122158Z`（runtime commit `7101d2a5c660ddd64cf08f41c68f8be650a6e291`，source manifest `932cad1e7df3a2a76098f214d73188ed6ecfa4323131c5f5d52951dc44c44c8f`，migration=none）正式交付，380 tests 全绿。首次发布调用因生产存在活动 2.5GB Archive 而被 fail-closed 拒绝（`database-activity-or-integrity`），归档结束后重试完成，未使用任何旁路。证据见 [R2-11_RELEASE.md](evidence/R2-11_RELEASE.md)。
+
+## 14A. R2-12 / R2-13：归档容错、短路径布局与每日清空
+
+### 交付结果（2026-09-13）
+
+- **R2-12**（`r2-12-a53b446-20260913T125428Z`，migration=none）修复归档大文件在慢 WebDAV（openlist→115）下的“PUT 后验证过早放弃”：响应超时与验证预算改为可配置且加大（默认 3600s / 120×20s），404/423 视为转存中并保持可复用重试；同时修复 ordered publish dispatcher 的过期 gate 竞态（claim 下重读 Job 状态）。382 tests。见 [R2-12_RELEASE.md](evidence/R2-12_RELEASE.md)。
+- **R2-13**（closure `r2-13-9f0eb94-20260913T135837Z`，`0009_archive_layout_flags`）把新归档布局改为 `<root>/<YYYY-MM-DD>/<N>/<sha256[:12]>.<ext>`（持久化每日序号），新增每天 06:00（北京时间）清空任务记录/缓存/状态消息并复位编号（保留日志与统计），新增 `/settings` 运行时开关（告警/预览/每日清空）。388 tests、v9。首次发布因 `remote_preflight.py` 未登记 v9 hash 出现 `database-schema` 假阳性，`9f0eb94` 修复后以 migration-free closure 收口。见 [R2-13_RELEASE.md](evidence/R2-13_RELEASE.md)。
 
 ## 15. 每阶段交付记录模板
 
