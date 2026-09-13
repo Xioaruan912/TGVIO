@@ -467,10 +467,22 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             state=JobState.SUCCEEDED,
             items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
         )
-        ui = TelethonBotUI(FakeClient(), settings(), FakeRepository([numeric_prefix]))
+        numeric_exact = Job(
+            id="1" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.SUCCEEDED,
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
+        )
+        ui = TelethonBotUI(
+            FakeClient(),
+            settings(),
+            FakeRepository([numeric_prefix, numeric_exact]),
+        )
 
         self.assertIsNone(await ui._resolve_job(42, "24"))
         self.assertIsNone(await ui._resolve_job(42, "#24"))
+        self.assertEqual((await ui._resolve_job(42, numeric_exact.id)).id, numeric_exact.id)
 
     async def test_terminal_job_with_stale_hold_flag_is_not_rendered_as_held(self) -> None:
         completed = job(state=JobState.SUCCEEDED, error_code=None)

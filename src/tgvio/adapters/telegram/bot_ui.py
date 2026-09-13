@@ -1812,8 +1812,14 @@ class TelethonBotUI:
         if numeric.isdigit():
             get_by_order = getattr(self._repository, "get_by_accepted_order", None)
             if callable(get_by_order):
-                return await get_by_order(int(owner_id), int(numeric))
-            return None
+                exact = await get_by_order(int(owner_id), int(numeric))
+                if exact is not None:
+                    return exact
+            # A short numeric value is exclusively a human task number. Keep
+            # accepting the extraordinarily rare all-numeric 32-char UUID as
+            # an exact technical identifier, but never as a prefix fallback.
+            if normalized.startswith("#") or len(normalized) != 32:
+                return None
         if len(normalized) == 32:
             exact = await self._repository.get(normalized)
             if exact is not None and int(exact.owner_id) == int(owner_id):
