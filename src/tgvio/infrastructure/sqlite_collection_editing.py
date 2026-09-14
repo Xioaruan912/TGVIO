@@ -333,6 +333,16 @@ class SQLiteCollectionEditingRepositoryMixin:
         await cursor.close()
         return None if row is None else self._submission_from_row(row)
 
+    async def page_pending_submissions(self, *, after: str = "", limit: int = 20):
+        cursor = await self._require().execute(
+            "SELECT * FROM collection_submissions WHERE state='creating' "
+            "AND frozen_json IS NOT NULL AND session_id>? ORDER BY session_id LIMIT ?",
+            (after, max(1, min(20, limit))),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return [self._submission_from_row(row) for row in rows]
+
     async def get_submission_by_token(self, token_id: str) -> CollectionSubmission | None:
         if not token_id:
             return None

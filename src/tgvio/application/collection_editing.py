@@ -678,6 +678,13 @@ class CollectionEditingService:
             session_id, tuple(job_ids), created_ids=created_ids
         )
 
+    async def recover_submission(self, session_id: str) -> CollectionFinalizeResult | None:
+        """Resume only a previously authorized durable snapshot, never draft data."""
+        submission = await self._repository.get_submission(session_id)
+        if submission is None or submission.state != "creating" or not submission.token_id:
+            return None
+        return await self._resume_submission(submission)
+
     async def _result_from_submission(
         self,
         session_id: str,

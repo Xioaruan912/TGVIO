@@ -215,6 +215,14 @@ class SQLiteIntakeRepositoryMixin:
             return []
         inserted_ids: list[int] = []
         async with self._write_transaction() as conn:
+            from tgvio.domain.intake import CollectionAlreadySubmittedError
+            cursor = await conn.execute(
+                "SELECT 1 FROM collection_submissions WHERE session_id=?", (session_id,),
+            )
+            submitted = await cursor.fetchone()
+            await cursor.close()
+            if submitted is not None:
+                raise CollectionAlreadySubmittedError("collection already submitted")
             cursor = await conn.execute(
                 "SELECT state FROM collection_sessions WHERE id=?",
                 (session_id,),

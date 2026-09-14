@@ -94,6 +94,8 @@ class PreviewService:
         return removed
 
     def _safe_dir(self, request_id: str) -> Path | None:
+        if any(path.is_symlink() for path in (self._cache_root, *self._cache_root.parents)):
+            return None
         value = str(request_id or "")
         if not value or not all(c.isalnum() or c in "-_" for c in value):
             return None
@@ -215,7 +217,10 @@ class PreviewService:
 
     # ------------------------------------------------------------------- work
     async def _run(self, request: PreviewRequest, item: MediaItem, chat_id: int) -> PreviewRequest:
-        cache_dir = self._safe_dir(request.id) or (self._cache_root / f"preview-{request.id}")
+        cache_dir = self._safe_dir(request.id)
+        if cache_dir is None:
+            await self._fail(request.id, "unsafe_path")
+            raise PreviewUnavailableError("unsafe preview path")
         cache_dir.mkdir(parents=True, exist_ok=True)
         await self._repository.update_preview_request(
             request.id, state=PreviewState.RUNNING, cache_dir=str(cache_dir)
@@ -266,6 +271,8 @@ class PreviewService:
         source = Path(local_path) if local_path else None
         if source is None or not source.is_file():
             raise PreviewUnavailableError("download produced no file")
+        if source.is_symlink() or cache_dir.resolve() not in source.resolve().parents:
+            raise PreviewUnavailableError("unsafe preview source")
         if source.stat().st_size > self._max_source_bytes:
             raise PreviewUnavailableError("source exceeds budget")
         if item.kind == MediaKind.VIDEO:
@@ -288,7 +295,9 @@ class PreviewService:
     async def _download_bounded(self, item: MediaItem, cache_dir: Path):
         if int(item.size_bytes or 0) > self._max_source_bytes:
             raise PreviewUnavailableError("source_too_large")
-        download = asyncio.create_task(self._downloader.download(item, cache_dir))
+        download = asyncio.create_task(self._downloader.download_bounded(
+            item, cache_dir, max_bytes=self._max_source_bytes,
+        ))
         try:
             while not download.done():
                 await asyncio.sleep(_DIR_POLL_SECONDS)
@@ -301,6 +310,8 @@ class PreviewService:
         finally:
             if not download.done():
                 download.cancel()
+            with suppress(asyncio.CancelledError, Exception):
+                await download
 
     async def _cover_item(self, draft: CollectionDraft) -> MediaItem | None:
         entries = await self._repository.list_draft_entries(draft.session_id)

@@ -19,6 +19,9 @@ from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
 
 class _Downloader:
+    async def download_bounded(self, item, target_dir, *, max_bytes):
+        return await self.download(item, target_dir)
+
     def __init__(self) -> None:
         self.calls = 0
 
@@ -50,6 +53,18 @@ class _Sender:
 
 
 class PreviewServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_unsafe_directory_never_falls_back_to_unchecked_path(self):
+        session, draft = await self._session([IncomingMedia(
+            kind=MediaKind.PHOTO, source="telegram:42:99", size_bytes=10,
+            source_chat_id=42, source_message_id=99,
+        )])
+        self.service._safe_dir = lambda request_id: None
+        with self.assertRaises(PreviewUnavailableError):
+            await self.service.preview(owner_id=7, chat_id=42, session_id=session.id,
+                                       expected_revision=draft.revision)
+        self.assertEqual(self.downloader.calls, 0)
+        self.assertEqual(self.sender.calls, [])
+
     async def test_owner_spoiler_and_changed_revision_are_enforced_before_send(self) -> None:
         from tgvio.domain.intake import SpoilerMode
         session, draft = await self._session([IncomingMedia(
@@ -232,7 +247,7 @@ class PreviewServiceTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_actual_download_over_budget_is_cancelled(self) -> None:
-        class _Flood:
+        class _Flood(_Downloader):
             def __init__(self) -> None:
                 self.calls = 0
 
@@ -275,7 +290,7 @@ class PreviewServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_duplicate_preview_for_same_owner_is_rejected(self) -> None:
         gate = asyncio.Event()
 
-        class _Blocking:
+        class _Blocking(_Downloader):
             async def download(self, item, target_dir, progress_callback=None):
                 target_dir.mkdir(parents=True, exist_ok=True)
                 path = target_dir / "source.bin"

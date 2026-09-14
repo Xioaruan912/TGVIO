@@ -208,6 +208,27 @@ class FakeTelegramClient:
 
 
 class TelethonMediaDownloaderTests(unittest.IsolatedAsyncioTestCase):
+    async def test_preview_stream_rejects_chunk_before_budget_overflow(self):
+        class Client:
+            maximum_written = 0
+            async def get_messages(self, *args, **kwargs):
+                return SimpleNamespace(media=object(), file=SimpleNamespace(size=0))
+            async def iter_download(self, *args, **kwargs):
+                yield b"12345678"
+                self.maximum_written = path.stat().st_size if path.exists() else 0
+                yield b"abcdefgh"
+                raise AssertionError("must not request another chunk after budget exceeded")
+        with TemporaryDirectory() as directory:
+            root = Path(directory)
+            path = root / "preview-source.jpg"
+            client = Client()
+            item = MediaItem(index=0, kind=MediaKind.PHOTO, source="fixture",
+                             source_chat_id=42, source_message_id=1)
+            with self.assertRaises(ValueError):
+                await TelethonMediaDownloader(client).download_bounded(item, root, max_bytes=10)
+            self.assertLessEqual(client.maximum_written, 10)
+            self.assertFalse(path.exists())
+
     async def test_download_is_atomic_and_reuses_complete_local_file(self) -> None:
         client = FakeTelegramClient()
         downloader = TelethonMediaDownloader(client)

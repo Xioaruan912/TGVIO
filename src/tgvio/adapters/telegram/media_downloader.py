@@ -13,6 +13,39 @@ from tgvio.observability import log_event
 
 
 class TelethonMediaDownloader:
+    async def download_bounded(self, item: MediaItem, target_dir: Path, *, max_bytes: int) -> MediaItem:
+        """Preview-only stream: enforce actual bytes before writing; no fallback."""
+        if item.source_chat_id is None or item.source_message_id is None:
+            raise ValueError("preview source unavailable")
+        message = await self._client.get_messages(item.source_chat_id, ids=item.source_message_id)
+        if message is None or message.media is None:
+            raise ValueError("preview source unavailable")
+        limit = max(1, int(max_bytes))
+        remote_size = int(getattr(getattr(message, "file", None), "size", 0) or 0)
+        if remote_size > limit:
+            raise ValueError("preview source exceeds budget")
+        suffix = ".jpg" if item.kind.value == "photo" else ".mp4"
+        path = target_dir / ("preview-source" + suffix)
+        count = 0
+        iterator = self._client.iter_download(message.media, request_size=64 * 1024)
+        try:
+            with path.open("xb") as handle:
+                async for chunk in iterator:
+                    if count + len(chunk) > limit:
+                        raise ValueError("preview source exceeds budget")
+                    handle.write(chunk)
+                    count += len(chunk)
+            if not count or (remote_size and count != remote_size):
+                raise ValueError("preview source incomplete")
+            return replace(item, local_path=str(path), size_bytes=count)
+        except BaseException:
+            path.unlink(missing_ok=True)
+            raise
+        finally:
+            close = getattr(iterator, "close", None) or getattr(iterator, "aclose", None)
+            if close is not None:
+                await close()
+
     def __init__(
         self,
         client: TelegramClient,

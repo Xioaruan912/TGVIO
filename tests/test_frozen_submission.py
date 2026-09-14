@@ -31,6 +31,50 @@ def _media(message_id: int) -> IncomingMedia:
 
 
 class FrozenSubmissionTests(unittest.IsolatedAsyncioTestCase):
+    async def test_frozen_submission_rejects_new_media_and_recovers_without_token(self):
+        from tgvio.domain.intake import CollectionAlreadySubmittedError
+        session, draft = await self._session(1)
+        token = await self.editing.issue_confirm(
+            owner_id=7, session_id=session.id, expected_revision=draft.revision,
+            spoiler_mode=SpoilerMode.SOURCE,
+        )
+        original = self.editing._resume_submission
+        async def crash(submission):
+            raise RuntimeError("injected interruption")
+        self.editing._resume_submission = crash
+        with self.assertRaises(RuntimeError):
+            await self.editing.confirm(owner_id=7, chat_id=42, token=token,
+                                      destination="@channel", max_items=100, ask_timeout_seconds=60)
+        with self.assertRaises(CollectionAlreadySubmittedError):
+            await self.intake.add_collection_media(session, [_media(9999)])
+        with self.assertRaises(CollectionAlreadySubmittedError):
+            await self.intake.add_collection_text(session, text="late", source_chat_id=42,
+                                                  source_message_id=10000)
+        self.editing._resume_submission = original
+        await self.repo.close()
+        await self.repo.open()
+        pending = await self.repo.page_pending_submissions()
+        self.assertEqual([s.session_id for s in pending], [session.id])
+        import asyncio
+        from unittest.mock import AsyncMock
+        from tests.test_intake_runtime_collections import FakeClient, RecordingRunner, settings
+        from tgvio.adapters.telegram.intake_runtime import TelethonIntakeRuntime
+        runtime = TelethonIntakeRuntime(FakeClient(), settings(), self.intake,
+                                       RecordingRunner(), editing=self.editing)
+        runtime._announce_finalize_result = AsyncMock()
+        await runtime.start()
+        try:
+            for _ in range(100):
+                if not await self.repo.page_pending_submissions():
+                    break
+                await asyncio.sleep(0.01)
+        finally:
+            await runtime.stop()
+        jobs = await self.repo.list_recent(owner_id=7, limit=10)
+        self.assertEqual(sum(len(job.items) for job in jobs), 1)
+        self.assertEqual(await self.repo.page_pending_submissions(), [])
+        self.assertIsNone(await self.editing.recover_submission(session.id))
+
     async def asyncSetUp(self) -> None:
         self.tmp = TemporaryDirectory()
         self.path = Path(self.tmp.name) / "state.sqlite3"

@@ -48,6 +48,29 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
     async def start(self) -> None:
         if self._dispatcher is not None:
             await self._dispatcher.start()
+        if self._editing is not None:
+            self._submission_recovery_task = asyncio.create_task(self._recover_submissions())
+
+    async def _recover_submissions(self) -> None:
+        after = ""
+        while True:
+            try:
+                pending = await self._repository.page_pending_submissions(after=after, limit=20)
+                for submission in pending:
+                    after = submission.session_id
+                    try:
+                        result = await self._editing.recover_submission(submission.session_id)
+                        if result is not None:
+                            await self._announce_finalize_result(
+                                result.session.chat_id, submission.owner_id, result, confirmation=True,
+                            )
+                    except Exception:
+                        self._log.warning("Frozen submission recovery deferred; snapshot retained")
+                if len(pending) < 20:
+                    after = ""
+            except Exception:
+                self._log.warning("Frozen submission recovery query deferred")
+            await asyncio.sleep(10)
 
     def register(self) -> None:
         self._client.add_event_handler(self._on_album, events.Album())
@@ -76,6 +99,10 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
         )
 
     async def stop(self) -> None:
+        recovery = getattr(self, "_submission_recovery_task", None)
+        if recovery is not None:
+            recovery.cancel()
+            await asyncio.gather(recovery, return_exceptions=True)
         await self._flush_all_pending()
         if not self._tasks:
             pending = ()
@@ -113,6 +140,13 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
             self._preview_tasks.clear()
 
     async def _on_message(self, event) -> None:
+        from tgvio.domain.intake import CollectionAlreadySubmittedError
+        try:
+            await self._on_message_collect(event)
+        except CollectionAlreadySubmittedError:
+            await self._safe_send(event.chat_id, "⚠️ 上一合集已确认，正在完成提交。本次内容未加入，请稍后新建合集并重新转发。")
+
+    async def _on_message_collect(self, event) -> None:
         if not self._authorized(event.sender_id):
             return
         raw_text = (event.raw_text or "").strip()
@@ -173,6 +207,13 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
                 )
 
     async def _on_album(self, event) -> None:
+        from tgvio.domain.intake import CollectionAlreadySubmittedError
+        try:
+            await self._on_album_collect(event)
+        except CollectionAlreadySubmittedError:
+            await self._safe_send(event.chat_id, "⚠️ 上一合集已确认，正在完成提交。本次相册未加入，请稍后新建合集并重新转发。")
+
+    async def _on_album_collect(self, event) -> None:
         if not event.messages:
             return
         sender_id = event.messages[0].sender_id

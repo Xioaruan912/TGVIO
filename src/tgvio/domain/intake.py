@@ -19,6 +19,10 @@ class CollectionState(StrEnum):
     CANCELLED = "cancelled"
 
 
+class CollectionAlreadySubmittedError(ValueError):
+    """The frozen collection cannot accept additional entries."""
+
+
 class CollectionEntryKind(StrEnum):
     MEDIA = "media"
     TEXT = "text"
