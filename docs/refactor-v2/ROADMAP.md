@@ -39,6 +39,7 @@ characterization -> implementation -> offline gates -> Git push
 | R2-11 | DELIVERED | 产品增强：owner 失败/异常私聊告警 + 合集发布前预览 | UI-04、IN-09 |
 | R2-12 | DELIVERED | 归档大文件传输容错（慢 WebDAV 后端）+ 发布竞态修复 | AR-02、PL-11 |
 | R2-13 | DELIVERED | 短路径归档布局、每日 06:00 清空任务/缓存/状态消息、Bot 内开关 | AR-01、UI-05 |
+| R2-14 | DELIVERED | 视频真实元数据/缩略图修复、仅终态失败告警、环境能力自检 | PL-05、UI-04、OB-01 |
 
 阶段编号表达依赖顺序，不要求每阶段只有一个 commit。每个阶段应拆成可部署的小提交；如果单阶段超过约一周或同时修改多个外部副作用边界，应继续拆分。
 
@@ -380,6 +381,8 @@ R2-10 的自动化与文档部分已交付：`FEATURE_CONTRACT.md` 已无 `REQUI
 
 - **R2-12**（`r2-12-a53b446-20260913T125428Z`，migration=none）修复归档大文件在慢 WebDAV（openlist→115）下的“PUT 后验证过早放弃”：响应超时与验证预算改为可配置且加大（默认 3600s / 120×20s），404/423 视为转存中并保持可复用重试；同时修复 ordered publish dispatcher 的过期 gate 竞态（claim 下重读 Job 状态）。382 tests。见 [R2-12_RELEASE.md](evidence/R2-12_RELEASE.md)。
 - **R2-13**（closure `r2-13-9f0eb94-20260913T135837Z`，`0009_archive_layout_flags`）把新归档布局改为 `<root>/<YYYY-MM-DD>/<N>/<sha256[:12]>.<ext>`（持久化每日序号），新增每天 06:00（北京时间）清空任务记录/缓存/状态消息并复位编号（保留日志与统计），新增 `/settings` 运行时开关（告警/预览/每日清空）。388 tests、v9。首次发布因 `remote_preflight.py` 未登记 v9 hash 出现 `database-schema` 假阳性，`9f0eb94` 修复后以 migration-free closure 收口。见 [R2-13_RELEASE.md](evidence/R2-13_RELEASE.md)。
+
+- **R2-14**（`r2-14-816409b-20260914T002637Z`，migration=none）修复白缩略图：发布视频改用 ffprobe 真实 duration/宽高构造 `DocumentAttributeVideo`（不再依赖缺失的 hachoir），缩略图拒绝黑/近白帧、扩大候选、预算升至 1MB；告警改为仅终态失败（`exhausted/quarantined/manual_review/abandoned`）才私聊，瞬时/重试中不打扰；新增启动环境自检与 `/diag` 能力布尔；修正 metrics 内存单位。397 tests。见 [R2-14_RELEASE.md](evidence/R2-14_RELEASE.md)。
 
 ## 15. 每阶段交付记录模板
 

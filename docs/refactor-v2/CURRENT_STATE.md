@@ -2,18 +2,18 @@
 
 > 审计时间：2026-09-13（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
-> 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-08、R2-09、R2-11、R2-12、R2-13 均已交付，R2-10 自动化收口已完成；所有 `REQUIRED` 合同为 `VERIFIED`。R2-12 修复归档慢后端容错与发布竞态；R2-13 交付短路径归档布局、每日 06:00 清空任务/缓存/状态消息并复位编号、`/settings` 内开关。当前生产事实以 `r2-13-9f0eb94-20260913T135837Z` / schema v9 为准。R2-04E 真实大文件性能、R2-05/06 真实 E2E 与破坏性回滚演练仍需 owner 窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。
+> 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-08、R2-09、R2-11、R2-12、R2-13、R2-14 均已交付，R2-10 自动化收口已完成；所有 `REQUIRED` 合同为 `VERIFIED`。R2-14 修复白缩略图（ffprobe 真实视频元数据 + 缩略图鲁棒化）、改为仅终态失败告警、新增环境能力自检。当前生产事实以 `r2-14-816409b-20260914T002637Z` / schema v9 为准。R2-04E 真实大文件性能、R2-05/06 真实 E2E 与破坏性回滚演练仍需 owner 窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。
 
 ## 1. 源码权威已经对齐
 
 | 范围 | 当前事实 | 结论 |
 |---|---|---|
-| Git runtime 基线 | `9f0eb946c2aa036cc203816ea5484e0bc1a884a3` 已推送 `origin/main` | R2-13 业务实现位于父提交 `2043706f68cc4b7b51cc0e4c7afa64dff5b341c0`，`9f0eb94` 修复 release 工具 v9 schema 识别 |
+| Git runtime 基线 | `816409b2ce4225ec59f0fe81eb96b915ec4a01cf` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object；R2-14 修复视频元数据/缩略图与告警口径 |
 | 退役旧树 | annotated tag `legacy-telegram-video-forwarder-750b3c1` 指向 `750b3c1629a0d360df740337671b54b8749e2ce2` | 旧架构可追溯，但不再留在当前可启动树 |
 | HostDZire | shared root `/root/TGVIO`；current link `/root/TGVIO-current`；Compose service/container `tgvio` | 版本化 release 已接管，运行卷仍留在 shared root |
-| 生产 release | `r2-13-9f0eb94-20260913T135837Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `9f0eb946c2aa036cc203816ea5484e0bc1a884a3` | schema-changing 首发 `r2-13-2043706-…` 应用 0009，工具修复后以 migration-free closure 收口 |
-| 生产 image | `sha256:5442ffa8c2f6858a9a245c0e21c042e71cc88cb336d6d9bcc1408a2c76458d58` | 正式 R2-13 closure runtime image；匹配 source manifest、v9 DB 与 rollback point 均可验证 |
-| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `daf84fc92682494fdec13243508fce614e95c37fe884b598a7ed2cec5e3b3e8d` | R2-13 runtime 三方身份一致 |
+| 生产 release | `r2-14-816409b-20260914T002637Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `816409b2ce4225ec59f0fe81eb96b915ec4a01cf` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
+| 生产 image | `sha256:bd0a53459e769e8e277154775853280297bc3a01618d47320fe8d7ef4d579aac` | 正式 R2-14 runtime image；匹配 source manifest、v9 DB 与 rollback point 均可验证 |
+| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `23a08a0093bfe06c4148f3e9080ec7c5646886290fe1d762438bd7dcf525b488` | R2-14 runtime 三方身份一致 |
 
 R2-00 记录的 `1da1d3d0…` 没有留下生成算法，已由 R2-01 的明确、可重复算法取代。原始 82 文件快照、逐文件 SHA-256、导入边界和发布记录见 [R2-01 evidence](evidence/R2-01_BASELINE.md)。
 
@@ -23,10 +23,10 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.1 运行状态
 
-- Release：`r2-13-9f0eb94-20260913T135837Z`。
-- Source：`/root/TGVIO-releases/r2-13-9f0eb94-20260913T135837Z/source`，由 `/root/TGVIO-current` 原子指向。
-- 容器 ID：`885de1f58e95caf801e3b1ff83ad4c33902b6285ae4dd135a3884108fba61e5c`。
-- Started-at：`2026-09-13T13:55:36.104523692Z`。
+- Release：`r2-14-816409b-20260914T002637Z`。
+- Source：`/root/TGVIO-releases/r2-14-816409b-20260914T002637Z/source`，由 `/root/TGVIO-current` 原子指向。
+- 容器 ID：`dbf073ad622b5ad0b61d1ad4c1cd33298c7f9d4cf37ce3abf7ae9f97ab962134`。
+- Started-at：`2026-09-14T00:23:33.824094485Z`。
 - 状态：`running`，Docker health=`healthy`，当前容器 restart count=0。
 - 同一 Compose project/service 下运行实例数为 1。
 - 启动日志有 bootstrap 与 Telegram-ready 标记，无 traceback/fatal/unhandled/exception marker。
@@ -51,15 +51,15 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.3 代码、测试与镜像
 
-- 当前生产 R2-13 runtime：103 个 Python 源文件；schema 为 v9。新增 `RuntimeFlags`、`DailyMaintenanceService/Runtime`、`SQLiteMaintenanceRepositoryMixin`、短路径 Archive 布局与 `/settings` 开关。
+- 当前生产 R2-14 runtime：104 个 Python 源文件；schema 为 v9。新增 `infrastructure/capabilities.py` 环境自检、ffprobe 视频属性、缩略图鲁棒化与仅终态告警门禁。
 - 下载/分析保持有限并发，Telegram publish 由 durable accepted-order dispatcher 串行执行，prepare/publish/archive 都由 generation-fenced claim + heartbeat + TTL watchdog 保护。
 - 当前主要热点为 `adapters/telegram/bot_ui.py`、Telegram publish 与 WebDAV adapter；repository 大文件热点已在 R2-03B 消除。
 - 当前生产的 domain/application AST 依赖边界与 103-file architecture gate 通过，并强制 `MAX_SOURCE_FILE_LINES=1000` 单文件预算。
-- 当前生产 R2-13 正式 clean/pushed Docker test target 在 `--network none` 下通过 388 tests，覆盖既有 scheduler/migration/upload/intake/release/undo/Archive/diagnostics、Dashboard/metrics/outbox、owner 告警与合集预览、归档慢后端容错与发布竞态修复，以及 R2-13 短路径布局/每日清空/运行时开关；没有启动第二个 Telegram Bot。
+- 当前生产 R2-14 正式 clean/pushed Docker test target 在 `--network none` 下通过 397 tests，覆盖既有 scheduler/migration/upload/intake/release/undo/Archive/diagnostics、Dashboard/metrics/outbox、告警/合集预览、归档容错、短路径布局/每日清空/开关，以及 R2-14 ffprobe 视频属性、缩略图空白帧排除、仅终态告警与环境自检；没有启动第二个 Telegram Bot。
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 依赖已由 hashed lock 固定；多阶段 Dockerfile 的 test/runtime targets 共用固定 base digest，runtime 内精确安装 7 个锁定 Python 包。
-- 正式 runtime image `sha256:5442ffa8c2f6858a9a245c0e21c042e71cc88cb336d6d9bcc1408a2c76458d58` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
+- 正式 runtime image `sha256:bd0a53459e769e8e277154775853280297bc3a01618d47320fe8d7ef4d579aac` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
 
 ## 3. 当前 TGVIO 已证明的能力
 
@@ -79,6 +79,7 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - 只读运维面：loopback-only Dashboard、恒定时间 Bearer 认证的 `/api/v1/*` 与低基数 Prometheus `/metrics`，以及 durable、幂等、HMAC 签名、有限退避的脱敏通知 outbox；默认关闭，无监听端口，无第二个 Telegram session。
 - Owner 告警（默认开启）：失败/异常（含 partial/uncertain、Archive 失败、Telegram 断连、磁盘低水位）经 Bot 私聊脱敏推送，带冷却去重；合集 `/end` 先展示发布预览，确认后才入队下载。
 - 归档与每日维护（R2-12/R2-13）：归档大文件对慢 WebDAV 后端容错（更长响应/验证预算、404/423 视为转存中并可复用重试）；新归档使用短路径 `<root>/YYYY-MM-DD/<N>/<sha256[:12]>.<ext>`；每天 06:00（北京时间）清空任务记录/缓存/旧状态消息并复位编号，保留日志与统计；`/settings` 可开关告警/预览/每日清空。
+- 视频发布与诊断（R2-14）：视频以 ffprobe 真实 duration/宽高发送并附带非空白缩略图（不依赖缺失的 hachoir）；owner 告警仅在终态失败触发；启动环境自检写入 `runtime_health.capabilities` 并在 `/diag` 显示 `ffmpeg/ffprobe/yt-dlp/cryptg/hachoir`。
 
 完整合同与缺口见 [FEATURE_CONTRACT.md](FEATURE_CONTRACT.md)。
 

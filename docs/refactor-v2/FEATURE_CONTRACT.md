@@ -47,7 +47,7 @@
 | PL-02 | 封面模式最多展示 10 张频道封面，但 overflow 图片和全部视频都进入同一讨论线程，不丢内容 | COVERED | orchestrator/publish pipeline tests |
 | PL-03 | 纯视频生成频道帧封面；direct 模式只发目标频道；特殊/超限媒体从原生 album 隔离 | COVERED | orchestrator/transport tests |
 | PL-04 | 原生媒体组每组最多 10 项且保持逻辑顺序 | COVERED | planner/transport tests；需补跨 Job 全局顺序 |
-| PL-05 | 原消息 spoiler 在上传与引用复用中保持；生成封面/manifest 不被错误遮挡 | COVERED | spoiler transport tests |
+| PL-05 | 原消息 spoiler 在上传与引用复用中保持；生成封面/manifest 不被错误遮挡 | COVERED | spoiler transport tests；R2-14 起视频以 ffprobe 真实 duration/宽高发送并附带非空白缩略图（不依赖缺失的 hachoir） |
 | PL-06 | 用户可选择 `ask/always_spoiler/always_normal`；ask 超时按 normal，主动取消不发布 | COVERED | R2-05 已发布 durable preference/decision/deadline；额外保留 `source` 兼容生产源 spoiler，待真实交互验收 |
 | PL-07 | caption forwarding、footer 和 1024 字符限制在计划中冻结 | COVERED | caption/footer tests |
 | PL-08 | 讨论组根用 Bot 可调用方式解析，并把映射写入 durable effect，重启不依赖内存 | VERIFIED | resolver/transport tests；生产有成功 effects |
@@ -77,7 +77,7 @@
 | UI-01 | 一个任务有稳定状态消息，展示阶段、总进度、当前项和速度；UI 失败不改变业务结果 | COVERED | R2-03A 提供按钮与友好错误；R2-05 已发布 durable message reference、重启复用和最多补发一次，完整进度视图仍继续治理 |
 | UI-02 | 首页、帮助、任务、计划、统计、健康、诊断、缓存和 Archive 都可通过按钮到达和返回 | COVERED | R2-03A 增加 persistent 手机键盘、任务直达按钮、确认页和重复刷新回归；仍需完整 view callback 遍历 |
 | UI-03 | `/jobs` 支持 SQL 分页、状态筛选、详情和失败中心，100+ Job 不超 Telegram 限制 | VERIFIED | R2-06C 已生产发布 SQL `COUNT + LIMIT/OFFSET` 分页、all/active/held/failed/completed 筛选与 failure center；后续 release 统一为 durable `任务 #N` + 时间/媒体摘要、普通详情隐藏 UUID、技术详情保留内部 ID，并支持 owner-scoped `#N` 解析。最终 R2-06 v5 release 的 304 tests 与 24 Job/healthy postflight 通过 |
-| UI-04 | owner 通过私聊收到失败/异常告警，含去重/冷却/脱敏 | VERIFIED | R2-11 已随 `r2-11-7101d2a-20260913T122158Z` 交付：`job.failed`（含 partial/uncertain）、`archive.failed`、Telegram 断连与磁盘低水位及恢复；复用 outbox claim/去重/退避；仅失败/异常推送，冷却窗口 3600s；payload 脱敏；webhook 为全量 best-effort 次渠道 |
+| UI-04 | owner 通过私聊收到失败/异常告警，含去重/冷却/脱敏 | VERIFIED | R2-11 已随 `r2-11-7101d2a-20260913T122158Z` 交付：`job.failed`（含 partial/uncertain）、`archive.failed`、Telegram 断连与磁盘低水位及恢复；复用 outbox claim/去重/退避；仅失败/异常推送，冷却窗口 3600s；payload 脱敏；webhook 为全量 best-effort 次渠道。R2-14 起仅终态失败（`exhausted/quarantined/manual_review/abandoned`）告警，瞬时/自动重试中不打扰 |
 | UI-05 | 每天 06:00（北京时间）清空任务列表/缓存/旧状态消息并复位编号；保留日志与统计；Bot 内可开关 | VERIFIED | R2-13 已随 `r2-13-9f0eb94-20260913T135837Z` + `0009_archive_layout_flags` 交付：`DailyMaintenanceRuntime` 06:00 执行，清终态 Job+级联/操作令牌/已结算 outbox/缓存/状态消息，编号复位为 `任务 #1`，日志按 3 天轮转保留、`daily_stats` 保留；`/settings` 提供告警/预览/每日清空开关（durable `runtime_flags`），默认开启 |
 | CT-01 | cancel 是 durable、幂等、owner-scoped，并在安全边界生效 | COVERED | job control tests；R2-06 v5 已让 Bot cancel 二次确认使用 owner/revision/TTL/single-use operation token |
 | CT-02 | 单 Job `pause/hold/resume` 保留缓存；全局暂停只停止新 claim | VERIFIED | R2-06 `0004_queue_controls` 已生产发布 durable Job hold/resume 与 global queue pause；下载/分析/PublishStep 在安全边界停，existing claim 可 heartbeat，resume 不重放已成功 PublishStep |
@@ -96,7 +96,7 @@
 | DB-01 | Job/Item/Event/Plan/Step/Effect/Archive/Control/Progress 均可持久恢复 | VERIFIED | repository tests 与生产 DB |
 | DB-02 | schema 使用不可变、有 checksum 的前向 migration，并在启动前备份和校验 | VERIFIED | R2-03B 接管 checksum ledger；`0002_scheduler`～`0007_archive_exact_delete` 均纳入 checksum/forward migration 链。A3 在 cutover 前完成 v6→v7 production-backup-copy rehearsal，生产现为 `user_version=7`、ledger `1..7`、schema hash `9cf2d4008d4fb888f5affdffea1ccd413b51968d14d234e07d0769cfe60c6e90`；SQLite backup API、schema fingerprint/checksum fail-closed、重复 no-op 与 rollback asset check 均通过 |
 | DB-03 | worker 使用 durable claim/lease/heartbeat；意外双进程也不能重复执行一个 Job | VERIFIED | R2-04 A-D 已正式生产发布 singleton runtime lease、prepare/publish/archive generation-fenced claim、TTL watchdog 与跨独立 SQLite connection 竞争保护；独立 postflight 显示 runtime lease active=1、phase claim blocker=0 |
-| OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | VERIFIED | R2-07D 已交付稳定 `DiagnosticSnapshot`：release/commit/manifest、schema/migration、lease/scheduler、Archive 聚合与非敏感 flags，由 3 条有界 SQL 聚合生成且 1000+ Job 不加载历史；异常归一为组件状态、secret/path fixture 拒绝；`/diag` 不发起 Telegram/WebDAV/代理请求 |
+| OB-01 | stats/health/diag 只读且脱敏，不主动发 Telegram/WebDAV 请求 | VERIFIED | R2-07D 已交付稳定 `DiagnosticSnapshot`：release/commit/manifest、schema/migration、lease/scheduler、Archive 聚合与非敏感 flags，由 3 条有界 SQL 聚合生成且 1000+ Job 不加载历史；异常归一为组件状态、secret/path fixture 拒绝；`/diag` 不发起 Telegram/WebDAV/代理请求。R2-14 增加启动环境自检与 `ffmpeg/ffprobe/yt-dlp/cryptg/hachoir` 能力布尔 |
 | OB-02 | JSONL 与 Docker logs 有界轮转，日志不含 URL、caption、peer/user、路径和凭据 | COVERED | logging tests；每次发布继续做 secret scan |
 | DP-01 | 每个 release build 可追溯到 full Git commit、source manifest、image digest 和 DB schema | VERIFIED | R2-01 建立源码权威；R2-02 machine manifest 与 HostDZire 后验验证完整链路 |
 | DP-02 | 每个通过门禁的 release build 都在同阶段交付 HostDZire，并完成回滚点与后验 | VERIFIED | R2-02 release `r2-02-569926b-20260911T063133Z` 已由唯一入口完成构建、三重回滚点、单实例切换与强制后验；见 [交付记录](evidence/R2-02_RELEASE.md) |

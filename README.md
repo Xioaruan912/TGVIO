@@ -19,15 +19,16 @@ of growing behavior inside one large bot runtime.
 ## Current phase
 
 TGVIO is the active production runtime. R2-01 restored source authority, R2-02
-established the reproducible fail-closed delivery chain, and R2-03 through R2-13
+established the reproducible fail-closed delivery chain, and R2-03 through R2-14
 added the migration ledger, durable scheduler/claim/FIFO, durable intake and
 collections, full queue control and undo, Archive V2 with exact remote delete,
 the redacted Diagnostic Snapshot, the read-only operations surface
 (Dashboard, metrics, notification outbox), owner failure alerts, collection
-preview, slow-backend Archive tolerance, a short dated Archive layout, and a
-daily 06:00 task-list/cache reset with `/settings` toggles. The current
-production release is `r2-13-9f0eb94-20260913T135837Z` at full commit
-`9f0eb946c2aa036cc203816ea5484e0bc1a884a3` (schema v9), healthy on HostDZire.
+preview, slow-backend Archive tolerance, a short dated Archive layout, a daily
+06:00 task-list/cache reset with `/settings` toggles, and correct video metadata
+(ffprobe) with robust thumbnails and final-only alerting. The current production
+release is `r2-14-816409b-20260914T002637Z` at full commit
+`816409b2ce4225ec59f0fe81eb96b915ec4a01cf` (schema v9), healthy on HostDZire.
 
 The authoritative refactoring plan, feature contract, and per-stage evidence
 live under [`docs/refactor-v2/`](docs/refactor-v2/README.md). The implemented
@@ -80,6 +81,12 @@ to `任务 #1`; operational JSONL logs (3-day retention) and aggregate statistic
 are kept. `TGVIO_ARCHIVE_LAYOUT=v2` stores new archives under
 `<root>/<YYYY-MM-DD>/<N>/`. All three behaviours (alerts, preview, daily reset)
 can be toggled from `/settings`.
+
+Owner alerts are sent only for **final** failures (recovery budget exhausted or
+quarantined); transient failures that automatic recovery will retry stay silent.
+Video metadata comes from ffprobe (not Telethon's optional hachoir), so videos
+are sent with real duration/dimensions and a non-blank thumbnail. `/diag` reports
+the environment capability booleans (ffmpeg/ffprobe/yt-dlp/cryptg/hachoir).
 
 ## Bot controls
 
