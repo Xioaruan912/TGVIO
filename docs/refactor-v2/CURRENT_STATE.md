@@ -8,18 +8,18 @@
 
 > 审计时间：2026-09-14（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
-> 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-08、R2-09、R2-11～R2-15 均已交付，R2-10 自动化收口已完成；所有 `REQUIRED` 合同为 `VERIFIED`。R2-15A 停止 destructive purge 并改为按北京时间业务日安全隐藏已结算 Job、引入 durable `maintenance_runs`/`maintenance_targets`；R2-15B 引入 `job_display_identity` 每业务日展示编号与按业务日统计。当前生产事实以 `r2-15b-75e6259-20260914T012823Z` / schema v11 为准。R2-04E 真实大文件性能、R2-05/06 真实 E2E 与破坏性回滚演练仍需 owner 窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。R2-16/R2-17 仍为设计阶段，未实现。
+> 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-08、R2-09、R2-11～R2-15 均已交付，R2-10 自动化收口已完成；R2-16 合集编辑/草稿与 R2-18 用户体验升级（18A 首页、18B 结果卡/收藏/分享/安静、18C 风格/最终键盘、18E 整理建议、18D 有界效果预览）已实现并部署；R2-17 完整内容审核仍未实现。所有 `REQUIRED` 合同为 `VERIFIED`。当前生产事实以 `r2-18d-1a9b86c-20260914T040154Z` / schema v14 为准。R2-04E 真实大文件性能、R2-05/06 真实 E2E 与破坏性回滚演练仍需 owner 窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。
 
 ## 1. 源码权威已经对齐
 
 | 范围 | 当前事实 | 结论 |
 |---|---|---|
-| Git runtime 基线 | `75e6259e9212e46e002e0ce2d3b5abb22f606d8f` 已推送 `origin/main` | 这是当前生产 TGVIO runtime 的完整 Git object；R2-15B 增加每业务日展示编号与按业务日统计 |
+| Git runtime 基线 | `1a9b86c179595861a53dc2fb28307987df3bdcae` 已推送 `origin/main` | 当前生产 TGVIO runtime 的完整 Git object；R2-18 用户体验升级最终包 |
 | 退役旧树 | annotated tag `legacy-telegram-video-forwarder-750b3c1` 指向 `750b3c1629a0d360df740337671b54b8749e2ce2` | 旧架构可追溯，但不再留在当前可启动树 |
 | HostDZire | shared root `/root/TGVIO`；current link `/root/TGVIO-current`；Compose service/container `tgvio` | 版本化 release 已接管，运行卷仍留在 shared root |
-| 生产 release | `r2-15b-75e6259-20260914T012823Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `75e6259e9212e46e002e0ce2d3b5abb22f606d8f` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
-| 生产 image | `sha256:d4e5ed97353a4dd14c7131ea5b2613783f2f22c246d99a245a97644c5e82b020` | 正式 R2-15B runtime image；匹配 source manifest、v11 DB 与 rollback point 均可验证 |
-| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `e22878365bbd0ed6f6c627afefbae1cef5abfd31d255b3a992ab868fba207d78` | R2-15B runtime 三方身份一致 |
+| 生产 release | `r2-18d-1a9b86c-20260914T040154Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `1a9b86c179595861a53dc2fb28307987df3bdcae` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
+| 生产 image | `sha256:63d3096f926fcd11b759fc8de18397e120c2d8889339ecd64033119899b511d4` | 正式 R2-18D runtime image；匹配 source manifest、v14 DB 与 rollback point 均可验证 |
+| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `3ee01cc3d0e80098397a6fa7322e1f952582d0e1babcbefc4be6001a746efb12` | R2-18D runtime 三方身份一致 |
 
 R2-00 记录的 `1da1d3d0…` 没有留下生成算法，已由 R2-01 的明确、可重复算法取代。原始 82 文件快照、逐文件 SHA-256、导入边界和发布记录见 [R2-01 evidence](evidence/R2-01_BASELINE.md)。
 
@@ -29,8 +29,8 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.1 运行状态
 
-- Release：`r2-15b-75e6259-20260914T012823Z`。
-- Source：`/root/TGVIO-releases/r2-15b-75e6259-20260914T012823Z/source`，由 `/root/TGVIO-current` 原子指向。
+- Release：`r2-18d-1a9b86c-20260914T040154Z`。
+- Source：`/root/TGVIO-releases/r2-18d-1a9b86c-20260914T040154Z/source`，由 `/root/TGVIO-current` 原子指向。
 - 容器 ID：`266eb6f777f6958724a218814056033234f2cd81bc78b986a781c939f2b0dfdd`。
 - Started-at：`2026-09-14T01:25:22.67540493Z`。
 - 状态：`running`，Docker health=`healthy`，当前容器 restart count=0。
@@ -47,8 +47,8 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - `quick_check=ok`，最新独立 postflight 报告数据库大小 1,069,056 bytes。
 - 当前 `jobs=0`（R2-13 的 06:00 每日清空已清理旧记录，之后无新任务）；非终态 Job blocker 为 0。
 - Publish / Archive / progress / phase-claim / partial-uncertain blocker 在最新独立 postflight 中全部为 0；singleton `telegram-runtime` lease active=1 且不构成 blocker。
-- `PRAGMA user_version=11`，`schema_migrations` 已连续登记 `0001_baseline`～`0011_display_identity`，只读核验 ledger 精确为 `[1,2,3,4,5,6,7,8,9,10,11]`。
-- 规范化整库 schema SQL SHA-256 为 `344e92de1828579e46afe9df40c00ccc0eab10028718ab2d70b8aa7bb896ed6d`。
+- `PRAGMA user_version=14`，`schema_migrations` 已连续登记 `0001_baseline`～`0014_suggestion_and_preview`。
+- 规范化整库 schema SQL SHA-256 为 `ef4930f53f2f3acaf515fee376676ea4d1b6c418f89fa5da47f1be57189924e8`。
 - R2-07A3 cutover 在生产 SQLite Backup API 回滚点副本上完成 v6→v7 rehearsal，再执行受控单实例迁移；24 Job 与既有 Archive 业务事实保持，`rollback_hostdzire.sh --check r2-07a3-98e2aaa-20260913T072332Z` 通过。
 - A3 新增 `archive_deletions`、`archive_deletion_targets`、`archive_deletion_events`，部署后只读聚合核验三表均为 0；没有对现存用户 Archive 做 destructive smoke，也没有人为生成删除记录。
 - R2-07D 以 `migration=none` 发布，不改变 schema：生产当时仍为 `user_version=7`、ledger `1..7`、schema hash `9cf2d4008d4fb888f5affdffea1ccd413b51968d14d234e07d0769cfe60c6e90`；启动新增一条脱敏 `static_proxy` runtime-health 行（未配置时为 `disabled`）。
@@ -56,18 +56,21 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - R2-13 以 `0009_archive_layout_flags` 把生产推进到 `user_version=9`：新增 `archive_day_counters`（每日归档序号）与 `runtime_flags`（Bot 内开关）。部署后首个 06:00 之后的启动触发每日清空，只读核验 `jobs=0`、ledger `[1..9]`、两张新表初始为空。
 - R2-15A 以 `0010_safe_history_maintenance` 把生产推进到 `user_version=10`：新增 `job_visibility`、`maintenance_runs`、`maintenance_targets`；不再物理删除 Job 历史。
 - R2-15B 以 `0011_display_identity` 把生产推进到 `user_version=11`：新增 `job_display_identity`（每业务日 `display_no` 与确定性回填）。部署后只读核验 ledger `[1..11]`、四张新表存在、`jobs=0`、`quick_check=ok`、`blockers=[]`。
+- R2-16 以 `0012_collection_editing` 推进到 v12：新增 `collection_drafts`/`collection_entry_edits`/`collection_submissions`/`editing_interactions`，并把既有 open 会话回填为活动草稿；旧的 open-session 唯一索引被活动草稿索引替换。
+- R2-18B 以 `0013_owner_favorites` 推进到 v13：新增 `favorites` 与 `user_preferences.quiet_mode/style_json`。
+- R2-18E 以 `0014_suggestion_and_preview` 推进到 v14：新增 `suggestion_applications`（建议撤回）与 `preview_requests`（效果预览请求）。R2-18C/R2-18D 为 migration=none。
 
 ### 2.3 代码、测试与镜像
 
-- 当前生产 R2-15B runtime：106 个 Python 源文件；schema 为 v11。R2-15A 新增 `domain/maintenance.py`、`infrastructure/sqlite_history.py` 与安全维护服务；R2-15B 在 `job_display_identity` 上增加每业务日展示编号。
+- 当前生产 R2-18D runtime：123 个 Python 源文件；schema 为 v14。R2-16 新增 collection editing 服务/草稿 overlay；R2-18 新增结果卡/收藏/风格/建议/有界效果预览。
 - 下载/分析保持有限并发，Telegram publish 由 durable accepted-order dispatcher 串行执行，prepare/publish/archive 都由 generation-fenced claim + heartbeat + TTL watchdog 保护。
 - 当前主要热点为 `adapters/telegram/bot_ui.py`、Telegram publish 与 WebDAV adapter；repository 大文件热点已在 R2-03B 消除。
-- 当前生产的 domain/application AST 依赖边界与 106-file architecture gate 通过，并强制 `MAX_SOURCE_FILE_LINES=1000` 单文件预算。
-- 当前生产 R2-15B 正式 clean/pushed Docker test target 在 `--network none` 下通过 405 tests，覆盖既有 scheduler/migration/upload/intake/release/undo/Archive/diagnostics、Dashboard/metrics/outbox、告警/合集预览、归档容错、短路径布局/每日清空/开关、ffprobe 视频属性/缩略图/仅终态告警/环境自检，以及 R2-15 安全隐藏/持久维护 run、隐藏 Job 过滤、`job_display_identity` 分配/回填/业务日解析与按业务日统计；没有启动第二个 Telegram Bot。
+- 当前生产的 domain/application AST 依赖边界与 123-file architecture gate 通过，并强制 `MAX_SOURCE_FILE_LINES=1000` 单文件预算。
+- 当前生产 R2-18D 正式 clean/pushed Docker test target 在 `--network none` 下通过 446 tests，覆盖既有 scheduler/migration/upload/intake/release/undo/Archive/diagnostics、Dashboard/metrics/outbox、告警/预览、归档容错、短路径布局、安全隐藏/维护、`job_display_identity`，以及 R2-16 草稿 revision/冻结提交、R2-18 结果卡/收藏/分享/安静模式、风格冻结、整理建议撤回与有界效果预览；没有启动第二个 Telegram Bot。
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 依赖已由 hashed lock 固定；多阶段 Dockerfile 的 test/runtime targets 共用固定 base digest，runtime 内精确安装 7 个锁定 Python 包。
-- 正式 runtime image `sha256:d4e5ed97353a4dd14c7131ea5b2613783f2f22c246d99a245a97644c5e82b020` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
+- 正式 runtime image `sha256:63d3096f926fcd11b759fc8de18397e120c2d8889339ecd64033119899b511d4` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
 
 ## 3. 当前 TGVIO 已证明的能力
 
@@ -88,6 +91,8 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 - Owner 告警（默认开启）：失败/异常（含 partial/uncertain、Archive 失败、Telegram 断连、磁盘低水位）经 Bot 私聊脱敏推送，带冷却去重；合集 `/end` 先展示发布预览，确认后才入队下载。
 - 归档与每日维护（R2-12/R2-13/R2-15）：归档大文件对慢 WebDAV 后端容错（更长响应/验证预算、404/423 视为转存中并可复用重试）；新归档使用短路径 `<root>/YYYY-MM-DD/<N>/<sha256[:12]>.<ext>`；每天 06:00（北京时间）不再物理删除任务历史，而是通过 durable `maintenance_runs`/`maintenance_targets` 安全隐藏已结算 Job、删除其旧状态卡并只对隐藏 Job 做安全缓存清理，同时回收过期/已消费 token 与已结算 outbox；所有发布/Archive/审计/去重凭据保留；`/settings` 可开关告警/预览/每日清空。
 - 视频发布与诊断（R2-14）：视频以 ffprobe 真实 duration/宽高发送并附带非空白缩略图（不依赖缺失的 hachoir）；owner 告警仅在终态失败触发；启动环境自检写入 `runtime_health.capabilities` 并在 `/diag` 显示 `ffmpeg/ffprobe/yt-dlp/cryptg/hachoir`。
+- 合集编辑与草稿（R2-16）：发布前可选封面、移除/恢复、上移/下移、改文案；多草稿保存/列表/继续/重启恢复；revision/CAS + operation token 冻结提交，重复/并发确认只产生一次副作用。
+- 用户体验升级（R2-18）：上下文首页与最终六键键盘；结果卡分别显示 Telegram 与 WebDAV，公开 `@username` 才生成帖子链接；owner-scoped 收藏/分享/安静模式；内置+自定义发布风格并冻结到任务；本地规则整理建议（可撤回）；owner 主动触发的有界效果预览（不创建 Job、不触发 Archive、用完即删缓存、保护 spoiler）。
 
 完整合同与缺口见 [FEATURE_CONTRACT.md](FEATURE_CONTRACT.md)。
 

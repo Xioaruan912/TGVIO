@@ -1,6 +1,6 @@
 # R2-18 用户体验升级实施方案
 
-> 2026-09-14；IN PROGRESS；设计和实现状态分别记录，未部署不标交付。
+> 2026-09-14；DELIVERED（18A/16/18B/18C/18E/18D 已实现并部署；仅剩真实手机验收）。R2-17 完整内容审核仍未实现。
 
 ## 基线与依赖审计
 
@@ -62,11 +62,13 @@ owner UX preferences 保存 quiet_mode；减少中间状态编辑/重复通知�
 ## 交付状态
 
 - [x] 18A：首页基础包实现/测试/部署，`c7ba056`，2026-09-14，migration=none；409 tests，证据见 [R2-18A_RELEASE.md](evidence/R2-18A_RELEASE.md)。最终草稿/风格导航仍待后续。
-- [ ] R2-16 前置编辑与多草稿。
-- [ ] 18B：结果卡/收藏/分享/安静模式。
-- [ ] 18C：风格预设。
-- [ ] 18D：效果预览。
-- [ ] 18E：整理建议。
-- [ ] 真实手机验收。
+- [x] R2-16 前置编辑与多草稿：`8cd0ac1`，`0012_collection_editing`，422 tests。
+- [x] 18B：结果卡/收藏/分享/安静模式：`bd7ae31`，`0013_owner_favorites`，433 tests。
+- [x] 18C：风格预设 + 最终六键键盘：`01f9dbc`，migration=none，436 tests。
+- [x] 18E：整理建议与可撤回编辑：`5a917b0`，`0014_suggestion_and_preview`，441 tests。
+- [x] 18D：有界效果预览：`1a9b86c`，migration=none，446 tests。
+- [ ] 真实手机验收（Android/iOS 键盘、草稿、预览、链接、收藏、安静模式）。
 
-R2-17 的完整内容审核仍为独立未完成阶段，不能把本包疑似提示标为已交付精确去重。
+最终生产 runtime 为 `1a9b86c179595861a53dc2fb28307987df3bdcae`，schema v14；完整的逐包 commit/release/测试/迁移与回滚边界见 [R2-18_UX_RELEASE.md](evidence/R2-18_UX_RELEASE.md)。Mini App 只完成设计：[R2-18_MINIAPP_DESIGN.md](R2-18_MINIAPP_DESIGN.md)。
+
+R2-17 的完整内容审核仍为独立未完成阶段，本轮 18E 只有规则化“疑似重复”，不能标为已交付精确去重。
