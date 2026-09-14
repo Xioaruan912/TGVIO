@@ -1,8 +1,8 @@
 # R2-15～R2-17 技术方案：安全清理、合集编辑、重复内容提示
 
 > 日期：2026-09-14
-> 文档状态：DESIGNED；三个代码阶段均为 NOT STARTED，未实现、未迁移、未部署。
-> 基线：R2-14 runtime `816409b2ce4225ec59f0fe81eb96b915ec4a01cf`，SQLite v9，397 项基础测试通过。
+> 文档状态：R2-15 已实现并部署；R2-16/R2-17 仍为 DESIGNED，未实现、未迁移、未部署。
+> 基线：R2-14 runtime `816409b2ce4225ec59f0fe81eb96b915ec4a01cf`，SQLite v9，397 项基础测试通过；R2-15 交付后生产 runtime 为 `75e6259e9212e46e002e0ce2d3b5abb22f606d8f`，SQLite v11，405 项测试。
 > 实施顺序：R2-15 → R2-16 → R2-17。本文是新增阶段设计，不替代已有功能合同和发布协议。
 
 ## 1. 总体决策与边界
@@ -71,6 +71,8 @@ status peer/message 仅留本地受保护 DB，不进入诊断快照、日志、
 ### 2.5 交付与验收
 
 先交付 R2-15A：停止 destructive purge、引入隐藏/历史页、持久 run/targets；再交付 R2-15B：独立每日展示编号、统计与旧入口兼容。若拆分 release，migration 也按实际包拆分，不一次创建未使用表。
+
+**交付记录（2026-09-14）**：R2-15A = `r2-15a-46ae55f-20260914T011949Z` + `0010_safe_history_maintenance`（403 tests，v10）；R2-15B = `r2-15b-75e6259-20260914T012823Z` + `0011_display_identity`（405 tests，v11）。生产 runtime commit `75e6259e9212e46e002e0ce2d3b5abb22f606d8f`，postflight `blockers=[]`、healthy、restart=0，rollback-check 通过。证据见 [R2-15_RELEASE.md](evidence/R2-15_RELEASE.md)。
 
 必须覆盖：发布成功但归档仍上传/重试；partial/uncertain；进行中的 undo/delete；清理与 retry 并发；状态卡删除超时；清理中 kill/restart；两个执行者竞争；跨天/回拨；保留有效 token、草稿和统计；重复 run 不重复计数；旧编号不误指新任务；1000+ Job SQL 分页。验证保留历史后旧 Telegram update 仍幂等。
 
@@ -178,7 +180,7 @@ Schema rollback 必须停机并使用匹配 DB/source/image 备份；存在新�
 
 ## 6. 实施完成清单
 
-- [ ] R2-15 安全隐藏、历史页、持久清理与编号统计，测试并部署。
+- [x] R2-15 安全隐藏、历史页、持久清理与编号统计，测试并部署（2026-09-14，`75e6259`，`r2-15b-75e6259-20260914T012823Z`，`0010`/`0011`）。
 - [ ] R2-16 合集编辑、冻结确认与草稿恢复，测试并部署。
 - [ ] R2-17 精确重复提示、持久决策与发布前复查，测试并部署。
 

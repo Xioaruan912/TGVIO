@@ -42,6 +42,9 @@ characterization -> implementation -> offline gates -> Git push
 | R2-12 | DELIVERED | 归档大文件传输容错（慢 WebDAV 后端）+ 发布竞态修复 | AR-02、PL-11 |
 | R2-13 | DELIVERED | 短路径归档布局、每日 06:00 清空任务/缓存/状态消息、Bot 内开关 | AR-01、UI-05 |
 | R2-14 | DELIVERED | 视频真实元数据/缩略图修复、仅终态失败告警、环境能力自检 | PL-05、UI-04、OB-01 |
+| R2-15 | DELIVERED | 安全隐藏/历史保留（不再物理删除历史）+ 每业务日展示编号与统计 | UI-05、OB-01 |
+| R2-16 | DESIGNED | 合集发布前编辑（封面/顺序/文案）与草稿恢复 | R2-15 |
+| R2-17 | DESIGNED | 已发布相同内容提示，跳过或仍然发布 | R2-15、R2-16 |
 
 阶段编号表达依赖顺序，不要求每阶段只有一个 commit。每个阶段应拆成可部署的小提交；如果单阶段超过约一周或同时修改多个外部副作用边界，应继续拆分。
 
@@ -385,6 +388,9 @@ R2-10 的自动化与文档部分已交付：`FEATURE_CONTRACT.md` 已无 `REQUI
 - **R2-13**（closure `r2-13-9f0eb94-20260913T135837Z`，`0009_archive_layout_flags`）把新归档布局改为 `<root>/<YYYY-MM-DD>/<N>/<sha256[:12]>.<ext>`（持久化每日序号），新增每天 06:00（北京时间）清空任务记录/缓存/状态消息并复位编号（保留日志与统计），新增 `/settings` 运行时开关（告警/预览/每日清空）。388 tests、v9。首次发布因 `remote_preflight.py` 未登记 v9 hash 出现 `database-schema` 假阳性，`9f0eb94` 修复后以 migration-free closure 收口。见 [R2-13_RELEASE.md](evidence/R2-13_RELEASE.md)。
 
 - **R2-14**（`r2-14-816409b-20260914T002637Z`，migration=none）修复白缩略图：发布视频改用 ffprobe 真实 duration/宽高构造 `DocumentAttributeVideo`（不再依赖缺失的 hachoir），缩略图拒绝黑/近白帧、扩大候选、预算升至 1MB；告警改为仅终态失败（`exhausted/quarantined/manual_review/abandoned`）才私聊，瞬时/重试中不打扰；新增启动环境自检与 `/diag` 能力布尔；修正 metrics 内存单位。397 tests。见 [R2-14_RELEASE.md](evidence/R2-14_RELEASE.md)。
+
+- **R2-15A**（`r2-15a-46ae55f-20260914T011949Z`，`0010_safe_history_maintenance`）停止 destructive `purge_terminal_history`：改为按北京时间 06:00 业务日边界安全隐藏已结算 Job（`job_visibility`），引入 durable `maintenance_runs`/`maintenance_targets`（lease/generation、冻结目标、逐项 checkpoint、有界状态卡删除、仅隐藏 Job 的安全缓存清理、过期/已消费 token 与已结算 outbox 回收），`/jobs` 新增 今天/待处理/历史 筛选。403 tests，v10。见 [R2-15_RELEASE.md](evidence/R2-15_RELEASE.md)。
+- **R2-15B**（`r2-15b-75e6259-20260914T012823Z`，`0011_display_identity`）引入 `job_display_identity`：`display_no` 在接受任务事务内按业务日分配，永久 `accepted_order` 继续单调递增驱动 FIFO，`#N` 只在当前业务日解析，旧全局编号不再误指新任务；统计 `today_*` 改按业务日聚合。405 tests，v11。见 [R2-15_RELEASE.md](evidence/R2-15_RELEASE.md)。
 
 ## 15. 每阶段交付记录模板
 
