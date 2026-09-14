@@ -1,6 +1,6 @@
 # R2-18 用户体验升级实施方案
 
-> 2026-09-14；DELIVERED（18A/16/18B/18C/18E/18D 已实现并部署；仅剩真实手机验收）。R2-17 完整内容审核仍未实现。
+> 2026-09-14；DELIVERED（18A/16/18B/18C/18E/18D 及验收修复 R2-18F1～F5 已实现并部署；仍需真实手机验收）。R2-17 完整内容审核仍未实现。
 
 ## 基线与依赖审计
 
@@ -69,6 +69,6 @@ owner UX preferences 保存 quiet_mode；减少中间状态编辑/重复通知�
 - [x] 18D：有界效果预览：`1a9b86c`，migration=none，446 tests。
 - [ ] 真实手机验收（Android/iOS 键盘、草稿、预览、链接、收藏、安静模式）。
 
-最终生产 runtime 为 `1a9b86c179595861a53dc2fb28307987df3bdcae`，schema v14；完整的逐包 commit/release/测试/迁移与回滚边界见 [R2-18_UX_RELEASE.md](evidence/R2-18_UX_RELEASE.md)。Mini App 只完成设计：[R2-18_MINIAPP_DESIGN.md](R2-18_MINIAPP_DESIGN.md)。
+最终生产 runtime 为 `b238b5861da6c44c94a737d953f3521027a03fa6`，schema v16；逐包 commit/release/测试/迁移与回滚边界见 [R2-18_UX_RELEASE.md](evidence/R2-18_UX_RELEASE.md) 与验收修复 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md)。Mini App 只完成设计：[R2-18_MINIAPP_DESIGN.md](R2-18_MINIAPP_DESIGN.md)。
 
 R2-17 的完整内容审核仍为独立未完成阶段，本轮 18E 只有规则化“疑似重复”，不能标为已交付精确去重。

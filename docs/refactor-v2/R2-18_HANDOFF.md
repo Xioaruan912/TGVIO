@@ -1,11 +1,11 @@
 # 用户体验升级接续交接
 
-> 2026-09-14。R2-16 与 R2-18 A/B/C/D/E 已实现、测试并部署。仅剩真实 Android/iOS 实机验收与独立未实现的 R2-17 完整内容审核。
+> 2026-09-14。R2-16、R2-18 A/B/C/D/E 与验收修复 R2-18F1～F5 均已实现、测试并部署。仍需真实 Android/iOS 实机验收与独立未实现的 R2-17 完整内容审核。
 
 ## 交付概览
 
-最终生产 runtime commit：`1a9b86c179595861a53dc2fb28307987df3bdcae`
-最终 release：`r2-18d-1a9b86c-20260914T040154Z`；schema v14，ledger `1..14`。
+最终生产 runtime commit：`b238b5861da6c44c94a737d953f3521027a03fa6`
+最终 release：`r2-18f5-b238b58-20260914T075349Z`；schema v16，ledger `1..16`。
 
 | 包 | commit | release | migration | tests |
 |---|---|---|---|---|
@@ -14,8 +14,13 @@
 | R2-18C 风格/最终键盘 | `01f9dbc` | `r2-18c-01f9dbc-20260914T034915Z` | none | 436 |
 | R2-18E 整理建议 | `5a917b0` | `r2-18e-5a917b0-20260914T035513Z` | `0014_suggestion_and_preview` | 441 |
 | R2-18D 有界效果预览 | `1a9b86c` | `r2-18d-1a9b86c-20260914T040154Z` | none | 446 |
+| R2-18F1 确认/预览安全补丁 | `06e0451` | `r2-18f1-06e0451-20260914T063914Z` | none | 449 |
+| R2-18F2 冻结提交恢复 | `568acc6` | `r2-18f2-568acc6-20260914T072824Z` | `0015_frozen_submissions` | 457 |
+| R2-18F3 draft 风格/同款再发 | `07bc973` | `r2-18f3-07bc973-20260914T074222Z` | `0016_draft_style` | 463 |
+| R2-18F4 预览资源/生命周期 | `4acd2bc` | `r2-18f4-4acd2bc-20260914T075031Z` | none | 467 |
+| R2-18F5 收藏幂等/链接去重 | `b238b58` | `r2-18f5-b238b58-20260914T075349Z` | none | 472 |
 
-逐包证据、回滚边界与点击路径见 [R2-18_UX_RELEASE.md](evidence/R2-18_UX_RELEASE.md)（18A 见 [R2-18A_RELEASE.md](evidence/R2-18A_RELEASE.md)）。每包都通过 `deploy_hostdzire.py` 唯一入口、独立 `vps_check.sh` 与 `rollback_hostdzire.sh --check`；后验 healthy、restart=0、单实例、`error_markers=0`、`jobs=0`、`blockers=[]`、`quick_check=ok`。
+逐包证据、回滚边界与点击路径见 [R2-18_UX_RELEASE.md](evidence/R2-18_UX_RELEASE.md) 与 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md)（18A 见 [R2-18A_RELEASE.md](evidence/R2-18A_RELEASE.md)）。每包都通过 `deploy_hostdzire.py` 唯一入口、独立 `vps_check.sh` 与 `rollback_hostdzire.sh --check`；后验 healthy、restart=0、单实例、`error_markers=0`、`jobs=0`、`blockers=[]`、`quick_check=ok`。
 
 ## 已实现功能与点击路径
 
@@ -37,6 +42,6 @@
 
 - 唯一发布入口 `python3 scripts/deploy_hostdzire.py --phase <实际阶段> --migration <实际迁移或 none>`；先 clean commit/push/full gates，再 build+部署，独立 `scripts/vps_check.sh` 与 `scripts/rollback_hostdzire.sh --check <release>`。
 - 生产 `/root/TGVIO` 与 `/root/TGVIO-current`，单实例 `tgvio`；远端 `.env/session/data/downloads/logs` 不被覆盖。
-- schema 回滚必须停机并恢复对应 release 的 `rollback/state-pre.sqlite3`（`0012` 会删除旧 open-session 唯一索引）；R2-18C/D 为 migration=none，代码回滚不需降库。
+- schema 回滚必须停机并恢复对应 release 的 `rollback/state-pre.sqlite3`（`0012` 会删除旧 open-session 唯一索引；`0015`/`0016` 为 additive）；R2-18C/D 与 R2-18F1/F4/F5 为 migration=none，代码回滚不需降库。
 - NTP 仍未同步（控制端/VPS 偏差约数分钟但低于 5 分钟门禁）；若发布门禁因时钟失败必须停止报告，不绕过或擅自改时钟。
 - Mini App 仅设计：[R2-18_MINIAPP_DESIGN.md](R2-18_MINIAPP_DESIGN.md)；本轮未新增 listener、公网端口或 Web 写接口。
