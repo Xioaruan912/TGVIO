@@ -5,7 +5,7 @@ from tgvio.adapters.telegram.intake_runtime_support import _PendingBatch
 from tgvio.adapters.telegram.intake_status import IntakeStatusMixin
 from tgvio.adapters.telegram.intake_collection import IntakeCollectionMixin
 from tgvio.adapters.telegram.intake_edit import IntakeEditMixin
-from tgvio.adapters.telegram.bot_ui_support import NAV_BUTTONS
+from tgvio.adapters.telegram.bot_ui_support import NAV_BUTTONS, COLLECTION_BUTTONS
 
 
 class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEditMixin):
@@ -64,7 +64,7 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
             events.NewMessage(
                 incoming=True,
                 func=lambda event: (event.raw_text or "").strip()
-                in {COLLECTION_BEGIN_BUTTON, COLLECTION_END_BUTTON},
+                in COLLECTION_BUTTONS,
             ),
         )
         self._client.add_event_handler(
@@ -111,14 +111,11 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
             raw_text
             and raw_text not in NAV_BUTTONS
             and not raw_text.lstrip().startswith("/")
-            and raw_text not in {COLLECTION_BEGIN_BUTTON, COLLECTION_END_BUTTON}
+            and raw_text not in COLLECTION_BUTTONS
             and await self._apply_pending_caption(int(event.sender_id), int(event.chat_id), raw_text)
         ):
             return
-        if raw_text in NAV_BUTTONS or raw_text.lstrip().startswith("/") or raw_text in {
-            COLLECTION_BEGIN_BUTTON,
-            COLLECTION_END_BUTTON,
-        }:
+        if raw_text in NAV_BUTTONS or raw_text.lstrip().startswith("/") or raw_text in COLLECTION_BUTTONS:
             return
 
         incoming = self._from_message(event.message, event.chat_id)

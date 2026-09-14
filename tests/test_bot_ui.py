@@ -98,6 +98,10 @@ class FakeRepository:
         self.quiet_mode = bool(enabled)
         return await self.get_user_preference(owner_id)
 
+    async def set_user_style(self, owner_id, style_json):
+        self.style_json = style_json
+        return await self.get_user_preference(owner_id)
+
     async def add_favorite(self, owner_id, job_id):
         job = self.jobs.get(job_id)
         if job is None or job.owner_id != owner_id:
@@ -125,6 +129,24 @@ class FakeRepository:
 
     async def list_favorite_ids(self, owner_id, *, limit=20, offset=0):
         return list(self.favorites)[offset : offset + limit]
+
+    async def list_drafts(self, owner_id, *, limit=20):
+        return []
+
+    async def list_draft_entries(self, session_id):
+        return []
+
+    async def get_draft(self, session_id):
+        return None
+
+    async def activate_draft(self, session_id, *, expected_revision=None):
+        return None
+
+    async def mark_draft_discarded(self, session_id):
+        return None
+
+    async def cancel_collection(self, session_id):
+        return None
 
     async def get_display_no(self, job_id):
         return self.accepted_orders.get(job_id)
@@ -656,7 +678,7 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(
             labels,
-            {"📥 开始合集", "🛑 结束并发布", "🏠 首页", "📋 我的任务", "🗂 发布历史", "ℹ️ 更多"},
+            {"📥 新建合集", "📋 我的任务", "📝 我的草稿", "🗂 发布历史", "🎨 发布风格", "ℹ️ 更多"},
         )
         self.assertEqual([len(row) for row in keyboard], [2, 2, 2])
         self.assertTrue(all(button.persistent for row in keyboard for button in row))
@@ -1821,3 +1843,15 @@ class BotUIResultTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(event)
         self.assertTrue(repository.quiet_mode)
         self.assertIn('安静模式', event.edits[0][0])
+
+    async def test_styles_page_and_named_selection(self) -> None:
+        repository = FakeRepository([job()])
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+        page = FakeEvent(data=b'ui:styles')
+        await ui._on_callback(page)
+        self.assertIn('发布风格', page.edits[0][0])
+
+        chosen = FakeEvent(data=b'ui:style:minimal')
+        await ui._on_callback(chosen)
+        self.assertIn('minimal', repository.style_json or '')
+        self.assertIn('极简直发', chosen.edits[0][0])

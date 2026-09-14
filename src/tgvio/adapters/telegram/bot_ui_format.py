@@ -94,9 +94,14 @@ class BotUIFormatMixin:
             if active:
                 lines.append(f"⏳ 有 {active} 个未完成任务，可查看进度或暂停状态。")
                 buttons.append([Button.inline("查看任务进度", b"ui:jobs:active:0")])
-            if not failures.total and session is None and not active:
+            drafts = await self._repository.list_drafts(owner_id, limit=20)
+            saved = [draft for draft in drafts if not draft.active]
+            if saved:
+                lines.append(f"📝 有 `{len(saved)}` 份草稿可继续编辑。")
+                buttons.append([Button.inline("我的草稿", b"ui:drafts:0")])
+            if not failures.total and session is None and not active and not saved:
                 lines.append("📥 直接转发图片、视频或文件给我，开始一次发布。")
-                lines.append("要合并多次转发？点键盘“开始合集”，收集好后预览发布。")
+                lines.append("要合并多次转发？点键盘“新建合集”，收集好后预览发布。")
         except Exception:
             lines.append("暂时无法读取完整状态，请稍后刷新；已有任务不受影响。")
         if not getattr(self._settings, "publish_enabled", False):
@@ -104,6 +109,8 @@ class BotUIFormatMixin:
         buttons.extend([
             [Button.inline("📋 我的任务", b"ui:jobs"),
              Button.inline("🗂 发布历史", b"ui:jobs:history:0")],
+            [Button.inline("📝 我的草稿", b"ui:drafts:0"),
+             Button.inline("🎨 发布风格", b"ui:styles")],
             [Button.inline("刷新", b"ui:home"), Button.inline("ℹ️ 更多", b"ui:more")],
         ])
         return "\n".join(lines), buttons
@@ -777,9 +784,9 @@ class BotUIFormatMixin:
             )
 
         return [
-            [text_button(COLLECTION_BEGIN_BUTTON), text_button(COLLECTION_END_BUTTON)],
-            [text_button(NAV_HOME), text_button(NAV_JOBS)],
-            [text_button(NAV_HISTORY), text_button(NAV_MORE)],
+            [text_button(COLLECTION_NEW_BUTTON), text_button(NAV_JOBS)],
+            [text_button(NAV_DRAFTS), text_button(NAV_HISTORY)],
+            [text_button(NAV_STYLE), text_button(NAV_MORE)],
         ]
 
     @staticmethod

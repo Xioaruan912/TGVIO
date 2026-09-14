@@ -284,13 +284,14 @@ class IntakeEditMixin:
         if editing is None:
             return
         preference = await self._intake.get_user_preference(owner_id)
+        style_policy = await self._resolve_style(owner_id)
         try:
             token = await editing.issue_confirm(
                 owner_id=owner_id,
                 session_id=session_id,
                 expected_revision=int(draft.revision),
                 spoiler_mode=preference.spoiler_mode,
-                style_policy=self._style_snapshot(owner_id),
+                style_policy=style_policy,
             )
         except Exception as exc:
             await self._safe_send(chat_id, f"⚠️ 无法生成确认：{type(exc).__name__}")
@@ -300,13 +301,15 @@ class IntakeEditMixin:
             session_id=session_id,
             expected_revision=int(draft.revision),
             spoiler_mode=preference.spoiler_mode,
-            style_policy=self._style_snapshot(owner_id),
+            style_policy=style_policy,
         )
+        style_label = "沿用我的发布风格" if style_policy else "默认风格"
         text = (
             "✅ **确认发布合集**\n"
             "──────────\n"
             f"媒体：`{len(frozen.media)}` 个\n"
-            f"头像封面：`{'已选择' if frozen.cover_entry_id else '自动'}`\n"
+            f"封面：`{'已选择' if frozen.cover_entry_id else '自动'}`\n"
+            f"风格：`{style_label}`\n"
             "──────────\n"
             "确认后开始下载并发布；旧预览将失效。"
         )
@@ -319,14 +322,16 @@ class IntakeEditMixin:
         except DraftUnavailableError:
             await self._safe_send(int(chat_id), text, buttons=rows)
 
-    def _style_snapshot(self, owner_id: int) -> dict[str, object] | None:
-        getter = getattr(self, "_style_snapshot_for", None)
-        if callable(getter):
-            try:
-                return getter(owner_id)
-            except Exception:
-                return None
-        return None
+    async def _resolve_style(self, owner_id: int) -> dict[str, object] | None:
+        repository = getattr(self, "_repository", None)
+        if repository is None:
+            return None
+        try:
+            from tgvio.application.publish_styles import PublishStyleService
+
+            return await PublishStyleService(repository).current(int(owner_id))
+        except Exception:
+            return None
 
     async def _on_edit_confirm(self, event, action: str, owner_id: int) -> None:
         editing = await self._editing_service()
@@ -348,7 +353,7 @@ class IntakeEditMixin:
                 ask_timeout_seconds=int(
                     getattr(self._settings, "spoiler_confirm_timeout_seconds", 60)
                 ),
-                style_policy=self._style_snapshot(owner_id),
+                style_policy=await self._resolve_style(owner_id),
             )
         except DraftRevisionConflict:
             await self._safe_send(event.chat_id, "⚠️ 内容已变化，请重新预览后再确认。")

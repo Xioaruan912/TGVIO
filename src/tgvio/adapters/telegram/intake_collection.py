@@ -18,7 +18,7 @@ class IntakeCollectionMixin:
         if not self._authorized(event.sender_id):
             return
         action = (event.raw_text or "").strip()
-        if action == COLLECTION_BEGIN_BUTTON:
+        if action in {COLLECTION_BEGIN_BUTTON, COLLECTION_NEW_BUTTON}:
             await self._begin_collection(event.chat_id, int(event.sender_id))
         elif action == COLLECTION_END_BUTTON:
             await self._end_collection(event.chat_id, int(event.sender_id))

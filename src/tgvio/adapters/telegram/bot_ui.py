@@ -70,12 +70,20 @@ from tgvio.adapters.telegram.bot_ui_format import BotUIFormatMixin
 
 from tgvio.adapters.telegram.bot_ui_jobs import BotUIJobsMixin
 from tgvio.adapters.telegram.bot_ui_result import BotUIResultMixin
+from tgvio.adapters.telegram.bot_ui_drafts import BotUIDraftsMixin
+from tgvio.adapters.telegram.bot_ui_styles import BotUIStylesMixin
 from tgvio.adapters.telegram.bot_ui_archive import BotUIArchiveMixin
 from tgvio.adapters.telegram.bot_ui_fixture import BotUIFixtureMixin
 
 
 class TelethonBotUI(
-    BotUIFixtureMixin, BotUIArchiveMixin, BotUIResultMixin, BotUIJobsMixin, BotUIFormatMixin
+    BotUIFixtureMixin,
+    BotUIArchiveMixin,
+    BotUIResultMixin,
+    BotUIDraftsMixin,
+    BotUIStylesMixin,
+    BotUIJobsMixin,
+    BotUIFormatMixin,
 ):
     def __init__(
         self,
@@ -287,6 +295,12 @@ class TelethonBotUI(
         elif action == NAV_HISTORY:
             text, buttons = await self._jobs_page(owner_id, filter=JobListFilter.HISTORY)
             await event.respond(text, buttons=buttons, parse_mode="md")
+        elif action == NAV_DRAFTS:
+            text, buttons = await self._render_drafts(owner_id, page=0)
+            await event.respond(text, buttons=buttons, parse_mode="md")
+        elif action == NAV_STYLE:
+            text, buttons = await self._render_styles(owner_id)
+            await event.respond(text, buttons=buttons, parse_mode="md")
         elif action == NAV_STATUS:
             await event.respond(
                 await self._status_text(owner_id),
@@ -413,6 +427,9 @@ class TelethonBotUI(
         if action == "ui:more":
             await self._edit_page(event, self._more_text(), self._more_buttons())
             return
+        if action == "ui:styles":
+            await self._show_styles_callback(event, owner_id)
+            return
         if action == "ui:settings":
             quiet = await self._quiet_enabled(owner_id)
             await self._edit_page(
@@ -536,6 +553,12 @@ class TelethonBotUI(
             ("ui:restyle:", self._restyle_callback),
             ("ui:favorites:", self._favorites_page_callback),
             ("ui:fav:", self._toggle_favorite_callback),
+            ("ui:drafts:", self._show_drafts_callback),
+            ("ui:draft-open:", self._draft_open_callback),
+            ("ui:draft-del:", self._draft_delete_callback),
+            ("ui:style-custom:", self._style_custom_callback),
+            ("ui:style-reset", self._style_reset_callback),
+            ("ui:style:", self._set_style_callback),
             ("ui:job:", self._show_job_callback),
         )
         for prefix, handler in job_actions:

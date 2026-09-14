@@ -27,10 +27,26 @@ NAV_ARCHIVE = "☁️ 归档"
 NAV_CACHE = "🧹 缓存"
 NAV_MORE = "ℹ️ 更多"
 NAV_HISTORY = "🗂 发布历史"
+NAV_DRAFTS = "📝 我的草稿"
+NAV_STYLE = "🎨 发布风格"
 COLLECTION_BEGIN_BUTTON = "📥 开始合集"
+COLLECTION_NEW_BUTTON = "📥 新建合集"
 COLLECTION_END_BUTTON = "🛑 结束并发布"
 NAV_BUTTONS = frozenset(
-    {NAV_HOME, NAV_JOBS, NAV_STATUS, NAV_ARCHIVE, NAV_CACHE, NAV_MORE, NAV_HISTORY}
+    {
+        NAV_HOME,
+        NAV_JOBS,
+        NAV_STATUS,
+        NAV_ARCHIVE,
+        NAV_CACHE,
+        NAV_MORE,
+        NAV_HISTORY,
+        NAV_DRAFTS,
+        NAV_STYLE,
+    }
+)
+COLLECTION_BUTTONS = frozenset(
+    {COLLECTION_BEGIN_BUTTON, COLLECTION_NEW_BUTTON, COLLECTION_END_BUTTON}
 )
 
 

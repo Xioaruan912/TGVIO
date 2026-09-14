@@ -131,3 +131,59 @@ class FavoritesAndResultTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PublishStyleTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = SQLiteJobRepository(Path(self.tmp.name) / 'state.sqlite3')
+        await self.repo.open()
+
+    async def asyncTearDown(self) -> None:
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def test_named_custom_and_reset_style(self) -> None:
+        from tgvio.application.publish_styles import PublishStyleService, resolve_style
+
+        self.assertEqual(resolve_style(None)[0], 'cover')
+        service = PublishStyleService(self.repo)
+        self.assertTrue((await service.current(7))['cover_mode'])
+
+        await service.set_named(7, 'minimal')
+        policy = await service.current(7)
+        self.assertFalse(policy['cover_mode'])
+        self.assertFalse(policy['forward_caption'])
+
+        await service.set_custom(7, policy={'cover_mode': True, 'forward_caption': True})
+        policy = await service.current(7)
+        self.assertTrue(policy['cover_mode'])
+        self.assertTrue(policy['forward_caption'])
+
+        await service.reset(7)
+        policy = await service.current(7)
+        self.assertTrue(policy['cover_mode'])
+        self.assertFalse(policy['forward_caption'])
+
+    async def test_style_snapshot_overrides_global_planning_policy(self) -> None:
+        from tgvio.application.orchestrator import JobOrchestrator, PlanningPolicy
+        from tgvio.domain.job import JobState, MediaItem, MediaKind
+        from tgvio.domain.publish import PublishStepKind
+
+        items = [
+            MediaItem(index=0, kind=MediaKind.PHOTO, source='x'),
+            MediaItem(index=1, kind=MediaKind.VIDEO, source='y'),
+        ]
+        job = Job(owner_id=7, destination='@channel', items=items, id='j1', state=JobState.ANALYZED)
+        await self.repo.create(job)
+        orchestrator = JobOrchestrator(self.repo, PlanningPolicy(cover_mode=True, forward_caption=True))
+
+        global_plan = orchestrator.plan(job)
+        self.assertTrue(any(step.kind == PublishStepKind.CHANNEL_COVER_ALBUM for step in global_plan.steps))
+
+        job.policy = {'publish_style': {'cover_mode': False, 'forward_caption': False}}
+        minimal_plan = orchestrator.plan(job)
+        self.assertFalse(any(step.kind == PublishStepKind.CHANNEL_COVER_ALBUM for step in minimal_plan.steps))
+        self.assertFalse(any(step.target.value == 'discussion' for step in minimal_plan.steps))
+        for step in minimal_plan.steps:
+            self.assertFalse(step.params['forward_caption'])

@@ -468,7 +468,9 @@ class CollectionEditingService:
             max_items=max_items,
             spoiler_mode=spoiler_mode,
             ask_timeout_seconds=ask_timeout_seconds,
-            extra_policy=dict(style_policy or {}),
+            extra_policy=(
+                {"publish_style": dict(style_policy)} if style_policy else None
+            ),
         )
         await self._repository.finish_submission(
             session_id,
