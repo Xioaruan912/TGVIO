@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
@@ -44,6 +45,9 @@ class IntakeEditMixin:
             return True
         if action.startswith("intake:sg:"):
             await self._on_suggestion(event, action, owner_id)
+            return True
+        if action.startswith("intake:pv:"):
+            await self._on_preview_request(event, action, owner_id)
             return True
         if action.startswith("intake:cc:"):
             await self._on_edit_confirm(event, action, owner_id)
@@ -262,7 +266,13 @@ class IntakeEditMixin:
         rows.append(
             [
                 Button.inline("🧠 整理建议", f"intake:sg:{encoded_sid}:{draft.revision}:a".encode()),
+                Button.inline("🖼 效果预览", f"intake:pv:{encoded_sid}:{draft.revision}".encode()),
+            ]
+        )
+        rows.append(
+            [
                 Button.inline("💾 保存草稿", f"intake:ed:{encoded_sid}:{draft.revision}:s".encode()),
+                Button.inline("🧹 清封面", f"intake:ed:{encoded_sid}:{draft.revision}:z".encode()),
             ]
         )
         rows.append(
@@ -344,6 +354,57 @@ class IntakeEditMixin:
             await self._safe_answer(event, "没有可撤回的调整", alert=True)
             return
         await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
+
+    async def _on_preview_request(self, event, action: str, owner_id: int) -> None:
+        previews = getattr(self, "_previews", None)
+        if previews is None:
+            await self._safe_answer(event, "效果预览未启用", alert=True)
+            return
+        parts = action.split(":")
+        if len(parts) < 4:
+            await self._safe_answer(event, "操作已过期", alert=True)
+            return
+        session_id = parts[2]
+        try:
+            revision = int(parts[3])
+        except (TypeError, ValueError):
+            await self._safe_answer(event, "操作已过期", alert=True)
+            return
+        editing = await self._editing_service()
+        draft = await editing.draft(session_id) if editing is not None else None
+        if draft is None or int(draft.owner_id) != int(owner_id):
+            await self._safe_answer(event, "草稿已失效", alert=True)
+            return
+        if int(draft.revision) != revision:
+            await self._safe_answer(event, "内容已更新，请刷新", alert=True)
+            await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
+            return
+        await self._safe_answer(event, "正在生成效果预览…")
+        asyncio.create_task(
+            self._run_preview(owner_id, int(event.chat_id), session_id, revision)
+        )
+
+    async def _run_preview(
+        self, owner_id: int, chat_id: int, session_id: str, revision: int
+    ) -> None:
+        previews = getattr(self, "_previews", None)
+        if previews is None:
+            return
+        try:
+            await previews.preview(
+                owner_id=owner_id,
+                chat_id=chat_id,
+                session_id=session_id,
+                expected_revision=revision,
+            )
+        except Exception:
+            try:
+                await self._safe_send(
+                    chat_id,
+                    "🖼 未能生成效果预览；已保留文字预览，可继续编辑或直接确认发布。",
+                )
+            except Exception:
+                pass
 
     async def _render_suggestions(self, chat_id: int, owner_id: int, session_id: str, draft) -> None:
         editing = await self._editing_service()

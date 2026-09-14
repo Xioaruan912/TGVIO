@@ -44,6 +44,8 @@ from tgvio.domain.notifications import ALERT_EVENT_TYPES
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
 from tgvio.application.collection_editing import CollectionEditingService
+from tgvio.application.previews import PreviewService
+from tgvio.adapters.telegram.preview_sender import TelethonPreviewSender
 from tgvio.application.job_diagnostics import JobDiagnosticService
 from tgvio.application.job_control import JobControlService
 from tgvio.application.job_runner import JobRunner
@@ -216,6 +218,25 @@ async def run(*, check_only: bool = False) -> None:
         )
         operation_tokens = OperationTokenService(repository)
         collection_editing = CollectionEditingService(repository, intake, operation_tokens)
+        preview_service = (
+            PreviewService(
+                repository,
+                TelethonMediaDownloader(
+                    gateway.client,
+                    download_workers=settings.telegram_download_workers,
+                    part_size_kb=settings.telegram_part_size_kb,
+                    shard_retries=settings.telegram_shard_retries,
+                ),
+                FFmpegMediaTransformer(),
+                TelethonPreviewSender(gateway.client),
+                cache_root=settings.download_dir,
+                max_source_bytes=settings.preview_max_source_bytes,
+                timeout_seconds=settings.preview_timeout_seconds,
+                cover_width=settings.cover_width,
+            )
+            if settings.preview_enabled
+            else None
+        )
         routed_downloader = RoutedMediaDownloader(
             TelethonMediaDownloader(
                 gateway.client,
@@ -288,6 +309,7 @@ async def run(*, check_only: bool = False) -> None:
             runner,
             flags=runtime_flags,
             editing=collection_editing,
+            previews=preview_service,
         )
         auto_recovery_runtime = AutoRecoveryRuntime(
             AutoRecoveryService(
@@ -433,6 +455,8 @@ async def run(*, check_only: bool = False) -> None:
             await alert_runtime.start()
         if maintenance_runtime is not None:
             await maintenance_runtime.start()
+        if preview_service is not None:
+            await preview_service.mark_interrupted()
         recoverable = await repository.list_by_states(
             (
                 JobState.RECEIVED,

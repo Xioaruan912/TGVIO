@@ -17,6 +17,7 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
         processor: JobRunner,
         flags: object | None = None,
         editing: object | None = None,
+        previews: object | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -24,6 +25,7 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
         self._processor = processor
         self._flags = flags
         self._editing = editing
+        self._previews = previews
         self._log = logging.getLogger("tgvio.telegram.intake")
         self._tasks: set[asyncio.Task] = set()
         self._status_tasks: dict[str, asyncio.Task] = {}

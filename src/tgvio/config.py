@@ -132,6 +132,9 @@ class Settings:
     alert_poll_seconds: int
     collection_preview_enabled: bool
     collection_editing_enabled: bool
+    preview_enabled: bool
+    preview_max_source_bytes: int
+    preview_timeout_seconds: int
     archive_enabled: bool
     archive_url: str
     archive_remote_root: str
@@ -302,6 +305,13 @@ class Settings:
             raise ConfigError("TGVIO_ALERT_POLL_SECONDS out of range")
         collection_preview_enabled = _bool("TGVIO_COLLECTION_PREVIEW_ENABLED", True)
         collection_editing_enabled = _bool("TGVIO_COLLECTION_EDITING_ENABLED", True)
+        preview_enabled = _bool("TGVIO_PREVIEW_ENABLED", True)
+        preview_max_source_bytes = _int("TGVIO_PREVIEW_MAX_SOURCE_BYTES", 33554432)
+        if not 1 <= preview_max_source_bytes <= 2 * 1024**3:
+            raise ConfigError("TGVIO_PREVIEW_MAX_SOURCE_BYTES out of range")
+        preview_timeout_seconds = _int("TGVIO_PREVIEW_TIMEOUT_SECONDS", 30)
+        if not 5 <= preview_timeout_seconds <= 600:
+            raise ConfigError("TGVIO_PREVIEW_TIMEOUT_SECONDS out of range")
         if webhook_enabled:
             parsed_webhook = urllib.parse.urlsplit(webhook_url)
             if parsed_webhook.scheme != "https" or not parsed_webhook.hostname:
@@ -422,6 +432,9 @@ class Settings:
             alert_poll_seconds=alert_poll_seconds,
             collection_preview_enabled=collection_preview_enabled,
             collection_editing_enabled=collection_editing_enabled,
+            preview_enabled=preview_enabled,
+            preview_max_source_bytes=preview_max_source_bytes,
+            preview_timeout_seconds=preview_timeout_seconds,
             archive_enabled=archive_enabled,
             archive_url=archive_url,
             archive_remote_root=archive_remote_root,
@@ -489,6 +502,7 @@ class Settings:
             "alert_poll_seconds": self.alert_poll_seconds,
             "collection_preview_enabled": self.collection_preview_enabled,
             "collection_editing_enabled": self.collection_editing_enabled,
+            "preview_enabled": self.preview_enabled,
             "archive_enabled": self.archive_enabled,
             "archive_configured": bool(self.archive_url and self.archive_user),
             "archive_remote_root_configured": bool(self.archive_remote_root),

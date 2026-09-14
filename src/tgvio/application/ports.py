@@ -37,6 +37,7 @@ from tgvio.domain.intake import (
 from tgvio.domain.job import Job, JobEvent, JobState, MediaItem, MediaKind
 from tgvio.domain.job_query import FailurePage, JobListFilter, JobPage
 from tgvio.domain.operations import OperationToken, PublishEffectRevocation, RevocationState
+from tgvio.domain.preview import PreviewRequest, PreviewState
 from tgvio.domain.suggestion import SuggestionApplication
 from tgvio.domain.publish import (
     PublishEffect,
@@ -245,6 +246,21 @@ class JobRepository(Protocol):
     ) -> SuggestionApplication | None: ...
 
     async def consume_suggestion_application(self, application_id: str) -> bool: ...
+
+    async def create_preview_request(self, request: PreviewRequest) -> PreviewRequest: ...
+
+    async def get_preview_request(self, request_id: str) -> PreviewRequest | None: ...
+
+    async def update_preview_request(
+        self,
+        request_id: str,
+        *,
+        state: PreviewState,
+        error_code: str | None = None,
+        cache_dir: str | None = None,
+    ) -> None: ...
+
+    async def mark_running_previews_interrupted(self) -> int: ...
 
     async def get_user_preference(self, owner_id: int) -> UserPreference: ...
 
