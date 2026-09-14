@@ -437,12 +437,6 @@ class CollectionEditingService:
             spoiler_mode=spoiler_mode,
             style_policy=style_policy,
         )
-        await self._repository.begin_submission(
-            session_id,
-            owner_id=int(owner_id),
-            revision=frozen.revision,
-            snapshot_hash=frozen.snapshot_hash,
-        )
         try:
             await self._tokens.consume(
                 token=token,
@@ -454,9 +448,14 @@ class CollectionEditingService:
                 payload={"snapshot_hash": frozen.snapshot_hash},
             )
         except OperationTokenInvalidError:
-            # A concurrent click consumed the same token; the submission row keeps
-            # the operation idempotent, so continue the frozen snapshot once safe.
-            pass
+            # A changed payload or expired confirmation must never authorize work.
+            raise
+        await self._repository.begin_submission(
+            session_id,
+            owner_id=int(owner_id),
+            revision=frozen.revision,
+            snapshot_hash=frozen.snapshot_hash,
+        )
         result = await self._intake.finalize_media(
             owner_id=int(owner_id),
             chat_id=int(chat_id),

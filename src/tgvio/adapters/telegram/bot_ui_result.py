@@ -38,6 +38,8 @@ class BotUIResultMixin:
         card = await self._build_result(owner_id, job)
         size = sum(int(item.size_bytes) for item in job.items)
         labels = {
+            "revoked": "↩️ 已撤销发布",
+            "partially_revoked": "⚠️ 已部分撤销，仍有消息需处理",
             "succeeded": "✅ Telegram 发布完成",
             "uncertain": "🛡️ 需人工核对（可能已有可见消息）",
             "failed": "❌ 发布失败",
@@ -166,6 +168,10 @@ class BotUIResultMixin:
         if intake is None or not hasattr(intake, "begin_collection"):
             await self._safe_answer(event, "合集功能当前不可用", alert=True)
             return
+        existing = await intake.open_collection(owner_id=int(owner_id), chat_id=int(event.chat_id))
+        if existing is not None:
+            await self._safe_answer(event, "已有收集中的合集，请先保存草稿或结束当前合集。", alert=True)
+            return
         if style is not None:
             try:
                 import json
@@ -209,12 +215,15 @@ class BotUIResultMixin:
             lines.append("还没有收藏的作品。")
         rows: list[list] = []
         for index, job in enumerate(jobs, start=1):
+            card = await self._result_service().build(job)
             size = sum(int(item.size_bytes) for item in job.items)
             label = await self._job_label(job)
             lines.append(
                 f"{index}. {self._job_state_icon(job.state)} {label} · "
                 f"{self._job_media_counts(job)} · {self._human_bytes(size)}"
             )
+            if card.telegram_state in {"revoked", "partially_revoked"}:
+                lines.append("   ↩️ 已撤销" if card.telegram_state == "revoked" else "   ⚠️ 部分撤销")
             if job.state == JobState.FAILED and job.error_code in {
                 "publish_partial",
                 "publish_uncertain",

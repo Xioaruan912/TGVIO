@@ -4,6 +4,14 @@ from tgvio.domain.preview import PreviewRequest, PreviewState
 
 
 class SQLitePreviewRepositoryMixin:
+    async def list_preview_request_ids(self) -> list[str]:
+        cursor = await self._require().execute("SELECT id FROM preview_requests")
+        rows = await cursor.fetchall()
+        await cursor.close()
+        # IDs become a single directory component, never an arbitrary path.
+        return [str(row["id"]) for row in rows
+                if str(row["id"]) and all(c.isalnum() or c in "-_" for c in str(row["id"]))]
+
     async def create_preview_request(self, request: PreviewRequest) -> PreviewRequest:
         async with self._write_transaction() as conn:
             await conn.execute(

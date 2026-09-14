@@ -49,6 +49,42 @@ class _Sender:
 
 
 class PreviewServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_owner_spoiler_and_changed_revision_are_enforced_before_send(self) -> None:
+        from tgvio.domain.intake import SpoilerMode
+        session, draft = await self._session([IncomingMedia(
+            kind=MediaKind.PHOTO, source="telegram:42:10", size_bytes=10,
+            source_chat_id=42, source_message_id=10,
+        )])
+        await self.intake.set_spoiler_mode(7, SpoilerMode.ALWAYS_SPOILER)
+        await self.service.preview(owner_id=7, chat_id=42, session_id=session.id,
+                                   expected_revision=draft.revision)
+        self.assertTrue(self.sender.calls[0][2])
+        download = self.downloader.download
+        async def changed(item, target):
+            await self.repo.set_draft_caption(session.id, text="changed",
+                                              expected_revision=draft.revision)
+            return await download(item, target)
+        self.downloader.download = changed
+        result = await self.service.preview(owner_id=7, chat_id=42, session_id=session.id,
+                                            expected_revision=draft.revision)
+        self.assertEqual(result.state, PreviewState.FAILED)
+        self.assertEqual(len(self.sender.calls), 1)
+
+    async def test_sender_timeout_is_bounded_and_cleans_cache(self) -> None:
+        import asyncio
+        session, draft = await self._session([IncomingMedia(
+            kind=MediaKind.PHOTO, source="telegram:42:11", size_bytes=10,
+            source_chat_id=42, source_message_id=11,
+        )])
+        async def hung(*args, **kwargs):
+            await asyncio.Event().wait()
+        self.sender.send_preview = hung
+        self.service._timeout = 0.02
+        result = await self.service.preview(owner_id=7, chat_id=42, session_id=session.id,
+                                            expected_revision=draft.revision)
+        self.assertEqual(result.error_code, "timeout")
+        self.assertFalse((self.root / "downloads" / f"preview-{result.id}").exists())
+
     async def asyncSetUp(self) -> None:
         self.tmp = TemporaryDirectory()
         self.root = Path(self.tmp.name)

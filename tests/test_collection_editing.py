@@ -29,6 +29,21 @@ def _media(message_id: int, kind: MediaKind = MediaKind.VIDEO) -> IncomingMedia:
 
 
 class CollectionEditingServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def test_changed_confirmation_payload_never_creates_job(self) -> None:
+        from tgvio.application.operation_tokens import OperationTokenInvalidError
+        session, draft = await self._session_with(1)
+        token = await self.editing.issue_confirm(
+            owner_id=7, session_id=session.id, expected_revision=draft.revision,
+            spoiler_mode=SpoilerMode.ALWAYS_NORMAL, style_policy={"cover_mode": True},
+        )
+        with self.assertRaises(OperationTokenInvalidError):
+            await self.editing.confirm(
+                owner_id=7, chat_id=42, token=token, destination="@fixture",
+                max_items=100, ask_timeout_seconds=60, style_policy={"cover_mode": False},
+            )
+        self.assertEqual(await self.repo.list_recent(owner_id=7), [])
+        self.assertIsNone(await self.repo.get_submission(session.id))
+
     async def asyncSetUp(self) -> None:
         self.tmp = TemporaryDirectory()
         self.repo = SQLiteJobRepository(Path(self.tmp.name) / "state.sqlite3")

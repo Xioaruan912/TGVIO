@@ -9,6 +9,7 @@ from tgvio.application.collection_editing import (
     DraftUnavailableError,
 )
 from tgvio.domain.collection_editing import DraftState
+from tgvio.application.operation_tokens import OperationTokenInvalidError
 from tgvio.domain.intake import CollectionEntryKind
 
 
@@ -180,7 +181,7 @@ class IntakeEditMixin:
             if draft is not None:
                 await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
             return
-        except DraftUnavailableError:
+        except (DraftUnavailableError, OperationTokenInvalidError):
             await self._safe_answer(event, "草稿已失效", alert=True)
             return
         await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
@@ -391,12 +392,14 @@ class IntakeEditMixin:
         if previews is None:
             return
         try:
-            await previews.preview(
+            result = await previews.preview(
                 owner_id=owner_id,
                 chat_id=chat_id,
                 session_id=session_id,
                 expected_revision=revision,
             )
+            if result.state.value != "succeeded":
+                raise RuntimeError("preview unavailable")
         except Exception:
             try:
                 await self._safe_send(
@@ -555,7 +558,7 @@ class IntakeEditMixin:
         except DraftRevisionConflict:
             await self._safe_send(event.chat_id, "⚠️ 内容已变化，请重新预览后再确认。")
             return
-        except DraftUnavailableError:
+        except (DraftUnavailableError, OperationTokenInvalidError):
             await self._safe_send(event.chat_id, "⚠️ 该确认已过期或已被使用。")
             return
         except Exception as exc:  # pragma: no cover - defensive

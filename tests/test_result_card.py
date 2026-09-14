@@ -118,6 +118,17 @@ class FavoritesAndResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(card.link_url, "https://t.me/mychannel/55")
         self.assertIsNone(card.archive_state)
         self.assertTrue(card.favorited)
+        from tgvio.domain.operations import RevocationState
+        effects = await self.repo.list_publish_effects(plan.id)
+        ids = tuple(e.id for e in effects if e.effect_type == "telegram_channel_message")
+        await self.repo.ensure_publish_effect_revocations(job.id, ids)
+        await self.repo.checkpoint_publish_effect_revocations(
+            job.id, ids, state=RevocationState.DELETED,
+        )
+        revoked = await ResultCardService(self.repo).build(job)
+        self.assertEqual(revoked.telegram_state, "revoked")
+        self.assertIsNone(revoked.link_url)
+        self.assertEqual(revoked.confirmed_messages, 0)
 
     async def test_result_card_marks_uncertain_publish(self) -> None:
         job = await self._job("j2", destination="@mychannel")

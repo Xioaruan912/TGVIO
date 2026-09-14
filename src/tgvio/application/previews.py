@@ -8,8 +8,8 @@ import time
 
 from tgvio.application.collection_editing import DraftRevisionConflict, DraftUnavailableError
 from tgvio.application.ports import JobRepository
-from tgvio.domain.collection_editing import CollectionDraft
-from tgvio.domain.intake import CollectionEntryKind
+from tgvio.domain.collection_editing import CollectionDraft, DraftState
+from tgvio.domain.intake import CollectionEntryKind, SpoilerMode
 from tgvio.domain.job import MediaItem, MediaKind
 from tgvio.domain.preview import PreviewRequest, PreviewState
 
@@ -54,7 +54,15 @@ class PreviewService:
         self._now = now or time.time
 
     async def mark_interrupted(self) -> int:
-        return await self._repository.mark_running_previews_interrupted()
+        count = await self._repository.mark_running_previews_interrupted()
+        if self._cache_root.is_symlink():
+            raise PreviewUnavailableError("preview root must not be a symlink")
+        # Only remove exact request-owned paths recorded in the preview ledger.
+        for request_id in await self._repository.list_preview_request_ids():
+            path = self._cache_root / f"preview-{request_id}"
+            if path.is_dir() and not path.is_symlink():
+                shutil.rmtree(path)
+        return count
 
     def _owner_lock(self, owner_id: int) -> asyncio.Lock:
         lock = self._owner_locks.get(int(owner_id))
@@ -76,11 +84,14 @@ class PreviewService:
             draft is None
             or int(draft.owner_id) != int(owner_id)
             or int(draft.revision) != int(expected_revision)
+            or draft.state not in {DraftState.COLLECTING, DraftState.PREVIEW, DraftState.SAVED}
         ):
             raise DraftRevisionConflict("draft revision changed")
         item = await self._cover_item(draft)
         if item is None:
             raise PreviewUnavailableError("合集里还没有可用于预览的媒体")
+        if self._owner_lock(int(owner_id)).locked():
+            raise PreviewUnavailableError("已有预览正在生成，请稍后重试")
         request = await self._repository.create_preview_request(
             PreviewRequest(
                 id=secrets.token_urlsafe(12),
@@ -109,19 +120,18 @@ class PreviewService:
         )
         cache_dir.mkdir(parents=True, exist_ok=True)
         try:
-            download, cover = await asyncio.wait_for(
-                self._generate(item, cache_dir), timeout=self._timeout
-            )
-            spoiler = bool(item.spoiler)
-            await self._sender.send_preview(
-                int(chat_id),
-                cover,
-                spoiler=spoiler,
-                caption="🖼 效果预览（示意，非像素级最终结果）\n确认前不会发布，也不会归档。",
+            await asyncio.wait_for(
+                self._generate_and_send(request, item, cache_dir, chat_id),
+                timeout=self._timeout,
             )
             await self._repository.update_preview_request(
                 request.id, state=PreviewState.SUCCEEDED
             )
+        except asyncio.CancelledError:
+            await self._repository.update_preview_request(
+                request.id, state=PreviewState.FAILED, error_code="cancelled"
+            )
+            raise
         except asyncio.TimeoutError:
             await self._repository.update_preview_request(
                 request.id, state=PreviewState.FAILED, error_code="timeout"
@@ -135,12 +145,31 @@ class PreviewService:
         updated = await self._repository.get_preview_request(request.id)
         return updated or request
 
+    async def _generate_and_send(self, request, item, cache_dir, chat_id):
+        _, cover = await self._generate(item, cache_dir)
+        draft = await self._repository.get_draft(request.session_id)
+        if (draft is None or draft.owner_id != request.owner_id
+                or draft.revision != request.revision
+                or draft.state not in {DraftState.COLLECTING, DraftState.PREVIEW, DraftState.SAVED}
+                or request.expires_at <= int(self._now())):
+            raise DraftRevisionConflict("preview is stale")
+        preference = await self._repository.get_user_preference(request.owner_id)
+        spoiler = bool(item.spoiler) or preference.spoiler_mode in {
+            SpoilerMode.ASK, SpoilerMode.ALWAYS_SPOILER,
+        }
+        await self._sender.send_preview(
+            int(chat_id), cover, spoiler=spoiler,
+            caption="🖼 效果预览（示意，非像素级最终结果）\n确认前不会发布，也不会归档。",
+        )
+
     async def _generate(self, item: MediaItem, cache_dir: Path):
         downloaded = await self._downloader.download(item, cache_dir)
         local_path = getattr(downloaded, "local_path", None)
         source = Path(local_path) if local_path else None
         if source is None or not source.is_file():
             raise PreviewUnavailableError("download produced no file")
+        if source.stat().st_size > self._max_source_bytes:
+            raise PreviewUnavailableError("preview source exceeds budget")
         if item.kind == MediaKind.VIDEO:
             duration = 0.0
             try:

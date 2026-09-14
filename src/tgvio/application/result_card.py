@@ -4,6 +4,7 @@ from dataclasses import dataclass
 
 from tgvio.application.ports import JobRepository
 from tgvio.domain.job import Job, JobState
+from tgvio.domain.operations import RevocationState
 
 _VISIBLE_EFFECT_TYPES = {
     "telegram_channel_message",
@@ -62,6 +63,10 @@ class ResultCardService:
         visible = [
             effect for effect in effects if effect.effect_type in _VISIBLE_EFFECT_TYPES
         ]
+        revocations = await self._repository.list_publish_effect_revocations(job.id)
+        deleted_ids = {r.effect_id for r in revocations if r.state == RevocationState.DELETED}
+        deleted = [e for e in visible if e.id in deleted_ids]
+        visible = [e for e in visible if e.id not in deleted_ids]
         channel_ids = [
             str(effect.external_message_id)
             for effect in visible
@@ -70,7 +75,9 @@ class ResultCardService:
         package = await self._repository.get_archive_package_for_job(job.id)
         archive_state = package.state.value if package is not None else None
 
-        if job.state == JobState.SUCCEEDED:
+        if deleted:
+            telegram_state = "partially_revoked" if visible else "revoked"
+        elif job.state == JobState.SUCCEEDED:
             telegram_state = "succeeded"
         elif job.state == JobState.FAILED and job.error_code in {
             "publish_partial",

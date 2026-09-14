@@ -56,6 +56,9 @@ class FakeClient:
 
 
 class FakeRepository:
+    async def list_publish_effect_revocations(self, job_id):
+        return []
+
     def __init__(self, jobs=(), *, archives=(), plans=()) -> None:
         self.jobs = {job.id: job for job in jobs}
         self.archives = {package.job_id: package for package in archives}
