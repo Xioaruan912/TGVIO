@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import logging
 import shutil
+import time
 from typing import Callable
 from zoneinfo import ZoneInfo
 
@@ -58,6 +59,7 @@ from tgvio.domain.job_query import (
     JobListFilter,
     JobPage,
 )
+from tgvio.domain.maintenance import business_day_bounds
 from tgvio.domain.operations import UndoStatus
 from tgvio.domain.publish import PublishPlan, PublishStepKind, PublishStepState, PublishTarget
 from tgvio.domain.progress import JobProgress
@@ -113,12 +115,16 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
     ) -> JobPage:
         page_jobs = getattr(self._repository, "page_jobs", None)
         if callable(page_jobs):
-            return await page_jobs(
-                owner_id=owner_id,
-                filter=filter,
-                page=page,
-                page_size=page_size,
-            )
+            kwargs: dict[str, object] = {
+                "owner_id": owner_id,
+                "filter": filter,
+                "page": page,
+                "page_size": page_size,
+            }
+            if filter == JobListFilter.TODAY:
+                bounds = business_day_bounds(time.time(), hour=6)
+                kwargs["business_day_start_epoch"] = bounds.start_epoch
+            return await page_jobs(**kwargs)
 
         # Compatibility for narrow test doubles. Production SQLite always uses
         # the SQL-paged repository method above.
@@ -140,6 +146,17 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 JobState.SUCCEEDED,
                 JobState.CANCELLED,
             }:
+                continue
+            if filter == JobListFilter.TODAY:
+                bounds = business_day_bounds(time.time(), hour=6)
+                created = job.created_at
+                if created.tzinfo is None:
+                    created = created.replace(tzinfo=timezone.utc)
+                if created.timestamp() < bounds.start_epoch:
+                    continue
+            if filter == JobListFilter.PENDING and job.terminal and job.state != JobState.FAILED:
+                continue
+            if filter == JobListFilter.HISTORY:
                 continue
             get_order = getattr(self._repository, "get_accepted_order", None)
             accepted_order = await get_order(job.id) if callable(get_order) else None
@@ -222,7 +239,7 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 ("• " if item == result.filter else "") + JOB_FILTER_LABELS[item],
                 f"ui:jobs:{item.value}:0".encode("utf-8"),
             )
-            for item in JobListFilter
+            for item in JOB_FILTER_UI_ORDER
         ]
         rows.append(filter_buttons[:3])
         rows.append(filter_buttons[3:])

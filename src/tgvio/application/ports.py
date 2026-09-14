@@ -153,6 +153,7 @@ class JobRepository(Protocol):
         filter: JobListFilter = JobListFilter.ALL,
         page: int = 0,
         page_size: int = 5,
+        business_day_start_epoch: float | None = None,
     ) -> JobPage: ...
 
     async def page_failures(
@@ -166,6 +167,96 @@ class JobRepository(Protocol):
     async def count_by_state(self, *, owner_id: int | None = None) -> dict[JobState, int]: ...
 
     async def get_stats_snapshot(self, *, owner_id: int | None = None) -> dict[str, int]: ...
+
+    async def list_terminal_job_ids_before(
+        self,
+        *,
+        cutoff_epoch: float,
+        limit: int = 200,
+        offset: int = 0,
+    ) -> list[str]: ...
+
+    async def hide_jobs(
+        self,
+        job_ids: tuple[str, ...],
+        *,
+        reason: str,
+        now: float,
+    ) -> int: ...
+
+    async def job_has_active_claim(self, job_id: str, *, now: float) -> bool: ...
+
+    async def job_has_unsettled_publish_step(self, job_id: str) -> bool: ...
+
+    async def job_has_pending_revocation(self, job_id: str) -> bool: ...
+
+    async def get_maintenance_run(
+        self,
+        *,
+        kind: str,
+        business_day: str,
+    ) -> dict[str, object] | None: ...
+
+    async def ensure_maintenance_run(
+        self,
+        *,
+        kind: str,
+        business_day: str,
+        cutoff_at: float,
+        now: float,
+    ) -> dict[str, object]: ...
+
+    async def has_maintenance_targets(self, run_id: int) -> bool: ...
+
+    async def claim_maintenance_run(
+        self,
+        run_id: int,
+        *,
+        holder_id: str,
+        now: float,
+        lease_seconds: float = 120.0,
+    ) -> dict[str, object] | None: ...
+
+    async def finish_maintenance_run(
+        self,
+        run_id: int,
+        *,
+        status: str,
+        now: float,
+        error: str | None = None,
+        next_retry_at: float | None = None,
+        attempt: int | None = None,
+    ) -> None: ...
+
+    async def upsert_maintenance_targets(
+        self,
+        run_id: int,
+        targets: tuple[dict[str, object], ...],
+        *,
+        now: float,
+    ) -> int: ...
+
+    async def list_unfinished_maintenance_targets(
+        self, run_id: int
+    ) -> list[dict[str, object]]: ...
+
+    async def set_maintenance_target_status(
+        self,
+        target_id: int,
+        *,
+        status: str,
+        now: float,
+        phase: str | None = None,
+    ) -> None: ...
+
+    async def recycle_operation_tokens(
+        self,
+        *,
+        now: float,
+        consumed_grace_seconds: float = 86400.0,
+    ) -> int: ...
+
+    async def prune_settled_outbox(self, *, cutoff_epoch: float) -> int: ...
 
     async def get_recent_event_counts(
         self,
@@ -229,10 +320,6 @@ class JobRepository(Protocol):
     async def get_runtime_flags(self) -> dict[str, str]: ...
 
     async def set_runtime_flag(self, key: str, value: str) -> None: ...
-
-    async def purge_terminal_history(self, *, reset_numbering: bool = True) -> dict[str, int]: ...
-
-    async def list_job_display_messages(self) -> list[dict[str, int]]: ...
 
     async def quick_check(self) -> bool: ...
 

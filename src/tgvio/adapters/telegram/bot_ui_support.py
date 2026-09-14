@@ -58,12 +58,24 @@ ARCHIVE_STATE_LABELS = {
 
 
 JOB_FILTER_LABELS = {
-    JobListFilter.ALL: "全部",
-    JobListFilter.ACTIVE: "进行中",
-    JobListFilter.HELD: "暂停",
+    JobListFilter.TODAY: "今天",
+    JobListFilter.PENDING: "待处理",
     JobListFilter.FAILED: "失败",
     JobListFilter.COMPLETED: "完成",
+    JobListFilter.ACTIVE: "进行中",
+    JobListFilter.HISTORY: "历史",
+    JobListFilter.ALL: "全部",
+    JobListFilter.HELD: "暂停",
 }
+
+JOB_FILTER_UI_ORDER = (
+    JobListFilter.TODAY,
+    JobListFilter.PENDING,
+    JobListFilter.FAILED,
+    JobListFilter.COMPLETED,
+    JobListFilter.ACTIVE,
+    JobListFilter.HISTORY,
+)
 
 
 STEP_LABELS = {

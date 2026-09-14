@@ -29,7 +29,7 @@ OPERATION_TOKENS_SQL = MIGRATIONS_DIR / "0005_operation_tokens_undo.sql"
 ARCHIVE_PROFILE_POLICY_SQL = MIGRATIONS_DIR / "0006_archive_profile_policy.sql"
 ARCHIVE_EXACT_DELETE_SQL = MIGRATIONS_DIR / "0007_archive_exact_delete.sql"
 NOTIFICATION_OUTBOX_SQL = MIGRATIONS_DIR / "0008_notification_outbox.sql"
-LATEST_VERSION = 9
+LATEST_VERSION = 10
 MIGRATION_ONLY_TABLES = {
     "runtime_leases",
     "job_phase_claims",
@@ -47,6 +47,9 @@ MIGRATION_ONLY_TABLES = {
     "notification_outbox",
     "archive_day_counters",
     "runtime_flags",
+    "job_visibility",
+    "maintenance_runs",
+    "maintenance_targets",
 }
 
 
@@ -402,6 +405,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
                         (7, "archive_exact_delete", 64),
                         (8, "notification_outbox", 64),
                         (9, "archive_layout_flags", 64),
+                        (10, "safe_history_maintenance", 64),
                     ],
                 )
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], LATEST_VERSION)
@@ -779,7 +783,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             assert isinstance(migration, dict)
             self.assertEqual(migration["from_version"], 6)
             self.assertEqual(migration["to_version"], LATEST_VERSION)
-            self.assertEqual(migration["applied_now"], [7, 8, 9])
+            self.assertEqual(migration["applied_now"], [7, 8, 9, 10])
             before = report["before"]
             after = report["after"]
             backup = report["backup"]

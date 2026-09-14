@@ -36,7 +36,7 @@ from tgvio.application.diagnostics import (
 )
 from tgvio.application.metrics import MetricsService
 from tgvio.application.alerts import AlertRuntime
-from tgvio.application.maintenance import DailyMaintenanceRuntime, DailyMaintenanceService
+from tgvio.application.maintenance import HistoryMaintenanceRuntime, HistoryMaintenanceService
 from tgvio.application.runtime_flags import RuntimeFlags
 from tgvio.application.notifications import NotificationRuntime, Notifier, WebhookNotifier
 from tgvio.adapters.telegram.alerts import TelegramOwnerNotifier
@@ -331,7 +331,7 @@ async def run(*, check_only: bool = False) -> None:
         dashboard_server: DashboardServer | None = None
         notification_runtime: NotificationRuntime | None = None
         alert_runtime: AlertRuntime | None = None
-        maintenance_runtime: DailyMaintenanceRuntime | None = None
+        maintenance_runtime: HistoryMaintenanceRuntime | None = None
         dashboard_service: DashboardService | None = None
         if settings.dashboard_enabled:
             dashboard_service = DashboardService(
@@ -383,8 +383,8 @@ async def run(*, check_only: bool = False) -> None:
             poll_seconds=settings.alert_poll_seconds,
             enabled=lambda: runtime_flags.bool("alerts_enabled", True),
         )
-        maintenance_runtime = DailyMaintenanceRuntime(
-            DailyMaintenanceService(
+        maintenance_runtime = HistoryMaintenanceRuntime(
+            HistoryMaintenanceService(
                 repository,
                 cache_operator=cache_runtime,
                 status_cleaner=TelethonPublishedMessageRemover(gateway.client),

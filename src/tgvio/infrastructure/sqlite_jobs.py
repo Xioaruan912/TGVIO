@@ -326,12 +326,17 @@ class SQLiteJobRepositoryMixin:
         filter: JobListFilter = JobListFilter.ALL,
         page: int = 0,
         page_size: int = 5,
+        business_day_start_epoch: float | None = None,
     ) -> JobPage:
         filter = JobListFilter(filter)
         size = max(1, min(20, int(page_size)))
         requested_page = max(0, int(page))
         conditions = ["j.owner_id=?"]
         params: list[object] = [int(owner_id)]
+        if filter == JobListFilter.HISTORY:
+            conditions.append("v.job_id IS NOT NULL")
+        else:
+            conditions.append("v.job_id IS NULL")
         if filter == JobListFilter.ACTIVE:
             conditions.extend(
                 [
@@ -350,6 +355,14 @@ class SQLiteJobRepositoryMixin:
             conditions.append("j.state='failed'")
         elif filter == JobListFilter.COMPLETED:
             conditions.append("j.state IN ('succeeded','cancelled')")
+        elif filter == JobListFilter.TODAY:
+            if business_day_start_epoch is not None:
+                conditions.append("CAST(strftime('%s', j.created_at) AS INTEGER) >= ?")
+                params.append(int(business_day_start_epoch))
+        elif filter == JobListFilter.PENDING:
+            conditions.append(
+                "(j.state NOT IN ('succeeded','failed','cancelled') OR j.state='failed')"
+            )
         where = " AND ".join(conditions)
         conn = self._require()
         cursor = await conn.execute(
@@ -357,6 +370,7 @@ class SQLiteJobRepositoryMixin:
             SELECT COUNT(*) AS count
             FROM jobs j
             LEFT JOIN job_controls c ON c.job_id=j.id
+            LEFT JOIN job_visibility v ON v.job_id=j.id
             WHERE {where}
             """,
             tuple(params),
@@ -374,6 +388,7 @@ class SQLiteJobRepositoryMixin:
                 s.accepted_order AS accepted_order
             FROM jobs j
             LEFT JOIN job_controls c ON c.job_id=j.id
+            LEFT JOIN job_visibility v ON v.job_id=j.id
             LEFT JOIN job_schedule s ON s.job_id=j.id
             WHERE {where}
             ORDER BY j.created_at DESC, j.rowid DESC
@@ -445,7 +460,9 @@ class SQLiteJobRepositoryMixin:
             SELECT COUNT(*) AS count
             FROM jobs j
             LEFT JOIN archive_packages a ON a.job_id=j.id
+            LEFT JOIN job_visibility v ON v.job_id=j.id
             WHERE j.owner_id=?
+              AND v.job_id IS NULL
               AND (({job_actionable}) OR ({archive_actionable}))
             """,
             (int(owner_id),),
@@ -466,8 +483,10 @@ class SQLiteJobRepositoryMixin:
                 s.accepted_order AS accepted_order
             FROM jobs j
             LEFT JOIN archive_packages a ON a.job_id=j.id
+            LEFT JOIN job_visibility v ON v.job_id=j.id
             LEFT JOIN job_schedule s ON s.job_id=j.id
             WHERE j.owner_id=?
+              AND v.job_id IS NULL
               AND (({job_actionable}) OR ({archive_actionable}))
             ORDER BY
                 CASE

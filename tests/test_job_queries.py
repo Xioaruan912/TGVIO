@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from tgvio.domain.job_query import JobListFilter
+from tgvio.domain.maintenance import business_day_bounds
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
 
@@ -256,6 +258,73 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([entry.job.id for entry in held.entries], ["active-held"])
         terminal = next(entry for entry in all_jobs.entries if entry.job.id == "terminal-held")
         self.assertFalse(terminal.held)
+
+
+    async def test_history_filter_default_hiding_and_pending(self) -> None:
+        await self._insert_job("j-received", state="received", ordinal=1)
+        await self._insert_job("j-failed", state="failed", ordinal=2)
+        await self._insert_job("j-succeeded", state="succeeded", ordinal=3)
+        await self._insert_job("j-cancelled", state="cancelled", ordinal=4)
+        await self._insert_job("j-hidden", state="succeeded", ordinal=5)
+        await self._insert_job("j-hidden-failed", state="failed", ordinal=6)
+        async with self.repo._write_transaction() as conn:
+            await conn.execute(
+                "INSERT INTO job_visibility(job_id, hidden_at, reason) VALUES(?,?,?)",
+                ("j-hidden", 1.0, "daily_rollover"),
+            )
+            await conn.execute(
+                "INSERT INTO job_visibility(job_id, hidden_at, reason) VALUES(?,?,?)",
+                ("j-hidden-failed", 1.0, "daily_rollover"),
+            )
+
+        all_page = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.ALL, page_size=20)
+        self.assertNotIn("j-hidden", {entry.job.id for entry in all_page.entries})
+        self.assertNotIn("j-hidden-failed", {entry.job.id for entry in all_page.entries})
+
+        history = await self.repo.page_jobs(
+            owner_id=42, filter=JobListFilter.HISTORY, page_size=20
+        )
+        self.assertEqual(
+            {entry.job.id for entry in history.entries},
+            {"j-hidden", "j-hidden-failed"},
+        )
+
+        pending = await self.repo.page_jobs(
+            owner_id=42, filter=JobListFilter.PENDING, page_size=20
+        )
+        self.assertEqual(
+            {entry.job.id for entry in pending.entries},
+            {"j-received", "j-failed"},
+        )
+
+        now = datetime(2026, 9, 12, 3, 0, tzinfo=timezone.utc).timestamp()
+        bounds = business_day_bounds(now, hour=6)
+        today = await self.repo.page_jobs(
+            owner_id=42,
+            filter=JobListFilter.TODAY,
+            page_size=20,
+            business_day_start_epoch=bounds.start_epoch,
+        )
+        self.assertNotIn("j-hidden", {entry.job.id for entry in today.entries})
+        self.assertIn("j-received", {entry.job.id for entry in today.entries})
+
+    async def test_failure_center_excludes_hidden_jobs(self) -> None:
+        await self._insert_job(
+            "visible-failure", state="failed", error_code="media_analysis_failed", ordinal=1
+        )
+        await self._insert_job(
+            "hidden-failure", state="failed", error_code="media_analysis_failed", ordinal=2
+        )
+        async with self.repo._write_transaction() as conn:
+            await conn.execute(
+                "INSERT INTO job_visibility(job_id, hidden_at, reason) VALUES(?,?,?)",
+                ("hidden-failure", 1.0, "daily_rollover"),
+            )
+        page = await self.repo.page_failures(owner_id=42, page=0, page_size=10)
+        ids = {entry.job.id for entry in page.entries}
+        self.assertIn("visible-failure", ids)
+        self.assertNotIn("hidden-failure", ids)
+        self.assertEqual(page.total, 1)
 
 
 if __name__ == "__main__":

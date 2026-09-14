@@ -12,6 +12,9 @@ class JobListFilter(StrEnum):
     HELD = "held"
     FAILED = "failed"
     COMPLETED = "completed"
+    TODAY = "today"
+    PENDING = "pending"
+    HISTORY = "history"
 
 
 @dataclass(frozen=True, slots=True)
