@@ -63,6 +63,8 @@ class CollectionSubmission:
     snapshot_hash: str
     job_ids: tuple[str, ...] = ()
     state: str = "creating"
+    token_id: str | None = None
+    frozen_json: str | None = None
     created_at: str | None = None
     updated_at: str | None = None
 

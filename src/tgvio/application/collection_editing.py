@@ -82,6 +82,9 @@ class CollectionEditingService:
             DraftState.SAVED,
         }:
             raise DraftUnavailableError("draft is unavailable")
+        submission = await self._repository.get_submission(session_id)
+        if submission is not None:
+            raise DraftUnavailableError("submission already accepted")
         if int(draft.revision) != int(expected_revision):
             raise DraftRevisionConflict("draft revision changed")
         return draft
@@ -341,6 +344,38 @@ class CollectionEditingService:
             caption_chars=len(caption),
         )
 
+    @staticmethod
+    def _frozen_content(
+        *,
+        session_id: str,
+        revision: int,
+        media: list[IncomingMedia],
+        caption: str,
+        cover_entry_id: int | None,
+        cover_index: int | None,
+        spoiler_mode: SpoilerMode,
+        style_policy: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        return {
+            "version": 1,
+            "session_id": str(session_id),
+            "revision": int(revision),
+            "media": [IntakeService._media_payload(item) for item in media],
+            "caption": str(caption or ""),
+            "cover_entry_id": None if cover_entry_id is None else int(cover_entry_id),
+            "cover_index": None if cover_index is None else int(cover_index),
+            "spoiler_mode": spoiler_mode.value,
+            "style": dict(style_policy or {}),
+        }
+
+    @staticmethod
+    def _content_hash(content: dict[str, Any]) -> str:
+        return hashlib.sha256(
+            json.dumps(
+                content, ensure_ascii=False, sort_keys=True, separators=(",", ":")
+            ).encode("utf-8")
+        ).hexdigest()
+
     async def freeze(
         self,
         *,
@@ -358,20 +393,16 @@ class CollectionEditingService:
         cover_index: int | None = None
         if cover_entry_id is not None and int(cover_entry_id) in entry_ids:
             cover_index = entry_ids.index(int(cover_entry_id))
-        payload = {
-            "session_id": session_id,
-            "revision": int(expected_revision),
-            "media_entry_ids": entry_ids,
-            "caption": caption,
-            "cover_entry_id": cover_entry_id,
-            "spoiler_mode": spoiler_mode.value,
-            "style": dict(style_policy or {}),
-        }
-        snapshot_hash = hashlib.sha256(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True, separators=(",", ":")).encode(
-                "utf-8"
-            )
-        ).hexdigest()
+        content = self._frozen_content(
+            session_id=session_id,
+            revision=int(expected_revision),
+            media=media,
+            caption=caption,
+            cover_entry_id=cover_entry_id,
+            cover_index=cover_index,
+            spoiler_mode=spoiler_mode,
+            style_policy=style_policy,
+        )
         return FrozenCollection(
             session_id=session_id,
             revision=int(expected_revision),
@@ -379,7 +410,7 @@ class CollectionEditingService:
             caption=caption,
             cover_entry_id=cover_entry_id,
             cover_index=cover_index,
-            snapshot_hash=snapshot_hash,
+            snapshot_hash=self._content_hash(content),
         )
 
     async def issue_confirm(
@@ -419,81 +450,210 @@ class CollectionEditingService:
         ask_timeout_seconds: int,
         style_policy: dict[str, Any] | None = None,
     ) -> CollectionFinalizeResult:
-        operation = await self._tokens.inspect(
-            token=token, owner_id=int(owner_id), action=CONFIRM_ACTION
-        )
+        owner = int(owner_id)
+        operation = None
+        try:
+            operation = await self._tokens.inspect(
+                token=token, owner_id=owner, action=CONFIRM_ACTION
+            )
+        except OperationTokenInvalidError:
+            operation = None
+
+        # A consumed token may only resume the exact submission it authorized.
+        if operation is None:
+            submission = await self._repository.get_submission_by_token(token)
+            if submission is None or int(submission.owner_id) != owner:
+                raise OperationTokenInvalidError(
+                    "operation expired, changed, or was already consumed"
+                )
+            if submission.state == "created":
+                return await self._result_from_submission(submission.session_id, submission.job_ids)
+            return await self._resume_submission(submission)
+
         session_id = str(operation.resource_id)
         existing = await self._repository.get_submission(session_id)
-        if existing is not None and existing.state == "created":
-            return await self._result_from_submission(session_id, existing.job_ids)
-        preference_session = await self._repository.get_collection(session_id)
-        if preference_session is None:
-            raise DraftUnavailableError("collection session is unavailable")
-        spoiler_mode = (await self._intake.get_user_preference(int(owner_id))).spoiler_mode
-        frozen = await self.freeze(
-            owner_id=int(owner_id),
+        if existing is not None:
+            if existing.state == "created":
+                return await self._result_from_submission(session_id, existing.job_ids)
+            if existing.token_id == token and int(existing.owner_id) == owner:
+                return await self._resume_submission(existing)
+            raise OperationTokenInvalidError("submission already accepted by another confirmation")
+
+        draft = await self._repository.get_draft(session_id)
+        if (
+            draft is None
+            or int(draft.owner_id) != owner
+            or draft.state not in {DraftState.COLLECTING, DraftState.PREVIEW, DraftState.SAVED}
+            or int(draft.revision) != int(operation.expected_revision)
+        ):
+            raise DraftRevisionConflict("draft revision changed")
+        media, entry_ids, caption = await self._ordered_media(session_id)
+        if not media:
+            raise CollectionEmptyError("collection contains no media")
+        cover_entry_id = draft.cover_entry_id
+        cover_index: int | None = None
+        if cover_entry_id is not None and int(cover_entry_id) in entry_ids:
+            cover_index = entry_ids.index(int(cover_entry_id))
+        spoiler_mode = (await self._intake.get_user_preference(owner)).spoiler_mode
+        content = self._frozen_content(
             session_id=session_id,
-            expected_revision=int(operation.expected_revision),
+            revision=int(operation.expected_revision),
+            media=media,
+            caption=caption,
+            cover_entry_id=cover_entry_id,
+            cover_index=cover_index,
             spoiler_mode=spoiler_mode,
             style_policy=style_policy,
         )
+        snapshot_hash = self._content_hash(content)
+        payload_hash = self._tokens.payload_hash({"snapshot_hash": snapshot_hash})
+        if payload_hash != operation.payload_hash:
+            raise OperationTokenInvalidError("operation payload changed")
+
+        chunk_size = max(1, int(max_items))
+        media_payload = list(content["media"])
+        parts = [
+            media_payload[start : start + chunk_size]
+            for start in range(0, len(media_payload), chunk_size)
+        ]
+        frozen_json = json.dumps(
+            {
+                **content,
+                "max_items": chunk_size,
+                "ask_timeout_seconds": int(ask_timeout_seconds),
+                "destination": str(destination),
+                "parts": parts,
+            },
+            ensure_ascii=False,
+            sort_keys=True,
+            separators=(",", ":"),
+        )
         try:
-            await self._tokens.consume(
+            submission, _created = await self._repository.commit_frozen_submission(
+                session_id=session_id,
+                owner_id=owner,
+                revision=int(operation.expected_revision),
+                snapshot_hash=snapshot_hash,
+                frozen_json=frozen_json,
+                token_id=token,
                 token=token,
-                owner_id=int(owner_id),
                 action=CONFIRM_ACTION,
                 resource_type=CONFIRM_RESOURCE_TYPE,
-                resource_id=session_id,
-                expected_revision=frozen.revision,
-                payload={"snapshot_hash": frozen.snapshot_hash},
+                payload_hash=payload_hash,
             )
-        except OperationTokenInvalidError:
-            # A changed payload or expired confirmation must never authorize work.
-            raise
-        await self._repository.begin_submission(
-            session_id,
-            owner_id=int(owner_id),
-            revision=frozen.revision,
-            snapshot_hash=frozen.snapshot_hash,
-        )
-        result = await self._intake.finalize_media(
-            owner_id=int(owner_id),
-            chat_id=int(chat_id),
-            session_id=session_id,
-            destination=destination,
-            media=list(frozen.media),
-            caption=frozen.caption,
-            cover_index=frozen.cover_index,
-            max_items=max_items,
-            spoiler_mode=spoiler_mode,
-            ask_timeout_seconds=ask_timeout_seconds,
-            extra_policy=(
-                {"publish_style": dict(style_policy)} if style_policy else None
-            ),
-        )
+        except ValueError as exc:
+            if "token" in str(exc):
+                raise OperationTokenInvalidError(
+                    "operation expired, changed, or was already consumed"
+                ) from exc
+            raise DraftRevisionConflict("draft revision changed") from exc
+        if submission.state == "created":
+            return await self._result_from_submission(session_id, submission.job_ids)
+        if submission.token_id != token or int(submission.owner_id) != owner:
+            raise OperationTokenInvalidError("submission already accepted by another confirmation")
+        return await self._resume_submission(submission)
+
+    async def _resume_submission(self, submission) -> CollectionFinalizeResult:
+        payload: dict[str, Any] = {}
+        if submission.frozen_json:
+            try:
+                parsed = json.loads(submission.frozen_json)
+                if isinstance(parsed, dict):
+                    payload = parsed
+            except (TypeError, ValueError):
+                payload = {}
+        if not payload or payload.get("version") != 1:
+            raise DraftUnavailableError("frozen submission snapshot is missing")
+        content = {
+            key: payload.get(key)
+            for key in (
+                "version", "session_id", "revision", "media", "caption",
+                "cover_entry_id", "cover_index", "spoiler_mode", "style",
+            )
+        }
+        if self._content_hash(content) != str(submission.snapshot_hash):
+            raise DraftUnavailableError("frozen submission snapshot mismatch")
+
+        session_id = str(submission.session_id)
+        parts = payload.get("parts") or []
+        chunk_size = max(1, int(payload.get("max_items") or 1))
+        destination = str(payload.get("destination") or "")
+        spoiler_mode = SpoilerMode(str(payload.get("spoiler_mode") or SpoilerMode.SOURCE.value))
+        cover_index = payload.get("cover_index")
+        caption = str(payload.get("caption") or "")
+        style = payload.get("style") or {}
+        ask_timeout = int(payload.get("ask_timeout_seconds") or 60)
+        job_ids = list(submission.job_ids)
+        created_ids: set[str] = set()
+
+        for part_index, part in enumerate(parts):
+            existing_job = await self._repository.get_collection_part_job(session_id, part_index)
+            if existing_job is not None:
+                if existing_job not in job_ids:
+                    job_ids.append(existing_job)
+                continue
+            media = [IntakeService._media_from_payload(item) for item in part]
+            policy: dict[str, Any] = {
+                "collection_id": session_id,
+                "collection_part_index": part_index,
+                "collection_part_count": len(parts),
+                "display_expected": True,
+            }
+            if part_index == 0 and caption:
+                policy["collection_caption"] = caption
+            if isinstance(cover_index, int) and cover_index // chunk_size == part_index:
+                policy["cover_item_index"] = cover_index % chunk_size
+            if style:
+                policy["publish_style"] = dict(style)
+            accepted = await self._intake.accept_once(
+                owner_id=int(submission.owner_id),
+                destination=destination,
+                media=media,
+                policy=policy,
+                spoiler_mode=spoiler_mode,
+                ask_timeout_seconds=ask_timeout,
+            )
+            await self._repository.record_collection_part_job(session_id, part_index, accepted.job.id)
+            await self._repository.append_submission_job(session_id, accepted.job.id)
+            if accepted.created:
+                created_ids.add(accepted.job.id)
+            if accepted.job.id not in job_ids:
+                job_ids.append(accepted.job.id)
+
+        session = await self._repository.get_collection(session_id)
+        if session is not None and session.state.value == "open":
+            try:
+                await self._repository.finalize_collection(session_id, tuple(job_ids))
+            except ValueError:
+                pass
         await self._repository.finish_submission(
-            session_id,
-            job_ids=tuple(accepted.job.id for accepted in result.jobs),
-            state="created",
+            session_id, job_ids=tuple(job_ids), state="created"
         )
         await self._repository.mark_draft_submitted(session_id)
-        return result
+        return await self._result_from_submission(
+            session_id, tuple(job_ids), created_ids=created_ids
+        )
 
     async def _result_from_submission(
         self,
         session_id: str,
         job_ids: tuple[str, ...],
+        *,
+        created_ids: set[str] | None = None,
     ) -> CollectionFinalizeResult:
         session = await self._repository.get_collection(session_id)
         if session is None:
             raise DraftUnavailableError("collection session is unavailable")
         from tgvio.application.intake import IntakeAcceptResult
 
+        freshly_created = created_ids or set()
         results: list[IntakeAcceptResult] = []
         for job_id in job_ids:
             job = await self._repository.get(job_id)
             if job is not None:
-                results.append(IntakeAcceptResult(job=job, created=False))
+                results.append(
+                    IntakeAcceptResult(job=job, created=job_id in freshly_created)
+                )
         return CollectionFinalizeResult(
             session=session,
             jobs=tuple(results),

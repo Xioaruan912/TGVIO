@@ -191,6 +191,33 @@ class JobRepository(Protocol):
 
     async def get_submission(self, session_id: str) -> CollectionSubmission | None: ...
 
+    async def get_submission_by_token(self, token_id: str) -> CollectionSubmission | None: ...
+
+    async def commit_frozen_submission(
+        self,
+        *,
+        session_id: str,
+        owner_id: int,
+        revision: int,
+        snapshot_hash: str,
+        frozen_json: str,
+        token_id: str,
+        token: str,
+        action: str,
+        resource_type: str,
+        payload_hash: str,
+    ) -> tuple[CollectionSubmission, bool]: ...
+
+    async def append_submission_job(self, session_id: str, job_id: str) -> None: ...
+
+    async def record_collection_part_job(
+        self, session_id: str, part_index: int, job_id: str
+    ) -> None: ...
+
+    async def get_collection_part_job(
+        self, session_id: str, part_index: int
+    ) -> str | None: ...
+
     async def begin_submission(
         self,
         session_id: str,

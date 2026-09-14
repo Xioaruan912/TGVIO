@@ -318,6 +318,110 @@ class SQLiteCollectionEditingRepositoryMixin:
         await cursor.close()
         return None if row is None else self._submission_from_row(row)
 
+    async def get_submission_by_token(self, token_id: str) -> CollectionSubmission | None:
+        if not token_id:
+            return None
+        conn = self._require()
+        cursor = await conn.execute(
+            "SELECT * FROM collection_submissions WHERE token_id=? LIMIT 1", (str(token_id),)
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return None if row is None else self._submission_from_row(row)
+
+    async def commit_frozen_submission(
+        self,
+        *,
+        session_id: str,
+        owner_id: int,
+        revision: int,
+        snapshot_hash: str,
+        frozen_json: str,
+        token_id: str,
+        token: str,
+        action: str,
+        resource_type: str,
+        payload_hash: str,
+    ) -> tuple[CollectionSubmission, bool]:
+        """Atomically authorize + persist the frozen submission.
+
+        Verifies the draft revision is unchanged, consumes the operation token with
+        a payload/revision CAS, invalidates sibling tokens and inserts the frozen
+        submission in ONE transaction. Any failure leaves no submission behind.
+        """
+        async with self._write_transaction() as conn:
+            cursor = await conn.execute(
+                "SELECT * FROM collection_submissions WHERE session_id=?", (str(session_id),)
+            )
+            existing = await cursor.fetchone()
+            await cursor.close()
+            if existing is not None:
+                return self._submission_from_row(existing), False
+
+            cursor = await conn.execute(
+                "SELECT revision, editor_state FROM collection_drafts WHERE session_id=?",
+                (str(session_id),),
+            )
+            draft = await cursor.fetchone()
+            await cursor.close()
+            if (
+                draft is None
+                or int(draft["revision"]) != int(revision)
+                or str(draft["editor_state"]) not in {"collecting", "preview", "saved"}
+            ):
+                raise ValueError("draft revision changed")
+
+            cursor = await conn.execute(
+                """
+                UPDATE operation_tokens
+                SET consumed_at=CAST(strftime('%s','now') AS INTEGER)
+                WHERE token=? AND owner_id=? AND action=? AND resource_type=?
+                  AND resource_id=? AND expected_revision=? AND payload_hash=?
+                  AND consumed_at IS NULL
+                  AND expires_at > CAST(strftime('%s','now') AS INTEGER)
+                """,
+                (
+                    str(token),
+                    int(owner_id),
+                    str(action),
+                    str(resource_type),
+                    str(session_id),
+                    int(revision),
+                    str(payload_hash),
+                ),
+            )
+            if cursor.rowcount != 1:
+                raise ValueError("operation token invalid")
+            await conn.execute(
+                """
+                UPDATE operation_tokens
+                SET consumed_at=CAST(strftime('%s','now') AS INTEGER)
+                WHERE token<>? AND owner_id=? AND action=? AND resource_type=?
+                  AND resource_id=? AND consumed_at IS NULL
+                """,
+                (str(token), int(owner_id), str(action), str(resource_type), str(session_id)),
+            )
+            await conn.execute(
+                """
+                INSERT INTO collection_submissions(
+                    session_id, owner_id, revision, snapshot_hash,
+                    job_ids_json, state, frozen_json, token_id
+                ) VALUES(?,?,?,?,'[]','creating',?,?)
+                """,
+                (
+                    str(session_id),
+                    int(owner_id),
+                    int(revision),
+                    str(snapshot_hash),
+                    str(frozen_json),
+                    str(token_id),
+                ),
+            )
+        created = await self.get_submission(session_id)
+        if created is None:
+            raise RuntimeError("submission disappeared after commit")
+        return created, True
+
     async def begin_submission(
         self,
         session_id: str,
@@ -346,6 +450,55 @@ class SQLiteCollectionEditingRepositoryMixin:
         if created is None:
             raise RuntimeError("submission disappeared after create")
         return created, True
+
+    async def append_submission_job(self, session_id: str, job_id: str) -> None:
+        import json
+
+        async with self._write_transaction() as conn:
+            cursor = await conn.execute(
+                "SELECT job_ids_json FROM collection_submissions WHERE session_id=?",
+                (str(session_id),),
+            )
+            row = await cursor.fetchone()
+            await cursor.close()
+            if row is None:
+                return
+            try:
+                job_ids = [str(value) for value in json.loads(row["job_ids_json"] or "[]")]
+            except (TypeError, ValueError):
+                job_ids = []
+            if str(job_id) not in job_ids:
+                job_ids.append(str(job_id))
+            await conn.execute(
+                """
+                UPDATE collection_submissions
+                SET job_ids_json=?, updated_at=CURRENT_TIMESTAMP
+                WHERE session_id=?
+                """,
+                (json.dumps(job_ids, separators=(",", ":")), str(session_id)),
+            )
+
+    async def record_collection_part_job(
+        self, session_id: str, part_index: int, job_id: str
+    ) -> None:
+        async with self._write_transaction() as conn:
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO collection_part_jobs(session_id, part_index, job_id)
+                VALUES(?,?,?)
+                """,
+                (str(session_id), int(part_index), str(job_id)),
+            )
+
+    async def get_collection_part_job(self, session_id: str, part_index: int) -> str | None:
+        conn = self._require()
+        cursor = await conn.execute(
+            "SELECT job_id FROM collection_part_jobs WHERE session_id=? AND part_index=?",
+            (str(session_id), int(part_index)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return None if row is None else str(row["job_id"])
 
     async def finish_submission(
         self,
@@ -522,6 +675,8 @@ class SQLiteCollectionEditingRepositoryMixin:
             snapshot_hash=str(row["snapshot_hash"]),
             job_ids=job_ids,
             state=str(row["state"]),
+            token_id=(row["token_id"] if "token_id" in row.keys() else None),
+            frozen_json=(row["frozen_json"] if "frozen_json" in row.keys() else None),
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
