@@ -229,6 +229,40 @@ class JobRepository(Protocol):
 
     async def set_user_spoiler_mode(self, owner_id: int, mode: SpoilerMode) -> UserPreference: ...
 
+    async def set_user_quiet_mode(self, owner_id: int, enabled: bool) -> UserPreference: ...
+
+    async def set_user_style(self, owner_id: int, style_json: str | None) -> UserPreference: ...
+
+    async def add_favorite(self, owner_id: int, job_id: str) -> bool: ...
+
+    async def remove_favorite(self, owner_id: int, job_id: str) -> bool: ...
+
+    async def is_favorite(self, owner_id: int, job_id: str) -> bool: ...
+
+    async def favorite_job_ids(
+        self,
+        owner_id: int,
+        job_ids: tuple[str, ...],
+    ) -> set[str]: ...
+
+    async def count_favorites(self, owner_id: int) -> int: ...
+
+    async def list_favorite_ids(
+        self,
+        owner_id: int,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[str]: ...
+
+    async def list_favorite_jobs(
+        self,
+        owner_id: int,
+        *,
+        limit: int = 20,
+        offset: int = 0,
+    ) -> list[Job]: ...
+
     async def get_job_display_message(self, job_id: str) -> JobDisplayMessage | None: ...
 
     async def save_job_display_message(self, ref: JobDisplayMessage) -> JobDisplayMessage: ...

@@ -365,6 +365,10 @@ class SQLiteIntakeRepositoryMixin:
         return UserPreference(
             owner_id=int(row["owner_id"]),
             spoiler_mode=SpoilerMode(row["spoiler_mode"]),
+            quiet_mode=bool(row["quiet_mode"]) if "quiet_mode" in row.keys() else False,
+            style_json=(
+                row["style_json"] if "style_json" in row.keys() else None
+            ),
             updated_at=row["updated_at"],
         )
 
@@ -379,6 +383,34 @@ class SQLiteIntakeRepositoryMixin:
                     updated_at=CURRENT_TIMESTAMP
                 """,
                 (owner_id, mode.value),
+            )
+        return await self.get_user_preference(owner_id)
+
+    async def set_user_quiet_mode(self, owner_id: int, enabled: bool) -> UserPreference:
+        async with self._write_transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_preferences(owner_id, quiet_mode)
+                VALUES(?,?)
+                ON CONFLICT(owner_id) DO UPDATE SET
+                    quiet_mode=excluded.quiet_mode,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (int(owner_id), 1 if enabled else 0),
+            )
+        return await self.get_user_preference(owner_id)
+
+    async def set_user_style(self, owner_id: int, style_json: str | None) -> UserPreference:
+        async with self._write_transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_preferences(owner_id, style_json)
+                VALUES(?,?)
+                ON CONFLICT(owner_id) DO UPDATE SET
+                    style_json=excluded.style_json,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (int(owner_id), style_json),
             )
         return await self.get_user_preference(owner_id)
 

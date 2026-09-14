@@ -59,6 +59,8 @@ class CollectionSession:
 class UserPreference:
     owner_id: int
     spoiler_mode: SpoilerMode = SpoilerMode.SOURCE
+    quiet_mode: bool = False
+    style_json: str | None = None
     updated_at: str | None = None
 
 

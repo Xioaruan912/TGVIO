@@ -7,6 +7,7 @@ from tgvio.infrastructure.sqlite_collection_editing import (
     SQLiteCollectionEditingRepositoryMixin,
 )
 from tgvio.infrastructure.sqlite_control import SQLiteControlRepositoryMixin
+from tgvio.infrastructure.sqlite_favorites import SQLiteFavoritesRepositoryMixin
 from tgvio.infrastructure.sqlite_intake import SQLiteIntakeRepositoryMixin
 from tgvio.infrastructure.sqlite_jobs import SQLiteJobRepositoryMixin
 from tgvio.infrastructure.sqlite_history import SQLiteHistoryRepositoryMixin
@@ -23,6 +24,7 @@ class SQLiteJobRepository(
     SQLiteHistoryRepositoryMixin,
     SQLiteIntakeRepositoryMixin,
     SQLiteCollectionEditingRepositoryMixin,
+    SQLiteFavoritesRepositoryMixin,
     SQLitePublishRepositoryMixin,
     SQLiteOperationRepositoryMixin,
     SQLiteArchiveRepositoryMixin,

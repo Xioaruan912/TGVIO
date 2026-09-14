@@ -69,11 +69,14 @@ from tgvio.adapters.telegram.bot_ui_format import BotUIFormatMixin
 
 
 from tgvio.adapters.telegram.bot_ui_jobs import BotUIJobsMixin
+from tgvio.adapters.telegram.bot_ui_result import BotUIResultMixin
 from tgvio.adapters.telegram.bot_ui_archive import BotUIArchiveMixin
 from tgvio.adapters.telegram.bot_ui_fixture import BotUIFixtureMixin
 
 
-class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIFormatMixin):
+class TelethonBotUI(
+    BotUIFixtureMixin, BotUIArchiveMixin, BotUIResultMixin, BotUIJobsMixin, BotUIFormatMixin
+):
     def __init__(
         self,
         client: TelegramClient,
@@ -90,6 +93,7 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
         operation_tokens: OperationTokenService | None = None,
         diagnostic_service: DiagnosticSnapshotService | None = None,
         runtime_flags: object | None = None,
+        intake: object | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -105,6 +109,7 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
         self._operation_tokens = operation_tokens
         self._diagnostic_service = diagnostic_service
         self._runtime_flags = runtime_flags
+        self._intake = intake
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 
@@ -240,9 +245,10 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
                 parse_mode="md",
             )
         elif command == "settings":
+            quiet = await self._quiet_enabled(int(event.sender_id))
             await event.respond(
-                self._settings_page_text(),
-                buttons=self._settings_page_buttons(),
+                self._settings_page_text(quiet),
+                buttons=self._settings_page_buttons(quiet),
                 parse_mode="md",
             )
         elif command == "retry":
@@ -408,7 +414,10 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
             await self._edit_page(event, self._more_text(), self._more_buttons())
             return
         if action == "ui:settings":
-            await self._edit_page(event, self._settings_page_text(), self._settings_page_buttons())
+            quiet = await self._quiet_enabled(owner_id)
+            await self._edit_page(
+                event, self._settings_page_text(quiet), self._settings_page_buttons(quiet)
+            )
             return
         if action.startswith("set:"):
             await self._toggle_setting_callback(event, action.split(":", 1)[1])
@@ -520,6 +529,13 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
             ("ui:hold:", self._hold_job_callback),
             ("ui:job-deep:", self._show_deep_job_callback),
             ("ui:plan:", self._show_plan_callback),
+            ("ui:result:", self._show_result_callback),
+            ("ui:link-info:", self._link_info_callback),
+            ("ui:share:", self._share_callback),
+            ("ui:repost:", self._repost_callback),
+            ("ui:restyle:", self._restyle_callback),
+            ("ui:favorites:", self._favorites_page_callback),
+            ("ui:fav:", self._toggle_favorite_callback),
             ("ui:job:", self._show_job_callback),
         )
         for prefix, handler in job_actions:
@@ -631,6 +647,25 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
             )
 
     async def _toggle_setting_callback(self, event, key: str) -> None:
+        owner_id = int(event.sender_id)
+        if key == "quiet_mode":
+            current = await self._quiet_enabled(owner_id)
+            try:
+                await self._repository.set_user_quiet_mode(owner_id, not current)
+            except Exception:
+                await self._safe_answer(event, "保存失败", alert=True)
+                return
+            await self._safe_answer(event, "已更新")
+            quiet = not current
+            try:
+                await event.edit(
+                    self._settings_page_text(quiet),
+                    buttons=self._settings_page_buttons(quiet),
+                    parse_mode="md",
+                )
+            except Exception:
+                pass
+            return
         allowed = {
             "alerts_enabled",
             "collection_preview_enabled",
@@ -646,10 +681,11 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
             await self._safe_answer(event, "保存失败", alert=True)
             return
         await self._safe_answer(event, "已更新")
+        quiet = await self._quiet_enabled(owner_id)
         try:
             await event.edit(
-                self._settings_page_text(),
-                buttons=self._settings_page_buttons(),
+                self._settings_page_text(quiet),
+                buttons=self._settings_page_buttons(quiet),
                 parse_mode="md",
             )
         except Exception:

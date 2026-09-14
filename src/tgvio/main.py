@@ -417,6 +417,7 @@ async def run(*, check_only: bool = False) -> None:
             operation_tokens=operation_tokens,
             diagnostic_service=diagnostic_service,
             runtime_flags=runtime_flags,
+            intake=intake,
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()

@@ -62,6 +62,9 @@ class FakeRepository:
         self.plans = {plan.job_id: plan for plan in plans}
         self.controls = {job.id: JobControlState(job_id=job.id) for job in jobs}
         self.accepted_orders = {job.id: index for index, job in enumerate(jobs, start=1)}
+        self.favorites: set[str] = set()
+        self.quiet_mode = False
+        self.style_json = None
         self.queue_control = QueueControlState()
         self.runtime_health = {
             "telegram": {"status": "connected", "detail": {}, "updated_at": "fixture"},
@@ -83,6 +86,45 @@ class FakeRepository:
 
     async def get_accepted_order(self, job_id):
         return self.accepted_orders.get(job_id)
+
+    async def get_user_preference(self, owner_id):
+        return SimpleNamespace(
+            owner_id=owner_id,
+            quiet_mode=self.quiet_mode,
+            style_json=self.style_json,
+        )
+
+    async def set_user_quiet_mode(self, owner_id, enabled):
+        self.quiet_mode = bool(enabled)
+        return await self.get_user_preference(owner_id)
+
+    async def add_favorite(self, owner_id, job_id):
+        job = self.jobs.get(job_id)
+        if job is None or job.owner_id != owner_id:
+            return False
+        self.favorites.add(job_id)
+        return True
+
+    async def remove_favorite(self, owner_id, job_id):
+        self.favorites.discard(job_id)
+        return True
+
+    async def is_favorite(self, owner_id, job_id):
+        job = self.jobs.get(job_id)
+        return job_id in self.favorites and job is not None and job.owner_id == owner_id
+
+    async def favorite_job_ids(self, owner_id, job_ids):
+        return {job_id for job_id in job_ids if await self.is_favorite(owner_id, job_id)}
+
+    async def count_favorites(self, owner_id):
+        return len(self.favorites)
+
+    async def list_favorite_jobs(self, owner_id, *, limit=20, offset=0):
+        jobs = [self.jobs[job_id] for job_id in self.favorites if job_id in self.jobs]
+        return jobs[offset : offset + limit]
+
+    async def list_favorite_ids(self, owner_id, *, limit=20, offset=0):
+        return list(self.favorites)[offset : offset + limit]
 
     async def get_display_no(self, job_id):
         return self.accepted_orders.get(job_id)
@@ -1740,3 +1782,42 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             ),
         )
         self.assertIn("分段/分卷", ui._fixture_validation_error(job, plan) or "")
+
+
+class BotUIResultTests(unittest.IsolatedAsyncioTestCase):
+    async def test_result_card_favorite_and_favorites_page(self) -> None:
+        done = job(state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([done])
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+
+        result = FakeEvent(data=f'ui:result:{done.id}'.encode())
+        await ui._on_callback(result)
+        self.assertIn('任务结果', result.edits[0][0])
+        self.assertTrue(
+            all(len(btn.data) <= 64 for row in result.edits[0][1]['buttons'] for btn in row if getattr(btn, 'data', None))
+        )
+
+        favorite = FakeEvent(data=f'ui:fav:{done.id}'.encode())
+        await ui._on_callback(favorite)
+        self.assertTrue(await repository.is_favorite(42, done.id))
+
+        page = FakeEvent(data=b'ui:favorites:0')
+        await ui._on_callback(page)
+        self.assertIn('收藏夹', page.edits[0][0])
+
+    async def test_result_card_rejects_foreign_owner(self) -> None:
+        done = job(owner_id=9, state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([done])
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+        event = FakeEvent(sender_id=42, data=f'ui:result:{done.id}'.encode())
+        await ui._on_callback(event)
+        self.assertEqual(event.edits, [])
+        self.assertTrue(any(alert for _, alert in [(a[0], a[1].get('alert')) for a in event.answers]))
+
+    async def test_settings_quiet_mode_toggle_is_owner_scoped(self) -> None:
+        repository = FakeRepository([job()])
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+        event = FakeEvent(data=b'set:quiet_mode')
+        await ui._on_callback(event)
+        self.assertTrue(repository.quiet_mode)
+        self.assertIn('安静模式', event.edits[0][0])

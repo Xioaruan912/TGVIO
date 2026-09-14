@@ -4,6 +4,13 @@ from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
 
 
 class IntakeStatusMixin:
+    async def _owner_quiet(self, owner_id: int) -> bool:
+        try:
+            preference = await self._repository.get_user_preference(int(owner_id))
+            return bool(preference.quiet_mode)
+        except Exception:
+            return False
+
     async def _track_status(self, chat_id: int, message_id: int, job_id: str) -> None:
         """Continuously edit the acceptance message with durable pipeline progress."""
 
@@ -12,6 +19,7 @@ class IntakeStatusMixin:
         previous_current = 0
         previous_time = time.monotonic()
         accepted_order = await self._accepted_order(job_id)
+        quiet_owner: bool | None = None
         try:
             while True:
                 job = await self._intake.repository.get(job_id) if hasattr(self._intake, "repository") else None
@@ -28,6 +36,8 @@ class IntakeStatusMixin:
                     repository = self._intake.repository
                 if job is None:
                     return
+                if quiet_owner is None:
+                    quiet_owner = await self._owner_quiet(int(job.owner_id))
                 progress = await repository.get_job_progress(job_id)
                 archive = await repository.get_archive_package_for_job(job_id)
                 control = await repository.get_job_control(job_id)
@@ -58,13 +68,15 @@ class IntakeStatusMixin:
                     accepted_order=accepted_order,
                 )
                 if text != last_text:
-                    if await self._safe_edit(
-                        chat_id,
-                        message_id,
-                        text,
-                        buttons=self._status_buttons(job, archive),
-                    ):
-                        last_text = text
+                    final = self._status_is_terminal(job, archive) or job.terminal
+                    if (not quiet_owner) or final:
+                        if await self._safe_edit(
+                            chat_id,
+                            message_id,
+                            text,
+                            buttons=self._status_buttons(job, archive),
+                        ):
+                            last_text = text
                 if self._status_is_terminal(job, archive):
                     return
                 await asyncio.sleep(4.0)
@@ -258,6 +270,10 @@ class IntakeStatusMixin:
                 )
             ]
         ]
+        if job.terminal:
+            rows[0].append(
+                Button.inline("📋 结果", f"ui:result:{job.id}".encode("utf-8"))
+            )
         if (
             job.state == JobState.FAILED
             and job.error_code not in {"publish_partial", "publish_uncertain"}

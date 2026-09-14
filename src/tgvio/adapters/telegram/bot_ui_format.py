@@ -793,13 +793,13 @@ class BotUIFormatMixin:
         return [
             [Button.inline("☁️ 归档", b"ui:archive"), Button.inline("🧹 缓存", b"ui:cache")],
             [Button.inline("📊 状态", b"ui:status"), Button.inline("🗂 历史", b"ui:jobs:history:0")],
-            [Button.inline("📈 统计", b"ui:stats"), Button.inline("❤️ 运行健康", b"ui:health")],
-            [Button.inline("🩺 技术诊断", b"ui:diag"), Button.inline("❓ 使用帮助", b"ui:help")],
-            [Button.inline("⚙️ 设置", b"ui:settings"), Button.inline("📋 我的任务", b"ui:jobs")],
-            [Button.inline("🏠 首页", b"ui:home")],
+            [Button.inline("⭐ 收藏夹", b"ui:favorites:0"), Button.inline("📈 统计", b"ui:stats")],
+            [Button.inline("❤️ 运行健康", b"ui:health"), Button.inline("🩺 技术诊断", b"ui:diag")],
+            [Button.inline("❓ 使用帮助", b"ui:help"), Button.inline("⚙️ 设置", b"ui:settings")],
+            [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
         ]
 
-    def _settings_page_text(self) -> str:
+    def _settings_page_text(self, quiet: bool = False) -> str:
         flags = getattr(self, "_runtime_flags", None)
 
         def on(key: str, default: bool = True) -> bool:
@@ -821,12 +821,14 @@ class BotUIFormatMixin:
             f"🔔 失败告警：`{label(on('alerts_enabled', True))}`\n"
             f"📦 合集发布预览：`{label(on('collection_preview_enabled', True))}`\n"
             f"🧹 每日清空任务：`{label(on('daily_cleanup_enabled', True))}`\n"
+            f"🔕 安静模式：`{label(quiet)}`（只影响你自己的中间提示）\n"
             f"🗂 归档路径：`{layout_text}`（改布局需重启）\n"
             "──────────\n"
-            "每日清空在 06:00（北京时间）执行：清空任务列表并复位编号、清理缓存与旧状态消息，保留日志与统计。"
+            "每日清空在 06:00（北京时间）执行：安全隐藏已结算任务、清理缓存与旧状态消息，保留记录与统计。\n"
+            "安静模式会减少中间状态刷新，但确认、最终结果与风险告警始终保留。"
         )
 
-    def _settings_page_buttons(self):
+    def _settings_page_buttons(self, quiet: bool = False):
         flags = getattr(self, "_runtime_flags", None)
 
         def on(key: str, default: bool = True) -> bool:
@@ -847,6 +849,7 @@ class BotUIFormatMixin:
             ],
             [
                 Button.inline(f"🧹 每日清空 {toggle_label(on('daily_cleanup_enabled', True))}", b"set:daily_cleanup_enabled"),
+                Button.inline(f"🔕 安静 {toggle_label(quiet)}", b"set:quiet_mode"),
             ],
             [Button.inline("🔄 刷新", b"ui:settings"), Button.inline("🏠 首页", b"ui:home")],
         ]
