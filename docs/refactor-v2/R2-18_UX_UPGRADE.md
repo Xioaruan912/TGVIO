@@ -61,7 +61,7 @@ owner UX preferences 保存 quiet_mode；减少中间状态编辑/重复通知�
 
 ## 交付状态
 
-- [ ] 18A：实现/测试/部署及证据。
+- [x] 18A：首页基础包实现/测试/部署，`c7ba056`，2026-09-14，migration=none；409 tests，证据见 [R2-18A_RELEASE.md](evidence/R2-18A_RELEASE.md)。最终草稿/风格导航仍待后续。
 - [ ] R2-16 前置编辑与多草稿。
 - [ ] 18B：结果卡/收藏/分享/安静模式。
 - [ ] 18C：风格预设。

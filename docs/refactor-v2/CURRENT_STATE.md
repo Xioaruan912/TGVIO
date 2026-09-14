@@ -1,5 +1,11 @@
 # 当前状态审计
 
+## 2026-09-14 R2-18A 最新增量（覆盖下文旧 runtime 身份）
+
+当前 runtime 为 `c7ba056e5a6d2451a9556acdf5fb4a2b32eda04f` / `r2-18a-c7ba056-20260914T025757Z`；image `sha256:73338e97dd2e826ad023cbf20c11aafdde19c480e521bd0fc42316bdbfec7604`；Git/宿主/容器 source manifest `5bde218af46f3ae8ddde713db181ae5327fafedb047f6416c33507296032a9c1`。409 tests；schema v11/hash 不变，migration=none。独立后验 healthy、restart0、单实例、error0、jobs0、blockers=[]、quick_check=ok；rollback assets check passed。新增上下文首页/六键过渡导航，不代表 R2-16/R2-17 已实现。详见 [发布证据](evidence/R2-18A_RELEASE.md) 和 [交接](R2-18_HANDOFF.md)。
+
+以下为 R2-15B 历史基线及架构说明，其 runtime 身份、容器 ID 和测试数不再代表最新发布。
+
 > 审计时间：2026-09-14（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
 > 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-08、R2-09、R2-11～R2-15 均已交付，R2-10 自动化收口已完成；所有 `REQUIRED` 合同为 `VERIFIED`。R2-15A 停止 destructive purge 并改为按北京时间业务日安全隐藏已结算 Job、引入 durable `maintenance_runs`/`maintenance_targets`；R2-15B 引入 `job_display_identity` 每业务日展示编号与按业务日统计。当前生产事实以 `r2-15b-75e6259-20260914T012823Z` / schema v11 为准。R2-04E 真实大文件性能、R2-05/06 真实 E2E 与破坏性回滚演练仍需 owner 窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。R2-16/R2-17 仍为设计阶段，未实现。
