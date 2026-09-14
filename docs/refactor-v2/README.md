@@ -34,6 +34,7 @@
 
 ## 4. 文档地图
 
+- [R2-18_UX_UPGRADE.md](R2-18_UX_UPGRADE.md)：新一轮手机端体验升级、依赖核查、分包和 Mini App 后续设计。
 - [R2-15_16_17_TECHNICAL_PLAN.md](R2-15_16_17_TECHNICAL_PLAN.md)：安全清理与历史保留（R2-15 已交付）、合集编辑、重复内容提示的技术方案（R2-16/R2-17 设计完成，代码阶段未开始）。
 - [CURRENT_STATE.md](CURRENT_STATE.md)：本地、Git 与生产的证据化现状和阻塞项。
 - [FEATURE_CONTRACT.md](FEATURE_CONTRACT.md)：必须保持、待补齐和明确退役的功能合同。

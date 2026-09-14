@@ -68,6 +68,46 @@ from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
 
 
 class BotUIFormatMixin:
+    async def _context_home(self, owner_id: int, chat_id: int):
+        """Read owner-scoped local state; navigation never schedules work."""
+        lines = ["**TGVIO 首页**", ""]
+        buttons = []
+        try:
+            failures = await self._repository.page_failures(
+                owner_id=owner_id, page=0, page_size=1,
+            )
+            if failures.total:
+                lines.append(f"⚠️ 有 {failures.total} 个任务需要处理，可查看原因和下一步。")
+                buttons.append([Button.inline("查看待处理事项", b"ui:failures:0")])
+            session = await self._repository.get_open_collection(owner_id, chat_id)
+            if session is not None:
+                media, texts = await self._repository.count_collection_entries(session.id)
+                lines.append(f"📥 合集收集中：{media} 项媒体、{texts} 段文字。")
+                lines.append("继续转发即可添加；准备好后点预览发布。")
+                buttons.append([Button.inline(
+                    "预览发布", f"intake:preview:{session.id}".encode(),
+                )])
+            counts = await self._repository.count_by_state(owner_id=owner_id)
+            active = sum(count for state, count in counts.items() if state not in {
+                JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED,
+            })
+            if active:
+                lines.append(f"⏳ 有 {active} 个未完成任务，可查看进度或暂停状态。")
+                buttons.append([Button.inline("查看任务进度", b"ui:jobs:active:0")])
+            if not failures.total and session is None and not active:
+                lines.append("📥 直接转发图片、视频或文件给我，开始一次发布。")
+                lines.append("要合并多次转发？点键盘“开始合集”，收集好后预览发布。")
+        except Exception:
+            lines.append("暂时无法读取完整状态，请稍后刷新；已有任务不受影响。")
+        if not getattr(self._settings, "publish_enabled", False):
+            lines.append("自动发布当前关闭，任务不会自动发送到频道。")
+        buttons.extend([
+            [Button.inline("📋 我的任务", b"ui:jobs"),
+             Button.inline("🗂 发布历史", b"ui:jobs:history:0")],
+            [Button.inline("刷新", b"ui:home"), Button.inline("ℹ️ 更多", b"ui:more")],
+        ])
+        return "\n".join(lines), buttons
+
     def _home_text(self) -> str:
         publish_status = "开启" if getattr(self._settings, "publish_enabled", False) else "关闭"
         return (
@@ -739,8 +779,7 @@ class BotUIFormatMixin:
         return [
             [text_button(COLLECTION_BEGIN_BUTTON), text_button(COLLECTION_END_BUTTON)],
             [text_button(NAV_HOME), text_button(NAV_JOBS)],
-            [text_button(NAV_STATUS), text_button(NAV_ARCHIVE)],
-            [text_button(NAV_CACHE), text_button(NAV_MORE)],
+            [text_button(NAV_HISTORY), text_button(NAV_MORE)],
         ]
 
     @staticmethod
@@ -752,6 +791,8 @@ class BotUIFormatMixin:
 
     def _more_buttons(self):
         return [
+            [Button.inline("☁️ 归档", b"ui:archive"), Button.inline("🧹 缓存", b"ui:cache")],
+            [Button.inline("📊 状态", b"ui:status"), Button.inline("🗂 历史", b"ui:jobs:history:0")],
             [Button.inline("📈 统计", b"ui:stats"), Button.inline("❤️ 运行健康", b"ui:health")],
             [Button.inline("🩺 技术诊断", b"ui:diag"), Button.inline("❓ 使用帮助", b"ui:help")],
             [Button.inline("⚙️ 设置", b"ui:settings"), Button.inline("📋 我的任务", b"ui:jobs")],

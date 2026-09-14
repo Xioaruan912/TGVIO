@@ -188,8 +188,9 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
         head, _, argument = raw.partition(" ")
         command = head[1:].split("@", 1)[0].lower()
         if command == "start":
+            text, _buttons = await self._context_home(int(event.sender_id), int(event.chat_id))
             await event.respond(
-                self._home_text(),
+                text,
                 buttons=self._reply_keyboard(),
                 parse_mode="md",
             )
@@ -269,13 +270,17 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
         owner_id = int(event.sender_id)
         action = (event.raw_text or "").strip()
         if action == NAV_HOME:
+            text, _buttons = await self._context_home(owner_id, int(event.chat_id))
             await event.respond(
-                self._home_text(),
+                text,
                 buttons=self._reply_keyboard(),
                 parse_mode="md",
             )
         elif action == NAV_JOBS:
             await self._respond_jobs(event, owner_id)
+        elif action == NAV_HISTORY:
+            text, buttons = await self._jobs_page(owner_id, filter=JobListFilter.HISTORY)
+            await event.respond(text, buttons=buttons, parse_mode="md")
         elif action == NAV_STATUS:
             await event.respond(
                 await self._status_text(owner_id),
@@ -313,7 +318,8 @@ class TelethonBotUI(BotUIFixtureMixin, BotUIArchiveMixin, BotUIJobsMixin, BotUIF
             return
 
         if action == "ui:home":
-            await self._edit_page(event, self._home_text(), self._home_buttons())
+            text, buttons = await self._context_home(owner_id, int(event.chat_id))
+            await self._edit_page(event, text, buttons)
             return
         if action == "ui:status":
             await self._edit_page(

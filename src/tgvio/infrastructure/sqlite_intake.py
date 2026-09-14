@@ -115,6 +115,16 @@ class SQLiteIntakeRepositoryMixin:
         await cursor.close()
         return None if row is None else self._collection_session_from_row(row)
 
+    async def count_collection_entries(self, session_id: str) -> tuple[int, int]:
+        cursor = await self._require().execute(
+            "SELECT entry_kind, COUNT(*) AS count FROM collection_entries "
+            "WHERE session_id=? GROUP BY entry_kind", (session_id,),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        counts = {str(row["entry_kind"]): int(row["count"]) for row in rows}
+        return counts.get("media", 0), counts.get("text", 0)
+
     async def get_collection(self, session_id: str) -> CollectionSession | None:
         conn = self._require()
         cursor = await conn.execute(

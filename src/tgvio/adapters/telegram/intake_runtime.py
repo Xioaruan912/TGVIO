@@ -4,6 +4,7 @@ from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
 from tgvio.adapters.telegram.intake_runtime_support import _PendingBatch
 from tgvio.adapters.telegram.intake_status import IntakeStatusMixin
 from tgvio.adapters.telegram.intake_collection import IntakeCollectionMixin
+from tgvio.adapters.telegram.bot_ui_support import NAV_BUTTONS
 
 
 class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
@@ -103,7 +104,7 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
         if not self._authorized(event.sender_id):
             return
         raw_text = (event.raw_text or "").strip()
-        if raw_text.lstrip().startswith("/") or raw_text in {
+        if raw_text in NAV_BUTTONS or raw_text.lstrip().startswith("/") or raw_text in {
             COLLECTION_BEGIN_BUTTON,
             COLLECTION_END_BUTTON,
         }:
@@ -241,14 +242,17 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
                 choice=parts[3],
             )
             return
-        if action.startswith("intake:end:"):
+        if action.startswith(("intake:end:", "intake:preview:")):
             session_id = action.split(":", 2)[2]
             session = await self._open_collection(owner_id, event.chat_id)
             if session is None or session.id != session_id:
                 await self._safe_answer(event, "合集已经结束或已失效", alert=True)
                 return
             await self._safe_answer(event, "正在生成预览")
-            await self._end_collection(event.chat_id, owner_id)
+            if action.startswith("intake:preview:"):
+                await self._request_collection_preview(event.chat_id, owner_id)
+            else:
+                await self._end_collection(event.chat_id, owner_id)
             return
         if action.startswith("intake:confirm:"):
             session_id = action.split(":", 2)[2]

@@ -614,9 +614,9 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         }
         self.assertEqual(
             labels,
-            set(NAV_BUTTONS) | {"📥 开始合集", "🛑 结束并发布"},
+            {"📥 开始合集", "🛑 结束并发布", "🏠 首页", "📋 我的任务", "🗂 发布历史", "ℹ️ 更多"},
         )
-        self.assertEqual([len(row) for row in keyboard], [2, 2, 2, 2])
+        self.assertEqual([len(row) for row in keyboard], [2, 2, 2])
         self.assertTrue(all(button.persistent for row in keyboard for button in row))
         self.assertTrue(all(button.resize for row in keyboard for button in row))
 
@@ -628,7 +628,39 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             await ui._on_nav_button(event)
 
         self.assertEqual(len(event.responses), 1)
-        self.assertIn("常驻按钮", event.responses[0][0])
+        self.assertIn("TGVIO 首页", event.responses[0][0])
+
+    async def test_context_home_collecting_failure_and_active_are_owner_scoped(self) -> None:
+        from unittest.mock import AsyncMock
+        repo = FakeRepository()
+        repo.page_failures = AsyncMock(return_value=SimpleNamespace(total=1))
+        repo.get_open_collection = AsyncMock(return_value=SimpleNamespace(id="a" * 32))
+        repo.count_collection_entries = AsyncMock(return_value=(12, 2))
+        repo.count_by_state = AsyncMock(return_value={JobState.DOWNLOADING: 1})
+        client = FakeClient()
+        ui = TelethonBotUI(client, settings(), repo)
+        text, buttons = await ui._context_home(42, 42)
+        self.assertIn("12 项媒体、2 段文字", text)
+        self.assertIn("1 个任务需要处理", text)
+        self.assertIn("1 个未完成任务", text)
+        repo.get_open_collection.assert_awaited_once_with(42, 42)
+        repo.count_by_state.assert_awaited_once_with(owner_id=42)
+        self.assertEqual(buttons[0][0].data, b"ui:failures:0")
+        self.assertTrue(all(len(button.data) <= 64 for row in buttons for button in row))
+        self.assertEqual(client.requests, [])
+
+    async def test_context_home_empty_and_query_failure_are_safe(self) -> None:
+        from unittest.mock import AsyncMock
+        repo = FakeRepository()
+        repo.page_failures = AsyncMock(return_value=SimpleNamespace(total=0))
+        repo.get_open_collection = AsyncMock(return_value=None)
+        ui = TelethonBotUI(FakeClient(), settings(), repo)
+        text, _ = await ui._context_home(42, 42)
+        self.assertIn("直接转发", text)
+        repo.page_failures.side_effect = RuntimeError("secret /private/path")
+        text, _ = await ui._context_home(42, 42)
+        self.assertIn("暂时无法读取", text)
+        self.assertNotIn("secret", text)
 
     def test_all_job_callback_payloads_fit_telegram_limit(self) -> None:
         ui = TelethonBotUI(FakeClient(), settings(), FakeRepository())

@@ -470,6 +470,29 @@ class IntakeRuntimeCollectionPreviewTests(unittest.IsolatedAsyncioTestCase):
         jobs = await self.repo.list_recent(owner_id=7, limit=10)
         self.assertEqual(len(jobs), 1)
 
+    async def test_home_preview_never_enqueues_when_preview_flag_disabled(self) -> None:
+        self.runtime._settings.collection_preview_enabled = False
+        session = await self.intake.begin_collection(owner_id=7, chat_id=42)
+        await self.runtime._on_message(FakeEvent(message=media_message(10)))
+        event = FakeEvent(data=f"intake:preview:{session.id}".encode())
+        await self.runtime._on_intake_callback(event)
+        await self.runtime._on_intake_callback(event)
+        self.assertEqual(await self.repo.list_recent(owner_id=7, limit=10), [])
+        self.assertEqual(self.runner.calls, [])
+        self.assertIsNotNone(await self.intake.open_collection(owner_id=7, chat_id=42))
+        self.assertTrue(any("合集发布预览" in entry["text"] for entry in self.client.sent))
+
+    async def test_all_navigation_labels_are_excluded_from_collection_caption(self) -> None:
+        from tgvio.adapters.telegram.bot_ui_support import NAV_BUTTONS
+
+        session = await self.intake.begin_collection(owner_id=7, chat_id=42)
+        for label in NAV_BUTTONS:
+            await self.runtime._on_message(FakeEvent(raw_text=label))
+        self.assertEqual(await self.repo.count_collection_entries(session.id), (0, 0))
+        await self.runtime._on_message(FakeEvent(message=media_message(10)))
+        await self.runtime._on_message(FakeEvent(raw_text="真实文案"))
+        self.assertEqual(await self.repo.count_collection_entries(session.id), (1, 1))
+
     async def test_abandon_cancels_without_creating_job(self) -> None:
         await self.runtime._begin_collection(42, 7)
         await self.runtime._on_message(
