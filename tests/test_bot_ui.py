@@ -1899,3 +1899,25 @@ class BotUIResultTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(event)
         texts = [text for text, _ in event.answers]
         self.assertTrue(any(text and '已发送' not in text for text in texts))
+
+    async def test_favorite_actions_are_idempotent_target_state(self) -> None:
+        done = job(owner_id=42, state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([done])
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+
+        for _ in range(2):
+            await ui._on_callback(FakeEvent(data=f'ui:fav:{done.id}'.encode()))
+        self.assertTrue(await repository.is_favorite(42, done.id))
+
+        for _ in range(2):
+            await ui._on_callback(FakeEvent(data=f'ui:unfav:{done.id}'.encode()))
+        self.assertFalse(await repository.is_favorite(42, done.id))
+
+    async def test_favorite_rejects_foreign_owner(self) -> None:
+        foreign = job(owner_id=9, state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([foreign])
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+        event = FakeEvent(sender_id=42, data=f'ui:fav:{foreign.id}'.encode())
+        await ui._on_callback(event)
+        self.assertFalse(await repository.is_favorite(9, foreign.id))
+        self.assertTrue(any(alert for _, alert in [(a[0], a[1].get('alert')) for a in event.answers]))

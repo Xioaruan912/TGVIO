@@ -6,6 +6,7 @@ import unittest
 
 from tgvio.application.result_card import ResultCardService, public_post_link
 from tgvio.domain.job import Job, JobState
+from tgvio.domain.operations import RevocationState
 from tgvio.domain.publish import PublishEffect, PublishPlan
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
@@ -198,3 +199,74 @@ class PublishStyleTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(any(step.target.value == 'discussion' for step in minimal_plan.steps))
         for step in minimal_plan.steps:
             self.assertFalse(step.params['forward_caption'])
+
+
+class ResultCardIdempotencyTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = SQLiteJobRepository(Path(self.tmp.name) / "state.sqlite3")
+        await self.repo.open()
+
+    async def asyncTearDown(self) -> None:
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _job_with_effects(self, effects, *, destination="@mychannel"):
+        job = Job(owner_id=7, destination=destination, items=[], id="j1")
+        await self.repo.create(job)
+        plan = PublishPlan(job_id="j1", steps=(), summary={})
+        await self.repo.save_publish_plan(plan)
+        await self.repo.record_publish_effects(
+            tuple(
+                PublishEffect(
+                    plan_id=plan.id,
+                    step_index=index,
+                    effect_type=kind,
+                    external_chat_id="-100123",
+                    external_message_id=str(message_id),
+                    detail={},
+                )
+                for index, (kind, message_id) in enumerate(effects)
+            )
+        )
+        job.state = JobState.SUCCEEDED
+        await self.repo.save(job)
+        return job
+
+    async def test_duplicate_effects_do_not_break_link(self) -> None:
+        job = await self._job_with_effects(
+            [
+                ("telegram_channel_message", "55"),
+                ("telegram_channel_message", "55"),
+            ]
+        )
+        card = await ResultCardService(self.repo).build(job)
+        self.assertEqual(card.link_url, "https://t.me/mychannel/55")
+        self.assertEqual(card.telegram_state, "succeeded")
+
+    async def test_revoked_channel_cover_removes_link_and_marks_partial(self) -> None:
+        job = await self._job_with_effects(
+            [
+                ("telegram_channel_message", "55"),
+                ("telegram_discussion_message", "77"),
+            ]
+        )
+        plan = await self.repo.get_publish_plan(job.id)
+        assert plan is not None
+        effects = await self.repo.list_publish_effects(plan.id)
+        channel_effect = next(e for e in effects if e.effect_type == "telegram_channel_message")
+        await self.repo.ensure_publish_effect_revocations(job.id, (channel_effect.id,))
+        await self.repo.checkpoint_publish_effect_revocations(
+            job.id, (channel_effect.id,), state=RevocationState.DELETED
+        )
+        card = await ResultCardService(self.repo).build(job)
+        self.assertEqual(card.telegram_state, "partially_revoked")
+        self.assertIsNone(card.link_url)
+
+    async def test_public_post_link_dedupes_and_requires_username(self) -> None:
+        self.assertEqual(
+            public_post_link("@c", ["55", "55"]), ("https://t.me/c/55", None)
+        )
+        url, reason = public_post_link("-100123", ["55"])
+        self.assertIsNone(url)
+        self.assertIsNotNone(reason)

@@ -75,7 +75,10 @@ class BotUIResultMixin:
             rows.append([Button.inline("ℹ️ 链接说明", self._callback_data("link-info", job.id))])
         rows.append(
             [
-                Button.inline(star, self._callback_data("fav", job.id)),
+                Button.inline(
+                    star,
+                    self._callback_data("unfav" if card.favorited else "fav", job.id),
+                ),
                 Button.inline("📤 分享", self._callback_data("share", job.id)),
             ]
         )
@@ -104,19 +107,29 @@ class BotUIResultMixin:
         text, rows = await self._render_result_card(owner_id, job)
         await self._edit_page(event, text, rows)
 
-    async def _toggle_favorite_callback(self, event, owner_id: int, job_id: str) -> None:
+    async def _set_favorite_callback(
+        self, event, owner_id: int, job_id: str, *, favorite: bool
+    ) -> None:
         job = await self._repository.get(job_id)
         if job is None or int(job.owner_id) != int(owner_id):
             await self._safe_answer(event, "没有找到对应任务", alert=True)
             return
-        if await self._repository.is_favorite(owner_id, job_id):
-            await self._repository.remove_favorite(owner_id, job_id)
-            await self._safe_answer(event, "已取消收藏")
-        else:
+        # Idempotent target-state write: a duplicated/racing callback cannot flip
+        # the user's choice back.
+        if favorite:
             await self._repository.add_favorite(owner_id, job_id)
             await self._safe_answer(event, "已收藏")
+        else:
+            await self._repository.remove_favorite(owner_id, job_id)
+            await self._safe_answer(event, "已取消收藏")
         text, rows = await self._render_result_card(owner_id, job)
         await self._edit_page(event, text, rows)
+
+    async def _favorite_on_callback(self, event, owner_id: int, job_id: str) -> None:
+        await self._set_favorite_callback(event, owner_id, job_id, favorite=True)
+
+    async def _favorite_off_callback(self, event, owner_id: int, job_id: str) -> None:
+        await self._set_favorite_callback(event, owner_id, job_id, favorite=False)
 
     async def _link_info_callback(self, event, owner_id: int, job_id: str) -> None:
         job = await self._repository.get(job_id)
@@ -278,7 +291,7 @@ class BotUIResultMixin:
                         f"{index} 📋 结果", self._callback_data("result", job.id)
                     ),
                     Button.inline(
-                        f"{index} ★ 取消", self._callback_data("fav", job.id)
+                        f"{index} ★ 取消", self._callback_data("unfav", job.id)
                     ),
                 ]
             )

@@ -67,11 +67,13 @@ class ResultCardService:
         deleted_ids = {r.effect_id for r in revocations if r.state == RevocationState.DELETED}
         deleted = [e for e in visible if e.id in deleted_ids]
         visible = [e for e in visible if e.id not in deleted_ids]
-        channel_ids = [
-            str(effect.external_message_id)
-            for effect in visible
-            if effect.effect_type == "telegram_channel_message"
-        ]
+        channel_ids = list(
+            dict.fromkeys(
+                str(effect.external_message_id)
+                for effect in visible
+                if effect.effect_type == "telegram_channel_message"
+            )
+        )
         package = await self._repository.get_archive_package_for_job(job.id)
         archive_state = package.state.value if package is not None else None
 
