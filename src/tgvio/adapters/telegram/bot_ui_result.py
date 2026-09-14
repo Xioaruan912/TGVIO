@@ -142,51 +142,94 @@ class BotUIResultMixin:
                 f"📤 分享链接（不会自动发送给他人）：\n{card.link_url}\n{share_url}",
             )
         except Exception:
-            pass
+            await self._safe_answer(event, "分享发送失败，请稍后重试", alert=True)
+            return
         await self._safe_answer(event, "链接已发送到当前对话")
 
     async def _repost_callback(self, event, owner_id: int, job_id: str) -> None:
-        await self._start_empty_collection(event, owner_id, style=None)
+        job = await self._repository.get(job_id)
+        if job is None or int(job.owner_id) != int(owner_id):
+            await self._safe_answer(event, "没有找到对应任务", alert=True)
+            return
+        await self._start_empty_collection(event, owner_id, style_override=None)
 
     async def _restyle_callback(self, event, owner_id: int, job_id: str) -> None:
         job = await self._repository.get(job_id)
-        style = None
-        if job is not None and int(job.owner_id) == int(owner_id):
-            candidate = job.policy.get("publish_style")
-            if isinstance(candidate, dict):
-                style = candidate
-        await self._start_empty_collection(event, owner_id, style=style)
+        if job is None or int(job.owner_id) != int(owner_id):
+            await self._safe_answer(event, "没有找到对应任务", alert=True)
+            return
+        import json
+
+        style = self._supported_style(job.policy.get("publish_style"))
+        if style is None:
+            await self._safe_answer(event, "该任务没有可沿用的发布风格", alert=True)
+            return
+        await self._start_empty_collection(
+            event, owner_id, style_override=json.dumps(style, ensure_ascii=False)
+        )
+
+    @staticmethod
+    def _supported_style(candidate: object) -> dict[str, bool] | None:
+        if not isinstance(candidate, dict):
+            return None
+        if "cover_mode" not in candidate and "forward_caption" not in candidate:
+            return None
+        return {
+            "cover_mode": bool(candidate.get("cover_mode", True)),
+            "forward_caption": bool(candidate.get("forward_caption", False)),
+        }
 
     async def _start_empty_collection(
         self,
         event,
         owner_id: int,
         *,
-        style: dict | None,
+        style_override: str | None,
     ) -> None:
         intake = getattr(self, "_intake", None)
         if intake is None or not hasattr(intake, "begin_collection"):
             await self._safe_answer(event, "合集功能当前不可用", alert=True)
             return
-        existing = await intake.open_collection(owner_id=int(owner_id), chat_id=int(event.chat_id))
+        owner = int(owner_id)
+        chat = int(event.chat_id)
+        existing = await intake.open_collection(owner_id=owner, chat_id=chat)
         if existing is not None:
-            await self._safe_answer(event, "已有收集中的合集，请先保存草稿或结束当前合集。", alert=True)
+            media, texts = await intake.collection_counts(existing.id)
+            if media == 0 and texts == 0:
+                if style_override is not None:
+                    draft = await self._repository.get_draft(existing.id)
+                    if draft is not None and draft.style_json != style_override:
+                        try:
+                            await self._repository.set_draft_style(
+                                existing.id,
+                                style_json=style_override,
+                                expected_revision=draft.revision,
+                            )
+                        except Exception:
+                            pass
+                await self._safe_answer(event, "已复用当前空合集")
+                await self._announce_collection(chat, reused=True)
+                return
+            await self._safe_answer(
+                event, "已有收集中的合集，请先保存草稿或结束当前合集。", alert=True
+            )
             return
-        if style is not None:
-            try:
-                import json
+        # begin_collection is atomic on (owner, chat) via the DB unique index, so a
+        # concurrent second click observes the winner instead of creating a duplicate.
+        session = await intake.begin_collection(
+            owner_id=owner, chat_id=chat, style_json=style_override
+        )
+        media, texts = await intake.collection_counts(session.id)
+        total = int(media) + int(texts)
+        await self._safe_answer(event, "已复用当前合集" if total else "已开始新的空合集")
+        await self._announce_collection(chat, reused=bool(total))
 
-                await self._repository.set_user_style(
-                    int(owner_id), json.dumps(style, ensure_ascii=False)
-                )
-            except Exception:
-                pass
-        await intake.begin_collection(owner_id=int(owner_id), chat_id=int(event.chat_id))
-        await self._safe_answer(event, "已开始新的空合集")
+    async def _announce_collection(self, chat_id: int, *, reused: bool) -> None:
+        heading = "♻️ **已复用当前空合集**" if reused else "📥 **已开始新的空合集**"
         try:
             await self._client.send_message(
-                event.chat_id,
-                "📥 **已开始新的空合集**\n\n发送图片/视频或文字，然后点“结束并发布”。",
+                int(chat_id),
+                f"{heading}\n\n发送图片/视频或文字，然后点“结束并发布”。",
                 buttons=self._reply_keyboard(),
                 parse_mode="md",
             )

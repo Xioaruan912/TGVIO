@@ -136,7 +136,9 @@ class SQLiteIntakeRepositoryMixin:
         await cursor.close()
         return None if row is None else self._collection_session_from_row(row)
 
-    async def create_collection(self, session: CollectionSession) -> CollectionSession:
+    async def create_collection(
+        self, session: CollectionSession, *, style_json: str | None = None
+    ) -> CollectionSession:
         async with self._write_transaction() as conn:
             cursor = await conn.execute(
                 """
@@ -172,10 +174,10 @@ class SQLiteIntakeRepositoryMixin:
             await conn.execute(
                 """
                 INSERT OR IGNORE INTO collection_drafts(
-                    session_id, owner_id, chat_id, revision, editor_state, active
-                ) VALUES(?,?,?,1,'collecting',1)
+                    session_id, owner_id, chat_id, revision, editor_state, active, style_json
+                ) VALUES(?,?,?,1,'collecting',1,?)
                 """,
-                (session.id, session.owner_id, session.chat_id),
+                (session.id, session.owner_id, session.chat_id, style_json),
             )
         created = await self.get_collection(session.id)
         if created is None:

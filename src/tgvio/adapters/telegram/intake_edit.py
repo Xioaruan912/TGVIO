@@ -50,6 +50,9 @@ class IntakeEditMixin:
         if action.startswith("intake:pv:"):
             await self._on_preview_request(event, action, owner_id)
             return True
+        if action.startswith("intake:st:"):
+            await self._on_draft_style(event, action, owner_id)
+            return True
         if action.startswith("intake:cc:"):
             await self._on_edit_confirm(event, action, owner_id)
             return True
@@ -272,7 +275,12 @@ class IntakeEditMixin:
         )
         rows.append(
             [
+                Button.inline("🎨 风格", f"intake:st:{encoded_sid}:{draft.revision}:o".encode()),
                 Button.inline("💾 保存草稿", f"intake:ed:{encoded_sid}:{draft.revision}:s".encode()),
+            ]
+        )
+        rows.append(
+            [
                 Button.inline("🧹 清封面", f"intake:ed:{encoded_sid}:{draft.revision}:z".encode()),
             ]
         )
@@ -409,6 +417,139 @@ class IntakeEditMixin:
             except Exception:
                 pass
 
+    async def _on_draft_style(self, event, action: str, owner_id: int) -> None:
+        editing = await self._editing_service()
+        if editing is None:
+            await self._safe_answer(event, "编辑功能不可用", alert=True)
+            return
+        parts = action.split(":")
+        if len(parts) < 5:
+            await self._safe_answer(event, "操作已过期", alert=True)
+            return
+        session_id = parts[2]
+        try:
+            revision = int(parts[3])
+        except (TypeError, ValueError):
+            await self._safe_answer(event, "操作已过期", alert=True)
+            return
+        operation = parts[4]
+        argument = parts[5] if len(parts) >= 6 else None
+        draft = await editing.draft(session_id)
+        if draft is None or int(draft.owner_id) != int(owner_id):
+            await self._safe_answer(event, "草稿已失效", alert=True)
+            return
+        try:
+            if operation == "o":
+                await self._safe_answer(event, "已刷新风格")
+                await self._render_draft_style(event.chat_id, owner_id, session_id, draft)
+                return
+            if int(draft.revision) != int(revision):
+                await self._safe_answer(event, "内容已更新，请刷新", alert=True)
+                await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
+                return
+            import json
+
+            from tgvio.application.publish_styles import BUILTIN_STYLES
+
+            payload: str | None
+            if operation == "n" and argument in BUILTIN_STYLES:
+                payload = json.dumps({"style": argument}, ensure_ascii=False)
+            elif operation in {"cu", "cd", "fu", "fd"}:
+                policy = await editing.effective_style(owner_id, session_id)
+                cover = bool(policy.get("cover_mode", True))
+                forward = bool(policy.get("forward_caption", False))
+                if operation == "cu":
+                    cover = True
+                elif operation == "cd":
+                    cover = False
+                elif operation == "fu":
+                    forward = True
+                elif operation == "fd":
+                    forward = False
+                payload = json.dumps(
+                    {"cover_mode": cover, "forward_caption": forward}, ensure_ascii=False
+                )
+            elif operation == "x":
+                payload = None
+            else:
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return
+            draft = await editing.set_draft_style(
+                owner_id=owner_id,
+                session_id=session_id,
+                style_json=payload,
+                expected_revision=revision,
+            )
+        except DraftRevisionConflict:
+            await self._safe_answer(event, "内容已更新，请刷新", alert=True)
+            refreshed = await editing.draft(session_id)
+            if refreshed is not None:
+                await self._render_edit_panel(event.chat_id, owner_id, session_id, refreshed)
+            return
+        except DraftUnavailableError:
+            await self._safe_answer(event, "草稿已失效", alert=True)
+            return
+        await self._safe_answer(event, "已更新草稿风格")
+        await self._render_draft_style(event.chat_id, owner_id, session_id, draft)
+
+    async def _render_draft_style(
+        self, chat_id: int, owner_id: int, session_id: str, draft
+    ) -> None:
+        editing = await self._editing_service()
+        if editing is None:
+            return
+        from tgvio.application.publish_styles import BUILTIN_STYLES, STYLE_ORDER, resolve_style
+
+        owned = await self._repository.get_user_preference(int(owner_id))
+        _, owner_policy = resolve_style(owned.style_json)
+        name, policy = resolve_style(draft.style_json) if draft.style_json else ("__default__", owner_policy)
+        source = "草稿覆盖" if draft.style_json else "owner 默认"
+        cover_label = "开" if policy.get("cover_mode") else "关"
+        caption_label = "保留" if policy.get("forward_caption") else "不保留"
+        lines = [
+            f"🎨 **草稿发布风格** · rev `{draft.revision}`",
+            "──────────",
+            f"当前来源：`{source}` · 封面={cover_label} · 原文字={caption_label}",
+            "──────────",
+        ]
+        rows: list[list] = []
+        for key in STYLE_ORDER:
+            style = BUILTIN_STYLES[key]
+            mark = "• " if key == name else ""
+            lines.append(f"{mark}**{style['label']}**：{style['description']}")
+            rows.append(
+                [
+                    Button.inline(
+                        f"{'✓ ' if key == name else ''}{style['label']}",
+                        f"intake:st:{session_id}:{draft.revision}:n:{key}".encode(),
+                    )
+                ]
+            )
+        rows.append(
+            [
+                Button.inline("封面 开", f"intake:st:{session_id}:{draft.revision}:cu".encode()),
+                Button.inline("封面 关", f"intake:st:{session_id}:{draft.revision}:cd".encode()),
+            ]
+        )
+        rows.append(
+            [
+                Button.inline("原文字 保留", f"intake:st:{session_id}:{draft.revision}:fu".encode()),
+                Button.inline("原文字 不保留", f"intake:st:{session_id}:{draft.revision}:fd".encode()),
+            ]
+        )
+        rows.append(
+            [
+                Button.inline("↩️ 沿用默认", f"intake:st:{session_id}:{draft.revision}:x".encode()),
+                Button.inline("↩️ 返回编辑", f"intake:ed:{session_id}:{draft.revision}:f".encode()),
+            ]
+        )
+        lines.append("──────────")
+        lines.append("草稿覆盖只在本次草稿生效；owner 默认与已排队任务不受影响。")
+        try:
+            await self._safe_edit(int(chat_id), await self._panel_message_id(session_id), "\n".join(lines), buttons=rows)
+        except DraftUnavailableError:
+            await self._safe_send(int(chat_id), "\n".join(lines), buttons=rows)
+
     async def _render_suggestions(self, chat_id: int, owner_id: int, session_id: str, draft) -> None:
         editing = await self._editing_service()
         if editing is None:
@@ -484,7 +625,7 @@ class IntakeEditMixin:
         if editing is None:
             return
         preference = await self._intake.get_user_preference(owner_id)
-        style_policy = await self._resolve_style(owner_id)
+        style_policy = await self._resolve_style(owner_id, session_id)
         try:
             token = await editing.issue_confirm(
                 owner_id=owner_id,
@@ -503,7 +644,8 @@ class IntakeEditMixin:
             spoiler_mode=preference.spoiler_mode,
             style_policy=style_policy,
         )
-        style_label = "沿用我的发布风格" if style_policy else "默认风格"
+        style_name = await editing.effective_style_name(owner_id, session_id)
+        style_label = f"草稿/常用风格 · {style_name}" if style_policy else "默认风格"
         text = (
             "✅ **确认发布合集**\n"
             "──────────\n"
@@ -522,14 +664,14 @@ class IntakeEditMixin:
         except DraftUnavailableError:
             await self._safe_send(int(chat_id), text, buttons=rows)
 
-    async def _resolve_style(self, owner_id: int) -> dict[str, object] | None:
-        repository = getattr(self, "_repository", None)
-        if repository is None:
+    async def _resolve_style(
+        self, owner_id: int, session_id: str
+    ) -> dict[str, object] | None:
+        editing = await self._editing_service()
+        if editing is None:
             return None
         try:
-            from tgvio.application.publish_styles import PublishStyleService
-
-            return await PublishStyleService(repository).current(int(owner_id))
+            return await editing.effective_style(int(owner_id), str(session_id))
         except Exception:
             return None
 
@@ -553,7 +695,7 @@ class IntakeEditMixin:
                 ask_timeout_seconds=int(
                     getattr(self._settings, "spoiler_confirm_timeout_seconds", 60)
                 ),
-                style_policy=await self._resolve_style(owner_id),
+                style_policy=None,
             )
         except DraftRevisionConflict:
             await self._safe_send(event.chat_id, "⚠️ 内容已变化，请重新预览后再确认。")

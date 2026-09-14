@@ -620,7 +620,7 @@ class IntakeEditingRuntimeTests(unittest.IsolatedAsyncioTestCase):
             session_id=session.id,
             expected_revision=draft.revision,
             spoiler_mode=SpoilerMode.SOURCE,
-            style_policy=await self.runtime._resolve_style(7),
+            style_policy=await self.runtime._resolve_style(7, session.id),
         )
         event = FakeEvent(chat_id=42, sender_id=7, data=f"intake:cc:{issued}".encode())
         await self.runtime._on_intake_callback(event)

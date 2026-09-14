@@ -274,6 +274,46 @@ class CollectionEditingService:
         drafts = await self._repository.list_drafts(int(owner_id), limit=MAX_SAVED_DRAFTS + 1)
         return sum(1 for draft in drafts if draft.state == DraftState.SAVED)
 
+    # ------------------------------------------------------------------ style
+    async def effective_style(self, owner_id: int, session_id: str) -> dict[str, Any]:
+        """Priority: draft override > owner default > system default."""
+        from tgvio.application.publish_styles import resolve_style
+
+        draft = await self._repository.get_draft(session_id)
+        if draft is not None and draft.style_json:
+            _, policy = resolve_style(draft.style_json)
+            return policy
+        preference = await self._repository.get_user_preference(int(owner_id))
+        _, policy = resolve_style(preference.style_json)
+        return policy
+
+    async def effective_style_name(self, owner_id: int, session_id: str) -> str:
+        from tgvio.application.publish_styles import resolve_style
+
+        draft = await self._repository.get_draft(session_id)
+        if draft is not None and draft.style_json:
+            name, _ = resolve_style(draft.style_json)
+            return name
+        preference = await self._repository.get_user_preference(int(owner_id))
+        name, _ = resolve_style(preference.style_json)
+        return name
+
+    async def set_draft_style(
+        self,
+        *,
+        owner_id: int,
+        session_id: str,
+        style_json: str | None,
+        expected_revision: int,
+    ) -> CollectionDraft:
+        await self._require_editable(owner_id, session_id, expected_revision)
+        target = await self._repository.set_draft_style(
+            session_id, style_json=style_json, expected_revision=expected_revision
+        )
+        if target is None:
+            raise DraftRevisionConflict("draft revision changed")
+        return target
+
     # --------------------------------------------------------------- snapshot
     async def _ordered_media(
         self,
@@ -422,6 +462,8 @@ class CollectionEditingService:
         spoiler_mode: SpoilerMode,
         style_policy: dict[str, Any] | None = None,
     ) -> str:
+        if style_policy is None:
+            style_policy = await self.effective_style(int(owner_id), session_id)
         frozen = await self.freeze(
             owner_id=owner_id,
             session_id=session_id,
@@ -495,6 +537,8 @@ class CollectionEditingService:
         if cover_entry_id is not None and int(cover_entry_id) in entry_ids:
             cover_index = entry_ids.index(int(cover_entry_id))
         spoiler_mode = (await self._intake.get_user_preference(owner)).spoiler_mode
+        if style_policy is None:
+            style_policy = await self.effective_style(owner, session_id)
         content = self._frozen_content(
             session_id=session_id,
             revision=int(operation.expected_revision),

@@ -1858,3 +1858,44 @@ class BotUIResultTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(chosen)
         self.assertIn('minimal', repository.style_json or '')
         self.assertIn('极简直发', chosen.edits[0][0])
+
+    async def test_restyle_rejects_foreign_or_missing_job(self) -> None:
+        done = job(owner_id=9, state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([done])
+        ui = TelethonBotUI(FakeClient(), settings(), repository)
+        event = FakeEvent(sender_id=42, data=f'ui:restyle:{done.id}'.encode())
+        await ui._on_callback(event)
+        self.assertTrue(any(alert for _, alert in [(a[0], a[1].get('alert')) for a in event.answers]))
+        self.assertEqual(repository.style_json, None)
+
+        missing = FakeEvent(sender_id=42, data=b'ui:restyle:' + b'z' * 32)
+        await ui._on_callback(missing)
+        self.assertTrue(any(alert for _, alert in [(a[0], a[1].get('alert')) for a in missing.answers]))
+
+    async def test_share_failure_does_not_claim_sent(self) -> None:
+        from types import SimpleNamespace
+
+        done = job(owner_id=42, state=JobState.SUCCEEDED, error_code=None)
+        repository = FakeRepository([done], plans=[SimpleNamespace(id='plan-1', job_id=done.id)])
+
+        async def effects(plan_id):
+            return [
+                SimpleNamespace(
+                    id=1,
+                    effect_type='telegram_channel_message',
+                    external_message_id='55',
+                )
+            ]
+
+        repository.list_publish_effects = effects  # type: ignore[assignment]
+        client = FakeClient()
+
+        async def boom(*args, **kwargs):
+            raise RuntimeError('send failed')
+
+        client.send_message = boom  # type: ignore[assignment]
+        ui = TelethonBotUI(client, settings(), repository)
+        event = FakeEvent(data=f'ui:share:{done.id}'.encode())
+        await ui._on_callback(event)
+        texts = [text for text, _ in event.answers]
+        self.assertTrue(any(text and '已发送' not in text for text in texts))

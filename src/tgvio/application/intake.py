@@ -163,12 +163,19 @@ class IntakeService:
                 return IntakeAcceptResult(job=job, created=True)
         raise RuntimeError("intake event contention did not converge")
 
-    async def begin_collection(self, *, owner_id: int, chat_id: int) -> CollectionSession:
+    async def begin_collection(
+        self,
+        *,
+        owner_id: int,
+        chat_id: int,
+        style_json: str | None = None,
+    ) -> CollectionSession:
         existing = await self._repository.get_open_collection(owner_id, chat_id)
         if existing is not None:
             return existing
         return await self._repository.create_collection(
-            CollectionSession(owner_id=owner_id, chat_id=chat_id)
+            CollectionSession(owner_id=owner_id, chat_id=chat_id),
+            style_json=style_json,
         )
 
     async def open_collection(

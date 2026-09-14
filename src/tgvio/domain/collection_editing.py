@@ -27,6 +27,7 @@ class CollectionDraft:
     state: DraftState = DraftState.COLLECTING
     cover_entry_id: int | None = None
     caption_override: str | None = None
+    style_json: str | None = None
     active: bool = True
     created_at: str | None = None
     updated_at: str | None = None

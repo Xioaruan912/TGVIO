@@ -67,15 +67,17 @@ class SQLiteCollectionEditingRepositoryMixin:
         session_id: str,
         owner_id: int,
         chat_id: int,
+        *,
+        style_json: str | None = None,
     ) -> CollectionDraft:
         async with self._write_transaction() as conn:
             await conn.execute(
                 """
                 INSERT OR IGNORE INTO collection_drafts(
-                    session_id, owner_id, chat_id, revision, editor_state, active
-                ) VALUES(?,?,?,1,'collecting',1)
+                    session_id, owner_id, chat_id, revision, editor_state, active, style_json
+                ) VALUES(?,?,?,1,'collecting',1,?)
                 """,
-                (str(session_id), int(owner_id), int(chat_id)),
+                (str(session_id), int(owner_id), int(chat_id), style_json),
             )
         draft = await self.get_draft(session_id)
         if draft is None:
@@ -174,6 +176,19 @@ class SQLiteCollectionEditingRepositoryMixin:
             session_id,
             expected_revision=expected_revision,
             caption_override=text,
+        )
+
+    async def set_draft_style(
+        self,
+        session_id: str,
+        *,
+        style_json: str | None,
+        expected_revision: int,
+    ) -> CollectionDraft | None:
+        return await self._bump_draft(
+            session_id,
+            expected_revision=expected_revision,
+            style_json=style_json,
         )
 
     async def _bump_draft(
@@ -655,6 +670,7 @@ class SQLiteCollectionEditingRepositoryMixin:
                 None if row["cover_entry_id"] is None else int(row["cover_entry_id"])
             ),
             caption_override=row["caption_override"],
+            style_json=(row["style_json"] if "style_json" in row.keys() else None),
             active=bool(row["active"]),
             created_at=row["created_at"],
             updated_at=row["updated_at"],

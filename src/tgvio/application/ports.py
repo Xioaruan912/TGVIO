@@ -101,7 +101,9 @@ class JobRepository(Protocol):
 
     async def count_collection_entries(self, session_id: str) -> tuple[int, int]: ...
 
-    async def create_collection(self, session: CollectionSession) -> CollectionSession: ...
+    async def create_collection(
+        self, session: CollectionSession, *, style_json: str | None = None
+    ) -> CollectionSession: ...
 
     async def set_collection_status_message(
         self,
@@ -164,6 +166,14 @@ class JobRepository(Protocol):
         session_id: str,
         *,
         text: str | None,
+        expected_revision: int,
+    ) -> CollectionDraft | None: ...
+
+    async def set_draft_style(
+        self,
+        session_id: str,
+        *,
+        style_json: str | None,
         expected_revision: int,
     ) -> CollectionDraft | None: ...
 
