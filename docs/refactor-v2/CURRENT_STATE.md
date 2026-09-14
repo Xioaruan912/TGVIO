@@ -1,5 +1,7 @@
 # 当前状态审计
 
+最新覆盖说明：2026-09-14 R2-18F1 已发布，runtime `06e0451cffd055b8e8f41c2cdac633fe4e1dc2e7`，release `r2-18f1-06e0451-20260914T063914Z`，449 tests，migration=none/schema v14不变。健康/单实例/restart0/SQLite/源码身份/rollback assets独立核验通过，详见 [F1发布证据与F2未完成清单](R2-18F_ACCEPTANCE_FIXES.md)。下文旧runtime身份及“仅剩实机”的完成判断由本增量覆盖。
+
 ## 2026-09-14 R2-18A 最新增量（覆盖下文旧 runtime 身份）
 
 当前 runtime 为 `c7ba056e5a6d2451a9556acdf5fb4a2b32eda04f` / `r2-18a-c7ba056-20260914T025757Z`；image `sha256:73338e97dd2e826ad023cbf20c11aafdde19c480e521bd0fc42316bdbfec7604`；Git/宿主/容器 source manifest `5bde218af46f3ae8ddde713db181ae5327fafedb047f6416c33507296032a9c1`。409 tests；schema v11/hash 不变，migration=none。独立后验 healthy、restart0、单实例、error0、jobs0、blockers=[]、quick_check=ok；rollback assets check passed。新增上下文首页/六键过渡导航，不代表 R2-16/R2-17 已实现。详见 [发布证据](evidence/R2-18A_RELEASE.md) 和 [交接](R2-18_HANDOFF.md)。

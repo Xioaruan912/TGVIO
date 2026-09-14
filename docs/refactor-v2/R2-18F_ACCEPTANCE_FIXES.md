@@ -21,3 +21,13 @@
 - 真机操作仍未验收。
 
 每阶段的 commit/release/独立后验以后续发布证据为准；未部署不标交付。
+
+## F1 发布证据（2026-09-14）
+
+- [x] F1：`06e0451cffd055b8e8f41c2cdac633fe4e1dc2e7` 已推送并发布；release `r2-18f1-06e0451-20260914T063914Z`，migration=none。
+- 本地与生产隔离 test image：449 tests passed；secret scan/compileall/123 Python 文件1000行预算/runtime image inspection passed。
+- image `sha256:f150008212d15d98ef460526b0758d0dd492234de482471a8399f0d80a31d964`；Git/宿主/容器 source manifest `f938a378725f1347c1697d7a74fc7f9169d37fba37928040eecccfc51ffdedd5`。
+- 独立 vps_check：healthy、单实例、restart0、error0、bootstrap/Telegram ready各1、jobs0、blockers=[]、quick_check=ok。schema v14/hash `ef4930f53f2f3acaf515fee376676ea4d1b6c418f89fa5da47f1be57189924e8` 不变。
+- `rollback_hostdzire.sh --check r2-18f1-06e0451-20260914T063914Z` passed。标准 release rollback/evidence 目录资产完整；previous runtime `1a9b86c`。无迁移代码回滚不要恢复旧数据库覆盖新业务事实。
+- 新增回归：风格快照不一致拒绝创建Job/submission、owner雪花偏好、下载中revision变化、发送超时清缓存；原结果卡测试追加真实撤销checkpoint断言。
+- 未用真实媒体做破坏性测试；真实手机验收及 F2 尚未完成。NTP no 仍需独立运维窗口。

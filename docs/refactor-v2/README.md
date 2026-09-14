@@ -6,6 +6,8 @@
 
 ## 1. 结论
 
+2026-09-14 验收修复最新状态：R2-18F1 `06e0451` 已生产发布，449 tests/schema v14，独立健康与回滚资产核验通过。下文“仅剩实机”不再成立；F2 同款再发草稿风格和恢复收口仍未完成，当前事实及证据见 [R2-18F_ACCEPTANCE_FIXES.md](R2-18F_ACCEPTANCE_FIXES.md)。
+
 最新增量：R2-18A 首页基础包已于 2026-09-14 发布，runtime `c7ba056`，release `r2-18a-c7ba056-20260914T025757Z`，409 tests，schema v11 不变。以下 R2-15 的 405 tests 是上一基线记录；当前证据以 [R2-18A_RELEASE.md](evidence/R2-18A_RELEASE.md) 为准。R2-16/R2-17 未实现，剩余体验升级见 [接续交接](R2-18_HANDOFF.md)。
 
 本次不是在旧 `src/bot.py` 上继续拆 facade，也不是再写第三套实现。HostDZire 正在运行 clean-room rewrite（包名 `tgvio`），当前生产已具备 durable Job、PublishPlan、side-effect journal、Telegram 发布、Archive V2、single Archive profile/policy snapshot、durable capability freshness/probe 状态、owner-scoped exact remote Archive delete、恢复、诊断、singleton runtime lease、generation-fenced phase claim、strict FIFO ordered publish dispatcher、bounded concurrent Telegram upload、durable update 去重、合集/文字、spoiler 偏好、稳定状态消息、durable automatic recovery、Job hold/resume、global queue pause/resume、SQL 分页任务查询、failure center、按北京时间业务日的人类可读 `任务 #N`（`job_display_identity`，永久 `accepted_order` 仍单调递增用于 FIFO）、安全历史隐藏与持久每日维护（`job_visibility`/`maintenance_runs`/`maintenance_targets`，不再物理删除 Job 历史）、合集预发布编辑与多草稿（`collection_drafts`/`collection_entry_edits`/`collection_submissions`，revision/CAS + 冻结提交）、owner-scoped 收藏/安静模式、发布风格冻结、本地整理建议（可撤回）与 owner 主动触发的有界效果预览，以及 owner/revision/TTL/single-use operation token、可部分恢复的 Telegram 发布撤销、固定脱敏 Diagnostic Snapshot，以及只读运维 Dashboard/metrics 与脱敏通知 outbox；最新正式 release gate 为 446 tests。V2 重构以这套生产源码为唯一代码基线，按可回滚阶段继续治理。
