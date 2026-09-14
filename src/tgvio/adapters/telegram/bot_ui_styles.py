@@ -20,11 +20,12 @@ class BotUIStylesMixin:
         preference = await self._repository.get_user_preference(int(owner_id))
         name, policy = resolve_style(preference.style_json)
         active = BUILTIN_STYLES.get(name, {}).get("label", "自定义")
+        cover_label = "开" if policy["cover_mode"] else "关"
+        caption_label = "保留" if policy["forward_caption"] else "不保留"
         lines = [
             "🎨 **发布风格**",
             "──────────",
-            f"当前：`{active}`（封面={"开" if policy['cover_mode'] else "关"} · "
-            f"原文字={"保留" if policy['forward_caption'] else "不保留"}）",
+            f"当前：`{active}`（封面={cover_label} · 原文字={caption_label}）",
             "──────────",
         ]
         rows: list[list] = []
@@ -42,16 +43,12 @@ class BotUIStylesMixin:
             )
         lines.append("──────────")
         lines.append("风格只改变封面/原文字；不会静默关闭雪花遮挡。确认时冻结到该任务。")
+        cover_button = "封面 " + ("开" if policy["cover_mode"] else "关")
+        caption_button = "原文字 " + ("保留" if policy["forward_caption"] else "不保留")
         rows.append(
             [
-                Button.inline(
-                    f"封面 {'开' if policy['cover_mode'] else '关'}",
-                    b"ui:style-custom:cover_mode",
-                ),
-                Button.inline(
-                    f"原文字 {'保留' if policy['forward_caption'] else '不保留'}",
-                    b"ui:style-custom:forward_caption",
-                ),
+                Button.inline(cover_button, b"ui:style-custom:cover_mode"),
+                Button.inline(caption_button, b"ui:style-custom:forward_caption"),
             ]
         )
         rows.append(
