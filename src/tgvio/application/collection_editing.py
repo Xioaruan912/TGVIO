@@ -515,9 +515,9 @@ class CollectionEditingService:
         session_id = str(operation.resource_id)
         existing = await self._repository.get_submission(session_id)
         if existing is not None:
-            if existing.state == "created":
-                return await self._result_from_submission(session_id, existing.job_ids)
             if existing.token_id == token and int(existing.owner_id) == owner:
+                if existing.state == "created":
+                    return await self._result_from_submission(session_id, existing.job_ids)
                 return await self._resume_submission(existing)
             raise OperationTokenInvalidError("submission already accepted by another confirmation")
 
@@ -591,10 +591,10 @@ class CollectionEditingService:
                     "operation expired, changed, or was already consumed"
                 ) from exc
             raise DraftRevisionConflict("draft revision changed") from exc
-        if submission.state == "created":
-            return await self._result_from_submission(session_id, submission.job_ids)
         if submission.token_id != token or int(submission.owner_id) != owner:
             raise OperationTokenInvalidError("submission already accepted by another confirmation")
+        if submission.state == "created":
+            return await self._result_from_submission(session_id, submission.job_ids)
         return await self._resume_submission(submission)
 
     async def _resume_submission(self, submission) -> CollectionFinalizeResult:
