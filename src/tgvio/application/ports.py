@@ -37,6 +37,7 @@ from tgvio.domain.intake import (
 from tgvio.domain.job import Job, JobEvent, JobState, MediaItem, MediaKind
 from tgvio.domain.job_query import FailurePage, JobListFilter, JobPage
 from tgvio.domain.operations import OperationToken, PublishEffectRevocation, RevocationState
+from tgvio.domain.suggestion import SuggestionApplication
 from tgvio.domain.publish import (
     PublishEffect,
     PublishPlan,
@@ -224,6 +225,26 @@ class JobRepository(Protocol):
         owner_id: int,
         expected_revision: int,
     ) -> bool: ...
+
+    async def overlay_snapshot(self, session_id: str) -> dict[str, object]: ...
+
+    async def apply_overlay(
+        self,
+        session_id: str,
+        overlay: dict[str, object],
+        *,
+        expected_revision: int,
+    ) -> CollectionDraft | None: ...
+
+    async def create_suggestion_application(
+        self, application: SuggestionApplication
+    ) -> SuggestionApplication: ...
+
+    async def get_active_suggestion_application(
+        self, session_id: str
+    ) -> SuggestionApplication | None: ...
+
+    async def consume_suggestion_application(self, application_id: str) -> bool: ...
 
     async def get_user_preference(self, owner_id: int) -> UserPreference: ...
 

@@ -148,8 +148,8 @@ class DiagnosticSnapshotTests(unittest.IsolatedAsyncioTestCase):
             snapshot = await service.snapshot()
 
         self.assertEqual(snapshot.aggregate_status, DiagnosticAvailability.READY)
-        self.assertEqual(snapshot.schema.user_version, 13)
-        self.assertEqual(snapshot.schema.latest_version, 13)
+        self.assertEqual(snapshot.schema.user_version, 14)
+        self.assertEqual(snapshot.schema.latest_version, 14)
         self.assertTrue(snapshot.schema.ledger_contiguous)
         self.assertEqual(snapshot.schema.verification, MigrationVerification.VERIFIED)
         self.assertTrue(snapshot.runtime_lease.unique)

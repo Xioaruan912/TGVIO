@@ -434,6 +434,61 @@ class SQLiteCollectionEditingRepositoryMixin:
             )
             return cursor.rowcount == 1
 
+    # -------------------------------------------------------- overlay snapshots
+    async def overlay_snapshot(self, session_id: str) -> dict[str, object]:
+        entries = await self.list_draft_entries(session_id)
+        draft = await self.get_draft(session_id)
+        return {
+            "positions": {
+                str(item.entry.id): int(item.position)
+                for item in entries
+                if item.entry.id is not None
+            },
+            "excluded": {
+                str(item.entry.id): 1 if item.excluded else 0
+                for item in entries
+                if item.entry.id is not None
+            },
+            "cover_entry_id": None if draft is None else draft.cover_entry_id,
+        }
+
+    async def apply_overlay(
+        self,
+        session_id: str,
+        overlay: dict[str, object],
+        *,
+        expected_revision: int,
+    ) -> CollectionDraft | None:
+        positions = overlay.get("positions") or {}
+        excluded = overlay.get("excluded") or {}
+        async with self._write_transaction() as conn:
+            cursor = await conn.execute(
+                """
+                UPDATE collection_drafts
+                SET revision=revision+1, updated_at=CURRENT_TIMESTAMP, cover_entry_id=?
+                WHERE session_id=? AND revision=? AND editor_state IN ('collecting','preview','saved')
+                """,
+                (
+                    overlay.get("cover_entry_id"),
+                    str(session_id),
+                    int(expected_revision),
+                ),
+            )
+            if cursor.rowcount != 1:
+                return None
+            for entry_id, position in dict(positions).items():
+                await conn.execute(
+                    "UPDATE collection_entry_edits SET position=? WHERE entry_id=? AND session_id=?",
+                    (int(position), int(entry_id), str(session_id)),
+                )
+            for entry_id, flag in dict(excluded).items():
+                await conn.execute(
+                    "UPDATE collection_entry_edits SET excluded=? WHERE entry_id=? AND session_id=?",
+                    (int(flag), int(entry_id), str(session_id)),
+                )
+        return await self.get_draft(session_id)
+
+
     # ----------------------------------------------------------------- mappers
     @staticmethod
     def _draft_from_row(row) -> CollectionDraft:

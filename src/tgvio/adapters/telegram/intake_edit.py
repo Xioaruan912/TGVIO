@@ -42,6 +42,9 @@ class IntakeEditMixin:
         if action.startswith("intake:df:"):
             await self._on_draft_list(event, action, owner_id)
             return True
+        if action.startswith("intake:sg:"):
+            await self._on_suggestion(event, action, owner_id)
+            return True
         if action.startswith("intake:cc:"):
             await self._on_edit_confirm(event, action, owner_id)
             return True
@@ -258,11 +261,16 @@ class IntakeEditMixin:
         )
         rows.append(
             [
+                Button.inline("🧠 整理建议", f"intake:sg:{encoded_sid}:{draft.revision}:a".encode()),
                 Button.inline("💾 保存草稿", f"intake:ed:{encoded_sid}:{draft.revision}:s".encode()),
-                Button.inline("✅ 确认发布", f"intake:ed:{encoded_sid}:{draft.revision}:k".encode()),
             ]
         )
-        rows.append([Button.inline("❌ 放弃合集", f"intake:abandon:{encoded_sid}".encode())])
+        rows.append(
+            [
+                Button.inline("✅ 确认发布", f"intake:ed:{encoded_sid}:{draft.revision}:k".encode()),
+                Button.inline("❌ 放弃合集", f"intake:abandon:{encoded_sid}".encode()),
+            ]
+        )
         try:
             await self._safe_edit(
                 int(chat_id),
@@ -272,6 +280,134 @@ class IntakeEditMixin:
             )
         except DraftUnavailableError:
             await self._safe_send(int(chat_id), text, buttons=rows)
+
+    async def _on_suggestion(self, event, action: str, owner_id: int) -> None:
+        editing = await self._editing_service()
+        if editing is None:
+            await self._safe_answer(event, "编辑功能不可用", alert=True)
+            return
+        parts = action.split(":")
+        if len(parts) < 5:
+            await self._safe_answer(event, "操作已过期", alert=True)
+            return
+        session_id = parts[2]
+        try:
+            revision = int(parts[3])
+        except (TypeError, ValueError):
+            await self._safe_answer(event, "操作已过期", alert=True)
+            return
+        operation = parts[4]
+        entry_id = int(parts[5]) if len(parts) >= 6 and parts[5].isdigit() else None
+        draft = await editing.draft(session_id)
+        if draft is None or int(draft.owner_id) != int(owner_id):
+            await self._safe_answer(event, "草稿已失效", alert=True)
+            return
+        from tgvio.application.suggestions import SuggestionService
+
+        service = SuggestionService(self._repository, editing)
+        try:
+            if operation == "a":
+                await self._safe_answer(event, "已生成建议")
+                await self._render_suggestions(event.chat_id, owner_id, session_id, draft)
+                return
+            if int(draft.revision) != int(revision):
+                await self._safe_answer(event, "内容已更新，请刷新", alert=True)
+                await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
+                return
+            if operation == "c" and entry_id is not None:
+                draft = await service.apply_cover(
+                    owner_id=owner_id,
+                    session_id=session_id,
+                    entry_id=entry_id,
+                    expected_revision=revision,
+                )
+                await self._safe_answer(event, "已应用封面建议")
+            elif operation == "o":
+                draft = await service.apply_order(
+                    owner_id=owner_id, session_id=session_id, expected_revision=revision
+                )
+                await self._safe_answer(event, "已应用排序建议")
+            elif operation == "u":
+                draft = await service.undo(
+                    owner_id=owner_id, session_id=session_id, expected_revision=revision
+                )
+                await self._safe_answer(event, "已撤回调整")
+            else:
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return
+        except DraftRevisionConflict:
+            await self._safe_answer(event, "内容已更新，请刷新", alert=True)
+            draft = await editing.draft(session_id)
+            await self._render_edit_panel(event.chat_id, owner_id, session_id, draft, page=0)
+            return
+        except DraftUnavailableError:
+            await self._safe_answer(event, "没有可撤回的调整", alert=True)
+            return
+        await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
+
+    async def _render_suggestions(self, chat_id: int, owner_id: int, session_id: str, draft) -> None:
+        editing = await self._editing_service()
+        if editing is None:
+            return
+        from tgvio.application.suggestions import SuggestionService
+        from tgvio.domain.suggestion import SuggestionKind
+
+        service = SuggestionService(self._repository, editing)
+        suggestions = await service.analyze(session_id)
+        lines = [f"🧠 **整理建议** · rev `{draft.revision}`", "──────────"]
+        if not suggestions:
+            lines.append("暂时没有可应用的建议。")
+        rows: list[list] = []
+        for index, suggestion in enumerate(suggestions, start=1):
+            tag = "疑似" if suggestion.uncertain else "规则"
+            lines.append(f"{index}. **{suggestion.title}**（{tag}）：{suggestion.detail}")
+            if suggestion.kind == SuggestionKind.COVER and suggestion.entry_ids:
+                rows.append(
+                    [
+                        Button.inline(
+                            f"{index} 应用封面",
+                            f"intake:sg:{session_id}:{draft.revision}:c:{suggestion.entry_ids[0]}".encode(),
+                        )
+                    ]
+                )
+            elif suggestion.kind == SuggestionKind.ORDER:
+                rows.append(
+                    [
+                        Button.inline(
+                            f"{index} 应用排序",
+                            f"intake:sg:{session_id}:{draft.revision}:o".encode(),
+                        )
+                    ]
+                )
+        lines.append("──────────")
+        lines.append("建议只在你点击后生效；不会自动删除、排序或改动手选封面。")
+        application = await self._repository.get_active_suggestion_application(session_id)
+        if application is not None and int(application.revision_applied) == int(draft.revision):
+            rows.append(
+                [
+                    Button.inline(
+                        "↩️ 撤回上次调整",
+                        f"intake:sg:{session_id}:{draft.revision}:u".encode(),
+                    )
+                ]
+            )
+        rows.append(
+            [
+                Button.inline(
+                    "↩️ 返回编辑",
+                    f"intake:ed:{session_id}:{draft.revision}:f".encode(),
+                )
+            ]
+        )
+        try:
+            await self._safe_edit(
+                int(chat_id),
+                await self._panel_message_id(session_id),
+                "\n".join(lines),
+                buttons=rows,
+            )
+        except DraftUnavailableError:
+            await self._safe_send(int(chat_id), "\n".join(lines), buttons=rows)
 
     async def _issue_and_show_confirm(
         self,
