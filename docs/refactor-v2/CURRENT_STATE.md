@@ -1,27 +1,19 @@
 # 当前状态审计
 
-最新覆盖说明：2026-09-14 R2-18F1 已发布，runtime `06e0451cffd055b8e8f41c2cdac633fe4e1dc2e7`，release `r2-18f1-06e0451-20260914T063914Z`，449 tests，migration=none/schema v14不变。健康/单实例/restart0/SQLite/源码身份/rollback assets独立核验通过，详见 [F1发布证据与F2未完成清单](R2-18F_ACCEPTANCE_FIXES.md)。下文旧runtime身份及“仅剩实机”的完成判断由本增量覆盖。
-
-## 2026-09-14 R2-18A 最新增量（覆盖下文旧 runtime 身份）
-
-当前 runtime 为 `c7ba056e5a6d2451a9556acdf5fb4a2b32eda04f` / `r2-18a-c7ba056-20260914T025757Z`；image `sha256:73338e97dd2e826ad023cbf20c11aafdde19c480e521bd0fc42316bdbfec7604`；Git/宿主/容器 source manifest `5bde218af46f3ae8ddde713db181ae5327fafedb047f6416c33507296032a9c1`。409 tests；schema v11/hash 不变，migration=none。独立后验 healthy、restart0、单实例、error0、jobs0、blockers=[]、quick_check=ok；rollback assets check passed。新增上下文首页/六键过渡导航，不代表 R2-16/R2-17 已实现。详见 [发布证据](evidence/R2-18A_RELEASE.md) 和 [交接](R2-18_HANDOFF.md)。
-
-以下为 R2-15B 历史基线及架构说明，其 runtime 身份、容器 ID 和测试数不再代表最新发布。
-
 > 审计时间：2026-09-14（Asia/Shanghai）
 > 审计方式：本地 Git/源码静态检查；HostDZire 只读与受控发布审计；生产源码脱敏归档；无网络临时测试容器。未输出 `.env` 内容、Telegram session、媒体文件或任何凭据。
-> 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-08、R2-09、R2-11～R2-15 均已交付，R2-10 自动化收口已完成；R2-16 合集编辑/草稿、R2-18 用户体验升级（18A～E）与 R2-18F 验收缺陷修复（F1～F5）已实现并部署；R2-17 完整内容审核仍未实现。所有 `REQUIRED` 合同为 `VERIFIED`。当前生产事实以 `r2-18f5-b238b58-20260914T075349Z` / schema v16 为准。R2-04E 真实大文件性能、R2-05/06 真实 E2E 与破坏性回滚演练仍需 owner 窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。
+> 阶段说明：R2-03A/B、R2-05、R2-06、R2-07A1/A2/A3/D、R2-08、R2-09、R2-11～R2-15 均已交付，R2-10 自动化收口已完成；R2-16 合集编辑/草稿、R2-18 用户体验升级（18A～E）与 R2-18F 验收缺陷修复（F1～F6）已实现并部署；R2-17 完整内容审核仍未实现。所有 `REQUIRED` 合同为 `VERIFIED`。当前生产事实以 `r2-18f6-53cbb2d-20260914T120716Z` / schema v16 为准。R2-04E 真实大文件性能、R2-05/06 真实 E2E 与破坏性回滚演练仍需 owner 窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。
 
 ## 1. 源码权威已经对齐
 
 | 范围 | 当前事实 | 结论 |
 |---|---|---|
-| Git runtime 基线 | `b238b5861da6c44c94a737d953f3521027a03fa6` 已推送 `origin/main` | 当前生产 TGVIO runtime 的完整 Git object；R2-18F 验收缺陷修复最终包 |
+| Git runtime 基线 | `53cbb2d0654b7d1e686216e0e4530d5c88c5ac29` 已推送 `origin/main` | 当前生产 TGVIO runtime 的完整 Git object；R2-18F 验收缺陷修复最终包 |
 | 退役旧树 | annotated tag `legacy-telegram-video-forwarder-750b3c1` 指向 `750b3c1629a0d360df740337671b54b8749e2ce2` | 旧架构可追溯，但不再留在当前可启动树 |
 | HostDZire | shared root `/root/TGVIO`；current link `/root/TGVIO-current`；Compose service/container `tgvio` | 版本化 release 已接管，运行卷仍留在 shared root |
-| 生产 release | `r2-18f5-b238b58-20260914T075349Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `b238b5861da6c44c94a737d953f3521027a03fa6` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
-| 生产 image | `sha256:af9e6a885d1807a8fccf83e3bbb0d8d90a124dfe89813178b3e38489a967c469` | 正式 R2-18F5 runtime image；匹配 source manifest、v16 DB 与 rollback point 均可验证 |
-| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `4d6163b928fd641e736f20f02b0d6dcf94599d577767025a68768fd6b182f955` | R2-18F5 runtime 三方身份一致 |
+| 生产 release | `r2-18f6-53cbb2d-20260914T120716Z`；`.release-commit` 与容器 `APP_COMMIT` 均为 full `53cbb2d0654b7d1e686216e0e4530d5c88c5ac29` | release 身份由 full commit、manifest 与不可变 image 共同固定 |
+| 生产 image | `sha256:bcb3174a437a23bb1834eb5b14c790fe5f30aa271651e71d5c7ffccf5e352cd6` | 正式 R2-18F6 runtime image；匹配 source manifest、v16 DB 与 rollback point 均可验证 |
+| Runtime 源码 | Git、生产宿主、运行容器的 source manifest 均为 `fe13b19bc0d54faaff7ed583c8e415047b78dcda2cfa7ed830d9ad307cc706d5` | R2-18F6 runtime 三方身份一致 |
 
 R2-00 记录的 `1da1d3d0…` 没有留下生成算法，已由 R2-01 的明确、可重复算法取代。原始 82 文件快照、逐文件 SHA-256、导入边界和发布记录见 [R2-01 evidence](evidence/R2-01_BASELINE.md)。
 
@@ -31,8 +23,8 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.1 运行状态
 
-- Release：`r2-18f5-b238b58-20260914T075349Z`。
-- Source：`/root/TGVIO-releases/r2-18f5-b238b58-20260914T075349Z/source`，由 `/root/TGVIO-current` 原子指向。
+- Release：`r2-18f6-53cbb2d-20260914T120716Z`。
+- Source：`/root/TGVIO-releases/r2-18f6-53cbb2d-20260914T120716Z/source`，由 `/root/TGVIO-current` 原子指向。
 - 容器 ID：`266eb6f777f6958724a218814056033234f2cd81bc78b986a781c939f2b0dfdd`。
 - Started-at：`2026-09-14T01:25:22.67540493Z`。
 - 状态：`running`，Docker health=`healthy`，当前容器 restart count=0。
@@ -66,15 +58,15 @@ runtime release 之后的 docs-only closure commit 可以领先生产 `APP_COMMI
 
 ### 2.3 代码、测试与镜像
 
-- 当前生产 R2-18F5 runtime：123 个 Python 源文件；schema 为 v16。R2-18F 新增持久化冻结提交/分块幂等、draft-scoped 风格、预览字节预算与生命周期、收藏幂等。
+- 当前生产 R2-18F6 runtime：123 个 Python 源文件；schema 为 v16。R2-18F 新增持久化冻结提交/分块幂等、draft-scoped 风格、预览字节预算与生命周期、收藏幂等。
 - 下载/分析保持有限并发，Telegram publish 由 durable accepted-order dispatcher 串行执行，prepare/publish/archive 都由 generation-fenced claim + heartbeat + TTL watchdog 保护。
 - 当前主要热点为 `adapters/telegram/bot_ui.py`、Telegram publish 与 WebDAV adapter；repository 大文件热点已在 R2-03B 消除。
 - 当前生产的 domain/application AST 依赖边界与 123-file architecture gate 通过，并强制 `MAX_SOURCE_FILE_LINES=1000` 单文件预算。
-- 当前生产 R2-18F5 正式 clean/pushed Docker test target 在 `--network none` 下通过 472 tests，覆盖既有 scheduler/migration/upload/intake/release/undo/Archive/diagnostics、Dashboard/metrics/outbox、告警/预览、归档容错、短路径布局、安全隐藏/维护、`job_display_identity`、R2-16 草稿 revision/冻结提交、R2-18 结果卡/收藏/分享/安静模式/风格/建议/预览，以及 R2-18F 冻结快照崩溃恢复/分块幂等/双 token 竞争、预览硬字节预算与路径安全、收藏目标状态幂等；没有启动第二个 Telegram Bot。
+- 当前生产 R2-18F6 正式 clean/pushed Docker test target 在 `--network none` 下通过 475 tests，覆盖既有 scheduler/migration/upload/intake/release/undo/Archive/diagnostics、Dashboard/metrics/outbox、告警/预览、归档容错、短路径布局、安全隐藏/维护、`job_display_identity`、R2-16 草稿 revision/冻结提交、R2-18 结果卡/收藏/分享/安静模式/风格/建议/预览，以及 R2-18F 冻结快照崩溃恢复/分块幂等/双 token 竞争、预览硬字节预算与路径安全、收藏目标状态幂等；没有启动第二个 Telegram Bot。
 - Bot-disabled foundation check、`compileall`、镜像禁入路径和 secret-pattern 检查通过。
 - 生产镜像不包含 tests、`.env`、`.git` 或运行卷。
 - 依赖已由 hashed lock 固定；多阶段 Dockerfile 的 test/runtime targets 共用固定 base digest，runtime 内精确安装 7 个锁定 Python 包。
-- 正式 runtime image `sha256:af9e6a885d1807a8fccf83e3bbb0d8d90a124dfe89813178b3e38489a967c469` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
+- 正式 runtime image `sha256:bcb3174a437a23bb1834eb5b14c790fe5f30aa271651e71d5c7ffccf5e352cd6` 已通过 release image inspection；生产 source/image/commit identity 与独立 postflight 一致。
 
 ## 3. 当前 TGVIO 已证明的能力
 

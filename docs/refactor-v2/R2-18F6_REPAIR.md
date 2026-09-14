@@ -1,6 +1,6 @@
 # R2-18F6 二次验收修复
 
-状态：IN PROGRESS。2026-09-14，上一轮 F5 独立验收仍有缺口；本阶段不新增 schema。
+状态：DELIVERED。2026-09-14，上一轮 F5 独立验收仍有缺口；本阶段不新增 schema。
 
 ## 修复边界
 
@@ -17,3 +17,12 @@
 ## 发布与回滚
 
 按唯一入口发布R2-18F6，migration=none，schema v16不变；代码回滚不能恢复旧DB覆盖新业务记录。准确commit、release、image及后验在发布后补录。
+
+## 正式交付证据
+
+- [x] commit `53cbb2d0654b7d1e686216e0e4530d5c88c5ac29` 已推送；release `r2-18f6-53cbb2d-20260914T120716Z`，2026-09-14，migration=none。
+- 本地及服务器无网络测试容器475 tests通过；secret scan、compileall、123个Python源文件/1000行预算、runtime image检查通过。
+- image `sha256:bcb3174a437a23bb1834eb5b14c790fe5f30aa271651e71d5c7ffccf5e352cd6`；Git/宿主/容器source manifest `fe13b19bc0d54faaff7ed583c8e415047b78dcda2cfa7ed830d9ad307cc706d5`。
+- 独立vps_check：healthy、单实例、restart0、error0、bootstrap/Telegram ready各1、jobs0、blockers=[]、quick_check=ok；schema v16/hash `59624f44635dd5ff7a31f313780d0aa4669cbf4bf18efae7405f98ec4ea0102c` 不变。
+- `rollback_hostdzire.sh --check r2-18f6-53cbb2d-20260914T120716Z` passed；标准release目录保留manifest/ledger及rollback资产。NTP仍no，未擅自调整。
+- 未做真实Android/iOS与用户媒体破坏性测试；不能以测试通过代替实机验收。

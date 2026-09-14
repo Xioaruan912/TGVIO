@@ -1,16 +1,16 @@
 # TGVIO 完全重构 V2
 
-> 状态：R2-00～R2-03、R2-05～R2-09、R2-11～R2-16 已交付；R2-18 用户体验升级（A/B/C/D/E）与 R2-18F 验收缺陷修复（F1～F5）已交付，仍需真实手机验收；R2-04 A-E 已正式发布但仍待 1～3 个真实大文件 performance acceptance（2026-09-14）
+> 状态：R2-00～R2-03、R2-05～R2-09、R2-11～R2-16 已交付；R2-18 用户体验升级（A/B/C/D/E）与 R2-18F 验收缺陷修复（F1～F6）已交付，仍需真实手机验收；R2-04 A-E 已正式发布但仍待 1～3 个真实大文件 performance acceptance（2026-09-14）
 > 适用范围：`TG_Upload_bot` Git 仓库与 HostDZire 上的 TGVIO 生产实例
 > 权威性：从本文件建立之日起，新重构工作以本目录为准；旧 `docs/REFACTORING.md`、`docs/R0_BASELINE.md`、`todo.md` 和 `AGENTS.md` 的历史阶段记录仅用于追溯。
 
 ## 1. 结论
 
-2026-09-14 最新验收发现 F5 仍有冻结后追加媒体遗漏、预览预算/路径及自动恢复缺口；正在实施 [R2-18F6 修复](R2-18F6_REPAIR.md)。当前生产身份见第6节，历史交付不代表全部验收通过。
+2026-09-14 最新验收发现 F5 仍有冻结后追加媒体遗漏、预览预算/路径及自动恢复缺口；已发布 [R2-18F6 修复](R2-18F6_REPAIR.md)。当前生产身份见第6节，历史交付不代表全部验收通过。
 
 R2-18A/F1 等历史身份与交接仅用于追溯；R2-16 已实现，R2-17 精确重复审核仍未实现。
 
-本次不是在旧 `src/bot.py` 上继续拆 facade，也不是再写第三套实现。HostDZire 正在运行 clean-room rewrite（包名 `tgvio`），当前生产已具备 durable Job、PublishPlan、side-effect journal、Telegram 发布、Archive V2、single Archive profile/policy snapshot、durable capability freshness/probe 状态、owner-scoped exact remote Archive delete、恢复、诊断、singleton runtime lease、generation-fenced phase claim、strict FIFO ordered publish dispatcher、bounded concurrent Telegram upload、durable update 去重、合集/文字、spoiler 偏好、稳定状态消息、durable automatic recovery、Job hold/resume、global queue pause/resume、SQL 分页任务查询、failure center、按北京时间业务日的人类可读 `任务 #N`（`job_display_identity`，永久 `accepted_order` 仍单调递增用于 FIFO）、安全历史隐藏与持久每日维护（`job_visibility`/`maintenance_runs`/`maintenance_targets`，不再物理删除 Job 历史）、合集预发布编辑与多草稿（`collection_drafts`/`collection_entry_edits`/`collection_submissions`/`collection_part_jobs`，revision/CAS + 持久化冻结快照与崩溃恢复 + 分块幂等提交）、draft-scoped 发布风格与同款再发、owner-scoped 收藏/安静模式、本地整理建议（可撤回）与 owner 主动触发的有界效果预览（真实字节预算/队列 TTL/路径安全/生命周期回收），以及 owner/revision/TTL/single-use operation token、可部分恢复的 Telegram 发布撤销、固定脱敏 Diagnostic Snapshot，以及只读运维 Dashboard/metrics 与脱敏通知 outbox；最新正式 release gate 为 472 tests。V2 重构以这套生产源码为唯一代码基线，按可回滚阶段继续治理。
+本次不是在旧 `src/bot.py` 上继续拆 facade，也不是再写第三套实现。HostDZire 正在运行 clean-room rewrite（包名 `tgvio`），当前生产已具备 durable Job、PublishPlan、side-effect journal、Telegram 发布、Archive V2、single Archive profile/policy snapshot、durable capability freshness/probe 状态、owner-scoped exact remote Archive delete、恢复、诊断、singleton runtime lease、generation-fenced phase claim、strict FIFO ordered publish dispatcher、bounded concurrent Telegram upload、durable update 去重、合集/文字、spoiler 偏好、稳定状态消息、durable automatic recovery、Job hold/resume、global queue pause/resume、SQL 分页任务查询、failure center、按北京时间业务日的人类可读 `任务 #N`（`job_display_identity`，永久 `accepted_order` 仍单调递增用于 FIFO）、安全历史隐藏与持久每日维护（`job_visibility`/`maintenance_runs`/`maintenance_targets`，不再物理删除 Job 历史）、合集预发布编辑与多草稿（`collection_drafts`/`collection_entry_edits`/`collection_submissions`/`collection_part_jobs`，revision/CAS + 持久化冻结快照与崩溃恢复 + 分块幂等提交）、draft-scoped 发布风格与同款再发、owner-scoped 收藏/安静模式、本地整理建议（可撤回）与 owner 主动触发的有界效果预览（真实字节预算/队列 TTL/路径安全/生命周期回收），以及 owner/revision/TTL/single-use operation token、可部分恢复的 Telegram 发布撤销、固定脱敏 Diagnostic Snapshot，以及只读运维 Dashboard/metrics 与脱敏通知 outbox；最新正式 release gate 为 475 tests。V2 重构以这套生产源码为唯一代码基线，按可回滚阶段继续治理。
 
 生产源码与来源清单现已进入 Git；后续仍禁止把本地旧运行代码直接覆盖 `/root/TGVIO`，所有代码交付必须走版本化 release。
 
@@ -40,7 +40,7 @@ R2-18A/F1 等历史身份与交接仅用于追溯；R2-16 已实现，R2-17 精�
 
 - [R2-18_UX_UPGRADE.md](R2-18_UX_UPGRADE.md)：手机端用户体验升级方案（R2-18A～E 已交付；仅剩真实手机验收）。
 - [R2-15_16_17_TECHNICAL_PLAN.md](R2-15_16_17_TECHNICAL_PLAN.md)：安全清理与历史保留（R2-15 已交付）、合集编辑（R2-16 已交付）、重复内容提示（R2-17 未实现）的技术方案。
-- [R2-18F_ACCEPTANCE_FIXES.md](R2-18F_ACCEPTANCE_FIXES.md)：验收缺陷修复（F1～F5 已交付；见 [发布证据](evidence/R2-18F_RELEASE.md)）。
+- [R2-18F_ACCEPTANCE_FIXES.md](R2-18F_ACCEPTANCE_FIXES.md)：验收缺陷修复（F1～F6 已交付；见 [发布证据](evidence/R2-18F_RELEASE.md)）。
 - [R2-18_MINIAPP_DESIGN.md](R2-18_MINIAPP_DESIGN.md)：Mini App 后续技术方案（仅设计，本轮不实现）。
 - [CURRENT_STATE.md](CURRENT_STATE.md)：本地、Git 与生产的证据化现状和阻塞项。
 - [FEATURE_CONTRACT.md](FEATURE_CONTRACT.md)：必须保持、待补齐和明确退役的功能合同。
@@ -65,7 +65,7 @@ R2-18A/F1 等历史身份与交接仅用于追溯；R2-16 已实现，R2-17 精�
 ## 6. 当前工作纪律
 
 - R2-00 已完成规划文档交付；R2-01 已把生产 clean-room runtime 回收至 Git；R2-02 已完成可复现构建与强制交付链。
-- 当前生产 release 为 `r2-18f5-b238b58-20260914T075349Z`，runtime commit 为 `b238b5861da6c44c94a737d953f3521027a03fa6`；生产 schema 为 `user_version=16`，hash `59624f44635dd5ff7a31f313780d0aa4669cbf4bf18efae7405f98ec4ea0102c`，migration ledger `1..16`。R2-18F2（`0015_frozen_submissions`）持久化冻结提交/崩溃恢复/分块幂等；R2-18F3（`0016_draft_style`）draft-scoped 风格与同款再发；R2-18F1/F4/F5 为 migration=none（确认 fail-closed、预览字节预算/队列/TTL/生命周期、收藏幂等与结果卡链接去重）。472 tests 全绿、逐包独立 postflight 与 rollback-check 通过。证据见 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md) 与 [R2-18_UX_RELEASE.md](evidence/R2-18_UX_RELEASE.md)。
+- 当前生产 release 为 `r2-18f6-53cbb2d-20260914T120716Z`，runtime commit 为 `53cbb2d0654b7d1e686216e0e4530d5c88c5ac29`；生产 schema 为 `user_version=16`，hash `59624f44635dd5ff7a31f313780d0aa4669cbf4bf18efae7405f98ec4ea0102c`，migration ledger `1..16`。R2-18F2（`0015_frozen_submissions`）持久化冻结提交/崩溃恢复/分块幂等；R2-18F3（`0016_draft_style`）draft-scoped 风格与同款再发；R2-18F1/F4/F5 为 migration=none（确认 fail-closed、预览字节预算/队列/TTL/生命周期、收藏幂等与结果卡链接去重）。475 tests 全绿、逐包独立 postflight 与 rollback-check 通过。证据见 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md) 与 [R2-18_UX_RELEASE.md](evidence/R2-18_UX_RELEASE.md)。
 - R2-10 自动化收口已交付：`FEATURE_CONTRACT.md` 已无 `REQUIRED` 项，旧 runtime 不在可启动树、仅由 tag `legacy-telegram-video-forwarder-750b3c1` 保留，当前 release 的 source/image/DB 回滚资产与单实例身份已验证。受控生产 smoke（单媒体/相册/合集/封面/评论区/spoiler/URL/>2GB、cancel/hold/retry/undo、Archive 精确删除）、真实大文件性能观测与破坏性回滚演练需要 owner 的 Telegram 会话和独立运维窗口，清单见 [R2-10_CLOSURE.md](evidence/R2-10_CLOSURE.md)。
 - R2-09（前一个 release）为 `r2-09-5ff2a61-20260913T092930Z`，runtime commit 为 `5ff2a61e6ca51a8faaf6960d78ea34a6dbeb45af`。R2-09 以 `0008_notification_outbox` 交付 loopback-only 只读 Dashboard、恒定时间 Bearer 认证的低基数 metrics，以及幂等/HMAC/有限重试的脱敏通知 outbox；默认关闭、无监听端口、无第二个 Telegram session。最新正式 gate 367 tests、生产副本 v7→v8 rehearsal、独立 postflight 与 rollback asset check 均通过；24 Job、当前 blocker=0、容器单实例 healthy/restart=0，migration ledger `1..8`，outbox 初始为空。证据见 [R2-09_RELEASE.md](evidence/R2-09_RELEASE.md)。
 - R2-07D 生产 release 为 `r2-07d-10b6dd5-20260913T091106Z`，runtime commit `10b6dd5f58f8839a6fa51428a32b93d8f95c098c`；生产 schema 当时为 `user_version=7`。A1 以 `0006_archive_profile_policy` 冻结 single Archive profile/policy，A2 以 migration-free release 增加 probe failure durable checkpoint、capability freshness、精确 retry token object-set 绑定与 Archive 状态 UI，A3 以 `0007_archive_exact_delete` 上线 owner-scoped 二次确认、immutable exact target set、marker-first/manifest-last、逐目标审计与 partial resume 的远端精确删除，D 以 migration-free release 交付固定白名单 `DiagnosticSnapshot`、3 条有界 SQL 聚合、1000+ Job 不加载历史与静态代理脱敏状态。证据见 [R2-07A1_ARCHIVE_PROFILE_RELEASE.md](evidence/R2-07A1_ARCHIVE_PROFILE_RELEASE.md)、[R2-07A2_ARCHIVE_RECOVERY_RELEASE.md](evidence/R2-07A2_ARCHIVE_RECOVERY_RELEASE.md)、[R2-07A3_ARCHIVE_DELETE_RELEASE.md](evidence/R2-07A3_ARCHIVE_DELETE_RELEASE.md) 与 [R2-07D_RELEASE.md](evidence/R2-07D_RELEASE.md)。
