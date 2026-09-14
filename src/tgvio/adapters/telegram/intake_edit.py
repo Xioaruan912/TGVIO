@@ -389,9 +389,13 @@ class IntakeEditMixin:
             await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
             return
         await self._safe_answer(event, "正在生成效果预览…")
-        asyncio.create_task(
+        task = asyncio.create_task(
             self._run_preview(owner_id, int(event.chat_id), session_id, revision)
         )
+        tasks = getattr(self, "_preview_tasks", None)
+        if tasks is not None:
+            tasks.add(task)
+            task.add_done_callback(tasks.discard)
 
     async def _run_preview(
         self, owner_id: int, chat_id: int, session_id: str, revision: int

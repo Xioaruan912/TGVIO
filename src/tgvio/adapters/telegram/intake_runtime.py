@@ -33,6 +33,7 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
         self._confirmation_lock = asyncio.Lock()
         self._pending_batches: dict[tuple[int, int], _PendingBatch] = {}
         self._flush_tasks: set[asyncio.Task] = set()
+        self._preview_tasks: set[asyncio.Task] = set()
         self._semaphore = asyncio.Semaphore(settings.worker_concurrency)
         repository = getattr(processor, "repository", None)
         if repository is None:
@@ -104,6 +105,12 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
                 task.cancel()
             await asyncio.gather(*confirmation_tasks, return_exceptions=True)
             self._confirmation_tasks.clear()
+        if self._preview_tasks:
+            preview_tasks = tuple(self._preview_tasks)
+            for task in preview_tasks:
+                task.cancel()
+            await asyncio.gather(*preview_tasks, return_exceptions=True)
+            self._preview_tasks.clear()
 
     async def _on_message(self, event) -> None:
         if not self._authorized(event.sender_id):

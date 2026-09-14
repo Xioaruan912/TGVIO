@@ -4,8 +4,13 @@ from tgvio.domain.preview import PreviewRequest, PreviewState
 
 
 class SQLitePreviewRepositoryMixin:
-    async def list_preview_request_ids(self) -> list[str]:
-        cursor = await self._require().execute("SELECT id FROM preview_requests")
+    async def list_preview_request_ids(
+        self, *, limit: int = 200, offset: int = 0
+    ) -> list[str]:
+        cursor = await self._require().execute(
+            "SELECT id FROM preview_requests ORDER BY rowid LIMIT ? OFFSET ?",
+            (max(1, int(limit)), max(0, int(offset))),
+        )
         rows = await cursor.fetchall()
         await cursor.close()
         # IDs become a single directory component, never an arbitrary path.

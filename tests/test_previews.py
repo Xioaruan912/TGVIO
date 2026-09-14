@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -228,6 +229,143 @@ class PreviewServiceTests(unittest.IsolatedAsyncioTestCase):
         assert request is not None
         self.assertEqual(request.state, PreviewState.FAILED)
 
+
+
+    async def test_actual_download_over_budget_is_cancelled(self) -> None:
+        class _Flood:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def download(self, item, target_dir, progress_callback=None):
+                self.calls += 1
+                target_dir.mkdir(parents=True, exist_ok=True)
+                path = target_dir / "flood.bin"
+                path.write_bytes(b"x" * (self.limit * 4))
+                await asyncio.sleep(1.0)
+                return replace(item, local_path=str(path))
+
+        flood = _Flood()
+        flood.limit = 1024
+        service = PreviewService(
+            self.repo,
+            flood,
+            self.cover,
+            self.sender,
+            cache_root=self.root / "downloads",
+            max_source_bytes=1024,
+            timeout_seconds=30,
+        )
+        session, draft = await self._session(
+            [
+                IncomingMedia(
+                    kind=MediaKind.PHOTO,
+                    source="telegram:42:9",
+                    source_chat_id=42,
+                    source_message_id=9,
+                    size_bytes=10,
+                )
+            ]
+        )
+        with self.assertRaises(PreviewUnavailableError):
+            await service.preview(
+                owner_id=7, chat_id=42, session_id=session.id, expected_revision=draft.revision
+            )
+        self.assertEqual(len(self.sender.calls), 0)
+
+    async def test_duplicate_preview_for_same_owner_is_rejected(self) -> None:
+        gate = asyncio.Event()
+
+        class _Blocking:
+            async def download(self, item, target_dir, progress_callback=None):
+                target_dir.mkdir(parents=True, exist_ok=True)
+                path = target_dir / "source.bin"
+                path.write_bytes(b"0123456789")
+                await gate.wait()
+                return replace(item, local_path=str(path))
+
+        service = PreviewService(
+            self.repo,
+            _Blocking(),
+            self.cover,
+            self.sender,
+            cache_root=self.root / "downloads",
+            max_source_bytes=1024 * 1024,
+            timeout_seconds=30,
+            max_concurrency=2,
+        )
+        session, draft = await self._session(
+            [
+                IncomingMedia(
+                    kind=MediaKind.PHOTO,
+                    source="telegram:42:11",
+                    source_chat_id=42,
+                    source_message_id=11,
+                    size_bytes=10,
+                )
+            ]
+        )
+        first = asyncio.create_task(
+            service.preview(
+                owner_id=7, chat_id=42, session_id=session.id, expected_revision=draft.revision
+            )
+        )
+        await asyncio.sleep(0.1)
+        with self.assertRaises(PreviewUnavailableError):
+            await service.preview(
+                owner_id=7, chat_id=42, session_id=session.id, expected_revision=draft.revision
+            )
+        gate.set()
+        await first
+
+    async def test_cleanup_ignores_path_escape_and_symlinks(self) -> None:
+        outside = self.root / "outside"
+        outside.mkdir(parents=True, exist_ok=True)
+        (outside / "keep.txt").write_text("keep")
+        root = self.root / "downloads"
+        root.mkdir(parents=True, exist_ok=True)
+        link = root / "preview-evil"
+        link.symlink_to(outside, target_is_directory=True)
+        safe_dir = root / "preview-good"
+        safe_dir.mkdir(parents=True, exist_ok=True)
+        (safe_dir / "tmp.bin").write_bytes(b"x")
+
+        async with self.repo._write_transaction() as conn:
+            for rid in ("evil", "good"):
+                await conn.execute(
+                    "INSERT INTO preview_requests(id, session_id, owner_id, revision, state, expires_at) "
+                    "VALUES(?,?,?,?,?,?)",
+                    (rid, "s", 7, 1, "failed", 0),
+                )
+        service = PreviewService(
+            self.repo,
+            self.downloader,
+            self.cover,
+            self.sender,
+            cache_root=root,
+            max_source_bytes=1024,
+            timeout_seconds=30,
+        )
+        await service.cleanup_cache()
+        self.assertFalse(safe_dir.exists())
+        # Symlinked/branching path must not traverse or delete outside the root.
+        self.assertTrue((outside / "keep.txt").exists())
+        self.assertTrue(link.is_symlink())
+        self.assertIsNone(service._safe_dir("../evil"))
+        self.assertIsNone(service._safe_dir("bad/name"))
+
+    async def test_mark_interrupted_removes_recorded_preview_dir(self) -> None:
+        root = self.root / "downloads"
+        orphan = root / "preview-orphan"
+        orphan.mkdir(parents=True, exist_ok=True)
+        (orphan / "part.bin").write_bytes(b"x")
+        async with self.repo._write_transaction() as conn:
+            await conn.execute(
+                "INSERT INTO preview_requests(id, session_id, owner_id, revision, state, expires_at) "
+                "VALUES('orphan','s',7,1,'running',0)"
+            )
+        count = await self.service.mark_interrupted()
+        self.assertEqual(count, 1)
+        self.assertFalse(orphan.exists())
 
 if __name__ == "__main__":
     unittest.main()
