@@ -22,6 +22,13 @@ class JobListEntry:
     job: Job
     held: bool = False
     accepted_order: int | None = None
+    display_no: int | None = None
+    display_business_day: str | None = None
+
+    @property
+    def label_number(self) -> int | None:
+        """Display number for the current business day, falling back to FIFO order."""
+        return self.display_no if self.display_no is not None else self.accepted_order
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,6 +54,12 @@ class FailureSummary:
     archive_package_id: str | None = None
     archive_error_code: str | None = None
     accepted_order: int | None = None
+    display_no: int | None = None
+    display_business_day: str | None = None
+
+    @property
+    def label_number(self) -> int | None:
+        return self.display_no if self.display_no is not None else self.accepted_order
 
 
 @dataclass(frozen=True, slots=True)

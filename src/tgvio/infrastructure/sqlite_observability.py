@@ -6,12 +6,18 @@ from tgvio.domain.progress import JobProgress
 
 
 class SQLiteObservabilityRepositoryMixin:
-    async def get_stats_snapshot(self, *, owner_id: int | None = None) -> dict[str, int]:
+    async def get_stats_snapshot(
+        self,
+        *,
+        owner_id: int | None = None,
+        business_day: str | None = None,
+    ) -> dict[str, int]:
         conn = self._require()
         owner_clause = "" if owner_id is None else "WHERE j.owner_id=?"
-        params: tuple[object, ...] = () if owner_id is None else (owner_id,)
+        owner_params: tuple[object, ...] = () if owner_id is None else (owner_id,)
         cursor = await conn.execute(
             f"""
+            WITH ctx(day) AS (SELECT COALESCE(?, date('now', '+2 hours')))
             SELECT
                 COUNT(DISTINCT j.id) AS jobs_total,
                 COUNT(ji.id) AS media_items,
@@ -19,15 +25,16 @@ class SQLiteObservabilityRepositoryMixin:
                 COUNT(DISTINCT CASE WHEN j.state='succeeded' THEN j.id END) AS succeeded,
                 COUNT(DISTINCT CASE WHEN j.state='failed' THEN j.id END) AS failed,
                 COUNT(DISTINCT CASE WHEN j.state='cancelled' THEN j.id END) AS cancelled,
-                COUNT(DISTINCT CASE WHEN date(j.created_at)=date('now') THEN j.id END) AS today_jobs,
-                COUNT(DISTINCT CASE WHEN date(j.updated_at)=date('now') AND j.state='succeeded' THEN j.id END) AS today_succeeded,
-                COUNT(DISTINCT CASE WHEN date(j.updated_at)=date('now') AND j.state='failed' THEN j.id END) AS today_failed,
-                COUNT(DISTINCT CASE WHEN date(j.updated_at)=date('now') AND j.state='cancelled' THEN j.id END) AS today_cancelled
+                COUNT(DISTINCT CASE WHEN d.business_day=(SELECT day FROM ctx) THEN j.id END) AS today_jobs,
+                COUNT(DISTINCT CASE WHEN d.business_day=(SELECT day FROM ctx) AND j.state='succeeded' THEN j.id END) AS today_succeeded,
+                COUNT(DISTINCT CASE WHEN d.business_day=(SELECT day FROM ctx) AND j.state='failed' THEN j.id END) AS today_failed,
+                COUNT(DISTINCT CASE WHEN d.business_day=(SELECT day FROM ctx) AND j.state='cancelled' THEN j.id END) AS today_cancelled
             FROM jobs j
             LEFT JOIN job_items ji ON ji.job_id=j.id
+            LEFT JOIN job_display_identity d ON d.job_id=j.id
             {owner_clause}
             """,
-            params,
+            (business_day, *owner_params),
         )
         row = await cursor.fetchone()
         await cursor.close()

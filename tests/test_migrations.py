@@ -29,7 +29,7 @@ OPERATION_TOKENS_SQL = MIGRATIONS_DIR / "0005_operation_tokens_undo.sql"
 ARCHIVE_PROFILE_POLICY_SQL = MIGRATIONS_DIR / "0006_archive_profile_policy.sql"
 ARCHIVE_EXACT_DELETE_SQL = MIGRATIONS_DIR / "0007_archive_exact_delete.sql"
 NOTIFICATION_OUTBOX_SQL = MIGRATIONS_DIR / "0008_notification_outbox.sql"
-LATEST_VERSION = 10
+LATEST_VERSION = 11
 MIGRATION_ONLY_TABLES = {
     "runtime_leases",
     "job_phase_claims",
@@ -50,6 +50,7 @@ MIGRATION_ONLY_TABLES = {
     "job_visibility",
     "maintenance_runs",
     "maintenance_targets",
+    "job_display_identity",
 }
 
 
@@ -406,6 +407,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
                         (8, "notification_outbox", 64),
                         (9, "archive_layout_flags", 64),
                         (10, "safe_history_maintenance", 64),
+                        (11, "display_identity", 64),
                     ],
                 )
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], LATEST_VERSION)
@@ -783,7 +785,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             assert isinstance(migration, dict)
             self.assertEqual(migration["from_version"], 6)
             self.assertEqual(migration["to_version"], LATEST_VERSION)
-            self.assertEqual(migration["applied_now"], [7, 8, 9, 10])
+            self.assertEqual(migration["applied_now"], [7, 8, 9, 10, 11])
             before = report["before"]
             after = report["after"]
             backup = report["backup"]
@@ -822,6 +824,18 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
                         "SELECT state, remote_path FROM archive_packages WHERE id='v6-package'"
                     ).fetchone(),
                     ("committed", "archive/v6"),
+                )
+                self.assertEqual(
+                    connection.execute(
+                        """
+                        SELECT business_day, display_no FROM job_display_identity
+                        WHERE job_id='v6-job'
+                        """
+                    ).fetchone(),
+                    (
+                        connection.execute("SELECT date('now', '+2 hours')").fetchone()[0],
+                        1,
+                    ),
                 )
                 self.assertEqual(
                     connection.execute(

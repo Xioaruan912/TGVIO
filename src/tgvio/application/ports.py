@@ -166,7 +166,25 @@ class JobRepository(Protocol):
 
     async def count_by_state(self, *, owner_id: int | None = None) -> dict[JobState, int]: ...
 
-    async def get_stats_snapshot(self, *, owner_id: int | None = None) -> dict[str, int]: ...
+    async def get_stats_snapshot(
+        self,
+        *,
+        owner_id: int | None = None,
+        business_day: str | None = None,
+    ) -> dict[str, int]: ...
+
+    async def get_display_no(self, job_id: str) -> int | None: ...
+
+    async def get_display_identity(self, job_id: str) -> dict[str, object] | None: ...
+
+    async def display_numbers_for(self, job_ids: tuple[str, ...]) -> dict[str, int]: ...
+
+    async def get_by_display_number(
+        self,
+        owner_id: int,
+        business_day: str,
+        display_no: int,
+    ) -> Job | None: ...
 
     async def list_terminal_job_ids_before(
         self,

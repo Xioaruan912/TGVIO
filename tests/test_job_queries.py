@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import json
+import time
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from tgvio.domain.job import Job, JobState
 from tgvio.domain.job_query import JobListFilter
 from tgvio.domain.maintenance import business_day_bounds
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
@@ -325,6 +327,44 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("visible-failure", ids)
         self.assertNotIn("hidden-failure", ids)
         self.assertEqual(page.total, 1)
+
+
+    async def test_display_numbers_are_per_business_day_and_sql_paged(self) -> None:
+        for job_id in ("a", "b", "c"):
+            await self.repo.create(
+                Job(
+                    owner_id=42,
+                    destination="@channel",
+                    items=[],
+                    id=job_id,
+                    state=JobState.RECEIVED,
+                )
+            )
+        self.assertEqual(await self.repo.get_display_no("a"), 1)
+        self.assertEqual(await self.repo.get_display_no("c"), 3)
+        self.assertEqual(
+            await self.repo.display_numbers_for(("a", "c")),
+            {"a": 1, "c": 3},
+        )
+
+        day = business_day_bounds(time.time()).day
+        resolved = await self.repo.get_by_display_number(42, day, 2)
+        self.assertIsNotNone(resolved)
+        self.assertEqual(resolved.id, "b")
+        # Old/other business days no longer resolve a bare number.
+        self.assertIsNone(await self.repo.get_by_display_number(42, "1999-01-01", 1))
+
+        page = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.ALL, page_size=10)
+        by_id = {entry.job.id: entry for entry in page.entries}
+        self.assertEqual(by_id["a"].display_no, 1)
+        self.assertEqual(by_id["a"].label_number, 1)
+
+    async def test_missing_display_identity_falls_back_to_fifo_order(self) -> None:
+        await self._insert_job("legacy", state="received", ordinal=1)
+        page = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.ALL, page_size=10)
+        entry = next(item for item in page.entries if item.job.id == "legacy")
+        self.assertIsNone(entry.display_no)
+        self.assertIsNotNone(entry.label_number)
 
 
 if __name__ == "__main__":

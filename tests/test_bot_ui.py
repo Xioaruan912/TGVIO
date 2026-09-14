@@ -84,6 +84,16 @@ class FakeRepository:
     async def get_accepted_order(self, job_id):
         return self.accepted_orders.get(job_id)
 
+    async def get_display_no(self, job_id):
+        return self.accepted_orders.get(job_id)
+
+    async def get_by_display_number(self, owner_id, business_day, display_no):
+        for job_id, order in self.accepted_orders.items():
+            job = self.jobs.get(job_id)
+            if order == display_no and job is not None and job.owner_id == owner_id:
+                return job
+        return None
+
     async def get_by_accepted_order(self, owner_id, accepted_order):
         for job_id, order in self.accepted_orders.items():
             job = self.jobs.get(job_id)

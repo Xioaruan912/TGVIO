@@ -76,10 +76,18 @@ from tgvio.adapters.telegram.bot_ui_job_actions import BotUIJobActionsMixin
 
 
 class BotUIJobsMixin(BotUIJobActionsMixin):
-    async def _job_label(self, job: Job) -> str:
+    async def _display_number(self, job: Job) -> int | None:
+        get_display = getattr(self._repository, "get_display_no", None)
+        if callable(get_display):
+            value = await get_display(job.id)
+            if value is not None:
+                return int(value)
         get_order = getattr(self._repository, "get_accepted_order", None)
         accepted_order = await get_order(job.id) if callable(get_order) else None
-        return self._job_number(accepted_order)
+        return None if accepted_order is None else int(accepted_order)
+
+    async def _job_label(self, job: Job) -> str:
+        return self._job_number(await self._display_number(job))
 
     async def _safe_undo_status(self, job: Job) -> UndoStatus | None:
         if self._undo_service is None:
@@ -203,7 +211,7 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 state_label = "已暂停" if entry.held else STATE_LABELS[job.state]
                 icon = "⏸" if entry.held else self._job_state_icon(job.state)
                 lines.append(
-                    f"{position}. {icon} {self._job_number(entry.accepted_order)} · "
+                    f"{position}. {icon} {self._job_number(entry.label_number)} · "
                     f"{state_label} · {self._job_local_time(job)}"
                 )
                 lines.append(
@@ -225,8 +233,8 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                         (
                             f"{position} {self._job_state_icon(entry.job.state, held=entry.held)} "
                             + (
-                                f"任务 #{entry.accepted_order}"
-                                if entry.accepted_order is not None
+                                f"任务 #{entry.label_number}"
+                                if entry.label_number is not None
                                 else "查看任务"
                             )
                         ),
@@ -312,6 +320,7 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                     archive_package_id=archive.id if archive is not None else None,
                     archive_error_code=archive.error_code if archive is not None else None,
                     accepted_order=accepted_order,
+                    display_no=await self._display_number(job),
                 )
             )
         total = len(entries)
@@ -340,7 +349,7 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 job = entry.job
                 size = sum(item.size_bytes for item in job.items)
                 lines.append(
-                    f"{position}. {self._job_number(entry.accepted_order)} · "
+                    f"{position}. {self._job_number(entry.label_number)} · "
                     f"{self._job_local_time(job)}"
                 )
                 lines.append(
@@ -361,8 +370,8 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 [
                     Button.inline(
                         (
-                            f"{position} 🔎 任务 #{entry.accepted_order}"
-                            if entry.accepted_order is not None
+                            f"{position} 🔎 任务 #{entry.label_number}"
+                            if entry.label_number is not None
                             else f"{position} 🔎 查看任务"
                         ),
                         self._callback_data("job", entry.job.id),
@@ -396,12 +405,10 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
             job,
             log_limit=60 if deep else 16,
         )
-        get_order = getattr(self._repository, "get_accepted_order", None)
-        accepted_order = await get_order(job.id) if callable(get_order) else None
         text = self._render_job_diagnostic(
             snapshot,
             deep=deep,
-            accepted_order=accepted_order,
+            accepted_order=await self._display_number(job),
         )
         if self._undo_service is not None and job.terminal:
             undo_status = await self._safe_undo_status(job)
@@ -452,22 +459,20 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 f"当前状态：{STATE_LABELS[job.state]}\n"
                 "该任务还没有生成 PublishPlan。"
             )
-        get_order = getattr(self._repository, "get_accepted_order", None)
-        accepted_order = await get_order(job.id) if callable(get_order) else None
-        return self._render_plan(job, plan, accepted_order=accepted_order)
+        return self._render_plan(job, plan, accepted_order=await self._display_number(job))
 
     async def _resolve_job(self, owner_id: int, prefix: str | None) -> Job | None:
         normalized = prefix.strip().lower() if prefix else ""
         numeric = normalized.removeprefix("#")
         if numeric.isdigit():
-            get_by_order = getattr(self._repository, "get_by_accepted_order", None)
-            if callable(get_by_order):
-                exact = await get_by_order(int(owner_id), int(numeric))
+            get_by_display = getattr(self._repository, "get_by_display_number", None)
+            if callable(get_by_display):
+                day = business_day_bounds(time.time()).day
+                exact = await get_by_display(int(owner_id), day, int(numeric))
                 if exact is not None:
                     return exact
-            # A short numeric value is exclusively a human task number. Keep
-            # accepting the extraordinarily rare all-numeric 32-char UUID as
-            # an exact technical identifier, but never as a prefix fallback.
+            # A short numeric value is exclusively a human display number for
+            # the current business day; old global numbers no longer resolve.
             if normalized.startswith("#") or len(normalized) != 32:
                 return None
         if len(normalized) == 32:

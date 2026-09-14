@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import time
 
 import aiosqlite
 
@@ -12,6 +13,7 @@ from tgvio.domain.job_query import (
     JobListFilter,
     JobPage,
 )
+from tgvio.domain.maintenance import business_day_bounds
 
 
 class SQLiteJobRepositoryMixin:
@@ -44,6 +46,7 @@ class SQLiteJobRepositoryMixin:
             "INSERT INTO job_schedule(job_id) VALUES(?)",
             (job.id,),
         )
+        await self._allocate_display_no(conn, job.id)
         await conn.execute(
             "INSERT INTO job_events(job_id, event_type, from_state, to_state) VALUES(?,?,?,?)",
             (job.id, "job_created", None, job.state.value),
@@ -385,11 +388,14 @@ class SQLiteJobRepositoryMixin:
             SELECT
                 j.id,
                 COALESCE(c.hold_requested,0) AS held,
-                s.accepted_order AS accepted_order
+                s.accepted_order AS accepted_order,
+                d.display_no AS display_no,
+                d.business_day AS display_business_day
             FROM jobs j
             LEFT JOIN job_controls c ON c.job_id=j.id
             LEFT JOIN job_visibility v ON v.job_id=j.id
             LEFT JOIN job_schedule s ON s.job_id=j.id
+            LEFT JOIN job_display_identity d ON d.job_id=j.id
             WHERE {where}
             ORDER BY j.created_at DESC, j.rowid DESC
             LIMIT ? OFFSET ?
@@ -410,6 +416,14 @@ class SQLiteJobRepositoryMixin:
                             None
                             if row["accepted_order"] is None
                             else int(row["accepted_order"])
+                        ),
+                        display_no=(
+                            None if row["display_no"] is None else int(row["display_no"])
+                        ),
+                        display_business_day=(
+                            None
+                            if row["display_business_day"] is None
+                            else str(row["display_business_day"])
                         ),
                     )
                 )
@@ -480,11 +494,14 @@ class SQLiteJobRepositoryMixin:
                 CASE WHEN ({archive_actionable}) THEN 1 ELSE 0 END AS archive_actionable,
                 a.id AS archive_package_id,
                 a.error_code AS archive_error_code,
-                s.accepted_order AS accepted_order
+                s.accepted_order AS accepted_order,
+                d.display_no AS display_no,
+                d.business_day AS display_business_day
             FROM jobs j
             LEFT JOIN archive_packages a ON a.job_id=j.id
             LEFT JOIN job_visibility v ON v.job_id=j.id
             LEFT JOIN job_schedule s ON s.job_id=j.id
+            LEFT JOIN job_display_identity d ON d.job_id=j.id
             WHERE j.owner_id=?
               AND v.job_id IS NULL
               AND (({job_actionable}) OR ({archive_actionable}))
@@ -518,6 +535,14 @@ class SQLiteJobRepositoryMixin:
                         None
                         if row["accepted_order"] is None
                         else int(row["accepted_order"])
+                    ),
+                    display_no=(
+                        None if row["display_no"] is None else int(row["display_no"])
+                    ),
+                    display_business_day=(
+                        None
+                        if row["display_business_day"] is None
+                        else str(row["display_business_day"])
                     ),
                 )
             )

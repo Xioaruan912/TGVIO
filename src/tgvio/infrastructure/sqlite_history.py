@@ -1,12 +1,86 @@
 from __future__ import annotations
 
 import time
+from typing import TYPE_CHECKING
+
+from tgvio.domain.maintenance import business_day_bounds
+
+if TYPE_CHECKING:
+    from tgvio.domain.job import Job
 
 
 _TERMINAL_SQL = "('succeeded','failed','cancelled')"
 
 
 class SQLiteHistoryRepositoryMixin:
+    async def _allocate_display_no(self, conn, job_id: str) -> int:
+        now = time.time()
+        business_day = business_day_bounds(now).day
+        cursor = await conn.execute(
+            "SELECT COALESCE(MAX(display_no),0) AS n FROM job_display_identity WHERE business_day=?",
+            (business_day,),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        display_no = (int(row["n"]) if row is not None else 0) + 1
+        await conn.execute(
+            """
+            INSERT INTO job_display_identity(job_id, business_day, display_no, created_at)
+            VALUES(?,?,?,?)
+            """,
+            (str(job_id), business_day, display_no, float(now)),
+        )
+        return display_no
+
+    async def get_display_identity(self, job_id: str) -> dict[str, object] | None:
+        conn = self._require()
+        cursor = await conn.execute(
+            "SELECT business_day, display_no, created_at FROM job_display_identity WHERE job_id=?",
+            (str(job_id),),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        return dict(row) if row is not None else None
+
+    async def get_display_no(self, job_id: str) -> int | None:
+        identity = await self.get_display_identity(job_id)
+        return None if identity is None else int(identity["display_no"])
+
+    async def display_numbers_for(self, job_ids: tuple[str, ...]) -> dict[str, int]:
+        if not job_ids:
+            return {}
+        placeholders = ",".join("?" for _ in job_ids)
+        conn = self._require()
+        cursor = await conn.execute(
+            f"SELECT job_id, display_no FROM job_display_identity WHERE job_id IN ({placeholders})",
+            tuple(str(value) for value in job_ids),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {str(row["job_id"]): int(row["display_no"]) for row in rows}
+
+    async def get_by_display_number(
+        self,
+        owner_id: int,
+        business_day: str,
+        display_no: int,
+    ) -> Job | None:
+        conn = self._require()
+        cursor = await conn.execute(
+            """
+            SELECT j.id AS id
+            FROM job_display_identity d
+            JOIN jobs j ON j.id=d.job_id
+            WHERE j.owner_id=? AND d.business_day=? AND d.display_no=?
+            """,
+            (int(owner_id), str(business_day), int(display_no)),
+        )
+        row = await cursor.fetchone()
+        await cursor.close()
+        if row is None:
+            return None
+        return await self.get(str(row["id"]))
+
     async def hide_jobs(self, job_ids: tuple[str, ...], *, reason: str, now: float) -> int:
         if not job_ids:
             return 0
