@@ -3,6 +3,9 @@ from __future__ import annotations
 from tgvio.infrastructure.sqlite_archive import SQLiteArchiveRepositoryMixin
 from tgvio.infrastructure.sqlite_archive_deletion import SQLiteArchiveDeletionRepositoryMixin
 from tgvio.infrastructure.sqlite_base import SQLiteRepositoryBase
+from tgvio.infrastructure.sqlite_collection_editing import (
+    SQLiteCollectionEditingRepositoryMixin,
+)
 from tgvio.infrastructure.sqlite_control import SQLiteControlRepositoryMixin
 from tgvio.infrastructure.sqlite_intake import SQLiteIntakeRepositoryMixin
 from tgvio.infrastructure.sqlite_jobs import SQLiteJobRepositoryMixin
@@ -19,6 +22,7 @@ class SQLiteJobRepository(
     SQLiteJobRepositoryMixin,
     SQLiteHistoryRepositoryMixin,
     SQLiteIntakeRepositoryMixin,
+    SQLiteCollectionEditingRepositoryMixin,
     SQLitePublishRepositoryMixin,
     SQLiteOperationRepositoryMixin,
     SQLiteArchiveRepositoryMixin,

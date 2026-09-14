@@ -4,10 +4,11 @@ from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
 from tgvio.adapters.telegram.intake_runtime_support import _PendingBatch
 from tgvio.adapters.telegram.intake_status import IntakeStatusMixin
 from tgvio.adapters.telegram.intake_collection import IntakeCollectionMixin
+from tgvio.adapters.telegram.intake_edit import IntakeEditMixin
 from tgvio.adapters.telegram.bot_ui_support import NAV_BUTTONS
 
 
-class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
+class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEditMixin):
     def __init__(
         self,
         client: TelegramClient,
@@ -15,12 +16,14 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
         intake: IntakeService,
         processor: JobRunner,
         flags: object | None = None,
+        editing: object | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
         self._intake = intake
         self._processor = processor
         self._flags = flags
+        self._editing = editing
         self._log = logging.getLogger("tgvio.telegram.intake")
         self._tasks: set[asyncio.Task] = set()
         self._status_tasks: dict[str, asyncio.Task] = {}
@@ -104,6 +107,14 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
         if not self._authorized(event.sender_id):
             return
         raw_text = (event.raw_text or "").strip()
+        if (
+            raw_text
+            and raw_text not in NAV_BUTTONS
+            and not raw_text.lstrip().startswith("/")
+            and raw_text not in {COLLECTION_BEGIN_BUTTON, COLLECTION_END_BUTTON}
+            and await self._apply_pending_caption(int(event.sender_id), int(event.chat_id), raw_text)
+        ):
+            return
         if raw_text in NAV_BUTTONS or raw_text.lstrip().startswith("/") or raw_text in {
             COLLECTION_BEGIN_BUTTON,
             COLLECTION_END_BUTTON,
@@ -206,6 +217,8 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
             if requested in aliases:
                 await self._intake.set_spoiler_mode(int(event.sender_id), aliases[requested])
             await self._show_mode(event.chat_id, int(event.sender_id))
+        elif command in {"drafts", "草稿"}:
+            await self._show_drafts(event.chat_id, int(event.sender_id))
         else:
             return
         raise events.StopPropagation
@@ -242,73 +255,10 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin):
                 choice=parts[3],
             )
             return
-        if action.startswith(("intake:end:", "intake:preview:")):
-            session_id = action.split(":", 2)[2]
-            session = await self._open_collection(owner_id, event.chat_id)
-            if session is None or session.id != session_id:
-                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
-                return
-            await self._safe_answer(event, "正在生成预览")
-            if action.startswith("intake:preview:"):
-                await self._request_collection_preview(event.chat_id, owner_id)
-            else:
-                await self._end_collection(event.chat_id, owner_id)
+        if await self._handle_edit_callback(event, action, owner_id):
             return
-        if action.startswith("intake:confirm:"):
-            session_id = action.split(":", 2)[2]
-            session = await self._open_collection(owner_id, event.chat_id)
-            if session is None or session.id != session_id:
-                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
-                return
-            await self._safe_answer(event, "正在发布合集")
-            await self._confirm_collection(event.chat_id, owner_id)
+        if await self._handle_collection_callback(event, action, owner_id):
             return
-        if action.startswith("intake:abandon:"):
-            session_id = action.split(":", 2)[2]
-            session = await self._open_collection(owner_id, event.chat_id)
-            if session is None or session.id != session_id:
-                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
-                return
-            await self._intake.cancel_collection(owner_id=owner_id, chat_id=int(event.chat_id))
-            await self._safe_answer(event, "合集已放弃")
-            if session.status_message_id is not None:
-                await self._safe_edit(
-                    int(event.chat_id),
-                    int(session.status_message_id),
-                    "⛔ **合集已放弃**",
-                )
-            return
-        if action.startswith("intake:prevmode:"):
-            session_id = action.split(":", 2)[2]
-            session = await self._open_collection(owner_id, event.chat_id)
-            if session is None or session.id != session_id:
-                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
-                return
-            preference = await self._intake.get_user_preference(owner_id)
-            await self._safe_answer(event, "选择显示模式")
-            try:
-                await event.edit(
-                    self._mode_text(preference.spoiler_mode),
-                    buttons=self._mode_buttons(),
-                    parse_mode="md",
-                )
-            except Exception:
-                pass
-            return
-        if action.startswith("intake:collection-cancel:"):
-            session_id = action.split(":", 2)[2]
-            session = await self._open_collection(owner_id, event.chat_id)
-            if session is None or session.id != session_id:
-                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
-                return
-            await self._intake.cancel_collection(owner_id=owner_id, chat_id=int(event.chat_id))
-            await self._safe_answer(event, "合集已取消")
-            if session.status_message_id is not None:
-                await self._safe_edit(
-                    int(event.chat_id),
-                    int(session.status_message_id),
-                    "⛔ **合集已取消**",
-                )
 
     async def _queue_batch(
         self,

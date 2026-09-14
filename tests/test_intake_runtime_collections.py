@@ -8,7 +8,9 @@ import time
 import unittest
 
 from tgvio.adapters.telegram.intake_runtime import TelethonIntakeRuntime
+from tgvio.application.collection_editing import CollectionEditingService
 from tgvio.application.intake import IncomingMedia, IntakeService
+from tgvio.application.operation_tokens import OperationTokenService
 from tgvio.domain.intake import JobDisplayMessage, SpoilerMode
 from tgvio.domain.job import JobState, MediaKind
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
@@ -534,6 +536,97 @@ class IntakeRuntimeCollectionPreviewTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(preview.cover_plan, "首个视频截帧")
         self.assertEqual(preview.discussion_groups, 1)
         self.assertEqual(preview.caption_lines, 2)
+
+
+class IntakeEditingRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = SQLiteJobRepository(Path(self.tmp.name) / "state.sqlite3")
+        await self.repo.open()
+        self.intake = IntakeService(self.repo)
+        self.tokens = OperationTokenService(self.repo)
+        self.editing = CollectionEditingService(self.repo, self.intake, self.tokens)
+        self.client = FakeClient()
+        self.runner = RecordingRunner()
+        self.runtime = TelethonIntakeRuntime(
+            self.client,
+            settings(),
+            self.intake,
+            self.runner,
+            editing=self.editing,
+        )
+
+    async def asyncTearDown(self) -> None:
+        await self.runtime.stop()
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _drain(self) -> None:
+        await asyncio.sleep(0.05)
+
+    async def test_end_uses_editing_preview_with_short_callbacks(self) -> None:
+        await self.runtime._begin_collection(42, 7)
+        await self.runtime._on_message(
+            FakeEvent(chat_id=42, sender_id=7, message=media_message(10))
+        )
+        await self.runtime._end_collection(42, 7)
+        await self._drain()
+        self.assertEqual(await self.repo.list_recent(owner_id=7, limit=10), [])
+        payloads = [
+            button.data
+            for message in self.client.edits + self.client.sent
+            for row in (message.get("buttons") or [])
+            for button in row
+        ]
+        self.assertTrue(payloads)
+        self.assertTrue(all(len(payload) <= 64 for payload in payloads))
+        self.assertTrue(any(payload.startswith(b"intake:ed:") for payload in payloads))
+
+    async def test_caption_message_updates_draft_and_leaves_caption_out_of_media(self) -> None:
+        await self.runtime._begin_collection(42, 7)
+        session = await self.intake.open_collection(owner_id=7, chat_id=42)
+        assert session is not None
+        await self.runtime._on_message(
+            FakeEvent(chat_id=42, sender_id=7, message=media_message(10))
+        )
+        draft = await self.editing.draft(session.id)
+        assert draft is not None
+        await self.editing.begin_caption(
+            owner_id=7,
+            chat_id=42,
+            session_id=session.id,
+            expected_revision=draft.revision,
+        )
+        await self.runtime._on_message(
+            FakeEvent(chat_id=42, sender_id=7, raw_text="自定义封面文案")
+        )
+        draft = await self.editing.draft(session.id)
+        assert draft is not None
+        self.assertEqual(draft.caption_override, "自定义封面文案")
+        counts = await self.intake.collection_counts(session.id)
+        self.assertEqual(counts, (1, 0))
+
+    async def test_confirm_token_creates_one_job_and_consumes_draft(self) -> None:
+        await self.runtime._begin_collection(42, 7)
+        session = await self.intake.open_collection(owner_id=7, chat_id=42)
+        assert session is not None
+        await self.runtime._on_message(
+            FakeEvent(chat_id=42, sender_id=7, message=media_message(10))
+        )
+        draft = await self.editing.draft(session.id)
+        assert draft is not None
+        issued = await self.editing.issue_confirm(
+            owner_id=7,
+            session_id=session.id,
+            expected_revision=draft.revision,
+            spoiler_mode=SpoilerMode.SOURCE,
+        )
+        event = FakeEvent(chat_id=42, sender_id=7, data=f"intake:cc:{issued}".encode())
+        await self.runtime._on_intake_callback(event)
+        await self._drain()
+        jobs = await self.repo.list_recent(owner_id=7, limit=10)
+        self.assertEqual(len(jobs), 1)
+        self.assertIsNone(await self.intake.open_collection(owner_id=7, chat_id=42))
 
 
 if __name__ == "__main__":

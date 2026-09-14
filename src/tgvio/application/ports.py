@@ -20,6 +20,12 @@ from tgvio.domain.archive import (
     ArchiveStoreReceipt,
 )
 from tgvio.domain.control import JobControlState, QueueControlState
+from tgvio.domain.collection_editing import (
+    CollectionDraft,
+    CollectionSubmission,
+    DraftEntry,
+    EditingInteraction,
+)
 from tgvio.domain.intake import (
     CollectionEntry,
     CollectionSession,
@@ -117,6 +123,107 @@ class JobRepository(Protocol):
     ) -> CollectionSession: ...
 
     async def cancel_collection(self, session_id: str) -> CollectionSession: ...
+
+    async def get_draft(self, session_id: str) -> CollectionDraft | None: ...
+
+    async def get_active_draft(self, owner_id: int, chat_id: int) -> CollectionDraft | None: ...
+
+    async def list_drafts(self, owner_id: int, *, limit: int = 20) -> list[CollectionDraft]: ...
+
+    async def create_draft(
+        self,
+        session_id: str,
+        owner_id: int,
+        chat_id: int,
+    ) -> CollectionDraft: ...
+
+    async def mark_draft_submitted(self, session_id: str) -> None: ...
+
+    async def mark_draft_discarded(self, session_id: str) -> None: ...
+
+    async def save_draft(
+        self, session_id: str, *, expected_revision: int
+    ) -> CollectionDraft | None: ...
+
+    async def activate_draft(
+        self, session_id: str, *, expected_revision: int | None = None
+    ) -> CollectionDraft | None: ...
+
+    async def set_draft_cover(
+        self,
+        session_id: str,
+        *,
+        entry_id: int | None,
+        expected_revision: int,
+    ) -> CollectionDraft | None: ...
+
+    async def set_draft_caption(
+        self,
+        session_id: str,
+        *,
+        text: str | None,
+        expected_revision: int,
+    ) -> CollectionDraft | None: ...
+
+    async def ensure_entry_edits(self, session_id: str) -> None: ...
+
+    async def list_draft_entries(self, session_id: str) -> list[DraftEntry]: ...
+
+    async def set_entry_excluded(
+        self,
+        session_id: str,
+        entry_id: int,
+        *,
+        excluded: bool,
+        expected_revision: int,
+    ) -> CollectionDraft | None: ...
+
+    async def move_draft_entry(
+        self,
+        session_id: str,
+        entry_id: int,
+        *,
+        direction: int,
+        expected_revision: int,
+    ) -> CollectionDraft | None: ...
+
+    async def get_submission(self, session_id: str) -> CollectionSubmission | None: ...
+
+    async def begin_submission(
+        self,
+        session_id: str,
+        *,
+        owner_id: int,
+        revision: int,
+        snapshot_hash: str,
+    ) -> tuple[CollectionSubmission, bool]: ...
+
+    async def finish_submission(
+        self,
+        session_id: str,
+        *,
+        job_ids: tuple[str, ...],
+        state: str = "created",
+    ) -> None: ...
+
+    async def create_editing_interaction(
+        self,
+        interaction: EditingInteraction,
+    ) -> EditingInteraction: ...
+
+    async def get_active_editing_interaction(
+        self,
+        owner_id: int,
+        chat_id: int,
+    ) -> EditingInteraction | None: ...
+
+    async def consume_editing_interaction(
+        self,
+        interaction_id: str,
+        *,
+        owner_id: int,
+        expected_revision: int,
+    ) -> bool: ...
 
     async def get_user_preference(self, owner_id: int) -> UserPreference: ...
 

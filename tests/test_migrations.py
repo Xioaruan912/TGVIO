@@ -29,7 +29,7 @@ OPERATION_TOKENS_SQL = MIGRATIONS_DIR / "0005_operation_tokens_undo.sql"
 ARCHIVE_PROFILE_POLICY_SQL = MIGRATIONS_DIR / "0006_archive_profile_policy.sql"
 ARCHIVE_EXACT_DELETE_SQL = MIGRATIONS_DIR / "0007_archive_exact_delete.sql"
 NOTIFICATION_OUTBOX_SQL = MIGRATIONS_DIR / "0008_notification_outbox.sql"
-LATEST_VERSION = 11
+LATEST_VERSION = 12
 MIGRATION_ONLY_TABLES = {
     "runtime_leases",
     "job_phase_claims",
@@ -51,6 +51,10 @@ MIGRATION_ONLY_TABLES = {
     "maintenance_runs",
     "maintenance_targets",
     "job_display_identity",
+    "collection_drafts",
+    "collection_entry_edits",
+    "collection_submissions",
+    "editing_interactions",
 }
 
 
@@ -408,6 +412,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
                         (9, "archive_layout_flags", 64),
                         (10, "safe_history_maintenance", 64),
                         (11, "display_identity", 64),
+                        (12, "collection_editing", 64),
                     ],
                 )
                 self.assertEqual(connection.execute("PRAGMA user_version").fetchone()[0], LATEST_VERSION)
@@ -785,7 +790,7 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
             assert isinstance(migration, dict)
             self.assertEqual(migration["from_version"], 6)
             self.assertEqual(migration["to_version"], LATEST_VERSION)
-            self.assertEqual(migration["applied_now"], [7, 8, 9, 10, 11])
+            self.assertEqual(migration["applied_now"], [7, 8, 9, 10, 11, 12])
             before = report["before"]
             after = report["after"]
             backup = report["backup"]
@@ -1045,6 +1050,87 @@ class MigrationRunnerTests(unittest.IsolatedAsyncioTestCase):
                 self.assertIsNotNone(
                     connection.execute(
                         "SELECT 1 FROM sqlite_schema WHERE type='table' AND name='migration_probe'"
+                    ).fetchone()
+                )
+                self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")
+            finally:
+                connection.close()
+
+
+def _version11_database(path: Path) -> None:
+    migrations = path.parent / "v11-migrations"
+    migrations.mkdir(exist_ok=True)
+    for version, source in (
+        (1, BASELINE_SQL),
+        (2, SCHEDULER_SQL),
+        (3, INTAKE_SQL),
+        (4, QUEUE_CONTROLS_SQL),
+        (5, OPERATION_TOKENS_SQL),
+        (6, ARCHIVE_PROFILE_POLICY_SQL),
+        (7, ARCHIVE_EXACT_DELETE_SQL),
+        (8, NOTIFICATION_OUTBOX_SQL),
+        (9, MIGRATIONS_DIR / "0009_archive_layout_flags.sql"),
+        (10, MIGRATIONS_DIR / "0010_safe_history_maintenance.sql"),
+        (11, MIGRATIONS_DIR / "0011_display_identity.sql"),
+    ):
+        shutil.copy2(source, migrations / source.name)
+    MigrationRunner(path, migrations_dir=migrations).run()
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            """
+            INSERT INTO collection_sessions(id, owner_id, chat_id, state, status_chat_id, status_message_id)
+            VALUES('v11-session', 7, 42, 'open', NULL, NULL)
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO collection_entries(session_id, ordinal, entry_kind, source_chat_id, source_message_id, payload_json)
+            VALUES('v11-session', 0, 'media', 42, 100, '{"kind":"video","source":"telegram:42:100"}')
+            """
+        )
+        connection.execute(
+            """
+            INSERT INTO collection_entries(session_id, ordinal, entry_kind, payload_json)
+            VALUES('v11-session', 1, 'text', '{"text":"hello"}')
+            """
+        )
+        connection.commit()
+    finally:
+        connection.close()
+
+
+class CollectionEditingMigrationTests(unittest.TestCase):
+    def test_v11_open_collection_is_backfilled_into_an_active_draft(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            database = Path(tmp) / "state.sqlite3"
+            _version11_database(database)
+            MigrationRunner(database, migrations_dir=MIGRATIONS_DIR).run()
+
+            connection = sqlite3.connect(database)
+            try:
+                self.assertEqual(
+                    connection.execute("PRAGMA user_version").fetchone()[0], LATEST_VERSION
+                )
+                self.assertEqual(
+                    connection.execute(
+                        "SELECT revision, editor_state, active FROM collection_drafts WHERE session_id='v11-session'"
+                    ).fetchone(),
+                    (1, "collecting", 1),
+                )
+                self.assertEqual(
+                    connection.execute(
+                        """
+                        SELECT position, excluded FROM collection_entry_edits ed
+                        JOIN collection_entries e ON e.id=ed.entry_id
+                        WHERE ed.session_id='v11-session' ORDER BY position
+                        """
+                    ).fetchall(),
+                    [(0, 0), (1, 0)],
+                )
+                self.assertIsNone(
+                    connection.execute(
+                        "SELECT 1 FROM sqlite_schema WHERE type='index' AND name='idx_collection_sessions_open_owner_chat'"
                     ).fetchone()
                 )
                 self.assertEqual(connection.execute("PRAGMA quick_check").fetchone()[0], "ok")

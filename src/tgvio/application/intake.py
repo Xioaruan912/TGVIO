@@ -331,6 +331,66 @@ class IntakeService:
             text_count=len(text_entries),
         )
 
+    async def finalize_media(
+        self,
+        *,
+        owner_id: int,
+        chat_id: int,
+        session_id: str,
+        destination: str,
+        media: Sequence[IncomingMedia],
+        caption: str = "",
+        cover_index: int | None = None,
+        max_items: int = 100,
+        spoiler_mode: SpoilerMode,
+        ask_timeout_seconds: int = 60,
+        extra_policy: dict[str, Any] | None = None,
+    ) -> CollectionFinalizeResult:
+        """Freeze an explicit ordered media list into durable Jobs.
+
+        Used by the collection editing confirm path where order/exclusions/cover
+        come from a revision-checked draft rather than the raw entry order.
+        """
+        if not media:
+            raise CollectionEmptyError("collection contains no media")
+        chunk_size = max(1, int(max_items))
+        chunks = [list(media)[start : start + chunk_size] for start in range(0, len(media), chunk_size)]
+        jobs: list[IntakeAcceptResult] = []
+        for part_index, chunk in enumerate(chunks):
+            policy: dict[str, Any] = dict(extra_policy or {})
+            policy.update(
+                {
+                    "collection_id": session_id,
+                    "collection_part_index": part_index,
+                    "collection_part_count": len(chunks),
+                    "display_expected": True,
+                }
+            )
+            if part_index == 0 and caption:
+                policy["collection_caption"] = caption
+            if cover_index is not None and 0 <= int(cover_index) < len(media):
+                if int(cover_index) // chunk_size == part_index:
+                    policy["cover_item_index"] = int(cover_index) % chunk_size
+            result = await self.accept_once(
+                owner_id=owner_id,
+                destination=destination,
+                media=chunk,
+                policy=policy,
+                spoiler_mode=spoiler_mode,
+                ask_timeout_seconds=ask_timeout_seconds,
+            )
+            jobs.append(result)
+        finalized = await self._repository.finalize_collection(
+            session_id,
+            tuple(result.job.id for result in jobs),
+        )
+        return CollectionFinalizeResult(
+            session=finalized,
+            jobs=tuple(jobs),
+            media_count=len(media),
+            text_count=0,
+        )
+
     async def cancel_collection(self, *, owner_id: int, chat_id: int) -> CollectionSession | None:
         session = await self._repository.get_open_collection(owner_id, chat_id)
         if session is None:

@@ -103,10 +103,11 @@ class SQLiteIntakeRepositoryMixin:
         conn = self._require()
         cursor = await conn.execute(
             """
-            SELECT *
-            FROM collection_sessions
-            WHERE owner_id=? AND chat_id=? AND state='open'
-            ORDER BY created_at DESC
+            SELECT s.*
+            FROM collection_sessions s
+            JOIN collection_drafts d ON d.session_id=s.id
+            WHERE s.owner_id=? AND s.chat_id=? AND s.state='open' AND d.active=1
+            ORDER BY s.created_at DESC
             LIMIT 1
             """,
             (owner_id, chat_id),
@@ -139,9 +140,10 @@ class SQLiteIntakeRepositoryMixin:
         async with self._write_transaction() as conn:
             cursor = await conn.execute(
                 """
-                SELECT *
-                FROM collection_sessions
-                WHERE owner_id=? AND chat_id=? AND state='open'
+                SELECT s.*
+                FROM collection_sessions s
+                JOIN collection_drafts d ON d.session_id=s.id
+                WHERE s.owner_id=? AND s.chat_id=? AND s.state='open' AND d.active=1
                 LIMIT 1
                 """,
                 (session.owner_id, session.chat_id),
@@ -166,6 +168,14 @@ class SQLiteIntakeRepositoryMixin:
                     session.status_message_id,
                     json.dumps(list(session.finalized_job_ids), separators=(",", ":")),
                 ),
+            )
+            await conn.execute(
+                """
+                INSERT OR IGNORE INTO collection_drafts(
+                    session_id, owner_id, chat_id, revision, editor_state, active
+                ) VALUES(?,?,?,1,'collecting',1)
+                """,
+                (session.id, session.owner_id, session.chat_id),
             )
         created = await self.get_collection(session.id)
         if created is None:
@@ -220,6 +230,7 @@ class SQLiteIntakeRepositoryMixin:
             ordinal_row = await cursor.fetchone()
             await cursor.close()
             next_ordinal = int(ordinal_row["max_ordinal"]) + 1
+            next_position = await self._next_edit_position(conn, session_id)
             for entry in entries:
                 if entry.source_chat_id is not None and entry.source_message_id is not None:
                     cursor = await conn.execute(
@@ -251,6 +262,15 @@ class SQLiteIntakeRepositoryMixin:
                     ),
                 )
                 inserted_ids.append(int(cursor.lastrowid))
+                await conn.execute(
+                    """
+                    INSERT OR IGNORE INTO collection_entry_edits(
+                        entry_id, session_id, position, excluded
+                    ) VALUES(?,?,?,0)
+                    """,
+                    (int(cursor.lastrowid), session_id, next_position),
+                )
+                next_position += 1
                 next_ordinal += 1
             await conn.execute(
                 "UPDATE collection_sessions SET updated_at=CURRENT_TIMESTAMP WHERE id=?",
@@ -294,6 +314,14 @@ class SQLiteIntakeRepositoryMixin:
             )
             if cursor.rowcount != 1:
                 raise ValueError("collection is not open")
+            await conn.execute(
+                """
+                UPDATE collection_drafts
+                SET editor_state='submitted', active=0, updated_at=CURRENT_TIMESTAMP
+                WHERE session_id=?
+                """,
+                (session_id,),
+            )
         finalized = await self.get_collection(session_id)
         if finalized is None:
             raise RuntimeError("collection session disappeared after finalize")
@@ -311,6 +339,14 @@ class SQLiteIntakeRepositoryMixin:
             )
             if cursor.rowcount != 1:
                 raise ValueError("collection is not open")
+            await conn.execute(
+                """
+                UPDATE collection_drafts
+                SET editor_state='discarded', active=0, updated_at=CURRENT_TIMESTAMP
+                WHERE session_id=?
+                """,
+                (session_id,),
+            )
         cancelled = await self.get_collection(session_id)
         if cancelled is None:
             raise RuntimeError("collection session disappeared after cancel")

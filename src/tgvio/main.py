@@ -43,6 +43,7 @@ from tgvio.adapters.telegram.alerts import TelegramOwnerNotifier
 from tgvio.domain.notifications import ALERT_EVENT_TYPES
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
+from tgvio.application.collection_editing import CollectionEditingService
 from tgvio.application.job_diagnostics import JobDiagnosticService
 from tgvio.application.job_control import JobControlService
 from tgvio.application.job_runner import JobRunner
@@ -213,6 +214,8 @@ async def run(*, check_only: bool = False) -> None:
             repository,
             default_policy={AUTO_RECOVERY_POLICY_KEY: recovery_policy.frozen()},
         )
+        operation_tokens = OperationTokenService(repository)
+        collection_editing = CollectionEditingService(repository, intake, operation_tokens)
         routed_downloader = RoutedMediaDownloader(
             TelethonMediaDownloader(
                 gateway.client,
@@ -284,6 +287,7 @@ async def run(*, check_only: bool = False) -> None:
             intake,
             runner,
             flags=runtime_flags,
+            editing=collection_editing,
         )
         auto_recovery_runtime = AutoRecoveryRuntime(
             AutoRecoveryService(
@@ -295,7 +299,6 @@ async def run(*, check_only: bool = False) -> None:
             intake_runtime.recover,
             poll_seconds=settings.auto_retry_poll_seconds,
         )
-        operation_tokens = OperationTokenService(repository)
         archive_deletion_service = (
             ArchiveDeletionService(
                 repository,

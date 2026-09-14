@@ -131,6 +131,7 @@ class Settings:
     alert_cooldown_seconds: int
     alert_poll_seconds: int
     collection_preview_enabled: bool
+    collection_editing_enabled: bool
     archive_enabled: bool
     archive_url: str
     archive_remote_root: str
@@ -300,6 +301,7 @@ class Settings:
         if not 5 <= alert_poll_seconds <= 3600:
             raise ConfigError("TGVIO_ALERT_POLL_SECONDS out of range")
         collection_preview_enabled = _bool("TGVIO_COLLECTION_PREVIEW_ENABLED", True)
+        collection_editing_enabled = _bool("TGVIO_COLLECTION_EDITING_ENABLED", True)
         if webhook_enabled:
             parsed_webhook = urllib.parse.urlsplit(webhook_url)
             if parsed_webhook.scheme != "https" or not parsed_webhook.hostname:
@@ -419,6 +421,7 @@ class Settings:
             alert_cooldown_seconds=alert_cooldown_seconds,
             alert_poll_seconds=alert_poll_seconds,
             collection_preview_enabled=collection_preview_enabled,
+            collection_editing_enabled=collection_editing_enabled,
             archive_enabled=archive_enabled,
             archive_url=archive_url,
             archive_remote_root=archive_remote_root,
@@ -485,6 +488,7 @@ class Settings:
             "alert_cooldown_seconds": self.alert_cooldown_seconds,
             "alert_poll_seconds": self.alert_poll_seconds,
             "collection_preview_enabled": self.collection_preview_enabled,
+            "collection_editing_enabled": self.collection_editing_enabled,
             "archive_enabled": self.archive_enabled,
             "archive_configured": bool(self.archive_url and self.archive_user),
             "archive_remote_root_configured": bool(self.archive_remote_root),

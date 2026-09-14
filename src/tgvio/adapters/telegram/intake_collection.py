@@ -59,6 +59,7 @@ class IntakeCollectionMixin:
         if not bool(getattr(self._settings, "collections_enabled", True)):
             await self._safe_send(chat_id, "合集功能当前未启用。")
             return
+        editing_enabled = bool(getattr(self, "_editing_enabled", lambda: False)())
         preview_enabled = bool(getattr(self._settings, "collection_preview_enabled", True))
         flags = getattr(self, "_flags", None)
         if flags is not None:
@@ -66,7 +67,7 @@ class IntakeCollectionMixin:
                 preview_enabled = flags.bool("collection_preview_enabled", preview_enabled)
             except Exception:
                 pass
-        if preview_enabled:
+        if preview_enabled or editing_enabled:
             await self._request_collection_preview(chat_id, owner_id)
             return
         await self._confirm_collection(chat_id, owner_id)
@@ -77,16 +78,28 @@ class IntakeCollectionMixin:
             await self._safe_send(chat_id, "当前没有正在收集的合集。")
             return
         preference = await self._intake.get_user_preference(owner_id)
-        preview = await self._intake.preview_collection(
-            owner_id=owner_id,
-            chat_id=int(chat_id),
-            cover_mode=bool(getattr(self._settings, "cover_mode", True)),
-        )
+        editing = getattr(self, "_editing", None)
+        revision = None
+        preview = None
+        if editing is not None and self._editing_enabled():
+            draft = await editing.draft(session.id)
+            if draft is not None:
+                revision = int(draft.revision)
+            preview = await editing.preview(
+                session_id=session.id,
+                cover_mode=bool(getattr(self._settings, "cover_mode", True)),
+            )
+        if preview is None:
+            preview = await self._intake.preview_collection(
+                owner_id=owner_id,
+                chat_id=int(chat_id),
+                cover_mode=bool(getattr(self._settings, "cover_mode", True)),
+            )
         if preview is None or preview.media_count == 0:
             await self._safe_send(chat_id, "合集里还没有媒体；继续发送媒体后再结束。")
             return
         text = self._collection_preview_text(preview, preference.spoiler_mode)
-        buttons = self._preview_buttons(session.id)
+        buttons = self._preview_buttons(session.id, revision=revision)
         target_chat = int(session.status_chat_id or chat_id)
         if session.status_message_id is not None:
             await self._safe_edit(target_chat, int(session.status_message_id), text, buttons=buttons)
@@ -100,26 +113,14 @@ class IntakeCollectionMixin:
                 int(message_id),
             )
 
-    async def _confirm_collection(self, chat_id: int, owner_id: int) -> None:
-        preference = await self._intake.get_user_preference(owner_id)
-        try:
-            result = await self._intake.finalize_collection(
-                owner_id=owner_id,
-                chat_id=int(chat_id),
-                destination=self._settings.destination,
-                max_items=min(100, int(getattr(self._settings, "batch_max_items", 100))),
-                spoiler_mode=preference.spoiler_mode,
-                ask_timeout_seconds=int(
-                    getattr(self._settings, "spoiler_confirm_timeout_seconds", 60)
-                ),
-            )
-        except CollectionEmptyError as exc:
-            if "no open" in str(exc):
-                await self._safe_send(chat_id, "当前没有正在收集的合集。")
-            else:
-                await self._safe_send(chat_id, "合集里还没有媒体；继续发送媒体后再结束。")
-            return
-
+    async def _announce_finalize_result(
+        self,
+        chat_id: int,
+        owner_id: int,
+        result,
+        *,
+        confirmation: bool = False,
+    ) -> None:
         reused_status = False
         activated = 0
         for accepted in result.jobs:
@@ -146,9 +147,8 @@ class IntakeCollectionMixin:
                 else:
                     await self._announce_job(int(chat_id), accepted.job)
             else:
-                # A previous /end attempt may have committed this Job but
-                # crashed before scheduling it. Durable phase claims make
-                # recovery safe even if another local task is already active.
+                # A previous confirm may have committed this Job but crashed
+                # before scheduling it. Durable claims make recovery safe.
                 await self.recover(accepted.job)
         if activated == 0 and result.session.status_message_id is not None:
             await self._safe_edit(
@@ -156,6 +156,98 @@ class IntakeCollectionMixin:
                 int(result.session.status_message_id),
                 "✅ **合集已结束**\n没有新的媒体需要创建任务；重复 update 已忽略。",
             )
+
+    async def _confirm_collection(self, chat_id: int, owner_id: int) -> None:
+        preference = await self._intake.get_user_preference(owner_id)
+        try:
+            result = await self._intake.finalize_collection(
+                owner_id=owner_id,
+                chat_id=int(chat_id),
+                destination=self._settings.destination,
+                max_items=min(100, int(getattr(self._settings, "batch_max_items", 100))),
+                spoiler_mode=preference.spoiler_mode,
+                ask_timeout_seconds=int(
+                    getattr(self._settings, "spoiler_confirm_timeout_seconds", 60)
+                ),
+            )
+        except CollectionEmptyError as exc:
+            if "no open" in str(exc):
+                await self._safe_send(chat_id, "当前没有正在收集的合集。")
+            else:
+                await self._safe_send(chat_id, "合集里还没有媒体；继续发送媒体后再结束。")
+            return
+        await self._announce_finalize_result(chat_id, owner_id, result)
+
+    async def _handle_collection_callback(self, event, action: str, owner_id: int) -> bool:
+        if action.startswith(("intake:end:", "intake:preview:")):
+            session_id = action.split(":", 2)[2]
+            session = await self._open_collection(owner_id, event.chat_id)
+            if session is None or session.id != session_id:
+                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
+                return True
+            await self._safe_answer(event, "正在生成预览")
+            if action.startswith("intake:preview:"):
+                await self._request_collection_preview(event.chat_id, owner_id)
+            else:
+                await self._end_collection(event.chat_id, owner_id)
+            return True
+        if action.startswith("intake:confirm:"):
+            session_id = action.split(":", 2)[2]
+            session = await self._open_collection(owner_id, event.chat_id)
+            if session is None or session.id != session_id:
+                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
+                return True
+            await self._safe_answer(event, "正在发布合集")
+            await self._confirm_collection(event.chat_id, owner_id)
+            return True
+        if action.startswith("intake:abandon:"):
+            session_id = action.split(":", 2)[2]
+            session = await self._open_collection(owner_id, event.chat_id)
+            if session is None or session.id != session_id:
+                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
+                return True
+            await self._intake.cancel_collection(owner_id=owner_id, chat_id=int(event.chat_id))
+            await self._safe_answer(event, "合集已放弃")
+            if session.status_message_id is not None:
+                await self._safe_edit(
+                    int(event.chat_id),
+                    int(session.status_message_id),
+                    "⛔ **合集已放弃**",
+                )
+            return True
+        if action.startswith("intake:prevmode:"):
+            session_id = action.split(":", 2)[2]
+            session = await self._open_collection(owner_id, event.chat_id)
+            if session is None or session.id != session_id:
+                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
+                return True
+            preference = await self._intake.get_user_preference(owner_id)
+            await self._safe_answer(event, "选择显示模式")
+            try:
+                await event.edit(
+                    self._mode_text(preference.spoiler_mode),
+                    buttons=self._mode_buttons(),
+                    parse_mode="md",
+                )
+            except Exception:
+                pass
+            return True
+        if action.startswith("intake:collection-cancel:"):
+            session_id = action.split(":", 2)[2]
+            session = await self._open_collection(owner_id, event.chat_id)
+            if session is None or session.id != session_id:
+                await self._safe_answer(event, "合集已经结束或已失效", alert=True)
+                return True
+            await self._intake.cancel_collection(owner_id=owner_id, chat_id=int(event.chat_id))
+            await self._safe_answer(event, "合集已取消")
+            if session.status_message_id is not None:
+                await self._safe_edit(
+                    int(event.chat_id),
+                    int(session.status_message_id),
+                    "⛔ **合集已取消**",
+                )
+            return True
+        return False
 
     async def _show_mode(self, chat_id: int, owner_id: int) -> None:
         preference = await self._intake.get_user_preference(owner_id)
@@ -201,9 +293,13 @@ class IntakeCollectionMixin:
 
     @staticmethod
     def _collection_buttons(session_id: str):
+        encoded = session_id.encode("utf-8")
         return [
-            [Button.inline("🛑 结束并发布", f"intake:end:{session_id}".encode("utf-8"))],
-            [Button.inline("❌ 取消合集", f"intake:collection-cancel:{session_id}".encode("utf-8"))],
+            [Button.inline("🛑 结束并发布", b"intake:end:" + encoded)],
+            [
+                Button.inline("📝 我的草稿", b"intake:df:l:0"),
+                Button.inline("❌ 取消合集", b"intake:collection-cancel:" + encoded),
+            ],
         ]
 
     def _collection_preview_text(self, preview, spoiler_mode) -> str:
@@ -231,9 +327,27 @@ class IntakeCollectionMixin:
         lines.append("确认后才会开始下载与发布。")
         return "\n".join(lines)
 
-    @staticmethod
-    def _preview_buttons(session_id: str):
+    def _preview_buttons(self, session_id: str, *, revision: int | None = None):
         encoded = session_id.encode("utf-8")
+        if self._editing_enabled() and revision is not None:
+            rev = str(int(revision)).encode("utf-8")
+            return [
+                [
+                    Button.inline(
+                        "✏️ 编辑合集",
+                        b"intake:ed:" + encoded + b":" + rev + b":o",
+                    ),
+                    Button.inline(
+                        "✅ 确认发布",
+                        b"intake:ed:" + encoded + b":" + rev + b":k",
+                    ),
+                ],
+                [
+                    Button.inline("🔞 显示模式", b"intake:prevmode:" + encoded),
+                    Button.inline("📝 我的草稿", b"intake:df:l:0"),
+                ],
+                [Button.inline("❌ 放弃", b"intake:abandon:" + encoded)],
+            ]
         return [
             [
                 Button.inline("✅ 确认发布", b"intake:confirm:" + encoded),

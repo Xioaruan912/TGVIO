@@ -26,57 +26,102 @@ class JobOrchestrator:
     def __init__(self, repository: JobRepository, policy: PlanningPolicy | None = None) -> None:
         self._repository = repository
         self._policy = policy or PlanningPolicy()
+        self._active = self._policy
         self._log = logging.getLogger("tgvio.publish.plan")
+
+    def _resolve_policy(self, job: Job) -> PlanningPolicy:
+        """Freeze per-job overrides (publish style snapshot) over the process baseline."""
+        snapshot = job.policy.get("publish_style")
+        if not isinstance(snapshot, dict):
+            return self._policy
+        override: dict[str, object] = {}
+        if "cover_mode" in snapshot:
+            override["cover_mode"] = bool(snapshot["cover_mode"])
+        if "forward_caption" in snapshot:
+            override["forward_caption"] = bool(snapshot["forward_caption"])
+        if not override:
+            return self._policy
+        return replace(self._policy, **override)
 
     def plan(self, job: Job) -> PublishPlan:
         if job.state != JobState.ANALYZED:
             raise ValueError(f"job must be analyzed before planning: {job.state.value}")
 
+        self._active = self._resolve_policy(job)
         steps: list[PublishStep] = []
         items = sorted(job.items, key=lambda item: item.index)
         photos = [item for item in items if item.kind == MediaKind.PHOTO]
         videos = [item for item in items if item.kind == MediaKind.VIDEO]
         documents = [item for item in items if item.kind == MediaKind.DOCUMENT]
         collection_caption = str(job.policy.get("collection_caption", "") or "")
+        chosen_cover = self._chosen_cover(job, items)
 
-        if self._policy.cover_mode and (photos or videos):
-            cover_photos = photos[: self._policy.cover_limit]
-            if cover_photos:
-                steps.append(
-                    self._step(
-                        steps,
-                        PublishStepKind.CHANNEL_COVER_ALBUM,
-                        PublishTarget.CHANNEL,
-                        cover_photos,
-                        mode="photo_album",
-                        collection_caption=collection_caption,
-                        collection_caption_item_index=cover_photos[0].index,
-                    )
-                )
-            elif videos:
+        if self._active.cover_mode and (photos or videos):
+            if chosen_cover is not None and chosen_cover.kind == MediaKind.VIDEO:
                 steps.append(
                     self._step(
                         steps,
                         PublishStepKind.CHANNEL_VIDEO_COVER,
                         PublishTarget.CHANNEL,
-                        [videos[0]],
+                        [chosen_cover],
                         mode="generated_frame",
                         collection_caption=collection_caption,
-                        collection_caption_item_index=videos[0].index,
+                        collection_caption_item_index=chosen_cover.index,
                     )
                 )
+                for chunk in self._chunks(photos, self._active.album_limit):
+                    steps.append(
+                        self._step(
+                            steps,
+                            PublishStepKind.DISCUSSION_PHOTO_ALBUM,
+                            PublishTarget.DISCUSSION,
+                            chunk,
+                            mode="photo_album",
+                        )
+                    )
+            else:
+                ordered_photos = photos
+                if chosen_cover is not None and chosen_cover.kind == MediaKind.PHOTO:
+                    ordered_photos = [chosen_cover] + [
+                        item for item in photos if item is not chosen_cover
+                    ]
+                cover_photos = ordered_photos[: self._active.cover_limit]
+                if cover_photos:
+                    steps.append(
+                        self._step(
+                            steps,
+                            PublishStepKind.CHANNEL_COVER_ALBUM,
+                            PublishTarget.CHANNEL,
+                            cover_photos,
+                            mode="photo_album",
+                            collection_caption=collection_caption,
+                            collection_caption_item_index=cover_photos[0].index,
+                        )
+                    )
+                elif videos:
+                    steps.append(
+                        self._step(
+                            steps,
+                            PublishStepKind.CHANNEL_VIDEO_COVER,
+                            PublishTarget.CHANNEL,
+                            [videos[0]],
+                            mode="generated_frame",
+                            collection_caption=collection_caption,
+                            collection_caption_item_index=videos[0].index,
+                        )
+                    )
 
-            overflow_photos = photos[self._policy.cover_limit :]
-            for chunk in self._chunks(overflow_photos, self._policy.album_limit):
-                steps.append(
-                    self._step(
-                        steps,
-                        PublishStepKind.DISCUSSION_PHOTO_ALBUM,
-                        PublishTarget.DISCUSSION,
-                        chunk,
-                        mode="photo_album",
+                overflow_photos = ordered_photos[self._active.cover_limit :]
+                for chunk in self._chunks(overflow_photos, self._active.album_limit):
+                    steps.append(
+                        self._step(
+                            steps,
+                            PublishStepKind.DISCUSSION_PHOTO_ALBUM,
+                            PublishTarget.DISCUSSION,
+                            chunk,
+                            mode="photo_album",
+                        )
                     )
-                )
 
             self._append_video_steps(
                 steps,
@@ -136,8 +181,8 @@ class JobOrchestrator:
             "videos": len(videos),
             "documents": len(documents),
             "steps": len(steps),
-            "cover_mode": self._policy.cover_mode,
-            "cover_count": min(len(photos), self._policy.cover_limit) if self._policy.cover_mode else 0,
+            "cover_mode": self._active.cover_mode,
+            "cover_count": min(len(photos), self._active.cover_limit) if self._active.cover_mode else 0,
             "discussion_steps": sum(1 for step in steps if step.target == PublishTarget.DISCUSSION),
             "channel_steps": sum(1 for step in steps if step.target == PublishTarget.CHANNEL),
         }
@@ -175,6 +220,15 @@ class JobOrchestrator:
         )
         return plan
 
+    @staticmethod
+    def _chosen_cover(job: Job, items: list[MediaItem]) -> MediaItem | None:
+        raw = job.policy.get("cover_item_index")
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return None
+        if 0 <= raw < len(items):
+            return items[raw]
+        return None
+
     def _step(
         self,
         current_steps: list[PublishStep],
@@ -196,8 +250,8 @@ class JobOrchestrator:
             params={
                 "mode": mode,
                 "strategies": strategies,
-                "forward_caption": self._policy.forward_caption,
-                "caption_footer": self._policy.caption_footer,
+                "forward_caption": self._active.forward_caption,
+                "caption_footer": self._active.caption_footer,
                 **(
                     {
                         "collection_caption": collection_caption,
@@ -222,7 +276,7 @@ class JobOrchestrator:
             nonlocal album_buffer
             if not album_buffer:
                 return
-            for chunk in self._chunks(album_buffer, self._policy.album_limit):
+            for chunk in self._chunks(album_buffer, self._active.album_limit):
                 steps.append(
                     self._step(
                         steps,
@@ -250,7 +304,7 @@ class JobOrchestrator:
                 )
             else:
                 album_buffer.append(item)
-                if len(album_buffer) >= self._policy.album_limit:
+                if len(album_buffer) >= self._active.album_limit:
                     flush_album()
         flush_album()
 
@@ -265,7 +319,7 @@ class JobOrchestrator:
             nonlocal group_buffer
             if not group_buffer:
                 return
-            for chunk in self._chunks(group_buffer, self._policy.album_limit):
+            for chunk in self._chunks(group_buffer, self._active.album_limit):
                 steps.append(
                     self._step(
                         steps,
@@ -293,7 +347,7 @@ class JobOrchestrator:
                 )
             else:
                 group_buffer.append(item)
-                if len(group_buffer) >= self._policy.album_limit:
+                if len(group_buffer) >= self._active.album_limit:
                     flush_group()
         flush_group()
 

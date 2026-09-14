@@ -598,7 +598,7 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         names = {name for name, _ in COMMANDS}
         self.assertEqual(
             names,
-            {"start", "begin", "end", "mode", "pause", "resume", "jobs", "status", "help"},
+            {"start", "begin", "end", "mode", "drafts", "pause", "resume", "jobs", "status", "help"},
         )
         self.assertFalse(
             names & {"queue", "profiles", "webdav", "backup", "dashboard"}
