@@ -34,6 +34,7 @@
 
 ## 4. 文档地图
 
+- [R2-15_16_17_TECHNICAL_PLAN.md](R2-15_16_17_TECHNICAL_PLAN.md)：安全清理与历史保留、合集编辑、重复内容提示的技术方案（设计完成，代码阶段未开始）。
 - [CURRENT_STATE.md](CURRENT_STATE.md)：本地、Git 与生产的证据化现状和阻塞项。
 - [FEATURE_CONTRACT.md](FEATURE_CONTRACT.md)：必须保持、待补齐和明确退役的功能合同。
 - [TARGET_ARCHITECTURE.md](TARGET_ARCHITECTURE.md)：目标模块、依赖、状态机、事务与恢复模型。
