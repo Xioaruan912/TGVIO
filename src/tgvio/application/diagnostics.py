@@ -11,6 +11,7 @@ from tgvio.application.archive_capabilities import get_archive_capability_status
 from tgvio.application.ports import JobRepository
 from tgvio.domain.diagnostics import (
     ArchiveDiagnostic,
+    CapabilitiesDiagnostic,
     DiagnosticAvailability,
     DiagnosticSnapshot,
     FeatureDiagnostics,
@@ -60,11 +61,13 @@ class DiagnosticSnapshotService:
         features: DiagnosticFeatureConfig,
         schema_status: Callable[[], dict[str, object]],
         now: Callable[[], int] | None = None,
+        capabilities: Callable[[], CapabilitiesDiagnostic] | None = None,
     ) -> None:
         self._repository = repository
         self._features = features
         self._schema_status = schema_status
         self._now = now or (lambda: int(time.time()))
+        self._capabilities = capabilities
 
     async def snapshot(self) -> DiagnosticSnapshot:
         aggregate_status = DiagnosticAvailability.READY
@@ -140,7 +143,16 @@ class DiagnosticSnapshotService:
             archive=archive,
             features=features,
             static_proxy=proxy,
+            capabilities=self._capability_projection(),
         )
+
+    def _capability_projection(self) -> CapabilitiesDiagnostic | None:
+        if self._capabilities is None:
+            return None
+        try:
+            return self._capabilities()
+        except Exception:
+            return None
 
     def _schema_projection(self) -> SchemaDiagnostic:
         try:

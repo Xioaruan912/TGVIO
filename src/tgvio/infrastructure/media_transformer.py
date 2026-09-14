@@ -67,9 +67,9 @@ class FFmpegMediaTransformer:
             if result[0] != 0 or not output.is_file() or output.stat().st_size <= 0:
                 last_error = result[2] or "ffmpeg produced no frame"
                 continue
-            if await self._frame_is_black(output):
+            if await self._frame_is_blank(output):
                 output.unlink(missing_ok=True)
-                last_error = "generated frame was black"
+                last_error = "generated frame was blank"
                 continue
             return output
         raise RuntimeError(f"unable to generate video cover: {last_error[-500:]}")
@@ -82,26 +82,26 @@ class FFmpegMediaTransformer:
         item_index: int,
         duration_seconds: float | None,
         max_size: int = 320,
-        max_bytes: int = 40 * 1024,
+        max_bytes: int = 1_000_000,
     ) -> Path | None:
         """Create a Telegram-friendly JPEG thumbnail without blocking publish.
 
-        Automatic selection samples 10/20/30 percent of the video when a
-        duration is known. Black frames are rejected. JPEG quality is reduced
-        only as much as needed to stay under the configured byte limit.
+        Automatic selection samples several positions across the video when a
+        duration is known. Black and near-white/blank frames are rejected. JPEG
+        quality is reduced only as much as needed to stay under the byte limit.
         """
         target_dir.mkdir(parents=True, exist_ok=True)
         output = target_dir / f"thumb-{item_index}.jpg"
         if duration_seconds and duration_seconds > 0:
             seeks = tuple(
                 max(0.0, duration_seconds * ratio)
-                for ratio in (0.10, 0.20, 0.30)
-            )
+                for ratio in (0.05, 0.10, 0.20, 0.30, 0.50, 0.70, 0.80)
+            ) + (1.0, 0.0)
         else:
             seeks = (1.0, 0.0)
 
         for seek in seeks:
-            frame_is_black: bool | None = None
+            frame_is_blank: bool | None = None
             for quality in (5, 8, 12, 18, 24, 30):
                 output.unlink(missing_ok=True)
                 code, _stdout, _stderr = await self._run(
@@ -123,9 +123,9 @@ class FFmpegMediaTransformer:
                 )
                 if code != 0 or not output.is_file() or output.stat().st_size <= 0:
                     break
-                if frame_is_black is None:
-                    frame_is_black = await self._frame_is_black(output)
-                if frame_is_black:
+                if frame_is_blank is None:
+                    frame_is_blank = await self._frame_is_blank(output)
+                if frame_is_blank:
                     output.unlink(missing_ok=True)
                     break
                 if output.stat().st_size <= max_bytes:
@@ -269,7 +269,19 @@ class FFmpegMediaTransformer:
                 segment_time = max(0.25, segment_time * min(0.75, ratio * 0.85))
         raise RuntimeError(f"unable to create playable video segments: {last_error[-500:]}")
 
+    async def _frame_is_blank(self, path: Path) -> bool:
+        if await self._frame_is_black(path):
+            return True
+        return await self._frame_is_white(path)
+
     async def _frame_is_black(self, path: Path) -> bool:
+        return await self._dominant_frame_ratio(path, negate=False) >= 95
+
+    async def _frame_is_white(self, path: Path) -> bool:
+        return await self._dominant_frame_ratio(path, negate=True) >= 95
+
+    async def _dominant_frame_ratio(self, path: Path, *, negate: bool) -> int:
+        filter_spec = "negate,blackframe=amount=95:threshold=32" if negate else "blackframe=amount=95:threshold=32"
         code, _stdout, stderr = await self._run(
             self._ffmpeg_bin,
             "-v",
@@ -277,23 +289,23 @@ class FFmpegMediaTransformer:
             "-i",
             str(path),
             "-vf",
-            "blackframe=amount=95:threshold=32",
+            filter_spec,
             "-f",
             "null",
             "-",
         )
         if code not in {0, 1}:
-            return False
+            return 0
         marker = "pblack:"
         pos = stderr.find(marker)
         if pos < 0:
-            return False
+            return 0
         digits = []
         for char in stderr[pos + len(marker) :]:
             if not char.isdigit():
                 break
             digits.append(char)
-        return bool(digits and int("".join(digits)) >= 95)
+        return int("".join(digits)) if digits else 0
 
     async def _probe_duration(self, path: Path) -> float:
         code, stdout, _stderr = await self._run(
@@ -486,5 +498,8 @@ class FFmpegMediaTransformer:
     @staticmethod
     def _cover_seeks(duration_seconds: float | None) -> tuple[float, ...]:
         if duration_seconds and duration_seconds > 0:
-            return tuple(max(0.0, duration_seconds * ratio) for ratio in (0.10, 0.20, 0.30)) + (1.0, 0.0)
+            return tuple(
+                max(0.0, duration_seconds * ratio)
+                for ratio in (0.05, 0.10, 0.20, 0.30, 0.50, 0.70)
+            ) + (1.0, 0.0)
         return (1.0, 0.0)

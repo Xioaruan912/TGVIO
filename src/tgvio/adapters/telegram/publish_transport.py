@@ -176,6 +176,15 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
                         exception_type=type(exc).__name__,
                         exc_info=True,
                     )
+                if thumbnail is None:
+                    log_event(
+                        self._log,
+                        logging.WARNING,
+                        "publish.thumbnail.missing",
+                        "No non-blank thumbnail frame; relying on ffprobe video attributes",
+                        job_id=job.id,
+                        item_index=item.index,
+                    )
             files.append(
                 await self._prepare_local_media(
                     source,
@@ -187,6 +196,9 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
                     force_upload=len(items) > 1,
                     job_id=job.id,
                     item_index=item.index,
+                    width=item.width,
+                    height=item.height,
+                    duration_seconds=item.duration_seconds,
                 )
             )
         captions = [self._caption(item, step) for item in items]

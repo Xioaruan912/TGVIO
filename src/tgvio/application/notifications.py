@@ -10,6 +10,7 @@ import urllib.parse
 from dataclasses import dataclass
 from typing import Callable, Protocol
 
+from tgvio.application.auto_recovery import recovery_status_is_final
 from tgvio.application.ports import JobRepository
 from tgvio.domain.notifications import NotificationEvent, new_holder_id
 from tgvio.observability import log_event
@@ -259,6 +260,11 @@ class NotificationRuntime:
     def _event_from_candidate(self, candidate: dict[str, object]) -> NotificationEvent | None:
         kind = str(candidate.get("kind", ""))
         state = str(candidate.get("state", ""))
+        recovery_status = candidate.get("recovery_status")
+        # Only alert on a *final* failure. A transient failure that automatic
+        # recovery will retry (scheduled/retrying) must not page the owner.
+        if state == "failed" and recovery_status and not recovery_status_is_final(recovery_status):
+            return None
         error_code = candidate.get("error_code")
         occurred_at = candidate.get("occurred_at")
         media_count = candidate.get("media_count")

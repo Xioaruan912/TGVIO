@@ -615,6 +615,45 @@ class TelethonPublishTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(isinstance(media, types.InputMediaUploadedDocument) for media in uploads))
         self.assertTrue(all(media.thumb is not None for media in uploads))
 
+    async def test_video_attributes_use_probed_dimensions_not_telethon_guess(self) -> None:
+        self.transformer.thumbnail_enabled = False
+        path = self.root / "video-probed.mp4"
+        path.write_bytes(b"payload")
+        item = MediaItem(
+            index=0,
+            kind=MediaKind.VIDEO,
+            source="fixture:probed",
+            local_path=str(path),
+            width=720,
+            height=1280,
+            duration_seconds=116.7,
+        )
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[item],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_MEDIA_GROUP,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={"strategies": {"0": "native"}},
+        )
+        await self.transport.execute_step(job, step, ())
+        self.assertEqual(len(self.client.send_calls), 1)
+        media = self.client.send_calls[0][1]
+        video_attrs = [
+            attribute
+            for attribute in media.attributes
+            if isinstance(attribute, types.DocumentAttributeVideo)
+        ]
+        self.assertEqual(len(video_attrs), 1)
+        self.assertEqual(video_attrs[0].duration, 116)
+        self.assertEqual(video_attrs[0].w, 720)
+        self.assertEqual(video_attrs[0].h, 1280)
+
     async def test_discussion_step_resolves_thread_from_confirmed_channel_effect(self) -> None:
         resolver = FakeDiscussionResolver(
             DiscussionRoot(chat_id=-100222, message_id=700, source_message_id=500)

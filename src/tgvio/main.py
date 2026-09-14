@@ -60,6 +60,7 @@ from tgvio.config import Settings, load_dotenv
 from tgvio.infrastructure.media_inspector import FFprobeMediaInspector
 from tgvio.infrastructure.log_reader import JsonlOperationalLogReader
 from tgvio.infrastructure.media_transformer import FFmpegMediaTransformer
+from tgvio.infrastructure.capabilities import probe_environment_capabilities
 from tgvio.infrastructure.proxy_probe import (
     probe_static_proxy_endpoint,
     static_proxy_unchecked_status,
@@ -91,6 +92,31 @@ async def run(*, check_only: bool = False) -> None:
         await repository.set_runtime_health("schema", "ready", detail=schema_status)
         runtime_flags = RuntimeFlags()
         await runtime_flags.load(repository)
+        capabilities = probe_environment_capabilities()
+        await repository.set_runtime_health(
+            "capabilities",
+            "ready" if (capabilities.ffmpeg and capabilities.ffprobe) else "degraded",
+            detail={
+                "ffmpeg": capabilities.ffmpeg,
+                "ffprobe": capabilities.ffprobe,
+                "yt_dlp": capabilities.yt_dlp,
+                "cryptg": capabilities.cryptg,
+                "hachoir": capabilities.hachoir,
+            },
+        )
+        log_event(
+            logger,
+            logging.INFO
+            if (capabilities.ffmpeg and capabilities.ffprobe)
+            else logging.WARNING,
+            "runtime.selfcheck",
+            "Environment capability self-check",
+            ffmpeg=capabilities.ffmpeg,
+            ffprobe=capabilities.ffprobe,
+            yt_dlp=capabilities.yt_dlp,
+            cryptg=capabilities.cryptg,
+            hachoir=capabilities.hachoir,
+        )
         proxy_probe = (
             static_proxy_unchecked_status(settings.static_proxy_url)
             if check_only
@@ -300,6 +326,7 @@ async def run(*, check_only: bool = False) -> None:
                 static_proxy_configured=bool(settings.static_proxy_url),
             ),
             schema_status=repository.schema_status,
+            capabilities=lambda: capabilities,
         )
         dashboard_server: DashboardServer | None = None
         notification_runtime: NotificationRuntime | None = None

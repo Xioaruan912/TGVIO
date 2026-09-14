@@ -83,6 +83,17 @@ class StaticProxyDiagnostic:
 
 
 @dataclass(frozen=True, slots=True)
+class CapabilitiesDiagnostic:
+    """Non-sensitive environment capability booleans (no paths or versions)."""
+
+    ffmpeg: bool
+    ffprobe: bool
+    yt_dlp: bool
+    cryptg: bool
+    hachoir: bool
+
+
+@dataclass(frozen=True, slots=True)
 class DiagnosticSnapshot:
     release_id: str
     app_version: str
@@ -95,3 +106,4 @@ class DiagnosticSnapshot:
     archive: ArchiveDiagnostic
     features: FeatureDiagnostics
     static_proxy: StaticProxyDiagnostic
+    capabilities: CapabilitiesDiagnostic | None = None

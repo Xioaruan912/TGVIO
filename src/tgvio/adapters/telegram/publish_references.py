@@ -48,6 +48,9 @@ class PublishReferenceMixin:
         force_upload: bool = False,
         job_id: str | None = None,
         item_index: int | None = None,
+        width: int | None = None,
+        height: int | None = None,
+        duration_seconds: float | None = None,
     ):
         if (
             kind == MediaKind.PHOTO
@@ -73,16 +76,24 @@ class PublishReferenceMixin:
             supports_streaming=supports_streaming,
         )
         if kind == MediaKind.VIDEO and not force_document:
-            has_video_attr = any(isinstance(a, types.DocumentAttributeVideo) for a in attributes)
-            if not has_video_attr:
-                attributes.append(
-                    types.DocumentAttributeVideo(
-                        duration=0,
-                        w=1,
-                        h=1,
-                        supports_streaming=supports_streaming
-                    )
+            # Telethon parses video metadata with the optional `hachoir` library,
+            # which is not installed in the runtime image, so its attributes
+            # collapse to duration=0/w=1/h=1. Use the ffprobe facts recorded on
+            # the MediaItem instead so Telegram renders a real preview/preview.
+            attributes = [
+                attribute
+                for attribute in attributes
+                if not isinstance(attribute, types.DocumentAttributeVideo)
+            ]
+            attributes.append(
+                types.DocumentAttributeVideo(
+                    duration=int(duration_seconds or 0),
+                    w=int(width or 1),
+                    h=int(height or 1),
+                    supports_streaming=supports_streaming,
+                    round_message=False,
                 )
+            )
         uploaded_thumb = (
             await self._upload_local_file(
                 thumbnail,

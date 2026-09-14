@@ -186,6 +186,21 @@ class BotUIFormatMixin:
             "**Static proxy**",
             f"State：`{snapshot.static_proxy.state.value}` · Last check：`{proxy_checked}`",
             "",
+            *(
+                [
+                    "**Capabilities**",
+                    (
+                        f"ffmpeg `{on_off(snapshot.capabilities.ffmpeg)}` · "
+                        f"ffprobe `{on_off(snapshot.capabilities.ffprobe)}` · "
+                        f"yt-dlp `{on_off(snapshot.capabilities.yt_dlp)}` · "
+                        f"cryptg `{on_off(snapshot.capabilities.cryptg)}` · "
+                        f"hachoir `{on_off(snapshot.capabilities.hachoir)}`"
+                    ),
+                    "",
+                ]
+                if snapshot.capabilities is not None
+                else []
+            ),
             "只读本地 SQLite 与脱敏启动状态；不会主动连接 Telegram、WebDAV、代理或其它外部服务。",
         ]
         return "\n".join(lines)

@@ -143,3 +143,67 @@ class WebhookNotifierTests(unittest.IsolatedAsyncioTestCase):
             await notifier.deliver({"event": "job.succeeded"})
         self.assertEqual(ctx.exception.code, "webhook_transport")
         self.assertNotIn("example.invalid", str(ctx.exception))
+
+
+class AlertFinalGateTests(unittest.TestCase):
+    def _runtime(self) -> NotificationRuntime:
+        return NotificationRuntime(object(), _RecordingNotifier())
+
+    def test_transient_failures_are_not_alerted(self) -> None:
+        runtime = self._runtime()
+        self.assertIsNone(
+            runtime._event_from_candidate(
+                {
+                    "kind": "job",
+                    "job_id": "j1",
+                    "state": "failed",
+                    "error_code": "download_failed",
+                    "recovery_status": "scheduled",
+                }
+            )
+        )
+        self.assertIsNone(
+            runtime._event_from_candidate(
+                {
+                    "kind": "archive",
+                    "package_id": "p1",
+                    "job_id": "j1",
+                    "state": "failed",
+                    "recovery_status": "retrying",
+                }
+            )
+        )
+
+    def test_final_failures_are_alerted(self) -> None:
+        runtime = self._runtime()
+        job_event = runtime._event_from_candidate(
+            {
+                "kind": "job",
+                "job_id": "j1",
+                "state": "failed",
+                "error_code": "download_failed",
+                "recovery_status": "exhausted",
+            }
+        )
+        self.assertIsNotNone(job_event)
+        assert job_event is not None
+        self.assertEqual(job_event.event_type, "job.failed")
+        archive_event = runtime._event_from_candidate(
+            {
+                "kind": "archive",
+                "package_id": "p1",
+                "job_id": "j1",
+                "state": "failed",
+                "recovery_status": "quarantined",
+            }
+        )
+        self.assertIsNotNone(archive_event)
+        assert archive_event is not None
+        self.assertEqual(archive_event.event_type, "archive.failed")
+
+    def test_failure_without_recovery_decision_is_treated_as_final(self) -> None:
+        runtime = self._runtime()
+        event = runtime._event_from_candidate(
+            {"kind": "job", "job_id": "j1", "state": "failed", "error_code": "x"}
+        )
+        self.assertIsNotNone(event)

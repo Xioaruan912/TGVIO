@@ -199,7 +199,8 @@ class SQLiteNotificationRepositoryMixin:
                    CAST(strftime('%s', j.updated_at) AS INTEGER) AS occurred_at,
                    (SELECT COUNT(*) FROM job_items i WHERE i.job_id=j.id) AS media_count,
                    (SELECT COALESCE(SUM(i.size_bytes),0) FROM job_items i WHERE i.job_id=j.id) AS bytes,
-                   (SELECT s.accepted_order FROM job_schedule s WHERE s.job_id=j.id) AS accepted_order
+                   (SELECT s.accepted_order FROM job_schedule s WHERE s.job_id=j.id) AS accepted_order,
+                   json_extract(j.policy_json, '$.auto_recovery_job.status') AS recovery_status
             FROM jobs j
             WHERE j.state IN ('succeeded','failed','cancelled')
               AND CAST(strftime('%s', j.updated_at) AS INTEGER) >= ?
@@ -217,8 +218,10 @@ class SQLiteNotificationRepositoryMixin:
                    a.state AS state,
                    CAST(strftime('%s', a.updated_at) AS INTEGER) AS occurred_at,
                    (SELECT COUNT(*) FROM archive_objects o WHERE o.package_id=a.id) AS media_count,
-                   (SELECT COALESCE(SUM(o.size_bytes),0) FROM archive_objects o WHERE o.package_id=a.id) AS bytes
+                   (SELECT COALESCE(SUM(o.size_bytes),0) FROM archive_objects o WHERE o.package_id=a.id) AS bytes,
+                   json_extract(j.policy_json, '$.auto_recovery_archive.status') AS recovery_status
             FROM archive_packages a
+            JOIN jobs j ON j.id = a.job_id
             WHERE a.state IN ('committed','failed','cancelled')
               AND CAST(strftime('%s', a.updated_at) AS INTEGER) >= ?
             ORDER BY a.updated_at DESC

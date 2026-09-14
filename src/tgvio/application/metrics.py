@@ -116,8 +116,9 @@ def _resident_memory_bytes() -> int:
         usage = resource.getrusage(resource.RUSAGE_SELF)
     except Exception:
         return 0
-    divisor = 1024 if "linux" not in _platform() else 1
-    return int(max(0, usage.ru_maxrss) * divisor)
+    # ru_maxrss is kilobytes on Linux and bytes on macOS/BSD.
+    multiplier = 1024 if _platform().startswith("linux") else 1
+    return int(max(0, usage.ru_maxrss) * multiplier)
 
 
 def _platform() -> str:

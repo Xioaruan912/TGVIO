@@ -8,11 +8,13 @@ from unittest.mock import AsyncMock, MagicMock, patch
 
 from tgvio.application.diagnostics import DiagnosticFeatureConfig, DiagnosticSnapshotService
 from tgvio.domain.diagnostics import (
+    CapabilitiesDiagnostic,
     DiagnosticAvailability,
     LeaseFreshness,
     MigrationVerification,
     StaticProxyState,
 )
+from tgvio.infrastructure.capabilities import probe_environment_capabilities
 from tgvio.infrastructure.proxy_probe import probe_static_proxy_endpoint
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 from tgvio.main import run
@@ -358,3 +360,47 @@ class CheckOnlyStartupTests(unittest.IsolatedAsyncioTestCase):
                 await repository.close()
             self.assertEqual(health["static_proxy"]["status"], "configured_unchecked")
             self.assertEqual(health["static_proxy"]["detail"], {"version": 1})
+
+
+class CapabilityDiagnosticTests(unittest.IsolatedAsyncioTestCase):
+    def test_probe_reports_boolean_capabilities(self) -> None:
+        caps = probe_environment_capabilities()
+        for value in (caps.ffmpeg, caps.ffprobe, caps.yt_dlp, caps.cryptg, caps.hachoir):
+            self.assertIsInstance(value, bool)
+
+    async def test_snapshot_includes_capabilities_when_provider_given(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            repository = SQLiteJobRepository(Path(tmp) / "state.sqlite3")
+            await repository.open()
+            try:
+                service = DiagnosticSnapshotService(
+                    repository,
+                    features=DiagnosticFeatureConfig(
+                        run_bot=True,
+                        publish_enabled=True,
+                        url_enabled=False,
+                        url_private_network_policy="block",
+                        archive_enabled=False,
+                        archive_profile_id="primary",
+                        archive_policy="required",
+                        collections_enabled=True,
+                        auto_retry_enabled=True,
+                        live_fixture_enabled=False,
+                        static_proxy_configured=False,
+                    ),
+                    schema_status=repository.schema_status,
+                    capabilities=lambda: CapabilitiesDiagnostic(
+                        ffmpeg=True,
+                        ffprobe=True,
+                        yt_dlp=True,
+                        cryptg=True,
+                        hachoir=False,
+                    ),
+                )
+                snapshot = await service.snapshot()
+                self.assertIsNotNone(snapshot.capabilities)
+                assert snapshot.capabilities is not None
+                self.assertTrue(snapshot.capabilities.ffprobe)
+                self.assertFalse(snapshot.capabilities.hachoir)
+            finally:
+                await repository.close()
