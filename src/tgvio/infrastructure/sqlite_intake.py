@@ -372,12 +372,27 @@ class SQLiteIntakeRepositoryMixin:
         await cursor.close()
         if row is None:
             return UserPreference(owner_id=owner_id)
+        columns = row.keys()
         return UserPreference(
             owner_id=int(row["owner_id"]),
             spoiler_mode=SpoilerMode(row["spoiler_mode"]),
-            quiet_mode=bool(row["quiet_mode"]) if "quiet_mode" in row.keys() else False,
+            quiet_mode=bool(row["quiet_mode"]) if "quiet_mode" in columns else False,
             style_json=(
-                row["style_json"] if "style_json" in row.keys() else None
+                row["style_json"] if "style_json" in columns else None
+            ),
+            thumbnail_path=(
+                row["thumbnail_path"] if "thumbnail_path" in columns else None
+            ),
+            caption_template=(
+                row["caption_template"] if "caption_template" in columns else None
+            ),
+            ytdlp_preset=(
+                row["ytdlp_preset"] if "ytdlp_preset" in columns else None
+            ),
+            ytdlp_audio_only=(
+                bool(row["ytdlp_audio_only"])
+                if "ytdlp_audio_only" in columns
+                else False
             ),
             updated_at=row["updated_at"],
         )
@@ -421,6 +436,59 @@ class SQLiteIntakeRepositoryMixin:
                     updated_at=CURRENT_TIMESTAMP
                 """,
                 (int(owner_id), style_json),
+            )
+        return await self.get_user_preference(owner_id)
+
+    async def set_user_thumbnail_path(
+        self, owner_id: int, thumbnail_path: str | None
+    ) -> UserPreference:
+        async with self._write_transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_preferences(owner_id, thumbnail_path)
+                VALUES(?,?)
+                ON CONFLICT(owner_id) DO UPDATE SET
+                    thumbnail_path=excluded.thumbnail_path,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (int(owner_id), thumbnail_path),
+            )
+        return await self.get_user_preference(owner_id)
+
+    async def set_user_caption_template(
+        self, owner_id: int, caption_template: str | None
+    ) -> UserPreference:
+        async with self._write_transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_preferences(owner_id, caption_template)
+                VALUES(?,?)
+                ON CONFLICT(owner_id) DO UPDATE SET
+                    caption_template=excluded.caption_template,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (int(owner_id), caption_template),
+            )
+        return await self.get_user_preference(owner_id)
+
+    async def set_user_ytdlp_options(
+        self,
+        owner_id: int,
+        *,
+        preset: str,
+        audio_only: bool,
+    ) -> UserPreference:
+        async with self._write_transaction() as conn:
+            await conn.execute(
+                """
+                INSERT INTO user_preferences(owner_id, ytdlp_preset, ytdlp_audio_only)
+                VALUES(?,?,?)
+                ON CONFLICT(owner_id) DO UPDATE SET
+                    ytdlp_preset=excluded.ytdlp_preset,
+                    ytdlp_audio_only=excluded.ytdlp_audio_only,
+                    updated_at=CURRENT_TIMESTAMP
+                """,
+                (int(owner_id), preset, 1 if audio_only else 0),
             )
         return await self.get_user_preference(owner_id)
 

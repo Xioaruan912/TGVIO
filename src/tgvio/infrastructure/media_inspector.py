@@ -61,7 +61,8 @@ class FFprobeMediaInspector:
                 "telegram_streamable_candidate": playable,
                 "faststart": faststart,
                 "faststart_candidate": playable and faststart is False,
-                "send_as_document_candidate": kind == MediaKind.DOCUMENT or (kind == MediaKind.VIDEO and not playable),
+                "send_as_document_candidate": kind in {MediaKind.DOCUMENT, MediaKind.AUDIO}
+                or (kind == MediaKind.VIDEO and not playable),
                 "large_file": stat.st_size > TELEGRAM_SOFT_LIMIT_BYTES,
                 "probe_skipped": not should_probe,
             }
@@ -132,6 +133,8 @@ class FFprobeMediaInspector:
             return MediaKind.PHOTO
         if video is not None or mime_type.startswith("video/"):
             return MediaKind.VIDEO
+        if audio is not None or mime_type.startswith("audio/"):
+            return MediaKind.AUDIO
         return MediaKind.DOCUMENT
 
     @staticmethod

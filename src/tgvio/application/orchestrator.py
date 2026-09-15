@@ -1,14 +1,31 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, replace
+from datetime import datetime
 import logging
-from typing import Iterable
+from typing import Callable, Iterable
+from zoneinfo import ZoneInfo
 
 from tgvio.application.ports import JobRepository
+from tgvio.domain.content import render_caption_template, split_template_buttons
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
 from tgvio.domain.publish import PublishPlan, PublishStep, PublishStepKind, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
+
+
+@dataclass(frozen=True, slots=True)
+class _RenderContext:
+    """Frozen per-job values used to render the owner caption template."""
+
+    template: str
+    thumbnail_path: str
+    channel_at: str
+    group_at: str
+    part_index: int
+    part_count: int
+    item_total: int
+    rendered_at: datetime
 
 
 @dataclass(frozen=True, slots=True)
@@ -18,16 +35,30 @@ class PlanningPolicy:
     album_limit: int = 10
     forward_caption: bool = True
     caption_footer: str = ""
+    channel_at: str = ""
+    group_at: str = ""
 
 
 class JobOrchestrator:
     """Deterministically converts analyzed media facts into a durable publish plan."""
 
-    def __init__(self, repository: JobRepository, policy: PlanningPolicy | None = None) -> None:
+    def __init__(
+        self,
+        repository: JobRepository,
+        policy: PlanningPolicy | None = None,
+        *,
+        clock: Callable[[], datetime] | None = None,
+    ) -> None:
         self._repository = repository
         self._policy = policy or PlanningPolicy()
         self._active = self._policy
+        self._clock = clock or self._default_clock
+        self._render_context: _RenderContext | None = None
         self._log = logging.getLogger("tgvio.publish.plan")
+
+    @staticmethod
+    def _default_clock() -> datetime:
+        return datetime.now(ZoneInfo("Asia/Shanghai"))
 
     def _resolve_policy(self, job: Job) -> PlanningPolicy:
         """Freeze per-job overrides (publish style snapshot) over the process baseline."""
@@ -50,9 +81,15 @@ class JobOrchestrator:
         self._active = self._resolve_policy(job)
         steps: list[PublishStep] = []
         items = sorted(job.items, key=lambda item: item.index)
+        self._render_context = self._build_render_context(job, len(items))
         photos = [item for item in items if item.kind == MediaKind.PHOTO]
         videos = [item for item in items if item.kind == MediaKind.VIDEO]
-        documents = [item for item in items if item.kind == MediaKind.DOCUMENT]
+        audios = [item for item in items if item.kind == MediaKind.AUDIO]
+        documents = [
+            item
+            for item in items
+            if item.kind in {MediaKind.DOCUMENT, MediaKind.AUDIO}
+        ]
         collection_caption = str(job.policy.get("collection_caption", "") or "")
         chosen_cover = self._chosen_cover(job, items)
 
@@ -179,6 +216,7 @@ class JobOrchestrator:
             "media_total": len(items),
             "photos": len(photos),
             "videos": len(videos),
+            "audios": len(audios),
             "documents": len(documents),
             "steps": len(steps),
             "cover_mode": self._active.cover_mode,
@@ -229,6 +267,71 @@ class JobOrchestrator:
             return items[raw]
         return None
 
+    def _build_render_context(self, job: Job, item_total: int) -> _RenderContext:
+        template = str(job.policy.get("caption_template", "") or "").strip()
+        thumbnail_path = str(job.policy.get("thumbnail_path", "") or "").strip()
+        part_index = self._policy_int(job, "collection_part_index", 0)
+        part_count = self._policy_int(job, "collection_part_count", 0)
+        return _RenderContext(
+            template=template,
+            thumbnail_path=thumbnail_path,
+            channel_at=self._active.channel_at,
+            group_at=self._active.group_at,
+            part_index=part_index,
+            part_count=part_count,
+            item_total=max(0, int(item_total)),
+            rendered_at=self._clock(),
+        )
+
+    @staticmethod
+    def _policy_int(job: Job, key: str, default: int) -> int:
+        raw = job.policy.get(key)
+        if isinstance(raw, bool) or not isinstance(raw, int):
+            return default
+        return int(raw)
+
+    def _step_caption_fields(
+        self,
+        batch: tuple[MediaItem, ...],
+    ) -> dict[str, object]:
+        """Render the owner caption template and parse optional inline buttons."""
+
+        context = self._render_context
+        if context is None or not context.template:
+            return {}
+        head = batch[0]
+        variables = {
+            "channel": context.channel_at,
+            "group": context.group_at,
+            "date": context.rendered_at.strftime("%Y-%m-%d"),
+            "time": context.rendered_at.strftime("%H:%M"),
+            "index": str(head.index + 1),
+            "total": str(context.item_total),
+            "count": str(len(batch)),
+            "name": str(head.name or ""),
+            "kind": head.kind.value,
+            "part": str(context.part_index + 1) if context.part_count else "",
+            "parts": str(context.part_count) if context.part_count else "",
+        }
+        try:
+            rendered = render_caption_template(context.template, variables)
+            rendered, buttons = split_template_buttons(rendered)
+        except ValueError as exc:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "publish.caption_template.invalid",
+                "Owner caption template could not be rendered",
+                exception_type=type(exc).__name__,
+            )
+            return {}
+        fields: dict[str, object] = {}
+        if rendered:
+            fields["caption_template"] = rendered
+        if buttons:
+            fields["caption_buttons"] = tuple(buttons)
+        return fields
+
     def _step(
         self,
         current_steps: list[PublishStep],
@@ -242,25 +345,29 @@ class JobOrchestrator:
     ) -> PublishStep:
         batch = tuple(items)
         strategies = {str(item.index): self._strategy(item) for item in batch}
+        params: dict[str, object] = {
+            "mode": mode,
+            "strategies": strategies,
+            "forward_caption": self._active.forward_caption,
+            "caption_footer": self._active.caption_footer,
+            **(
+                {
+                    "collection_caption": collection_caption,
+                    "collection_caption_item_index": collection_caption_item_index,
+                }
+                if collection_caption and collection_caption_item_index is not None
+                else {}
+            ),
+            **self._step_caption_fields(batch),
+        }
+        if self._render_context is not None and self._render_context.thumbnail_path:
+            params["thumbnail_path"] = self._render_context.thumbnail_path
         return PublishStep(
             index=len(current_steps),
             kind=kind,
             target=target,
             item_indexes=tuple(item.index for item in batch),
-            params={
-                "mode": mode,
-                "strategies": strategies,
-                "forward_caption": self._active.forward_caption,
-                "caption_footer": self._active.caption_footer,
-                **(
-                    {
-                        "collection_caption": collection_caption,
-                        "collection_caption_item_index": collection_caption_item_index,
-                    }
-                    if collection_caption and collection_caption_item_index is not None
-                    else {}
-                ),
-            },
+            params=params,
         )
 
     def _append_video_steps(

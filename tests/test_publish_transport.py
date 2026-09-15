@@ -34,6 +34,8 @@ class FakeTransformer:
         self.remux_calls: list[int] = []
         self.thumbnail_calls: list[int] = []
         self.thumbnail_enabled = False
+        self.normalize_calls: list[str] = []
+        self.normalize_enabled = True
         self.playable_split_calls: list[int] = []
         self.binary_split_calls: list[int] = []
 
@@ -81,6 +83,22 @@ class FakeTransformer:
         target_dir.mkdir(parents=True, exist_ok=True)
         out = target_dir / f"thumb-{item_index}.jpg"
         out.write_bytes(b"thumb")
+        return out
+
+    async def normalize_thumbnail(
+        self,
+        source: Path,
+        target_dir: Path,
+        *,
+        max_size: int = 320,
+        max_bytes: int = 1_000_000,
+    ) -> Path | None:
+        self.normalize_calls.append(str(source))
+        if not self.normalize_enabled:
+            return None
+        target_dir.mkdir(parents=True, exist_ok=True)
+        out = target_dir / "custom-thumb.jpg"
+        out.write_bytes(b"custom-thumb")
         return out
 
     async def make_playable_segments(
@@ -328,6 +346,165 @@ class TelethonPublishTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([media.message for media in sends[0].multi_media], ["a", "b"])
         self.assertIsNone(sends[0].reply_to)
         self.assertEqual(self.client.send_calls, [])
+
+    async def test_custom_thumbnail_is_normalized_and_preferred(self) -> None:
+        custom = self.root / "owner-thumb.jpg"
+        custom.write_bytes(b"custom")
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.VIDEO)],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_MEDIA_GROUP,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={
+                "forward_caption": False,
+                "strategies": {"0": "native"},
+                "thumbnail_path": str(custom),
+            },
+        )
+        await self.transport.execute_step(job, step, ())
+        self.assertEqual(self.transformer.normalize_calls, [str(custom)])
+        self.assertEqual(self.transformer.thumbnail_calls, [])
+
+    async def test_unusable_custom_thumbnail_falls_back_to_generated_frame(self) -> None:
+        custom = self.root / "owner-thumb.jpg"
+        custom.write_bytes(b"custom")
+        self.transformer.normalize_enabled = False
+        self.transformer.thumbnail_enabled = True
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.VIDEO)],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_MEDIA_GROUP,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={
+                "forward_caption": False,
+                "strategies": {"0": "native"},
+                "thumbnail_path": str(custom),
+            },
+        )
+        await self.transport.execute_step(job, step, ())
+        self.assertEqual(self.transformer.normalize_calls, [str(custom)])
+        self.assertEqual(self.transformer.thumbnail_calls, [0])
+
+    async def test_custom_thumbnail_replaces_generated_channel_cover(self) -> None:
+        custom = self.root / "owner-thumb.jpg"
+        custom.write_bytes(b"custom")
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.VIDEO)],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_VIDEO_COVER,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={
+                "forward_caption": False,
+                "strategies": {"0": "native"},
+                "thumbnail_path": str(custom),
+            },
+        )
+        await self.transport.execute_step(job, step, ())
+        self.assertEqual(self.transformer.normalize_calls, [str(custom)])
+        self.assertEqual(self.transformer.cover_calls, [])
+        self.assertEqual(len(self.client.send_calls), 1)
+
+    async def test_caption_buttons_only_attach_to_single_media_sends(self) -> None:
+        buttons = (("打开频道", "https://t.me/example"),)
+        single = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.VIDEO)],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_MEDIA_GROUP,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={
+                "forward_caption": False,
+                "strategies": {"0": "native"},
+                "caption_buttons": buttons,
+            },
+        )
+        await self.transport.execute_step(single, step, ())
+        self.assertEqual(len(self.client.send_calls), 1)
+        sent_buttons = self.client.send_calls[0][2].get("buttons")
+        self.assertIsNotNone(sent_buttons)
+        self.assertEqual(sent_buttons[0][0].text, "打开频道")
+        self.assertEqual(sent_buttons[0][0].url, "https://t.me/example")
+
+        album = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[self._item(0, MediaKind.PHOTO), self._item(1, MediaKind.PHOTO)],
+        )
+        album_step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_COVER_ALBUM,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0, 1),
+            params={
+                "forward_caption": False,
+                "strategies": {"0": "native", "1": "native"},
+                "caption_buttons": buttons,
+            },
+        )
+        self.client.send_calls.clear()
+        await self.transport.execute_step(album, album_step, ())
+        self.assertEqual(self.client.send_calls, [])
+
+    async def test_audio_item_is_published_as_playable_audio(self) -> None:
+        path = self.root / "item-0.mp3"
+        path.write_bytes(b"audio")
+        item = MediaItem(
+            index=0,
+            kind=MediaKind.AUDIO,
+            source="url:https://example.test/audio",
+            local_path=str(path),
+            duration_seconds=12.0,
+        )
+        job = Job(
+            owner_id=42,
+            destination="@channel",
+            state=JobState.PLANNED,
+            items=[item],
+        )
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_DOCUMENT,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0,),
+            params={"forward_caption": False, "strategies": {"0": "document"}},
+        )
+        await self.transport.execute_step(job, step, ())
+        self.assertEqual(len(self.client.send_calls), 1)
+        media = self.client.send_calls[0][1]
+        self.assertEqual(media.mime_type, "audio/mpeg")
+        self.assertFalse(media.force_file)
+        audio_attributes = [
+            attribute
+            for attribute in media.attributes
+            if isinstance(attribute, types.DocumentAttributeAudio)
+        ]
+        self.assertEqual(len(audio_attributes), 1)
+        self.assertEqual(audio_attributes[0].duration, 12)
+        self.assertFalse(self.client.send_calls[0][2].get("force_document", False))
 
     async def test_single_visible_send_failure_is_uncertain(self) -> None:
         self.client.fail_send_on = 1

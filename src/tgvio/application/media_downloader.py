@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 import logging
 import shutil
 from pathlib import Path
@@ -73,10 +74,11 @@ class JobDownloader:
                 )
                 if item.kind == MediaKind.TEXT:
                     continue
+                download_item = self._with_url_options(job, item)
                 self._ensure_disk_capacity(item.size_bytes)
                 downloaded[position] = await self._download_with_cancel(
                     job,
-                    item,
+                    download_item,
                     target_dir,
                 )
                 job.items = list(downloaded)
@@ -268,6 +270,24 @@ class JobDownloader:
             if pending_updates:
                 await asyncio.gather(*tuple(pending_updates), return_exceptions=True)
             raise
+
+    @staticmethod
+    def _with_url_options(job: Job, item: Any) -> Any:
+        """Freeze the per-job yt-dlp snapshot onto the URL media item."""
+
+        if str(item.metadata.get("source_type") or "").lower() != "url":
+            return item
+        if "ytdlp" in item.metadata:
+            return item
+        policy = job.policy.get("ytdlp")
+        if not isinstance(policy, dict):
+            return item
+        metadata = dict(item.metadata)
+        metadata["ytdlp"] = {
+            "preset": policy.get("preset"),
+            "audio_only": bool(policy.get("audio_only")),
+        }
+        return replace(item, metadata=metadata)
 
     def _ensure_disk_capacity(self, expected_bytes: int) -> None:
         self._download_root.mkdir(parents=True, exist_ok=True)

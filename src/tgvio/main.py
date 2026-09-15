@@ -247,6 +247,7 @@ async def run(*, check_only: bool = False) -> None:
             {
                 "url": UrlMediaDownloader(
                     private_network_policy=settings.url_private_network_policy,
+                    cookies_file=settings.ytdlp_cookies_file or None,
                 )
             },
         )
@@ -270,6 +271,8 @@ async def run(*, check_only: bool = False) -> None:
                     for value in (settings.channel_at, settings.group_at)
                     if value
                 ).strip(),
+                channel_at=settings.channel_at,
+                group_at=settings.group_at,
             ),
         )
         processor = IngestionProcessor(

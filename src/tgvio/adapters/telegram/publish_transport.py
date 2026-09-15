@@ -122,13 +122,20 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
         if step.kind == PublishStepKind.CHANNEL_VIDEO_COVER:
             item = items[0]
             source = self._local_path(item)
-            cover = await self._transformer.make_video_cover(
-                source,
+            cover = await self._custom_thumbnail(
+                step,
                 workdir,
-                item_index=item.index,
-                duration_seconds=item.duration_seconds,
-                max_width=self._cover_width,
+                job_id=job.id,
+                max_size=self._cover_width,
             )
+            if cover is None:
+                cover = await self._transformer.make_video_cover(
+                    source,
+                    workdir,
+                    item_index=item.index,
+                    duration_seconds=item.duration_seconds,
+                    max_width=self._cover_width,
+                )
             sent = await self._send_visible_file(
                 target,
                 str(cover),
@@ -140,7 +147,7 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
         force_document = step.kind in {
             PublishStepKind.CHANNEL_DOCUMENT,
             PublishStepKind.DISCUSSION_DOCUMENT,
-        }
+        } and not any(item.kind == MediaKind.AUDIO for item in items)
         files: list[object] = []
         for item in items:
             strategy = self._strategy(step, item.index)
@@ -158,24 +165,26 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
                 )
             thumbnail = None
             if item.kind == MediaKind.VIDEO:
-                try:
-                    thumbnail = await self._transformer.make_video_thumbnail(
-                        source,
-                        workdir,
-                        item_index=item.index,
-                        duration_seconds=item.duration_seconds,
-                    )
-                except Exception as exc:
-                    log_event(
-                        self._log,
-                        logging.WARNING,
-                        "publish.thumbnail.failed",
-                        "Video thumbnail generation failed",
-                        job_id=job.id,
-                        item_index=item.index,
-                        exception_type=type(exc).__name__,
-                        exc_info=True,
-                    )
+                thumbnail = await self._custom_thumbnail(step, workdir, job_id=job.id)
+                if thumbnail is None:
+                    try:
+                        thumbnail = await self._transformer.make_video_thumbnail(
+                            source,
+                            workdir,
+                            item_index=item.index,
+                            duration_seconds=item.duration_seconds,
+                        )
+                    except Exception as exc:
+                        log_event(
+                            self._log,
+                            logging.WARNING,
+                            "publish.thumbnail.failed",
+                            "Video thumbnail generation failed",
+                            job_id=job.id,
+                            item_index=item.index,
+                            exception_type=type(exc).__name__,
+                            exc_info=True,
+                        )
                 if thumbnail is None:
                     log_event(
                         self._log,
@@ -202,6 +211,7 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
                 )
             )
         captions = [self._caption(item, step) for item in items]
+        buttons = self._caption_buttons(step) if len(files) == 1 else None
         if len(files) > 1:
             sent = await self._send_album(
                 target,
@@ -219,8 +229,76 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
                 force_document=force_document,
                 supports_streaming=not force_document and items[0].kind == MediaKind.VIDEO,
                 reply_to=reply_to,
+                buttons=buttons,
             )
         return await self._finalize_receipts(job, step, self._receipts(sent, step, items))
+
+    async def _custom_thumbnail(
+        self,
+        step,
+        workdir: Path,
+        *,
+        job_id: str,
+        max_size: int = 320,
+    ) -> Path | None:
+        """Normalize an owner-supplied thumbnail, or return None to auto-generate."""
+
+        custom = str(step.params.get("thumbnail_path", "") or "").strip()
+        if not custom:
+            return None
+        path = Path(custom)
+        if not path.is_file():
+            log_event(
+                self._log,
+                logging.WARNING,
+                "publish.thumbnail.custom_missing",
+                "Custom thumbnail file is unavailable; falling back to a generated frame",
+                job_id=job_id,
+            )
+            return None
+        try:
+            normalized = await self._transformer.normalize_thumbnail(
+                path,
+                workdir,
+                max_size=max_size,
+            )
+        except Exception as exc:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "publish.thumbnail.custom_failed",
+                "Custom thumbnail could not be normalized",
+                job_id=job_id,
+                exception_type=type(exc).__name__,
+            )
+            return None
+        if normalized is None:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "publish.thumbnail.custom_invalid",
+                "Custom thumbnail is not a decodable image",
+                job_id=job_id,
+            )
+        return normalized
+
+    @staticmethod
+    def _caption_buttons(step: PublishStep) -> list[list["Button"]] | None:
+        raw = step.params.get("caption_buttons")
+        if not raw:
+            return None
+        rows: list[list[Button]] = []
+        for entry in raw:
+            try:
+                label, url = entry
+            except (TypeError, ValueError):
+                continue
+            label = str(label).strip()
+            url = str(url).strip()
+            if not label or not url.lower().startswith(("http://", "https://")):
+                continue
+            rows.append([Button.url(label, url)])
+        return rows or None
 
     async def _upload_local_file(
         self,

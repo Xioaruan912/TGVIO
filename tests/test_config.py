@@ -53,6 +53,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.log_backup_count, 5)
         self.assertFalse(settings.url_enabled)
         self.assertEqual(settings.url_private_network_policy, "block")
+        self.assertEqual(settings.ytdlp_cookies_file, "")
         self.assertEqual(settings.static_proxy_url, "")
         self.assertEqual(settings.static_proxy_probe_timeout_seconds, 2)
         summary = settings.safe_summary()
@@ -345,6 +346,24 @@ class SettingsTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ConfigError, "LIVE_FIXTURE_MAX_MB"):
                 Settings.from_env()
+
+
+class YtdlpCookieSettingsTests(unittest.TestCase):
+    def test_cookies_path_is_optional_and_redacted(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_YTDLP_COOKIES_FILE": "/app/session/cookies.txt"},
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        self.assertEqual(settings.ytdlp_cookies_file, "/app/session/cookies.txt")
+        summary = settings.safe_summary()
+        self.assertTrue(summary["ytdlp_cookies_configured"])
+        self.assertNotIn("/app/session/cookies.txt", repr(summary))
+
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            default = Settings.from_env()
+        self.assertFalse(default.safe_summary()["ytdlp_cookies_configured"])
 
 
 class DashboardWebhookSettingsTests(unittest.TestCase):

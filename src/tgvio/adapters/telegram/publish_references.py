@@ -1,5 +1,8 @@
 from __future__ import annotations
 
+import mimetypes
+from pathlib import Path
+
 from tgvio.adapters.telegram.publish_transport_support import *  # noqa: F401,F403
 
 
@@ -94,6 +97,25 @@ class PublishReferenceMixin:
                     round_message=False,
                 )
             )
+        if kind == MediaKind.AUDIO and not force_document:
+            # Publish audio-only downloads as a playable audio media message.
+            # Telethon's get_attributes needs an optional tag parser that is not
+            # installed in the runtime image, so attach the audio attribute
+            # explicitly from the durable duration captured by ffprobe.
+            attributes = [
+                attribute
+                for attribute in attributes
+                if not isinstance(attribute, types.DocumentAttributeAudio)
+            ]
+            attributes.append(
+                types.DocumentAttributeAudio(
+                    duration=int(duration_seconds or 0),
+                    title=(Path(source).stem or None),
+                    performer=None,
+                    voice=False,
+                )
+            )
+            mime_type = mimetypes.guess_type(str(source))[0] or "audio/mpeg"
         uploaded_thumb = (
             await self._upload_local_file(
                 thumbnail,

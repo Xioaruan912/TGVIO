@@ -14,6 +14,7 @@ from tgvio.domain.intake import (
     SpoilerMode,
     UserPreference,
 )
+from tgvio.application.content_prefs import content_policy_snapshot
 from tgvio.domain.job import Job, MediaItem, MediaKind
 
 
@@ -96,6 +97,7 @@ class IntakeService:
         incoming = self._dedupe_batch(media)
         if not incoming:
             raise ValueError("incoming media batch must not be empty")
+        policy = await self._apply_content_policy(owner_id, policy)
 
         # Compatibility for narrow test doubles and any non-SQL repository.
         if not hasattr(self._repository, "lookup_intake_events") or not hasattr(
@@ -162,6 +164,25 @@ class IntakeService:
             if await self._repository.create_with_intake_events(job, events):
                 return IntakeAcceptResult(job=job, created=True)
         raise RuntimeError("intake event contention did not converge")
+
+    async def _apply_content_policy(
+        self,
+        owner_id: int,
+        policy: dict[str, Any] | None,
+    ) -> dict[str, Any]:
+        merged = dict(policy or {})
+        getter = getattr(self._repository, "get_user_preference", None)
+        if getter is None:
+            return merged
+        try:
+            preference = await getter(int(owner_id))
+        except Exception:
+            return merged
+        snapshot = content_policy_snapshot(preference)
+        for key in ("thumbnail_path", "caption_template", "ytdlp"):
+            if key not in merged and snapshot.get(key) is not None:
+                merged[key] = snapshot[key]
+        return merged
 
     async def begin_collection(
         self,

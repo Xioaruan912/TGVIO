@@ -121,6 +121,19 @@ Telegram 消息 / 链接
 - **改数据库结构**：只能**新增**不可变的 migration 文件 `infrastructure/migrations/NNNN_名字.sql`，绝不修改已有 migration；表结构变化要能被旧的 checksum 校验接受。
 - **改配置项**：在 `config.py` 里读取并校验，同时更新 `.env.example`（本仓库根目录）。
 
+## 6.1 内容偏好（缩略图 / 配文模板 / 链接画质）
+
+这三个「所有者级内容偏好」是同一套模式，可作为新增偏好的范例：
+
+- 规则集中在 `domain/content.py`（纯函数：画质预设、模板变量白名单、模板渲染、`button: 文字 | 链接` 解析）。
+- 持久化在 `user_preferences`（migration `0017_user_content_prefs`），仓储方法在 `infrastructure/sqlite_intake.py`，端口声明在 `application/ports.py`。
+- 服务与快照在 `application/content_prefs.py`：`ContentPreferenceService` 负责校验/保存，`content_policy_snapshot()` 产出冻结进任务的数据。
+- **接受任务时冻结**：`application/intake.py` 的 `_apply_content_policy()` 把偏好写入 `Job.policy`（`thumbnail_path` / `caption_template` / `ytdlp`），显式传入的同名 policy 优先。之后修改偏好只影响新任务。
+- 发布时：`application/orchestrator.py` 渲染模板为 `caption_template`、解析 `caption_buttons`、把 `thumbnail_path` 写入 step params；`adapters/telegram/publish_transport.py` 使用自定义缩略图（失败回退自动截帧）并只在**单条媒体**上附加按钮（相册不支持按钮）。
+- 下载时：`application/media_downloader.py` 把 `job.policy["ytdlp"]` 合并进 URL 媒体项，`adapters/url_downloader.py` 据此选择 `format`、音频提取后处理器与可选的 `cookiefile`（路径来自 `TGVIO_YTDLP_COOKIES_FILE`，服务端配置）。
+- 音频：`MediaKind.AUDIO` 走 document step，但发布时以可播放音频属性（`DocumentAttributeAudio` + `audio/mpeg`）发送，不强制作为文件。
+- Bot UI 在 `adapters/telegram/bot_ui_content.py`（页面、回调、`/thumb`、`/caption`），入口按钮在设置页。
+
 ---
 
 ## 7. 如何自测

@@ -114,6 +114,7 @@ class Settings:
     auto_retry_poll_seconds: int
     url_enabled: bool
     url_private_network_policy: str
+    ytdlp_cookies_file: str
     static_proxy_url: str = field(repr=False)
     static_proxy_probe_timeout_seconds: int
     dashboard_enabled: bool
@@ -414,9 +415,9 @@ class Settings:
             auto_retry_poll_seconds=auto_retry_poll_seconds,
             url_enabled=_bool("TGVIO_URL_ENABLED", False),
             url_private_network_policy=url_private_network_policy,
+            ytdlp_cookies_file=os.getenv("TGVIO_YTDLP_COOKIES_FILE", "").strip(),
             static_proxy_url=static_proxy_url,
-            static_proxy_probe_timeout_seconds=static_proxy_probe_timeout_seconds,
-            dashboard_enabled=dashboard_enabled,
+            static_proxy_probe_timeout_seconds=static_proxy_probe_timeout_seconds,            dashboard_enabled=dashboard_enabled,
             dashboard_host=dashboard_host,
             dashboard_port=dashboard_port,
             dashboard_token=dashboard_token,
@@ -490,6 +491,7 @@ class Settings:
             "log_backup_count": self.log_backup_count,
             "url_enabled": self.url_enabled,
             "url_private_network_policy": self.url_private_network_policy,
+            "ytdlp_cookies_configured": bool(self.ytdlp_cookies_file),
             "static_proxy_configured": bool(self.static_proxy_url),
             "static_proxy_probe_timeout_seconds": self.static_proxy_probe_timeout_seconds,
             "dashboard_enabled": self.dashboard_enabled,

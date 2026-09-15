@@ -10,6 +10,7 @@ from typing import Callable
 from yt_dlp import YoutubeDL
 
 from tgvio.application.ports import TransferProgressCallback
+from tgvio.domain.content import AUDIO_ONLY_PRESET, YTDLP_AUDIO_FORMAT, ytdlp_format_for
 from tgvio.domain.job import MediaItem
 from tgvio.infrastructure.url_security import validate_download_url
 
@@ -27,10 +28,12 @@ class UrlMediaDownloader:
         private_network_policy: str = "block",
         ydl_factory: Callable = YoutubeDL,
         cancel_wait_seconds: float = 10.0,
+        cookies_file: str | None = None,
     ) -> None:
         self._private_network_policy = private_network_policy
         self._ydl_factory = ydl_factory
         self._cancel_wait_seconds = max(0.1, float(cancel_wait_seconds))
+        self._cookies_file = (cookies_file or "").strip() or None
 
     async def download(
         self,
@@ -87,19 +90,7 @@ class UrlMediaDownloader:
                 total = int(total_raw) if total_raw else None
                 loop.call_soon_threadsafe(progress_callback, downloaded, total)
 
-        options = {
-            "outtmpl": str(root / "%(id).80s-%(title).120s.%(ext)s"),
-            "format": "bv*+ba/b",
-            "merge_output_format": "mp4",
-            "noplaylist": True,
-            "quiet": True,
-            "no_warnings": True,
-            "noprogress": True,
-            "retries": 3,
-            "continuedl": True,
-            "restrictfilenames": True,
-            "progress_hooks": [progress_hook],
-        }
+        options = self._build_options(item, root, progress_hook)
         if cancel_event.is_set():
             raise UrlDownloadCancelled("URL download cancelled")
         try:
@@ -135,6 +126,39 @@ class UrlMediaDownloader:
             metadata=metadata,
         )
 
+    def _build_options(self, item: MediaItem, root: Path, progress_hook: Callable) -> dict:
+        ytdlp = item.metadata.get("ytdlp")
+        config = ytdlp if isinstance(ytdlp, dict) else {}
+        preset = str(config.get("preset") or "best")
+        audio_only = bool(config.get("audio_only"))
+        options: dict = {
+            "outtmpl": str(root / "%(id).80s-%(title).120s.%(ext)s"),
+            "format": ytdlp_format_for(AUDIO_ONLY_PRESET if audio_only else preset),
+            "noplaylist": True,
+            "quiet": True,
+            "no_warnings": True,
+            "noprogress": True,
+            "retries": 3,
+            "continuedl": True,
+            "restrictfilenames": True,
+            "progress_hooks": [progress_hook],
+        }
+        if audio_only:
+            options["postprocessors"] = [
+                {
+                    "key": "FFmpegExtractAudio",
+                    "preferredcodec": YTDLP_AUDIO_FORMAT,
+                    "preferredquality": "0",
+                }
+            ]
+        else:
+            options["merge_output_format"] = "mp4"
+        if self._cookies_file:
+            cookie_path = Path(self._cookies_file)
+            if cookie_path.is_file():
+                options["cookiefile"] = str(cookie_path)
+        return options
+
     @staticmethod
     def _source_url(item: MediaItem) -> str:
         prefix = "url:"
@@ -167,7 +191,18 @@ class UrlMediaDownloader:
         for candidate in candidates:
             expanded.append(candidate)
             stem, _ext = os.path.splitext(candidate)
-            expanded.extend((f"{stem}.mp4", f"{stem}.mkv", f"{stem}.webm"))
+            expanded.extend(
+                (
+                    f"{stem}.mp4",
+                    f"{stem}.mkv",
+                    f"{stem}.webm",
+                    f"{stem}.mp3",
+                    f"{stem}.m4a",
+                    f"{stem}.opus",
+                    f"{stem}.ogg",
+                    f"{stem}.wav",
+                )
+            )
         seen: set[Path] = set()
         for candidate in expanded:
             resolved = cls._contained_path(candidate, root)

@@ -72,6 +72,7 @@ from tgvio.adapters.telegram.bot_ui_jobs import BotUIJobsMixin
 from tgvio.adapters.telegram.bot_ui_result import BotUIResultMixin
 from tgvio.adapters.telegram.bot_ui_drafts import BotUIDraftsMixin
 from tgvio.adapters.telegram.bot_ui_styles import BotUIStylesMixin
+from tgvio.adapters.telegram.bot_ui_content import BotUIContentMixin
 from tgvio.adapters.telegram.bot_ui_archive import BotUIArchiveMixin
 from tgvio.adapters.telegram.bot_ui_fixture import BotUIFixtureMixin
 
@@ -82,6 +83,7 @@ class TelethonBotUI(
     BotUIResultMixin,
     BotUIDraftsMixin,
     BotUIStylesMixin,
+    BotUIContentMixin,
     BotUIJobsMixin,
     BotUIFormatMixin,
 ):
@@ -259,6 +261,14 @@ class TelethonBotUI(
                 buttons=self._settings_page_buttons(quiet),
                 parse_mode="md",
             )
+        elif command == "thumb":
+            await self._set_thumbnail_from_message(event, int(event.sender_id))
+        elif command == "caption":
+            await self._set_caption_template_from_message(
+                event,
+                int(event.sender_id),
+                argument,
+            )
         elif command == "retry":
             await self._retry_job(event, int(event.sender_id), argument.strip() or None)
         elif command == "cancel":
@@ -429,6 +439,11 @@ class TelethonBotUI(
             return
         if action == "ui:styles":
             await self._show_styles_callback(event, owner_id)
+            return
+        if action == "ui:content":
+            await self._show_content_callback(event, owner_id)
+            return
+        if await self._handle_content_callback(event, owner_id, action):
             return
         if action == "ui:settings":
             quiet = await self._quiet_enabled(owner_id)

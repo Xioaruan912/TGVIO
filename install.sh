@@ -187,6 +187,7 @@ GROUP_ADV=(
   "TGVIO_CACHE_RETENTION_HOURS|缓存保留小时|int_range|1:2160"
   "TGVIO_DISK_RESERVE_MB|磁盘保留空间(MB)|int_range|0:1000000"
   "TGVIO_AUTO_RETRY_MAX_ATTEMPTS|自动重试次数|int_range|0:10"
+  "TGVIO_YTDLP_COOKIES_FILE|链接下载 Cookie 文件路径（可空）|any"
   "TGVIO_LOG_LEVEL|日志级别|choice|DEBUG,INFO,WARNING,ERROR,CRITICAL"
 )
 

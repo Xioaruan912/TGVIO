@@ -5,7 +5,7 @@ import logging
 from pathlib import Path
 from typing import Iterable, Protocol
 
-from telethon import TelegramClient, helpers, utils
+from telethon import Button, TelegramClient, helpers, utils
 from telethon.errors.rpcerrorlist import MediaEmptyError, MediaInvalidError
 from telethon.tl import functions, types
 

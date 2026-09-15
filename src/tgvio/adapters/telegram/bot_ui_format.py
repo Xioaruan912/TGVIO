@@ -858,6 +858,7 @@ class BotUIFormatMixin:
                 Button.inline(f"🧹 每日清空 {toggle_label(on('daily_cleanup_enabled', True))}", b"set:daily_cleanup_enabled"),
                 Button.inline(f"🔕 安静 {toggle_label(quiet)}", b"set:quiet_mode"),
             ],
+            [Button.inline("🧩 内容与下载", b"ui:content")],
             [Button.inline("🔄 刷新", b"ui:settings"), Button.inline("🏠 首页", b"ui:home")],
         ]
 

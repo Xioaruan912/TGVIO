@@ -216,3 +216,104 @@ class OrchestratorTests(unittest.TestCase):
             "@destination @discussion",
         )
 
+    def test_caption_template_renders_variables_into_step_params(self) -> None:
+        from datetime import datetime
+        from zoneinfo import ZoneInfo
+
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={
+                "caption_template": "{channel} | {date} 第{index}集/共{total}集 {count}{kind}",
+                "collection_part_index": 1,
+                "collection_part_count": 3,
+            },
+            items=[
+                MediaItem(index=0, kind=MediaKind.VIDEO, source="v0", name="ep1.mp4"),
+                MediaItem(index=1, kind=MediaKind.VIDEO, source="v1", name="ep2.mp4"),
+            ],
+        )
+        orchestrator = JobOrchestrator(
+            DummyRepository(),
+            PlanningPolicy(channel_at="@channel", group_at="@group"),
+            clock=lambda: datetime(2026, 9, 15, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+        plan = orchestrator.plan(job)
+        album_steps = [
+            step for step in plan.steps if len(step.item_indexes) == 2
+        ]
+        self.assertEqual(len(album_steps), 1)
+        self.assertEqual(
+            album_steps[0].params["caption_template"],
+            "@channel | 2026-09-15 第1集/共2集 2video",
+        )
+
+    def test_caption_template_button_line_becomes_caption_buttons(self) -> None:
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={"caption_template": "看这里\nbutton: 打开频道 | https://t.me/example"},
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="v0")],
+        )
+        plan = JobOrchestrator(DummyRepository(), PlanningPolicy()).plan(job)
+        params = plan.steps[0].params
+        self.assertEqual(params["caption_template"], "看这里")
+        self.assertEqual(
+            params["caption_buttons"],
+            (("打开频道", "https://t.me/example"),),
+        )
+
+    def test_unknown_template_variable_is_ignored_without_crashing(self) -> None:
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={"caption_template": "{bogus}"},
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="v0")],
+        )
+        plan = JobOrchestrator(DummyRepository(), PlanningPolicy()).plan(job)
+        self.assertNotIn("caption_template", plan.steps[0].params)
+        self.assertNotIn("caption_buttons", plan.steps[0].params)
+
+    def test_thumbnail_path_is_frozen_into_steps(self) -> None:
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={"thumbnail_path": "/data/content/thumbnail-42.jpg"},
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="v0")],
+        )
+        plan = JobOrchestrator(DummyRepository(), PlanningPolicy()).plan(job)
+        self.assertTrue(
+            all(
+                step.params.get("thumbnail_path") == "/data/content/thumbnail-42.jpg"
+                for step in plan.steps
+            )
+        )
+
+    def test_audio_is_planned_as_its_own_document_step(self) -> None:
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={},
+            items=[
+                MediaItem(
+                    index=0,
+                    kind=MediaKind.AUDIO,
+                    source="url:https://example.test/a",
+                    metadata={"send_as_document_candidate": True},
+                )
+            ],
+        )
+        plan = JobOrchestrator(
+            DummyRepository(),
+            PlanningPolicy(cover_mode=False),
+        ).plan(job)
+        self.assertEqual(len(plan.steps), 1)
+        self.assertEqual(plan.steps[0].kind, PublishStepKind.CHANNEL_DOCUMENT)
+        self.assertEqual(plan.steps[0].params["strategies"], {"0": "document"})
+        self.assertEqual(plan.summary["audios"], 1)
+

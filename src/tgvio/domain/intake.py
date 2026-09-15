@@ -65,6 +65,10 @@ class UserPreference:
     spoiler_mode: SpoilerMode = SpoilerMode.SOURCE
     quiet_mode: bool = False
     style_json: str | None = None
+    thumbnail_path: str | None = None
+    caption_template: str | None = None
+    ytdlp_preset: str | None = None
+    ytdlp_audio_only: bool = False
     updated_at: str | None = None
 
 

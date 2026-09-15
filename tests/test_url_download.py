@@ -114,6 +114,63 @@ class UrlMediaDownloaderTests(unittest.IsolatedAsyncioTestCase):
             self.assertTrue(FakeYdl.last_options["noplaylist"])
             self.assertEqual(progress, [(5, 13), (13, 13)])
 
+    async def test_quality_preset_selects_a_bounded_format(self) -> None:
+        item = MediaItem(
+            index=0,
+            kind=MediaKind.DOCUMENT,
+            source="url:https://example.com/watch?v=abc",
+            metadata={"source_type": "url", "ytdlp": {"preset": "720", "audio_only": False}},
+        )
+        downloader = UrlMediaDownloader(private_network_policy="allow", ydl_factory=FakeYdl)
+        with TemporaryDirectory() as tmp:
+            await downloader.download(item, Path(tmp))
+        self.assertIn("height<=720", FakeYdl.last_options["format"])
+        self.assertEqual(FakeYdl.last_options["merge_output_format"], "mp4")
+        self.assertNotIn("postprocessors", FakeYdl.last_options)
+
+    async def test_audio_only_extracts_mp3(self) -> None:
+        item = MediaItem(
+            index=0,
+            kind=MediaKind.DOCUMENT,
+            source="url:https://example.com/watch?v=abc",
+            metadata={"source_type": "url", "ytdlp": {"preset": "best", "audio_only": True}},
+        )
+        downloader = UrlMediaDownloader(private_network_policy="allow", ydl_factory=FakeYdl)
+        with TemporaryDirectory() as tmp:
+            await downloader.download(item, Path(tmp))
+        self.assertEqual(FakeYdl.last_options["format"], "bestaudio/best")
+        postprocessors = FakeYdl.last_options["postprocessors"]
+        self.assertEqual(postprocessors[0]["key"], "FFmpegExtractAudio")
+        self.assertEqual(postprocessors[0]["preferredcodec"], "mp3")
+        self.assertNotIn("merge_output_format", FakeYdl.last_options)
+
+    async def test_cookies_file_is_only_used_when_present(self) -> None:
+        item = MediaItem(
+            index=0,
+            kind=MediaKind.DOCUMENT,
+            source="url:https://example.com/watch?v=abc",
+            metadata={"source_type": "url"},
+        )
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            cookies = root / "cookies.txt"
+            cookies.write_text("# netscape\n", encoding="utf-8")
+            downloader = UrlMediaDownloader(
+                private_network_policy="allow",
+                ydl_factory=FakeYdl,
+                cookies_file=str(cookies),
+            )
+            await downloader.download(item, root)
+            self.assertEqual(FakeYdl.last_options["cookiefile"], str(cookies))
+
+            missing = UrlMediaDownloader(
+                private_network_policy="allow",
+                ydl_factory=FakeYdl,
+                cookies_file=str(root / "absent.txt"),
+            )
+            await missing.download(item, root)
+            self.assertNotIn("cookiefile", FakeYdl.last_options)
+
     async def test_backend_exception_does_not_echo_source_url(self) -> None:
         item = MediaItem(
             index=0,

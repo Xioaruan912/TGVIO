@@ -160,6 +160,47 @@ class FFmpegMediaTransformer:
             raise RuntimeError(f"faststart remux failed: {(stderr or 'unknown')[-500:]}")
         return output
 
+    async def normalize_thumbnail(
+        self,
+        source: Path,
+        target_dir: Path,
+        *,
+        max_size: int = 320,
+        max_bytes: int = 1_000_000,
+    ) -> Path | None:
+        """Downscale an owner-supplied image into a Telegram-friendly thumbnail.
+
+        Returns ``None`` when the source cannot be decoded as an image so the
+        caller can fall back to the auto-generated frame instead of failing the
+        whole publish step.
+        """
+
+        target_dir.mkdir(parents=True, exist_ok=True)
+        output = target_dir / "custom-thumb.jpg"
+        for quality in (5, 8, 12, 18, 24, 30):
+            output.unlink(missing_ok=True)
+            code, _stdout, _stderr = await self._run(
+                self._ffmpeg_bin,
+                "-y",
+                "-v",
+                "error",
+                "-i",
+                str(source),
+                "-frames:v",
+                "1",
+                "-vf",
+                f"scale={max_size}:{max_size}:force_original_aspect_ratio=decrease",
+                "-q:v",
+                str(quality),
+                str(output),
+            )
+            if code != 0 or not output.is_file() or output.stat().st_size <= 0:
+                return None
+            if output.stat().st_size <= max_bytes:
+                return output
+        output.unlink(missing_ok=True)
+        return None
+
     async def make_binary_volumes(
         self,
         source: Path,
