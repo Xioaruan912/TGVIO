@@ -31,7 +31,7 @@
 ### 第 1 步：把代码放到服务器上
 
 ```bash
-git clone <本仓库地址>
+git clone https://github.com/Xioaruan912/TG_Upload_bot.git
 cd TG_Upload_bot
 ```
 
