@@ -6,6 +6,8 @@
 
 ## 1. 阶段门禁
 
+2026-09-15：[R2-18F7 效果预览入口](R2-18F7_PREVIEW_ENTRY.md) IN PROGRESS，默认启用、首层直达、新旧导航兼容及清理时间动态说明；migration=none。
+
 2026-09-14 F6追加修复已交付（`53cbb2d`，migration=none，475 tests）：冻结后媒体/文字拒收、后台提交恢复、预览硬写入预算与路径fail-closed，证据见 [R2-18F6_REPAIR.md](R2-18F6_REPAIR.md)。
 
 2026-09-14 独立验收发现确认校验、预览隐私/失效、撤销展示和同款再发缺陷，不能只剩实机验收。新增 [R2-18F 修复计划](R2-18F_ACCEPTANCE_FIXES.md)，F1（无迁移安全补丁）与 F2–F5（冻结提交恢复、draft 风格、预览资源、结果卡幂等）均已修复、测试并部署，证据见 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md)。

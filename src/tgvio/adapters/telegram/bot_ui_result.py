@@ -242,7 +242,7 @@ class BotUIResultMixin:
         try:
             await self._client.send_message(
                 int(chat_id),
-                f"{heading}\n\n发送图片/视频或文字，然后点“结束并发布”。",
+                f"{heading}\n\n发送图片/视频或文字，然后点“预览与整理”。",
                 buttons=self._reply_keyboard(),
                 parse_mode="md",
             )

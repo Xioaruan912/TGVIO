@@ -539,6 +539,37 @@ class IntakeRuntimeCollectionPreviewTests(unittest.IsolatedAsyncioTestCase):
 
 
 class IntakeEditingRuntimeTests(unittest.IsolatedAsyncioTestCase):
+    async def test_visual_preview_visible_on_first_preview_page_without_running_it(self):
+        self.runtime._previews = SimpleNamespace()
+        await self.runtime._begin_collection(42, 7)
+        await self.runtime._on_message(FakeEvent(message=media_message(10)))
+        await self.runtime._end_collection(42, 7)
+        buttons = [b for row in self.client.edits[-1]["buttons"] for b in row]
+        self.assertEqual(buttons[0].text, "🖼 生成效果预览")
+        self.assertTrue(buttons[0].data.startswith(b"intake:pv:"))
+        self.assertTrue(all(len(b.data) <= 64 for b in buttons))
+        self.assertEqual(await self.repo.list_recent(owner_id=7), [])
+        self.assertEqual(self.runner.calls, [])
+
+    async def test_new_and_legacy_navigation_text_never_becomes_caption(self):
+        from telethon import events
+        await self.runtime._begin_collection(42, 7)
+        await self.runtime._on_message(FakeEvent(message=media_message(10)))
+        session = await self.intake.open_collection(owner_id=7, chat_id=42)
+        for label in ("👀 预览与整理", "🛑 结束并发布"):
+            event = FakeEvent(raw_text=label)
+            await self.runtime._on_message(event)
+            with self.assertRaises(events.StopPropagation):
+                await self.runtime._on_collection_button(event)
+        self.assertEqual(await self.intake.collection_counts(session.id), (1, 0))
+        self.assertEqual(await self.repo.list_recent(owner_id=7), [])
+
+    async def test_new_collection_keyboard_button_starts_collection(self):
+        from telethon import events
+        with self.assertRaises(events.StopPropagation):
+            await self.runtime._on_collection_button(FakeEvent(raw_text="📥 新建合集"))
+        self.assertIsNotNone(await self.intake.open_collection(owner_id=7, chat_id=42))
+
     async def asyncSetUp(self) -> None:
         self.tmp = TemporaryDirectory()
         self.repo = SQLiteJobRepository(Path(self.tmp.name) / "state.sqlite3")

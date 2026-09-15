@@ -633,6 +633,13 @@ def job(*, owner_id=42, state=JobState.FAILED, error_code="download_failed"):
 
 
 class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
+    def test_settings_displays_persisted_cleanup_time(self):
+        from tgvio.application.runtime_flags import RuntimeFlags
+        ui = TelethonBotUI(FakeClient(), SimpleNamespace(allowed_users=(7,)), FakeRepository())
+        ui._runtime_flags = RuntimeFlags(overrides={"daily_cleanup_time": "19:00"})
+        self.assertIn("19:00", ui._settings_page_text())
+        self.assertNotIn("06:00", ui._settings_page_text())
+
     async def test_server_menu_resets_legacy_commands_and_sets_tgvio_commands(self) -> None:
         client = FakeClient()
         ui = TelethonBotUI(client, SimpleNamespace(allowed_users=(42,)), SimpleNamespace())

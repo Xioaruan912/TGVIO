@@ -101,7 +101,7 @@ class BotUIFormatMixin:
                 buttons.append([Button.inline("我的草稿", b"ui:drafts:0")])
             if not failures.total and session is None and not active and not saved:
                 lines.append("📥 直接转发图片、视频或文件给我，开始一次发布。")
-                lines.append("要合并多次转发？点键盘“新建合集”，收集好后预览发布。")
+                lines.append("想先看效果再发布？请先点“📥 新建合集”，添加内容后点“👀 预览与整理”。直接转发不会进入预览。")
         except Exception:
             lines.append("暂时无法读取完整状态，请稍后刷新；已有任务不受影响。")
         if not getattr(self._settings, "publish_enabled", False):
@@ -831,7 +831,7 @@ class BotUIFormatMixin:
             f"🔕 安静模式：`{label(quiet)}`（只影响你自己的中间提示）\n"
             f"🗂 归档路径：`{layout_text}`（改布局需重启）\n"
             "──────────\n"
-            "每日清空在 06:00（北京时间）执行：安全隐藏已结算任务、清理缓存与旧状态消息，保留记录与统计。\n"
+            f"每日清空在 {flags.get('daily_cleanup_time', '06:00') if flags else '06:00'}（北京时间）执行：安全隐藏已结算任务、清理缓存与旧状态消息，保留记录与统计。\n"
             "安静模式会减少中间状态刷新，但确认、最终结果与风险告警始终保留。"
         )
 

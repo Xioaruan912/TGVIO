@@ -85,7 +85,7 @@ class BotUIDraftsMixin:
         try:
             await self._client.send_message(
                 int(event.chat_id),
-                "✏️ **已打开草稿**\n\n继续发送图片/视频或文字补充内容，完成后点消息里的“结束并发布”。",
+                "✏️ **已打开草稿**\n\n继续发送图片/视频或文字补充内容，完成后点消息里的“预览与整理”。",
                 buttons=self._reply_keyboard(),
                 parse_mode="md",
             )

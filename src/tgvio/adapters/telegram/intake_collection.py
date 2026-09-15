@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
+from tgvio.adapters.telegram.bot_ui_support import COLLECTION_NEW_BUTTON, COLLECTION_PREVIEW_BUTTON
 
 
 class IntakeCollectionMixin:
@@ -20,6 +21,8 @@ class IntakeCollectionMixin:
         action = (event.raw_text or "").strip()
         if action in {COLLECTION_BEGIN_BUTTON, COLLECTION_NEW_BUTTON}:
             await self._begin_collection(event.chat_id, int(event.sender_id))
+        elif action == COLLECTION_PREVIEW_BUTTON:
+            await self._request_collection_preview(event.chat_id, int(event.sender_id))
         elif action == COLLECTION_END_BUTTON:
             await self._end_collection(event.chat_id, int(event.sender_id))
         raise events.StopPropagation
@@ -288,14 +291,14 @@ class IntakeCollectionMixin:
             "📥 **合集收集中**\n\n"
             f"媒体：`{media_count}`\n"
             f"文字：`{text_count}`\n\n"
-            "继续发送图片、视频或文字；完成后点“结束并发布”或发送 /end。"
+            "继续发送图片、视频或文字；完成后点“预览与整理”，确认后才发布。"
         )
 
     @staticmethod
     def _collection_buttons(session_id: str):
         encoded = session_id.encode("utf-8")
         return [
-            [Button.inline("🛑 结束并发布", b"intake:end:" + encoded)],
+            [Button.inline("👀 预览与整理", b"intake:preview:" + encoded)],
             [
                 Button.inline("📝 我的草稿", b"intake:df:l:0"),
                 Button.inline("❌ 取消合集", b"intake:collection-cancel:" + encoded),
@@ -331,7 +334,10 @@ class IntakeCollectionMixin:
         encoded = session_id.encode("utf-8")
         if self._editing_enabled() and revision is not None:
             rev = str(int(revision)).encode("utf-8")
-            return [
+            preview_rows = [[Button.inline(
+                    "🖼 生成效果预览", b"intake:pv:" + encoded + b":" + rev,
+                )]] if getattr(self, "_previews", None) is not None else []
+            return preview_rows + [
                 [
                     Button.inline(
                         "✏️ 编辑合集",

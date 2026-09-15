@@ -439,6 +439,8 @@ class AlertPreviewSettingsTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertTrue(settings.alerts_enabled)
         self.assertTrue(settings.collection_preview_enabled)
+        self.assertTrue(settings.preview_enabled)
+        self.assertTrue(settings.collection_editing_enabled)
         self.assertIsNone(settings.alert_user_id)
         self.assertEqual(settings.alert_cooldown_seconds, 3600)
         self.assertEqual(settings.alert_poll_seconds, 60)
