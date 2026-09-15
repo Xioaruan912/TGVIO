@@ -47,10 +47,12 @@
 
 F5 二次验收发现冻结后仍收集媒体、无启动提交恢复和预览安全缺口，详见 [F6 修复](R2-18F6_REPAIR.md)。
 
+F6 之后用户 iOS 反馈“直接转发/首层预览没有效果预览入口”，F7 交付 `👀 预览与整理` 与首层 `🖼 生成效果预览`，并修复新建/结束/预览文本路由与清理时间动态显示，见 [R2-18F7_RELEASE.md](evidence/R2-18F7_RELEASE.md)。
+
 ## 仍未完成
 
-- **真实 Android/iOS 实机验收**：最终六键键盘、草稿编辑与恢复、风格切换、效果预览（图片/遮挡）、打开帖子链接、分享、收藏夹翻页、安静模式观感、连续转发不把按钮文本写入文案。自动化测试不能替代。
+- **真实 Android/iOS 实机验收**：最终六键键盘、草稿编辑与恢复、风格切换、`👀 预览与整理` 与 `🖼 生成效果预览` 的图片/遮挡、打开帖子链接、分享、收藏夹翻页、安静模式观感、连续转发不把按钮文本写入文案。自动化测试不能替代。
 - **R2-17 精确重复审核**仍未实现；当前只有规则化“疑似重复”。
-- NTP 仍未同步（本轮门禁未阻塞），需独立运维窗口。
+- VPS 时间同步已于 2026-09-15 为 `ntp_synchronized=yes`，此前 `no` 的问题已消除。
 
-逐包 commit/release/image/manifest/迁移与回滚边界见 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md)。
+逐包 commit/release/image/manifest/迁移与回滚边界见 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md) 与 [R2-18F7_RELEASE.md](evidence/R2-18F7_RELEASE.md)。

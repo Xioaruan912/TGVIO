@@ -1,6 +1,6 @@
 # R2-18F7：效果预览入口可发现性
 
-状态：IN PROGRESS；migration=none。
+状态：DELIVERED（2026-09-15）。migration=none。commit `31a51d26eadbbb7aacc1bbc584bd04aafc1ed6ca`，release `r2-18f7-31a51d2-20260915T025757Z`，479 tests，schema v16 不变；证据见 [R2-18F7_RELEASE.md](evidence/R2-18F7_RELEASE.md)。
 
 用户 iOS 使用反馈：直接转发未经过合集，第一层合集预览也没有效果预览入口。
 
@@ -14,5 +14,7 @@
 
 验收：新旧导航文字不进入文案；打开文字预览不创建 Job/不执行效果生成；按钮不超过64字节；完整离线门禁及生产后验。
 
-回滚：无 schema 变化，恢复上一镜像与源码，不恢复数据库；19:00 配置仍保留。
+回滚：无 schema 变化，恢复上一运行时镜像与源码，不恢复数据库；19:00 配置仍保留。
 真实 iOS 按钮布局和效果图片仍需用户验收，不以 fake 测试替代。
+
+过程记录：首次构建在该 release 完成切换后、写元数据前被中断（`.release-commit`/`current` 停留 F6，`remote_preflight` 报 release-commit/source-manifest）；随后建立在线备份、用发布脚本 `atomic_metadata` 语义对齐到正在运行的 F7、确认 `blockers=[]`，再从 clean `31a51d2` 重跑唯一入口得到完整 release。

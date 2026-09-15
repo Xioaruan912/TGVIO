@@ -6,13 +6,13 @@
 
 ## 1. 阶段门禁
 
-2026-09-15：[R2-18F7 效果预览入口](R2-18F7_PREVIEW_ENTRY.md) IN PROGRESS，默认启用、首层直达、新旧导航兼容及清理时间动态说明；migration=none。
+2026-09-15：R2-18F7 效果预览入口已交付（`31a51d2`，release `r2-18f7-31a51d2-20260915T025757Z`，migration=none，479 tests）：收集卡“👀 预览与整理”、首层“🖼 生成效果预览”、新旧导航兼容、清理时间动态显示；证据见 [R2-18F7_RELEASE.md](evidence/R2-18F7_RELEASE.md)。首次构建在切换后、写元数据前被中断，已通过在运行的 F7 上对齐 release 元数据并从 clean commit 重跑唯一入口收口。
 
 2026-09-14 F6追加修复已交付（`53cbb2d`，migration=none，475 tests）：冻结后媒体/文字拒收、后台提交恢复、预览硬写入预算与路径fail-closed，证据见 [R2-18F6_REPAIR.md](R2-18F6_REPAIR.md)。
 
 2026-09-14 独立验收发现确认校验、预览隐私/失效、撤销展示和同款再发缺陷，不能只剩实机验收。新增 [R2-18F 修复计划](R2-18F_ACCEPTANCE_FIXES.md)，F1（无迁移安全补丁）与 F2–F5（冻结提交恢复、draft 风格、预览资源、结果卡幂等）均已修复、测试并部署，证据见 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md)。
 
-2026-09-14 实时核查：R2-15 已交付。R2-16 合集编辑/草稿、R2-18 用户体验升级（18A/18B/18C/18D/18E）与 R2-18F 验收修复（F1～F5）均已实现并部署；R2-17 完整内容审核仍未实现。最终 runtime `b238b58`，schema v16。
+2026-09-15 实时核查：R2-15、R2-16、R2-18（18A～E）与 R2-18F（F1～F7）均已实现并部署；R2-17 完整内容审核仍未实现。最终 runtime `31a51d2`，release `r2-18f7-31a51d2-20260915T025757Z`，schema v16。
 
 2026-09-14 状态校正：R2-16 已交付（`8cd0ac1`，`0012_collection_editing`）；R2-17 仍只有设计。详细数据模型、事务、交互、迁移和验收见 [技术方案](R2-15_16_17_TECHNICAL_PLAN.md)。
 

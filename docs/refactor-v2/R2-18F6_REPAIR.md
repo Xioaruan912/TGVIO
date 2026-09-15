@@ -24,5 +24,5 @@
 - 本地及服务器无网络测试容器475 tests通过；secret scan、compileall、123个Python源文件/1000行预算、runtime image检查通过。
 - image `sha256:bcb3174a437a23bb1834eb5b14c790fe5f30aa271651e71d5c7ffccf5e352cd6`；Git/宿主/容器source manifest `fe13b19bc0d54faaff7ed583c8e415047b78dcda2cfa7ed830d9ad307cc706d5`。
 - 独立vps_check：healthy、单实例、restart0、error0、bootstrap/Telegram ready各1、jobs0、blockers=[]、quick_check=ok；schema v16/hash `59624f44635dd5ff7a31f313780d0aa4669cbf4bf18efae7405f98ec4ea0102c` 不变。
-- `rollback_hostdzire.sh --check r2-18f6-53cbb2d-20260914T120716Z` passed；标准release目录保留manifest/ledger及rollback资产。NTP仍no，未擅自调整。
+- `rollback_hostdzire.sh --check r2-18f6-53cbb2d-20260914T120716Z` passed；标准release目录保留manifest/ledger及rollback资产。F6 发布时 NTP 仍 no 且未擅自调整；2026-09-15 最新报告已为 `ntp_synchronized=yes`。F6 之后由 F7（`31a51d2`）补上效果预览入口，见 [R2-18F7_RELEASE.md](evidence/R2-18F7_RELEASE.md)。
 - 未做真实Android/iOS与用户媒体破坏性测试；不能以测试通过代替实机验收。

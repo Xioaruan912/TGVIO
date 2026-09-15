@@ -1,11 +1,11 @@
 # 用户体验升级接续交接
 
-> 2026-09-14。R2-16、R2-18 A/B/C/D/E 与验收修复 R2-18F1～F5 均已实现、测试并部署。仍需真实 Android/iOS 实机验收与独立未实现的 R2-17 完整内容审核。
+> 2026-09-15。R2-16、R2-18 A/B/C/D/E 与验收修复 R2-18F1～F7 均已实现、测试并部署。仍需真实 Android/iOS 实机验收与独立未实现的 R2-17 完整内容审核。
 
 ## 交付概览
 
-最终生产 runtime commit：`b238b5861da6c44c94a737d953f3521027a03fa6`
-最终 release：`r2-18f5-b238b58-20260914T075349Z`；schema v16，ledger `1..16`。
+最终生产 runtime commit：`31a51d26eadbbb7aacc1bbc584bd04aafc1ed6ca`
+最终 release：`r2-18f7-31a51d2-20260915T025757Z`；schema v16，ledger `1..16`。
 
 | 包 | commit | release | migration | tests |
 |---|---|---|---|---|
@@ -19,6 +19,8 @@
 | R2-18F3 draft 风格/同款再发 | `07bc973` | `r2-18f3-07bc973-20260914T074222Z` | `0016_draft_style` | 463 |
 | R2-18F4 预览资源/生命周期 | `4acd2bc` | `r2-18f4-4acd2bc-20260914T075031Z` | none | 467 |
 | R2-18F5 收藏幂等/链接去重 | `b238b58` | `r2-18f5-b238b58-20260914T075349Z` | none | 472 |
+| R2-18F6 启动恢复/拒收/预览预算 | `53cbb2d` | `r2-18f6-53cbb2d-20260914T120716Z` | none | 475 |
+| R2-18F7 效果预览入口 | `31a51d2` | `r2-18f7-31a51d2-20260915T025757Z` | none | 479 |
 
 逐包证据、回滚边界与点击路径见 [R2-18_UX_RELEASE.md](evidence/R2-18_UX_RELEASE.md) 与 [R2-18F_RELEASE.md](evidence/R2-18F_RELEASE.md)（18A 见 [R2-18A_RELEASE.md](evidence/R2-18A_RELEASE.md)）。每包都通过 `deploy_hostdzire.py` 唯一入口、独立 `vps_check.sh` 与 `rollback_hostdzire.sh --check`；后验 healthy、restart=0、单实例、`error_markers=0`、`jobs=0`、`blockers=[]`、`quick_check=ok`。
 
@@ -27,6 +29,7 @@
 - 新建/编辑合集：键盘“📥 新建合集”或 `/begin` → 发媒体/文字 → 消息内“🛑 结束并发布”→ 预览 → “✏️ 编辑合集”→ 封面/⬆️⬇️/🗑/改文案/保存草稿 → “✅ 确认发布”（owner/revision/TTL/single-use token 冻结提交）。
 - 我的草稿：键盘“📝 我的草稿”或 `/drafts` → 继续编辑/删除；重启后仍在。
 - 结果卡：任务终态卡片“📋 结果”→ 打开帖子（仅公开 `@username`）/归档状态/再发一组/同款再发/收藏/分享/撤销。
+- 效果预览入口：键盘“📥 新建合集”→ 发内容 → 收集卡“👀 预览与整理”→ 首层“🖼 生成效果预览”（直接转发不会进入预览）。
 - 收藏夹：“ℹ️ 更多”→“⭐ 收藏夹”，或结果卡“收藏夹”。
 - 发布风格：键盘“🎨 发布风格”→ 极简直发/封面合集/图文精选/自定义封面+原文字/恢复默认；确认时冻结。
 - 整理建议：编辑面板“🧠 整理建议”→ 应用封面/排序、撤回上次调整。
