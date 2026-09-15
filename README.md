@@ -1,331 +1,146 @@
-# TGVIO
+# TGVIO 视频转发机器人
 
-TGVIO is the clean-room rewrite of `telegram-video-forwarder`.
+把视频、图片或链接发给 Telegram 机器人，它会自动帮你**发布到自己的频道**，还可以顺手备份到网盘（WebDAV）。全程自动，手机就能操作。
 
-> Source authority recovery: the runtime in this repository was recovered from
-> the HostDZire production TGVIO instance during R2-01 on 2026-09-11. The
-> evidence-backed refactoring plan and compatibility contract live in
-> [`docs/refactor-v2/`](docs/refactor-v2/README.md). The retired runtime remains
-> available through Git history and must not be mixed back into this package.
+- 支持直接转发 Telegram 里的视频/图片，也支持发抖音、B站、YouTube 等**链接**。
+- 支持一次发很多个，自动合并成一组发布。
+- 发布前可以先**预览、排序、选封面、改文字**。
+- 发布成功后有结果卡片，可以收藏、分享、撤销。
+- 可选把原文件备份到 WebDAV。
 
-The product idea stays the same: accept Telegram/media inputs, build a durable
-job, decide how the media should be published, publish it to Telegram, and
-optionally run secondary transports such as backup storage.
+---
 
-The implementation is intentionally different. TGVIO starts from explicit
-domain models, durable state, ports/adapters and a central orchestrator instead
-of growing behavior inside one large bot runtime.
+## 一、开始前要准备什么
 
-## Current phase
+你只需要准备 5 样东西：
 
-TGVIO is the active production runtime. R2-01 restored source authority, R2-02
-established the reproducible fail-closed delivery chain, and R2-03 through R2-14
-added the migration ledger, durable scheduler/claim/FIFO, durable intake and
-collections, full queue control and undo, Archive V2 with exact remote delete,
-the redacted Diagnostic Snapshot, the read-only operations surface
-(Dashboard, metrics, notification outbox), owner failure alerts, collection
-preview, slow-backend Archive tolerance, a short dated Archive layout, a daily
-06:00 task-list/cache reset with `/settings` toggles, and correct video metadata
-(ffprobe) with robust thumbnails and final-only alerting. The current production
-release is `r2-14-816409b-20260914T002637Z` at full commit
-`816409b2ce4225ec59f0fe81eb96b915ec4a01cf` (schema v9), healthy on HostDZire.
+| 需要什么 | 去哪里拿 |
+|---|---|
+| 一台能装 Docker 的服务器（VPS） | 任意云服务商，Linux 系统即可 |
+| 机器人的令牌（BOT_TOKEN） | 在 Telegram 里找 **@BotFather**，发送 `/newbot` 按提示创建，复制它给的令牌 |
+| API_ID 和 API_HASH | 打开 **my.telegram.org**，登录后进入 `API development tools`，创建一个应用即可看到 |
+| 目标频道 | 你自己的频道，例如 `@my_channel`（机器人必须是该频道管理员） |
+| 你自己的数字用户 ID | 在 Telegram 里找 **@userinfobot**，它会把你的数字 ID 发给你 |
 
-The authoritative refactoring plan, feature contract, and per-stage evidence
-live under [`docs/refactor-v2/`](docs/refactor-v2/README.md). The implemented
-path is:
+> 小提示：机器人要先加进你的频道并设为**管理员**，否则无法发布。
 
-```text
-Telegram media / album / URL
-  -> allowlist
-  -> durable job (SQLite)
-  -> local download
-  -> ffprobe/media analysis
-  -> PublishPlan v2
-  -> side-effect-aware ordered Telegram publish
-  -> independent WebDAV Archive lifecycle
-  -> read-only diagnostics / Dashboard / metrics / redacted notifications
-```
+---
 
-PublishPlan persistence and the generic side-effect-aware Execution Engine are
-implemented. Native Telegram channel/discussion transport, generated video
-covers, faststart remux, >2GB playable segmentation, binary volumes and durable
-Telegram media-reference reuse are also implemented. Spoiler media is preserved
-through explicit Telethon InputMedia objects, including custom TGVIO album
-construction so fresh-upload conversion cannot drop the spoiler bit. Video
-uploads also get best-effort Telegram thumbnails and media captions use the
-persisted channel/group footer policy. Publishing remains protected by the
-separate `TGVIO_PUBLISH_ENABLED` gate; the audited HostDZire deployment has
-that gate enabled and contains confirmed publish effects.
+## 二、三步开始
 
-The controlled fixture path has its own source-safe, disabled-by-default gate
-`TGVIO_LIVE_FIXTURE_ENABLED`. The audited production deployment explicitly
-enables it. It remains independent from automatic publishing and only exposes
-the hidden `/publish <job>` flow with a second confirmation and strict
-item/size/strategy limits.
-
-The read-only operations surface (`TGVIO_DASHBOARD_ENABLED`,
-`TGVIO_WEBHOOK_ENABLED`) is also disabled by default; the audited production
-deployment currently leaves both off, so there is no extra listener and no
-second Telegram session.
-
-Owner failure alerts are on by default: the Bot sends a redacted private-chat
-message for failed jobs (including partial/uncertain), failed Archive packages,
-Telegram disconnection, and low disk space, and a short recovery note when the
-condition clears. The collection flow shows a preview card before publishing
-(`TGVIO_COLLECTION_PREVIEW_ENABLED=true`) with confirm / show-mode / abandon
-actions; nothing is downloaded until the owner confirms.
-
-Every day at 06:00 (Asia/Shanghai) TGVIO clears the visible task list, the
-download cache, and the Bot's tracked status messages, and resets task numbering
-to `任务 #1`; operational JSONL logs (3-day retention) and aggregate statistics
-are kept. `TGVIO_ARCHIVE_LAYOUT=v2` stores new archives under
-`<root>/<YYYY-MM-DD>/<N>/`. All three behaviours (alerts, preview, daily reset)
-can be toggled from `/settings`.
-
-Owner alerts are sent only for **final** failures (recovery budget exhausted or
-quarantined); transient failures that automatic recovery will retry stay silent.
-Video metadata comes from ffprobe (not Telethon's optional hachoir), so videos
-are sent with real duration/dimensions and a non-blank thumbnail. `/diag` reports
-the environment capability booleans (ffmpeg/ffprobe/yt-dlp/cryptg/hachoir).
-
-## Bot controls
-
-Run `/start` once to install a persistent mobile keyboard with six compact
-entries: home, my jobs, status, Archive, cache, and more. Recent jobs have
-direct detail buttons. Job detail provides context-sensitive plan, safe retry,
-cancel, Archive retry, and redacted technical-detail buttons, so normal use
-never requires copying a job ID. Mutating/network actions opened from buttons
-have a separate confirmation page.
-
-The Telegram command menu intentionally exposes only `/start`, `/jobs`,
-`/status`, and `/help`. Existing advanced commands remain accepted for
-backward compatibility, but they are no longer presented as the normal mobile
-workflow. TGVIO resets legacy command scopes on startup so clients do not keep
-showing the retired long menu.
-
-Docker health is not just a SQLite existence check. When the Bot runtime is
-enabled, TGVIO writes durable process/Telegram heartbeats and the container
-healthcheck requires both to remain fresh and connected. `/status` renders the
-same durable Telegram connectivity state.
-
-Statistics, health, job detail, and diagnostics are read-only. They never send a Telegram
-probe, touch WebDAV, or trigger cache cleanup. Diagnostics only use the static
-settings safe-summary plus durable Job/Publish/Archive state, low-cardinality
-runtime facts, the image build commit, and already-redacted structured log
-metadata. Captions, user ids, source URLs, media paths and credentials are
-excluded from diagnostic rendering.
-
-## URL intake
-
-TGVIO can route a plain HTTP(S) link through yt-dlp and then through the same
-durable download → analysis → PublishPlan pipeline used by Telegram media. URL
-intake is disabled in the source example and does not implicitly enable
-Telegram publishing. The audited HostDZire deployment explicitly enables URL
-intake.
-
-```text
-TGVIO_URL_ENABLED=false
-TGVIO_URL_PRIVATE_NETWORK_POLICY=block
-```
-
-The default policy blocks directly resolved private/local targets. URLs with
-embedded credentials, fragments, or credential-like query parameters are
-rejected before persistence. Download output is constrained to the Job's
-managed directory and downloader failures do not echo the source URL into the
-durable error message.
-
-Telegram media intake also has a short smart batching window. Telegram may
-deliver a large user selection as several adjacent albums because one Telegram
-media group is limited, but TGVIO treats that transport limit separately from
-the logical Job. By default adjacent media/albums from the same owner/chat are
-gathered for 1.5 seconds (maximum wait 5 seconds) and up to 100 items are sent
-to one PublishPlan. Set `TGVIO_BATCH_WINDOW_MS=0` to restore immediate one-event
-Job creation.
-
-Known-size Telegram files use bounded concurrent range downloads for throughput.
-If all retries for a concurrent shard are exhausted, TGVIO removes the partial
-file and makes one automatic single-stream attempt before failing the Job.
-Explicit cancellation never starts this fallback, and every successful result
-still passes the same size check and atomic rename boundary.
-
-## Local cache lifecycle
-
-TGVIO keeps local media long enough for durable retry/recovery instead of
-blindly deleting every completed download. Automatic cleanup defaults to 24
-hours and only removes cache for `succeeded` or `cancelled` jobs. `planned` and
-`failed` jobs are deliberately retained because they may still need publish or
-retry recovery. An ArchivePackage that has not reached `committed` or
-`cancelled` also blocks deletion so canonical media cannot disappear mid-archive.
-
-```text
-TGVIO_CACHE_RETENTION_HOURS=24
-TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES=30
-```
-
-The cache page shows managed usage and cleanup eligibility. Its confirmed
-cleanup action skips the age window for terminal jobs but still refuses to
-delete files required by an ArchivePackage that has not reached
-`committed`/`cancelled`.
-
-Active jobs expose durable phase progress in `/jobs`. Telegram and yt-dlp
-downloads report byte counters while analysis/publish report item/step
-counters. Progress rows contain only phase/index/count/byte values and do not
-store filenames, captions, media URLs or credentials.
-
-## Structured operational logs
-
-TGVIO writes one JSON object per log line to stdout and, by default, to the
-persistent `logs/tgvio.jsonl` volume. File logs rotate independently from the
-Docker `json-file` driver so container recreation does not erase the primary
-troubleshooting history and neither sink grows without a bound.
-
-Important pipeline transitions have stable event names and correlation fields,
-for example `job_id`, `plan_id`, `package_id`, `step_index`, `object_index`,
-`error_code`, byte counts and elapsed milliseconds. Typical event families are
-`intake.*`, `download.*`, `analysis.*`, `publish.*`, `archive.*`, and
-`runtime.*`. Filenames, captions, configured URLs, credentials, authentication
-headers and managed media paths are not intentional log fields; the formatter
-also redacts URLs, common secret assignments and managed runtime paths from
-free-form messages and exception text.
-
-Useful production queries can be run without parsing Docker's human output:
-
-```text
-sh scripts/logs.sh --tail 100
-sh scripts/logs.sh --job <full-job-id> --tail 200
-sh scripts/logs.sh --event publish. --level ERROR --tail 100
-sh scripts/logs.sh --package <archive-package-id> --tail 200
-```
-
-Logging configuration:
-
-```text
-TGVIO_LOG_LEVEL=INFO
-TGVIO_LOG_DIR=/app/logs
-TGVIO_LOG_FILE_ENABLED=true
-TGVIO_LOG_MAX_MB=20
-TGVIO_LOG_BACKUP_COUNT=5
-```
-
-## WebDAV Archive V2
-
-WebDAV is implemented as a durable archive system rather than an upload-attempt
-queue. One Job maps to one stable ArchivePackage using a human-readable layout:
-
-```text
-archive/YYYY/MM/DD/<package>/
-  media/001__original.ext
-  media/002__original.ext
-  manifest.json
-  _COMPLETE.json
-```
-
-The planner archives canonical media only. Telegram cover frames, thumbnails,
-temporary remuxes and split transport parts are deliberately excluded. V2
-state lives in `archive_packages`, `archive_objects`, and `archive_events`.
-The V2 executor is now implemented. It starts capability discovery with
-OPTIONS/PROPFIND, validates canonical files against their planned SHA-256, resumes stored
-objects after restart, verifies remote size, writes `manifest.json`, and writes
-`_COMPLETE.json` only after final verification. Servers that advertise MOVE
-use `.staging/<package>` plus collection MOVE; other servers use the final
-directory directly with the complete marker as the commit boundary.
-
-The Archive runtime is wired into the Bot lifecycle. Source defaults remain
-disabled; production is explicitly enabled after endpoint validation. When enabled it plans the package without network I/O, then a separate
-worker executes it. A failed package does not mutate Telegram Job state and is
-not retried in a tight automatic loop; the confirmed Archive retry button
-returns that same durable package to staging after validating local canonical
-cache. The confirmed connection test begins with OPTIONS/PROPFIND. If the DAV frontend omits
-write methods from `Allow`, TGVIO performs one tiny isolated
-`.staging/.capability-*` write/read/move fixture under the configured archive
-root and deletes it immediately; the result is cached for the process lifetime.
-
-The old attempt-centric runtime/code has been removed. Existing production
-databases may still contain historical `backup_attempts`/`backup_files` tables;
-they are intentionally left untouched for non-destructive compatibility and
-are no longer read by TGVIO.
-
-Archive endpoint credentials remain outside SQLite and Git. Each durable package freezes only a non-secret single-profile identity and policy snapshot:
-
-```text
-TGVIO_ARCHIVE_ENABLED=false  # source-safe default; production explicitly enables it
-TGVIO_ARCHIVE_WEBDAV_URL=
-TGVIO_ARCHIVE_REMOTE_ROOT=TGVIO
-TGVIO_ARCHIVE_WEBDAV_USER=
-TGVIO_ARCHIVE_WEBDAV_PASSWORD=
-TGVIO_ARCHIVE_PROFILE_ID=primary
-TGVIO_ARCHIVE_POLICY=required  # required | best_effort
-TGVIO_ARCHIVE_POLL_SECONDS=10
-```
-
-Credentials and the full WebDAV URL are never included in SQLite snapshots,
-safe summaries, archive events, manifests, or user-facing status output. The
-non-secret profile id, policy and policy version are persisted into each
-ArchivePackage so later default changes cannot reinterpret historical work.
-
-Production Archive V2 has passed real endpoint validation: scoped capability
-probing, staging + MOVE commit, canonical media verification, `manifest.json`,
-`_COMPLETE.json`, live background-runtime processing, and fixture cleanup all
-succeeded. Production therefore runs with `TGVIO_ARCHIVE_ENABLED=true` while
-Telegram auto-publish remains controlled by its independent explicit gate.
-
-## Safety rule
-
-`TGVIO_RUN_BOT=false` remains the safe source default. Production explicitly
-sets it to true. `TGVIO_PUBLISH_ENABLED=false` remains the safe source default
-for externally visible channel publishing; the audited production deployment
-explicitly sets it to true. Secrets remain outside Git and Docker build
-context.
-
-## Layout
-
-```text
-src/tgvio/
-  domain/          Pure business concepts
-  application/     Use-cases and orchestration
-  adapters/        Telegram and future external adapters
-  infrastructure/  SQLite, filesystem, FFmpeg, network implementations
-  config.py        Typed environment contract
-  main.py          Composition root only
-```
-
-## Local checks
+### 第 1 步：把代码放到服务器上
 
 ```bash
-sh scripts/check_foundation.sh
+git clone <本仓库地址>
+cd TG_Upload_bot
 ```
 
-For a clean, pushed checkout, the isolated Docker diagnostic build is:
+### 第 2 步：运行一键脚本
 
 ```bash
-scripts/build_check.sh
+bash install.sh
 ```
 
-It runs the test image with `--network none`, inspects the minimal runtime
-image, never reads production configuration and never starts the Bot. It is a
-test build, not a production release.
+在菜单里选择 **`1) 安装并启动`**，然后按提示依次输入前面准备好的 5 个信息即可。脚本会自动生成配置文件、构建并启动机器人。
 
-## Deployment
+### 第 3 步：在手机上打开机器人
 
-Deployment credentials are never copied into Git. The production target is
-`/root/TGVIO` and the single Compose service/container is `tgvio`. Every tested
-release must follow the backup, single-instance cutover, verification and
-rollback protocol in
-[`DEPLOYMENT_HOSTDZIRE.md`](docs/refactor-v2/DEPLOYMENT_HOSTDZIRE.md).
+在 Telegram 里找到你的机器人，发送一次 **`/start`**，就会看到常驻的手机键盘，之后按按钮操作即可。
 
-The formal release entrypoint proven by R2-02 is:
+---
 
-```bash
-python3 scripts/deploy_hostdzire.py --phase R2-02
+## 三、脚本菜单说明
+
+运行 `bash install.sh` 后可以看到：
+
+| 选项 | 作用 |
+|---|---|
+| `1) 安装并启动` | 第一次使用选这个；会引导你填必要信息并启动 |
+| `2) 查看日志` | 实时查看运行情况，排查问题时用 |
+| `3) 停止` | 停止机器人（数据保留） |
+| `4) 删除` | 删除机器人和镜像；默认**保留数据**，会二次确认 |
+| `5) 重建 / 更新` | 更新代码后重新构建并启动 |
+| `6) 查看状态` | 查看机器人是否在运行 |
+| `7) 修改配置` | 用菜单方式修改配置（见下一节） |
+
+---
+
+## 四、怎么使用（手机操作）
+
+1. **直接转发**：把视频/图片转发给机器人，它会自动发布。
+2. **合集模式**：点键盘上的「📥 新建合集」，把要一起发布的视频/图片陆续发给它，发完后点「👀 预览与整理」，可以排序、选封面、改文字；最后点「✅ 确认发布」。
+3. **发链接**：把抖音/B站/YouTube 等链接直接发给机器人即可。
+4. **结果与收藏**：发布完成后会出现结果卡片，可以「打开帖子」「收藏」「分享」「撤销」。
+5. **我的草稿 / 发布风格 / 发布历史**：都在手机键盘上，点一下就能进。
+
+---
+
+## 五、修改配置（不用懂技术）
+
+在脚本菜单选 **`7) 修改配置`**，会看到分组菜单：
+
+```
+1) 必填凭证     机器人的令牌、API、目标频道、你的用户 ID
+2) 发布外观     是否生成封面、是否保留原来的文字等
+3) 功能开关     各种功能开/关
+4) 归档(备份)   把文件备份到 WebDAV 网盘
+5) 性能与高级   并发、缓存、日志等（一般不用改）
+6) 查看全部     查看当前配置（密码会打码）
+7) 备份 / 恢复   修改前自动备份，可随时恢复
 ```
 
-It accepts only a clean full commit already present at live `origin/main`,
-builds and tests the candidate on HostDZire without production mounts or
-network, creates three rollback points, recreates the sole service once, and
-writes a non-secret release manifest. Operational details are in
-[`RELEASE_TOOLING.md`](docs/refactor-v2/RELEASE_TOOLING.md); the first production
-acceptance record is
-[`R2-02_RELEASE.md`](docs/refactor-v2/evidence/R2-02_RELEASE.md). The next planned
-stage is R2-03 migration-ledger takeover; schema changes remain prohibited until
-its production-copy rehearsal passes. Each later code stage must update the
-explicit `--phase` only after its own release gates support that stage.
+- 选择分组 → 再选择要改的某一项 → 输入新值（**直接回车 = 不修改**）→ 保存。
+- 每项都有中文说明，填错会提示重填，不会把错误值写进去。
+- 修改保存后，脚本会问你要不要**立即重启**让改动生效。
+
+---
+
+## 六、常见问题
+
+**发了消息没反应？**
+- 确认机器人正在运行（脚本菜单 `6) 查看状态`），并确认你的用户 ID 已填对。
+
+**发布失败 / 上传不上去？**
+- 先看日志（菜单 `2) 查看日志`）。多半是网络问题，稍等会自动重试。
+- 如果是频道权限问题：确认机器人已是频道**管理员**。
+
+**磁盘满了？**
+- 机器人会定期清理已完成的临时文件。也可以手动停止后删除 `downloads/` 里的内容。
+
+**怎么彻底卸载？**
+- 脚本菜单选 `4) 删除`；如果想连数据一起删，再按提示选择删除数据即可。
+
+---
+
+## 七、数据与备份
+
+运行数据都在项目目录下，**不会上传到任何地方**：
+
+```
+data/        数据库（任务与状态）
+session/     Telegram 登录信息（请勿外传）
+downloads/   下载缓存
+logs/        运行日志
+.env         你的配置（含密钥，请勿外传）
+```
+
+> 换服务器时，把这几个目录一起拷过去即可（`session/` 能让机器人免重新登录）。
+
+---
+
+## 八、想让 AI 帮你二次开发？
+
+本仓库包含一份专门写给 AI 的开发说明：[`AI_DEVELOPMENT.md`](AI_DEVELOPMENT.md)。它介绍了项目结构、分层规则、核心数据流和关键接口，AI 读完就能快速上手。
+
+用法：把本仓库地址发给你使用的 AI，并附上下面这句话：
+
+```text
+请先完整阅读仓库根目录的 AI_DEVELOPMENT.md，了解项目结构、分层规则、核心数据流和关键接口，然后再帮我实现下面的需求：
+（在这里写你的需求）
+```
+
+---
+
+## 九、开源许可
+
+见 [LICENSE](LICENSE)。

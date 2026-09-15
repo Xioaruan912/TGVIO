@@ -21,3 +21,8 @@ logs
 *.key
 id_rsa
 id_ed25519
+
+# 本地 / AI 文档，不进入镜像
+AGENTS.md
+todo.md
+docs

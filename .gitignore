@@ -24,3 +24,8 @@ deployment-ledger.json
 *.key
 id_rsa
 id_ed25519
+
+# 仅供本地 / AI 使用，不发布到 GitHub
+AGENTS.md
+todo.md
+docs/
