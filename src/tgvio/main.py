@@ -343,12 +343,26 @@ async def run(*, check_only: bool = False) -> None:
                 on_trigger_media=intake_runtime.accept_source_media,
                 on_notice=intake_runtime.notify_source_owner,
             )
-            if await source_coordinator.start():
+
+        async def _start_source_reader() -> None:
+            """Attach the personal session without delaying bot readiness."""
+
+            assert source_coordinator is not None
+            try:
+                if await source_coordinator.start():
+                    log_event(
+                        logger,
+                        logging.INFO,
+                        "source.reader.ready",
+                        "Personal-account source reader started from saved session",
+                    )
+            except Exception as exc:  # noqa: BLE001 - never block the bot
                 log_event(
                     logger,
-                    logging.INFO,
-                    "source.reader.ready",
-                    "Personal-account source reader started from saved session",
+                    logging.WARNING,
+                    "source.reader.start_failed",
+                    "Source reader failed to start",
+                    exception_type=type(exc).__name__,
                 )
         auto_recovery_runtime = AutoRecoveryRuntime(
             AutoRecoveryService(
@@ -511,6 +525,7 @@ async def run(*, check_only: bool = False) -> None:
             await intake_runtime.recover(job)
         await auto_recovery_runtime.start()
         telegram_task: asyncio.Task | None = None
+        source_start_task: asyncio.Task | None = None
         try:
             log_event(
                 logger,
@@ -519,6 +534,12 @@ async def run(*, check_only: bool = False) -> None:
                 "Telegram adapter connected; intake runtime active",
                 recovery_jobs=len(recoverable),
             )
+            source_start_task = None
+            if source_coordinator is not None:
+                source_start_task = asyncio.create_task(
+                    _start_source_reader(),
+                    name="tgvio-source-start",
+                )
             shutdown_event = asyncio.Event()
             loop = asyncio.get_running_loop()
             registered_signals: list[signal.Signals] = []
@@ -585,6 +606,9 @@ async def run(*, check_only: bool = False) -> None:
                 await archive_runtime.stop()
             await cache_runtime.stop()
             await runtime_health.stop()
+            if source_start_task is not None and not source_start_task.done():
+                source_start_task.cancel()
+                await asyncio.gather(source_start_task, return_exceptions=True)
             await _stop_clients()
             if telegram_task is not None:
                 await asyncio.gather(telegram_task, return_exceptions=True)
