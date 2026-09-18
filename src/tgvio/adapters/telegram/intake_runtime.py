@@ -183,6 +183,8 @@ class TelethonIntakeRuntime(
         # In-Bot source setup consumes the owner's next text (phone, code, chat).
         if await self.handle_source_input(raw_text, int(event.chat_id), int(event.sender_id)):
             return
+        if await self.handle_trigger_misuse(raw_text, int(event.chat_id)):
+            return
 
         incoming = self._from_message(event.message, event.chat_id)
         if incoming is not None:

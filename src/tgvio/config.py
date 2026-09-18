@@ -119,6 +119,7 @@ class Settings:
     source_chats: tuple[str, ...]
     source_trigger: str
     source_delete_trigger: bool
+    source_latest: bool
     source_download_workers: int
     static_proxy_url: str = field(repr=False)
     static_proxy_probe_timeout_seconds: int
@@ -388,6 +389,7 @@ class Settings:
         if len(source_trigger) > 32 or any(character.isspace() for character in source_trigger):
             raise ConfigError("TGVIO_SOURCE_TRIGGER must be a single short token without spaces")
         source_delete_trigger = _bool("TGVIO_SOURCE_TRIGGER_DELETE", True)
+        source_latest = _bool("TGVIO_SOURCE_LATEST", True)
         source_download_workers = _int("TGVIO_SOURCE_DOWNLOAD_WORKERS", 4)
         if not 1 <= source_download_workers <= 16:
             raise ConfigError("TGVIO_SOURCE_DOWNLOAD_WORKERS out of range")
@@ -441,6 +443,7 @@ class Settings:
             source_chats=source_chats,
             source_trigger=source_trigger,
             source_delete_trigger=source_delete_trigger,
+            source_latest=source_latest,
             source_download_workers=source_download_workers,
             static_proxy_url=static_proxy_url,
             static_proxy_probe_timeout_seconds=static_proxy_probe_timeout_seconds,            dashboard_enabled=dashboard_enabled,
@@ -522,6 +525,7 @@ class Settings:
             "source_chat_count": len(self.source_chats),
             "source_trigger_configured": bool(self.source_trigger),
             "source_delete_trigger": self.source_delete_trigger,
+            "source_latest": self.source_latest,
             "source_download_workers": self.source_download_workers,
             "static_proxy_configured": bool(self.static_proxy_url),
             "static_proxy_probe_timeout_seconds": self.static_proxy_probe_timeout_seconds,

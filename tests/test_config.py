@@ -59,6 +59,7 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.source_chats, ())
         self.assertEqual(settings.source_trigger, "#tgvio")
         self.assertTrue(settings.source_delete_trigger)
+        self.assertTrue(settings.source_latest)
         self.assertEqual(settings.source_download_workers, 4)
         self.assertTrue(settings.safe_summary()["source_session_configured"])
         self.assertEqual(settings.static_proxy_url, "")

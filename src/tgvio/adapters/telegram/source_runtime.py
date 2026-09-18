@@ -103,6 +103,17 @@ class SourceCoordinator:
             return bool(self._settings.source_delete_trigger)
         return str(raw).strip().lower() in {"1", "true", "yes", "on"}
 
+    def effective_latest(self) -> bool:
+        raw = self._flags.get("source_latest")
+        if raw is None:
+            return bool(getattr(self._settings, "source_latest", True))
+        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
+
+    async def toggle_latest(self) -> bool:
+        value = not self.effective_latest()
+        await self._flags.set(self._repository, "source_latest", "true" if value else "false")
+        return value
+
     def effective_chats(self) -> tuple[str, ...]:
         raw = self._flags.get(_WHITELIST_FLAG)
         if not raw:
@@ -155,8 +166,21 @@ class SourceCoordinator:
             self._log.warning("source.session.connect_failed type=%s", type(exc).__name__)
             return False
         self._client = client
+        await self._start_updates()
         await self._ensure_reader()
         return True
+
+    async def _start_updates(self) -> None:
+        """Make sure the authorized client is actually receiving updates."""
+
+        client = self._client
+        if client is None:
+            return
+        try:
+            await client.catch_up()
+        except Exception as exc:  # noqa: BLE001 - best effort sync of missed updates
+            self._log.warning("source.updates.catch_up_failed type=%s", type(exc).__name__)
+        self._log.info("source.updates.ready")
 
     async def stop(self) -> None:
         self._reader = None
@@ -250,6 +274,10 @@ class SourceCoordinator:
             session_file.chmod(0o600)
         except OSError:
             pass
+        # The client connected while unauthorized; reconnect so Telethon starts
+        # the update loop and syncs state on an authorized session. Without this
+        # the reader could never see the owner's outgoing trigger messages.
+        await self._reconnect_after_login()
         await self._ensure_reader()
         chats = self.effective_chats()
         if not chats:
@@ -287,6 +315,21 @@ class SourceCoordinator:
         if self._on_reader_stopped is not None:
             self._on_reader_stopped()
         return "已退出登录并删除 session。"
+
+    async def _reconnect_after_login(self) -> None:
+        client = self._client
+        if client is None:
+            return
+        try:
+            await client.disconnect()
+        except Exception:  # noqa: BLE001
+            pass
+        try:
+            await client.connect()
+        except Exception as exc:  # noqa: BLE001
+            self._log.warning("source.session.reconnect_failed type=%s", type(exc).__name__)
+            return
+        await self._start_updates()
 
     async def _discard_client(self, client: TelegramClient | None = None) -> None:
         target = client if client is not None else self._client

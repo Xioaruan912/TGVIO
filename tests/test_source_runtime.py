@@ -26,6 +26,7 @@ def _settings(**overrides):
         "source_chats": ("@env",),
         "source_trigger": "#env",
         "source_delete_trigger": True,
+        "source_latest": True,
         "source_download_workers": 4,
     }
     values.update(overrides)
@@ -50,7 +51,16 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(coordinator.effective_trigger(), "#env")
         self.assertEqual(coordinator.effective_chats(), ("@env",))
         self.assertTrue(coordinator.effective_delete_trigger())
+        self.assertTrue(coordinator.effective_latest())
         self.assertEqual(coordinator.status_line(), "未登录")
+
+    async def test_latest_toggle_persists(self) -> None:
+        coordinator = self._coordinator()
+        self.assertFalse(await coordinator.toggle_latest())
+        self.assertFalse(coordinator.effective_latest())
+        self.assertEqual(self.repo.flags["source_latest"], "false")
+        self.assertTrue(await coordinator.toggle_latest())
+        self.assertTrue(coordinator.effective_latest())
 
     async def test_runtime_flags_override_settings(self) -> None:
         coordinator = self._coordinator()

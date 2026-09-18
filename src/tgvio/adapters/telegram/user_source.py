@@ -19,6 +19,7 @@ from tgvio.application.intake import IncomingMedia
 from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 
 _ALBUM_SPAN = 11
+_LATEST_SCAN = 25
 
 
 class UserSourceDownloader:
@@ -99,12 +100,29 @@ class UserSourceReader:
     def is_trigger(self, event) -> bool:
         if not getattr(event, "outgoing", False):
             return False
-        if (getattr(event, "raw_text", "") or "").strip() != self._trigger:
-            return False
-        if getattr(getattr(event, "message", None), "reply_to_msg_id", None) is None:
+        text = (getattr(event, "raw_text", "") or "").strip()
+        if text != self._trigger:
             return False
         chat_id = getattr(event, "chat_id", None)
-        return chat_id is not None and int(chat_id) in self._allowed_ids
+        if chat_id is None:
+            return False
+        if int(chat_id) not in self._allowed_ids:
+            self._log.info("source.trigger.rejected reason=not_whitelisted")
+            return False
+        return True
+
+    async def capture_latest(self, chat_id: int, *, limit: int = _LATEST_SCAN) -> list[IncomingMedia]:
+        """Capture the newest media message in a whitelisted chat."""
+
+        try:
+            async for message in self._client.iter_messages(int(chat_id), limit=max(1, int(limit))):
+                item = self._to_media(message)
+                if item is not None:
+                    return self._to_media_list(await self._expand(message))
+        except Exception as exc:  # noqa: BLE001 - user-facing miss
+            self._log.warning("source.latest.failed type=%s", type(exc).__name__)
+            return []
+        return []
 
     async def capture_reply(self, event) -> list[IncomingMedia]:
         reply = await event.get_reply_message()

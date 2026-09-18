@@ -110,14 +110,29 @@ class IntakeSourceMixin:
         owner_id = getattr(self, "_source_owner_id", None) or getattr(event, "sender_id", None)
         if not owner_id:
             return
+        has_reply = getattr(getattr(event, "message", None), "reply_to_msg_id", None) is not None
+        log_event(
+            self._log,
+            logging.INFO,
+            "source.trigger.received",
+            "Source trigger received",
+            reply=has_reply,
+        )
         try:
-            media = await reader.capture_reply(event)
+            media = await reader.capture_reply(event) if has_reply else []
+            if not media and not has_reply and self.source_latest_enabled():
+                media = await reader.capture_latest(event.chat_id)
             if media:
                 await self._accept_and_schedule(int(owner_id), int(owner_id), media)
+            elif has_reply:
+                await self._safe_send(
+                    int(owner_id),
+                    "⚠️ 未能读取被回复的消息：可能已被删除或不是媒体。",
+                )
             else:
                 await self._safe_send(
                     int(owner_id),
-                    "⚠️ 未能读取被回复的消息：可能已被删除、不是媒体，或不在白名单。",
+                    "⚠️ 没找到最近的媒体：请**长按目标消息 → 回复**，再发送触发词。",
                 )
         except Exception as exc:  # noqa: BLE001 - user-facing miss, never crash the client
             log_event(
@@ -132,6 +147,27 @@ class IntakeSourceMixin:
         finally:
             if self.source_delete_trigger():
                 await self._delete_source_trigger(event)
+
+    def source_latest_enabled(self) -> bool:
+        coordinator = getattr(self, "_source", None)
+        if coordinator is not None and hasattr(coordinator, "effective_latest"):
+            return bool(coordinator.effective_latest())
+        return bool(getattr(self._settings, "source_latest", True))
+
+    async def handle_trigger_misuse(self, raw_text: str, chat_id: int) -> bool:
+        """Explain how to use the trigger when it is sent to the bot itself."""
+
+        coordinator = getattr(self, "_source", None)
+        if coordinator is None or not hasattr(coordinator, "effective_trigger"):
+            return False
+        if (raw_text or "").strip() != coordinator.effective_trigger():
+            return False
+        await self._safe_send(
+            chat_id,
+            "💡 触发词要在【来源聊天】里使用：长按目标消息 → 回复 → 发送 "
+            f"`{coordinator.effective_trigger()}`。",
+        )
+        return True
 
     async def _delete_source_trigger(self, event) -> None:
         client = getattr(self, "_source_client", None)

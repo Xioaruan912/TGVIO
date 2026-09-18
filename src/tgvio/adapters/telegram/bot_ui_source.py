@@ -36,9 +36,22 @@ class BotUISourceMixin:
         else:
             lines.append("来源白名单：`空`（未配置时不会抓取任何内容）")
         lines.append(f"触发词：`{trigger}`（回复目标消息后发送它）")
+        latest = coordinator.effective_latest()
+        lines.append(
+            "无回复时："
+            + ("抓该聊天最近一条媒体" if latest else "只抓你回复的那条")
+        )
         if coordinator.active:
             rows.append([Button.inline("➕ 添加来源", b"ui:source-add")])
             rows.append([Button.inline("🗑 删除来源", b"ui:source-list")])
+            rows.append(
+                [
+                    Button.inline(
+                        "🎯 无回复模式 " + ("开" if latest else "关"),
+                        b"ui:source-latest",
+                    )
+                ]
+            )
             rows.append([Button.inline("🚪 退出登录", b"ui:source-logout")])
         else:
             rows.append([Button.inline("📱 登录 / 重新登录", b"ui:source-login")])
@@ -97,6 +110,12 @@ class BotUISourceMixin:
                 "──────────\n"
                 "发送 `@频道名` 或 `-100` 开头的数字 ID；该账号需要已经加入这个聊天。",
             )
+            return True
+        if action == "ui:source-latest":
+            await coordinator.toggle_latest()
+            await self._safe_answer(event, "已切换")
+            text, rows = await self._source_page(owner_id)
+            await self._edit_page(event, text, rows)
             return True
         if action == "ui:source-logout":
             try:

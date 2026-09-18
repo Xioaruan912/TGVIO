@@ -54,15 +54,25 @@ class FakeUserClient:
     async def get_messages(self, entity, ids):
         return self.messages.get(ids)
 
-    def iter_messages(self, entity, *, min_id=0, max_id=0):
+    def iter_messages(self, entity, *, min_id=0, max_id=0, limit=None):
         self.iterated.append((entity, min_id, max_id))
 
         async def generator():
-            for message in self.messages.values():
-                if message is None:
+            ordered = sorted(
+                (message for message in self.messages.values() if message is not None),
+                key=lambda message: message.id,
+                reverse=True,
+            )
+            emitted = 0
+            for message in ordered:
+                if min_id and message.id <= min_id:
                     continue
-                if min_id < message.id <= max_id:
-                    yield message
+                if max_id and message.id > max_id:
+                    continue
+                if limit is not None and emitted >= int(limit):
+                    break
+                emitted += 1
+                yield message
 
         return generator()
 
@@ -87,16 +97,19 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(resolved, 1)
         self.assertIn(-1000000000111, reader.allowed_ids)
 
-    async def test_trigger_filter_requires_outgoing_reply_in_whitelist(self) -> None:
+    async def test_trigger_filter_requires_whitelist_but_not_a_reply(self) -> None:
         reader = UserSourceReader(FakeUserClient(), trigger="#tgvio", allowed_chats=[])
         reader._allowed_ids = {-100555}
         base = SimpleNamespace(
             outgoing=True,
             raw_text="#tgvio",
             chat_id=-100555,
-            message=SimpleNamespace(reply_to_msg_id=7),
+            message=SimpleNamespace(reply_to_msg_id=None),
         )
         self.assertTrue(reader.is_trigger(base))
+        self.assertTrue(
+            reader.is_trigger(SimpleNamespace(**{**vars(base), "message": SimpleNamespace(reply_to_msg_id=7)}))
+        )
         self.assertFalse(reader.is_trigger(SimpleNamespace(**{**vars(base), "outgoing": False})))
         self.assertFalse(reader.is_trigger(SimpleNamespace(**{**vars(base), "raw_text": "hi"})))
         self.assertFalse(
@@ -107,14 +120,20 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
                 )
             )
         )
-        self.assertFalse(
-            reader.is_trigger(
-                SimpleNamespace(
-                    outgoing=True, raw_text="#tgvio", chat_id=-100555,
-                    message=SimpleNamespace(reply_to_msg_id=None),
-                )
-            )
+
+    async def test_capture_latest_picks_the_newest_media_and_skips_text(self) -> None:
+        text_message = SimpleNamespace(
+            id=31, chat_id=-100555, grouped_id=None, message="#tgvio",
+            photo=None, video=None, document=None, audio=None, voice=None,
+            file=None, media=None,
         )
+        newest = _message(30, grouped_id=None, kind="document")
+        older = _message(29, kind="photo")
+        client = FakeUserClient({31: text_message, 30: newest, 29: older})
+        reader = UserSourceReader(client, trigger="#tgvio")
+        media = await reader.capture_latest(-100555, limit=10)
+        self.assertEqual([item.source_message_id for item in media], [30])
+        self.assertEqual(media[0].kind, MediaKind.DOCUMENT)
 
     async def test_capture_reply_expands_the_media_group(self) -> None:
         target = _message(20, grouped_id=99)
@@ -168,12 +187,17 @@ class FakeSourceClient:
 class FakeReader:
     def __init__(self, media: list[IncomingMedia] | None = None) -> None:
         self.media = media or []
+        self.latest_calls: list[int] = []
         self.resolved_links: list[str] = []
 
     def is_trigger(self, _event) -> bool:
         return True
 
     async def capture_reply(self, _event):
+        return list(self.media)
+
+    async def capture_latest(self, chat_id: int, **_kwargs):
+        self.latest_calls.append(int(chat_id))
         return list(self.media)
 
     async def resolve_link(self, url: str):
@@ -198,10 +222,10 @@ class SourceMixinHost(IntakeSourceMixin):
 
 
 class _TriggerEvent:
-    def __init__(self, message_id: int = 55) -> None:
+    def __init__(self, message_id: int = 55, *, reply_to: int | None = 7) -> None:
         self.outgoing = True
         self.chat_id = -100555
-        self.message = SimpleNamespace(id=message_id)
+        self.message = SimpleNamespace(id=message_id, reply_to_msg_id=reply_to)
 
 
 class SourceMixinTests(unittest.IsolatedAsyncioTestCase):
@@ -213,19 +237,47 @@ class SourceMixinTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(host.accepted, [(7, 7, media)])
         self.assertEqual(host._source_client.deleted, [55])
 
+    async def test_trigger_without_reply_uses_latest_when_enabled(self) -> None:
+        media = [IncomingMedia(kind=MediaKind.VIDEO, source="telegram:-100555:9")]
+        host = SourceMixinHost()
+        reader = FakeReader(media)
+        host._source_reader = reader
+        host._source = SimpleNamespace(effective_latest=lambda: True)
+        await host._on_source_trigger(_TriggerEvent(56, reply_to=None))
+        self.assertEqual(reader.latest_calls, [-100555])
+        self.assertEqual(host.accepted, [(7, 7, media)])
+        self.assertEqual(host._source_client.deleted, [56])
+
+    async def test_trigger_without_reply_warns_when_latest_disabled(self) -> None:
+        host = SourceMixinHost()
+        reader = FakeReader([IncomingMedia(kind=MediaKind.VIDEO, source="x")])
+        host._source_reader = reader
+        host._source = SimpleNamespace(effective_latest=lambda: False)
+        await host._on_source_trigger(_TriggerEvent(57, reply_to=None))
+        self.assertEqual(reader.latest_calls, [])
+        self.assertEqual(host.accepted, [])
+        self.assertTrue(any("回复" in text for _chat, text in host.sent))
+
     async def test_trigger_without_media_warns_but_still_cleans_up(self) -> None:
         host = SourceMixinHost()
         host._source_reader = FakeReader([])
-        await host._on_source_trigger(_TriggerEvent(56))
+        await host._on_source_trigger(_TriggerEvent(58))
         self.assertEqual(host.accepted, [])
         self.assertTrue(any("未能读取" in text for _chat, text in host.sent))
-        self.assertEqual(host._source_client.deleted, [56])
+        self.assertEqual(host._source_client.deleted, [58])
 
     async def test_trigger_delete_can_be_disabled(self) -> None:
         host = SourceMixinHost(delete_trigger=False)
         host._source_reader = FakeReader([])
-        await host._on_source_trigger(_TriggerEvent(57))
+        await host._on_source_trigger(_TriggerEvent(59))
         self.assertEqual(host._source_client.deleted, [])
+
+    async def test_trigger_misuse_hint_in_the_bot_chat(self) -> None:
+        host = SourceMixinHost()
+        host._source = SimpleNamespace(effective_trigger=lambda: "#tgvio")
+        self.assertFalse(await host.handle_trigger_misuse("其它文字", 7))
+        self.assertTrue(await host.handle_trigger_misuse("#tgvio", 7))
+        self.assertTrue(any("来源聊天" in text for _chat, text in host.sent))
 
     async def test_link_branch_only_handles_telegram_links(self) -> None:
         media = [IncomingMedia(kind=MediaKind.PHOTO, source="telegram:-100:1")]
