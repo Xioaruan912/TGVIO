@@ -26,6 +26,12 @@ class IntakeSourceMixin:
             "Source reader attached",
             resolved_chats=len(getattr(reader, "allowed_ids", ()) or ()),
         )
+        log_event(
+            self._log,
+            logging.INFO,
+            "source.handler.registered",
+            "Source trigger handler registered on the personal client",
+        )
 
     def clear_source(self) -> None:
         self._source_client = None

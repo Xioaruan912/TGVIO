@@ -145,6 +145,21 @@ class SourceCoordinator:
                 except Exception:  # noqa: BLE001
                     pass
 
+    async def check_now(self) -> tuple[int, int]:
+        """Manual "check now": search and process any pending trigger messages."""
+
+        reader = self._reader
+        if reader is None:
+            return (0, 0)
+        found = await reader.find_recent_triggers(limit=20)
+        processed = 0
+        for chat_id, message_id, reply_to in found:
+            if message_id <= self._trigger_seen.get(chat_id, 0):
+                continue
+            await self.handle_trigger(chat_id, message_id, reply_to)
+            processed += 1
+        return (len(found), processed)
+
     async def _notice(self, text: str) -> None:
         if self._on_notice is None:
             return
@@ -294,9 +309,8 @@ class SourceCoordinator:
         self._trigger_seen = await reader.seed_trigger_cursor()
         report = getattr(reader, "seed_report", {}) or {}
         self._log.info(
-            "source.poll.seed chats=%s scanned=%s triggers=%s",
+            "source.poll.seed chats=%s triggers=%s",
             report.get("chats", 0),
-            report.get("scanned", 0),
             report.get("triggers", 0),
         )
         self._reader = reader

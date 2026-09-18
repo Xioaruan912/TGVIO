@@ -62,6 +62,39 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await coordinator.toggle_latest())
         self.assertTrue(coordinator.effective_latest())
 
+    async def test_check_now_processes_pending_triggers(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        processed: list[tuple[int, int]] = []
+
+        class _Reader:
+            async def find_recent_triggers(self, **_kwargs):
+                return [(5, 100, None), (5, 99, 42)]
+
+        async def _handle(chat_id, message_id, reply_to):
+            processed.append((int(chat_id), int(message_id)))
+
+        coordinator._reader = _Reader()
+        coordinator.handle_trigger = _handle
+        coordinator._trigger_seen = {5: 0}
+        found, count = await coordinator.check_now()
+        self.assertEqual(found, 2)
+        self.assertEqual(count, 2)
+        self.assertEqual(processed, [(5, 100), (5, 99)])
+
+    async def test_check_now_ignores_already_seen_triggers(self) -> None:
+        coordinator = self._coordinator()
+
+        class _Reader:
+            async def find_recent_triggers(self, **_kwargs):
+                return [(5, 10, None)]
+
+        coordinator._reader = _Reader()
+        coordinator._trigger_seen = {5: 10}
+        found, count = await coordinator.check_now()
+        self.assertEqual(found, 1)
+        self.assertEqual(count, 0)
+
     async def test_handle_trigger_dedupes_and_dispatches_media(self) -> None:
         coordinator = self._coordinator()
         coordinator._user_id = 7

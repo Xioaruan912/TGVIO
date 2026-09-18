@@ -54,7 +54,7 @@ class FakeUserClient:
     async def get_messages(self, entity, ids):
         return self.messages.get(ids)
 
-    def iter_messages(self, entity, *, min_id=0, max_id=0, limit=None):
+    def iter_messages(self, entity, *, min_id=0, max_id=0, limit=None, search=None):
         self.iterated.append((entity, min_id, max_id))
 
         async def generator():
@@ -68,6 +68,14 @@ class FakeUserClient:
                 if min_id and message.id <= min_id:
                     continue
                 if max_id and message.id > max_id:
+                    continue
+                if (
+                    entity is not None
+                    and getattr(message, "chat_id", None) is not None
+                    and int(entity) != int(message.chat_id)
+                ):
+                    continue
+                if search and search not in (getattr(message, "message", "") or ""):
                     continue
                 if limit is not None and emitted >= int(limit):
                     break
@@ -199,6 +207,21 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         reader = UserSourceReader(client, trigger="#tgvio")
         reader._allowed_ids = {-100555}
         found = await reader.poll_triggers({-100555: 50}, limit=10)
+        self.assertEqual(found, [(-100555, 60, 42)])
+
+    async def test_find_recent_triggers_searches_whitelisted_chats(self) -> None:
+        trigger = _message(60, kind="document", chat_id=-100555)
+        trigger.message = "#tgvio"
+        trigger.outgoing = True
+        trigger.reply_to_msg_id = 42
+        not_ours = _message(59, kind="document", chat_id=-100555)
+        not_ours.message = "#tgvio"
+        not_ours.outgoing = False
+        client = FakeUserClient({60: trigger, 59: not_ours})
+        reader = UserSourceReader(client, trigger="#tgvio")
+        reader._allowed_ids = {-100555, -100666}
+        found = await reader.find_recent_triggers(limit=10)
+        # only the outgoing trigger in the whitelisted chat is returned
         self.assertEqual(found, [(-100555, 60, 42)])
 
     async def test_missing_message_returns_empty(self) -> None:

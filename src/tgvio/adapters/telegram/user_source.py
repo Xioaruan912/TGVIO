@@ -145,41 +145,76 @@ class UserSourceReader:
             return []
         return self._to_media_list(await self._expand(message))
 
+    async def find_recent_triggers(
+        self,
+        *,
+        limit: int = 20,
+    ) -> list[tuple[int, int, int | None]]:
+        """Server-side search for your trigger messages in every whitelisted chat."""
+
+        found: list[tuple[int, int, int | None]] = []
+        for chat_id in sorted(self._allowed_ids):
+            try:
+                async for message in self._client.iter_messages(
+                    chat_id,
+                    limit=max(1, int(limit)),
+                    search=self._trigger,
+                ):
+                    if not getattr(message, "outgoing", False):
+                        continue
+                    if (getattr(message, "message", "") or "").strip() != self._trigger:
+                        continue
+                    found.append(
+                        (int(chat_id), int(message.id), getattr(message, "reply_to_msg_id", None))
+                    )
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("source.search.failed type=%s", type(exc).__name__)
+        found.sort(key=lambda item: item[1], reverse=True)
+        return found
+
     async def seed_trigger_cursor(self, *, limit: int = _SEED_SCAN) -> dict[int, int]:
         """Cursor per chat that also picks up recent, not-yet-handled triggers.
 
-        Scans a bounded window of the whitelisted chat; if any outgoing trigger
-        is found the cursor rewinds just below it so it is processed once.
-        Handled triggers are deleted, and intake dedupes by
-        ``(chat_id, message_id)``, so this can never double-publish.
+        Uses a server-side search so a trigger is found even when the source bot
+        has sent far more than the scan window since. Handled triggers are
+        deleted, and intake dedupes by ``(chat_id, message_id)``, so this can
+        never double-publish.
         """
 
         cursor: dict[int, int] = {}
-        scanned = 0
+        matches: dict[int, list[int]] = {}
         triggers = 0
         for chat_id in sorted(self._allowed_ids):
             try:
-                newest: int | None = None
-                oldest_trigger: int | None = None
-                async for message in self._client.iter_messages(chat_id, limit=max(1, int(limit))):
-                    scanned += 1
-                    message_id = int(message.id)
-                    if newest is None:
-                        newest = message_id
-                    if getattr(message, "outgoing", False) and (
-                        getattr(message, "message", "") or ""
-                    ).strip() == self._trigger:
-                        triggers += 1
-                        oldest_trigger = message_id
-                if newest is None:
-                    continue
-                if oldest_trigger is not None:
-                    cursor[chat_id] = max(0, oldest_trigger - 1)
-                else:
-                    cursor[chat_id] = max(0, newest - _REPLAY_WINDOW)
+                async for message in self._client.iter_messages(
+                    chat_id,
+                    limit=max(1, int(limit)),
+                    search=self._trigger,
+                ):
+                    if not getattr(message, "outgoing", False):
+                        continue
+                    if (getattr(message, "message", "") or "").strip() != self._trigger:
+                        continue
+                    triggers += 1
+                    matches.setdefault(chat_id, []).append(int(message.id))
             except Exception:  # noqa: BLE001
                 continue
-        self.seed_report = {"chats": len(cursor), "scanned": scanned, "triggers": triggers}
+        for chat_id in sorted(self._allowed_ids):
+            newest: int | None = None
+            try:
+                async for message in self._client.iter_messages(chat_id, limit=1):
+                    newest = int(message.id)
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+            if newest is None:
+                continue
+            chat_matches = matches.get(chat_id) or []
+            if chat_matches:
+                cursor[chat_id] = max(0, min(chat_matches) - 1)
+            else:
+                cursor[chat_id] = max(0, newest - _REPLAY_WINDOW)
+        self.seed_report = {"chats": len(cursor), "triggers": triggers}
         return cursor
 
     async def poll_triggers(

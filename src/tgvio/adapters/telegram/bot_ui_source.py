@@ -52,6 +52,7 @@ class BotUISourceMixin:
                     )
                 ]
             )
+            rows.append([Button.inline("🧪 立即检查触发词", b"ui:source-check")])
             rows.append([Button.inline("🚪 退出登录", b"ui:source-logout")])
         else:
             rows.append([Button.inline("📱 登录 / 重新登录", b"ui:source-login")])
@@ -116,6 +117,23 @@ class BotUISourceMixin:
             await self._safe_answer(event, "已切换")
             text, rows = await self._source_page(owner_id)
             await self._edit_page(event, text, rows)
+            return True
+        if action == "ui:source-check":
+            try:
+                found, processed = await coordinator.check_now()
+            except Exception:
+                await self._safe_answer(event, "检查失败", alert=True)
+                return True
+            if found == 0:
+                detail = (
+                    "没找到你发送的触发词。请确认是在**已添加的来源聊天**里发送 "
+                    f"`{coordinator.effective_trigger()}`（或长按目标消息→回复→再发送）。"
+                )
+            else:
+                detail = f"找到 {found} 条触发词，已处理 {processed} 条。"
+            await self._safe_answer(event, "已检查")
+            text, rows = await self._source_page(owner_id)
+            await self._edit_page(event, f"{detail}\n\n{text}", rows)
             return True
         if action == "ui:source-logout":
             try:
