@@ -189,12 +189,19 @@ class IntakeSourceMixin:
         coordinator = getattr(self, "_source", None)
         if coordinator is None or not hasattr(coordinator, "effective_trigger"):
             return False
-        if (raw_text or "").strip() != coordinator.effective_trigger():
+        trigger = coordinator.effective_trigger()
+        if (raw_text or "").strip().casefold() != trigger.casefold():
             return False
+        log_event(
+            self._log,
+            logging.INFO,
+            "source.trigger.misuse",
+            "Trigger sent to the bot chat instead of a source chat",
+        )
         await self._safe_send(
             chat_id,
             "💡 触发词要在【来源聊天】里使用：长按目标消息 → 回复 → 发送 "
-            f"`{coordinator.effective_trigger()}`。",
+            f"`{trigger}`。",
         )
         return True
 

@@ -100,19 +100,26 @@ class UserSourceReader:
         self._allowed_ids = resolved
         return len(resolved)
 
+    def matches_trigger(self, text: str | None) -> bool:
+        return (text or "").strip().casefold() == self._trigger.casefold()
+
     def is_trigger(self, event) -> bool:
         if not getattr(event, "outgoing", False):
             return False
-        text = (getattr(event, "raw_text", "") or "").strip()
-        if text != self._trigger:
-            return False
+        text = getattr(event, "raw_text", "") or ""
         chat_id = getattr(event, "chat_id", None)
         if chat_id is None:
             return False
-        if int(chat_id) not in self._allowed_ids:
-            self._log.info("source.trigger.rejected reason=not_whitelisted")
+        if int(chat_id) in self._allowed_ids:
+            self._log.info(
+                "source.update.outgoing trigger=%s",
+                self.matches_trigger(text),
+            )
+        else:
+            if self.matches_trigger(text):
+                self._log.info("source.trigger.rejected reason=not_whitelisted")
             return False
-        return True
+        return self.matches_trigger(text)
 
     async def capture_latest(self, chat_id: int, *, limit: int = _LATEST_SCAN) -> list[IncomingMedia]:
         """Capture the newest media message in a whitelisted chat."""
@@ -162,7 +169,7 @@ class UserSourceReader:
                 ):
                     if not getattr(message, "outgoing", False):
                         continue
-                    if (getattr(message, "message", "") or "").strip() != self._trigger:
+                    if not self.matches_trigger(getattr(message, "message", "")):
                         continue
                     found.append(
                         (int(chat_id), int(message.id), getattr(message, "reply_to_msg_id", None))
@@ -193,7 +200,7 @@ class UserSourceReader:
                 ):
                     if not getattr(message, "outgoing", False):
                         continue
-                    if (getattr(message, "message", "") or "").strip() != self._trigger:
+                    if not self.matches_trigger(getattr(message, "message", "")):
                         continue
                     triggers += 1
                     matches.setdefault(chat_id, []).append(int(message.id))
@@ -231,7 +238,7 @@ class UserSourceReader:
                 async for message in self._client.iter_messages(chat_id, limit=max(1, int(limit))):
                     if not getattr(message, "outgoing", False):
                         continue
-                    if (getattr(message, "message", "") or "").strip() != self._trigger:
+                    if not self.matches_trigger(getattr(message, "message", "")):
                         continue
                     if int(message.id) <= int(after.get(chat_id, 0)):
                         continue
