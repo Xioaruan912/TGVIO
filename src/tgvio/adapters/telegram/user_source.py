@@ -20,6 +20,7 @@ from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 
 _ALBUM_SPAN = 11
 _LATEST_SCAN = 25
+_REPLAY_WINDOW = 5
 
 
 class UserSourceDownloader:
@@ -143,13 +144,17 @@ class UserSourceReader:
         return self._to_media_list(await self._expand(message))
 
     async def seed_trigger_cursor(self) -> dict[int, int]:
-        """Remember the newest message id per chat so history is never replayed."""
+        """Cursor per chat: look a few messages back so a recent trigger still counts.
+
+        Re-processing the same message is safe: intake dedupes by
+        ``(chat_id, message_id)`` so an already accepted job is never repeated.
+        """
 
         cursor: dict[int, int] = {}
         for chat_id in sorted(self._allowed_ids):
             try:
                 async for message in self._client.iter_messages(chat_id, limit=1):
-                    cursor[chat_id] = int(message.id)
+                    cursor[chat_id] = max(0, int(message.id) - _REPLAY_WINDOW)
                     break
             except Exception:  # noqa: BLE001
                 continue

@@ -164,6 +164,33 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(media[0].source_chat_id, -1005)
         self.assertEqual(await reader.resolve_link("https://example.com/x"), [])
 
+    async def test_seed_cursor_looks_back_a_small_window(self) -> None:
+        client = FakeUserClient({40: _message(40), 39: _message(39)})
+        reader = UserSourceReader(client, trigger="#tgvio")
+        reader._allowed_ids = {-100555}
+        cursor = await reader.seed_trigger_cursor()
+        self.assertEqual(cursor, {-100555: 35})
+
+    async def test_poll_triggers_finds_only_new_outgoing_matches(self) -> None:
+        old = _message(50, kind="document")
+        old.message = "#tgvio"
+        old.outgoing = True
+        target = _message(60, kind="document")
+        target.message = "#tgvio"
+        target.outgoing = True
+        target.reply_to_msg_id = 42
+        incoming = _message(61, kind="document")
+        incoming.message = "#tgvio"
+        incoming.outgoing = False
+        other = _message(62, kind="document")
+        other.message = "hello"
+        other.outgoing = True
+        client = FakeUserClient({50: old, 60: target, 61: incoming, 62: other})
+        reader = UserSourceReader(client, trigger="#tgvio")
+        reader._allowed_ids = {-100555}
+        found = await reader.poll_triggers({-100555: 50}, limit=10)
+        self.assertEqual(found, [(-100555, 60, 42)])
+
     async def test_missing_message_returns_empty(self) -> None:
         client = FakeUserClient()
         client.entities["@chan"] = SimpleNamespace(id=5)
