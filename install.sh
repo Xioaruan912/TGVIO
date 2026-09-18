@@ -188,6 +188,11 @@ GROUP_ADV=(
   "TGVIO_DISK_RESERVE_MB|磁盘保留空间(MB)|int_range|0:1000000"
   "TGVIO_AUTO_RETRY_MAX_ATTEMPTS|自动重试次数|int_range|0:10"
   "TGVIO_YTDLP_COOKIES_FILE|链接下载 Cookie 文件路径（可空）|any"
+  "TGVIO_SOURCE_SESSION|来源 session 文件路径（个人账号）|any"
+  "TGVIO_SOURCE_CHATS|来源白名单（@名或-100ID，逗号分隔）|any"
+  "TGVIO_SOURCE_TRIGGER|回复触发词（默认 #tgvio）|any"
+  "TGVIO_SOURCE_TRIGGER_DELETE|抓取后删除触发消息|bool"
+  "TGVIO_SOURCE_DOWNLOAD_WORKERS|来源下载并发|int_range|1:16"
   "TGVIO_LOG_LEVEL|日志级别|choice|DEBUG,INFO,WARNING,ERROR,CRITICAL"
 )
 

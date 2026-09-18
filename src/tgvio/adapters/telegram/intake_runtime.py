@@ -5,10 +5,18 @@ from tgvio.adapters.telegram.intake_runtime_support import _PendingBatch
 from tgvio.adapters.telegram.intake_status import IntakeStatusMixin
 from tgvio.adapters.telegram.intake_collection import IntakeCollectionMixin
 from tgvio.adapters.telegram.intake_edit import IntakeEditMixin
+from tgvio.adapters.telegram.intake_source import IntakeSourceMixin
+from tgvio.adapters.telegram.intake_media import IntakeMediaMixin
 from tgvio.adapters.telegram.bot_ui_support import NAV_BUTTONS, COLLECTION_BUTTONS
 
 
-class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEditMixin):
+class TelethonIntakeRuntime(
+    IntakeStatusMixin,
+    IntakeCollectionMixin,
+    IntakeEditMixin,
+    IntakeSourceMixin,
+    IntakeMediaMixin,
+):
     def __init__(
         self,
         client: TelegramClient,
@@ -18,6 +26,9 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
         flags: object | None = None,
         editing: object | None = None,
         previews: object | None = None,
+        source_client: object | None = None,
+        source_reader: object | None = None,
+        source_owner_id: int | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -26,6 +37,9 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
         self._flags = flags
         self._editing = editing
         self._previews = previews
+        self._source_client = source_client
+        self._source_reader = source_reader
+        self._source_owner_id = int(source_owner_id) if source_owner_id else None
         self._log = logging.getLogger("tgvio.telegram.intake")
         self._tasks: set[asyncio.Task] = set()
         self._status_tasks: dict[str, asyncio.Task] = {}
@@ -98,6 +112,8 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
             self._on_intake_callback,
             events.CallbackQuery(pattern=b"^intake:"),
         )
+        if self._source_client is not None and self._source_reader is not None:
+            self.register_source_handlers(self._source_client)
 
     async def stop(self) -> None:
         recovery = getattr(self, "_submission_recovery_task", None)
@@ -177,6 +193,12 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
                     )
                 return
             await self._queue_batch(event.chat_id, event.sender_id, [incoming])
+            return
+
+        # Owner-driven Telegram links are resolved with the personal session so
+        # content the bot cannot see (private chats, protected channels) still
+        # reaches the normal job pipeline.
+        if await self.handle_source_link(raw_text, event.chat_id, event.sender_id):
             return
 
         # URL intake deliberately remains outside explicit collection sessions,
@@ -940,52 +962,9 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
 
     @staticmethod
     def _from_message(message, chat_id: int) -> IncomingMedia | None:
-        if message.photo is not None:
-            kind = MediaKind.PHOTO
-        elif message.video is not None:
-            kind = MediaKind.VIDEO
-        elif message.document is not None:
-            kind = MediaKind.DOCUMENT
-        else:
-            return None
-
-        file_info = getattr(message, "file", None)
-        original_name = getattr(file_info, "name", None)
-        extension = getattr(file_info, "ext", None)
-        size = int(getattr(file_info, "size", 0) or 0)
-        metadata = {
-            "telegram_original_name": original_name,
-            "telegram_extension": extension,
-        }
-        return IncomingMedia(
-            kind=kind,
-            source=f"telegram:{chat_id}:{message.id}",
-            caption=message.message or "",
-            size_bytes=size,
-            name=original_name,
-            spoiler=bool(getattr(message.media, "spoiler", False)),
-            grouped_id=message.grouped_id,
-            source_chat_id=int(chat_id),
-            source_message_id=int(message.id),
-            metadata=metadata,
-        )
+        """Delegated to IntakeMediaMixin (kept as a thin alias for callers)."""
+        return IntakeMediaMixin._from_message(message, chat_id)
 
     @staticmethod
     def _from_url_message(message, chat_id: int) -> IncomingMedia | None:
-        if getattr(message, "photo", None) is not None or getattr(message, "document", None) is not None:
-            return None
-        raw = str(getattr(message, "message", "") or "").strip()
-        if not raw.lower().startswith(("http://", "https://")):
-            return None
-        hostname, _port = validate_url_syntax(raw)
-        return IncomingMedia(
-            kind=MediaKind.DOCUMENT,
-            source=f"url:{raw}",
-            caption="",
-            source_chat_id=int(chat_id),
-            source_message_id=int(message.id),
-            metadata={
-                "source_type": "url",
-                "url_hostname": hostname,
-            },
-        )
+        return IntakeMediaMixin._from_url_message(message, chat_id)

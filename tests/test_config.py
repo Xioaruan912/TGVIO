@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import os
+from pathlib import Path
 import tempfile
 import unittest
 from unittest.mock import patch
@@ -54,6 +55,12 @@ class SettingsTests(unittest.TestCase):
         self.assertFalse(settings.url_enabled)
         self.assertEqual(settings.url_private_network_policy, "block")
         self.assertEqual(settings.ytdlp_cookies_file, "")
+        self.assertEqual(settings.source_session, Path("/app/session/source_user"))
+        self.assertEqual(settings.source_chats, ())
+        self.assertEqual(settings.source_trigger, "#tgvio")
+        self.assertTrue(settings.source_delete_trigger)
+        self.assertEqual(settings.source_download_workers, 4)
+        self.assertTrue(settings.safe_summary()["source_session_configured"])
         self.assertEqual(settings.static_proxy_url, "")
         self.assertEqual(settings.static_proxy_probe_timeout_seconds, 2)
         summary = settings.safe_summary()
@@ -346,6 +353,56 @@ class SettingsTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ConfigError, "LIVE_FIXTURE_MAX_MB"):
                 Settings.from_env()
+
+
+class SourceReaderSettingsTests(unittest.TestCase):
+    def test_source_reader_values_are_parsed_and_summarized(self) -> None:
+        with patch.dict(
+            os.environ,
+            {
+                **BASE_ENV,
+                "TGVIO_SOURCE_SESSION": "/data/source_user",
+                "TGVIO_SOURCE_CHATS": "@a, -1001234567890",
+                "TGVIO_SOURCE_TRIGGER": "存一下",
+                "TGVIO_SOURCE_TRIGGER_DELETE": "false",
+                "TGVIO_SOURCE_DOWNLOAD_WORKERS": "6",
+            },
+            clear=True,
+        ):
+            settings = Settings.from_env()
+        self.assertEqual(settings.source_session, Path("/data/source_user"))
+        self.assertEqual(settings.source_chats, ("@a", "-1001234567890"))
+        self.assertEqual(settings.source_trigger, "存一下")
+        self.assertFalse(settings.source_delete_trigger)
+        self.assertEqual(settings.source_download_workers, 6)
+        summary = settings.safe_summary()
+        self.assertEqual(summary["source_chat_count"], 2)
+        self.assertNotIn("-1001234567890", repr(summary))
+
+    def test_source_reader_can_be_disabled_with_empty_session(self) -> None:
+        with patch.dict(
+            os.environ, {**BASE_ENV, "TGVIO_SOURCE_SESSION": ""}, clear=True
+        ):
+            settings = Settings.from_env()
+        self.assertIsNone(settings.source_session)
+        self.assertFalse(settings.safe_summary()["source_session_configured"])
+
+    def test_source_trigger_must_be_a_single_token(self) -> None:
+        for value in ("two words", "x" * 40):
+            with self.subTest(value=value), patch.dict(
+                os.environ,
+                {**BASE_ENV, "TGVIO_SOURCE_TRIGGER": value},
+                clear=True,
+            ), self.assertRaises(ConfigError):
+                Settings.from_env()
+
+    def test_source_download_workers_range(self) -> None:
+        with patch.dict(
+            os.environ,
+            {**BASE_ENV, "TGVIO_SOURCE_DOWNLOAD_WORKERS": "99"},
+            clear=True,
+        ), self.assertRaises(ConfigError):
+            Settings.from_env()
 
 
 class YtdlpCookieSettingsTests(unittest.TestCase):

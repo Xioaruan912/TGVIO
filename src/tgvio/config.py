@@ -115,6 +115,11 @@ class Settings:
     url_enabled: bool
     url_private_network_policy: str
     ytdlp_cookies_file: str
+    source_session: Path | None
+    source_chats: tuple[str, ...]
+    source_trigger: str
+    source_delete_trigger: bool
+    source_download_workers: int
     static_proxy_url: str = field(repr=False)
     static_proxy_probe_timeout_seconds: int
     dashboard_enabled: bool
@@ -370,6 +375,22 @@ class Settings:
         channel_at = os.getenv("CHANNEL_AT", "").strip()
         if not channel_at and destination.startswith("@"):
             channel_at = destination
+        source_session_raw = os.getenv(
+            "TGVIO_SOURCE_SESSION", "/app/session/source_user"
+        ).strip()
+        source_session = Path(source_session_raw) if source_session_raw else None
+        source_chats = tuple(
+            part.strip()
+            for part in os.getenv("TGVIO_SOURCE_CHATS", "").split(",")
+            if part.strip()
+        )
+        source_trigger = os.getenv("TGVIO_SOURCE_TRIGGER", "#tgvio").strip() or "#tgvio"
+        if len(source_trigger) > 32 or any(character.isspace() for character in source_trigger):
+            raise ConfigError("TGVIO_SOURCE_TRIGGER must be a single short token without spaces")
+        source_delete_trigger = _bool("TGVIO_SOURCE_TRIGGER_DELETE", True)
+        source_download_workers = _int("TGVIO_SOURCE_DOWNLOAD_WORKERS", 4)
+        if not 1 <= source_download_workers <= 16:
+            raise ConfigError("TGVIO_SOURCE_DOWNLOAD_WORKERS out of range")
         return cls(
             environment=os.getenv("TGVIO_ENV", "development").strip() or "development",
             run_bot=_bool("TGVIO_RUN_BOT", False),
@@ -416,6 +437,11 @@ class Settings:
             url_enabled=_bool("TGVIO_URL_ENABLED", False),
             url_private_network_policy=url_private_network_policy,
             ytdlp_cookies_file=os.getenv("TGVIO_YTDLP_COOKIES_FILE", "").strip(),
+            source_session=source_session,
+            source_chats=source_chats,
+            source_trigger=source_trigger,
+            source_delete_trigger=source_delete_trigger,
+            source_download_workers=source_download_workers,
             static_proxy_url=static_proxy_url,
             static_proxy_probe_timeout_seconds=static_proxy_probe_timeout_seconds,            dashboard_enabled=dashboard_enabled,
             dashboard_host=dashboard_host,
@@ -492,6 +518,11 @@ class Settings:
             "url_enabled": self.url_enabled,
             "url_private_network_policy": self.url_private_network_policy,
             "ytdlp_cookies_configured": bool(self.ytdlp_cookies_file),
+            "source_session_configured": bool(self.source_session),
+            "source_chat_count": len(self.source_chats),
+            "source_trigger_configured": bool(self.source_trigger),
+            "source_delete_trigger": self.source_delete_trigger,
+            "source_download_workers": self.source_download_workers,
             "static_proxy_configured": bool(self.static_proxy_url),
             "static_proxy_probe_timeout_seconds": self.static_proxy_probe_timeout_seconds,
             "dashboard_enabled": self.dashboard_enabled,

@@ -134,6 +134,17 @@ Telegram 消息 / 链接
 - 音频：`MediaKind.AUDIO` 走 document step，但发布时以可播放音频属性（`DocumentAttributeAudio` + `audio/mpeg`）发送，不强制作为文件。
 - Bot UI 在 `adapters/telegram/bot_ui_content.py`（页面、回调、`/thumb`、`/caption`），入口按钮在设置页。
 
+## 6.2 来源读取器（个人账号 session，可选）
+
+用于抓取 **bot 看不到的内容**（另一个机器人的私聊、开启"禁止转发/限制保存"的频道）：
+
+- `adapters/telegram/user_gateway.py`：第二个 Telethon client，凭据来自 `TGVIO_SOURCE_SESSION`（默认 `session/source_user`），**没有 bot_token**；文件存在即启动，不存在则跳过并在日志记 `source.reader.unconfigured`。
+- `adapters/telegram/user_source.py` + `domain/telegram_links.py`：`UserSourceReader` 只响应**所有者主动触发**——回复目标消息并发 `TGVIO_SOURCE_TRIGGER`（默认 `#tgvio`），或发送 `t.me` 消息链接；按 `grouped_id` 自动补全媒体组，产出 `IncomingMedia(source_type="user_source", source_chat_id, source_message_id, ...)`。
+- `adapters/telegram/intake_source.py`（`IntakeSourceMixin`）：把触发器注册到 user client，抓取后调用现有 `_accept_and_schedule()` 入队，并按 `TGVIO_SOURCE_TRIGGER_DELETE` 删除触发消息。
+- 下载：`main.py` 给 `RoutedMediaDownloader` 注册 `"user_source"` → 绑定 user client 的 `TelethonMediaDownloader`（低并发）；`PreviewService` 改用 routed downloader，因此受限来源也能出效果预览。
+- 边界：**不做自动监听**（不订阅来源新帖），只处理白名单 `TGVIO_SOURCE_CHATS` 里的主动触发；下载仍走既有 Job/恢复/去重/归档链路。`media_router.download_bounded()` 支持按来源路由做有界预览。
+- 一次性登录：`scripts/login_source_session.py`（已包含在 runtime 镜像）。
+
 ---
 
 ## 7. 如何自测

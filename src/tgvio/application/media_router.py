@@ -26,3 +26,17 @@ class RoutedMediaDownloader:
         source_type = str(item.metadata.get("source_type") or "telegram").strip().lower()
         downloader = self._routes.get(source_type, self._default)
         return await downloader.download(item, target_dir, progress_callback)
+
+    async def download_bounded(
+        self,
+        item: MediaItem,
+        target_dir: Path,
+        *,
+        max_bytes: int,
+    ) -> MediaItem:
+        source_type = str(item.metadata.get("source_type") or "telegram").strip().lower()
+        downloader = self._routes.get(source_type, self._default)
+        bounded = getattr(downloader, "download_bounded", None)
+        if bounded is None:
+            raise ValueError("source does not support bounded preview")
+        return await bounded(item, target_dir, max_bytes=max_bytes)

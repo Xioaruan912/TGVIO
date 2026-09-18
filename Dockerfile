@@ -50,7 +50,7 @@ CMD ["sh", "scripts/check_foundation.sh"]
 
 FROM runtime-base AS runtime
 COPY src ./src
-COPY scripts/healthcheck.py scripts/image_inspect.py ./scripts/
+COPY scripts/healthcheck.py scripts/image_inspect.py scripts/login_source_session.py ./scripts/
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["python", "scripts/healthcheck.py"]
 CMD ["python", "-m", "tgvio.main"]
