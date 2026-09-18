@@ -281,6 +281,8 @@ class TelethonIntakeRuntime(
             await self._begin_collection(event.chat_id, int(event.sender_id))
         elif command in {"end", "结束"}:
             await self._end_collection(event.chat_id, int(event.sender_id))
+        elif command in {"grab", "抓取"}:
+            await self.handle_grab(event, argument)
         elif command == "mode":
             requested = argument.strip().lower()
             aliases = {

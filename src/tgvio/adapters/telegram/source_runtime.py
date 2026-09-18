@@ -145,6 +145,30 @@ class SourceCoordinator:
                 except Exception:  # noqa: BLE001
                     pass
 
+    async def grab_latest(self, index: int = 0) -> tuple[int, str]:
+        """Reliable owner command: publish the newest media of a whitelisted chat.
+
+        This does not depend on the owner's outgoing trigger message being seen;
+        the bot chat command plus reading the source chat are both reliable.
+        """
+
+        reader = self._reader
+        if reader is None or self._client is None or self._user_id is None:
+            return (0, "")
+        chats = reader.ordered_chats()
+        if not chats:
+            return (0, "")
+        if not 0 <= int(index) < len(chats):
+            index = 0
+        chat_id = chats[int(index)]
+        label = reader.label_for(chat_id)
+        media = await reader.capture_latest(chat_id)
+        if not media:
+            return (0, label)
+        if self._on_trigger_media is not None:
+            await self._on_trigger_media(int(self._user_id), media)
+        return (len(media), label)
+
     async def check_now(self) -> tuple[int, int]:
         """Manual "check now": search and process any pending trigger messages."""
 

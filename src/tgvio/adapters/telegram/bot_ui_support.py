@@ -17,6 +17,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("jobs", "查看最近任务"),
     ("status", "查看运行与任务状态"),
     ("source", "来源账号（个人 session）"),
+    ("grab", "抓取来源最近一条媒体"),
     ("help", "查看使用说明"),
 )
 

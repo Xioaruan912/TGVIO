@@ -74,8 +74,25 @@ class UserSourceReader:
         self._trigger = (trigger or "#tgvio").strip() or "#tgvio"
         self._allowed_raw = tuple(entry for entry in (allowed_chats or ()) if str(entry).strip())
         self._allowed_ids: set[int] = set()
+        self._chat_labels: dict[int, str] = {}
         self.seed_report: dict[str, int] = {}
         self._log = logging.getLogger("tgvio.telegram.source")
+
+    def label_for(self, chat_id: int) -> str:
+        return self._chat_labels.get(int(chat_id), str(chat_id))
+
+    def ordered_chats(self) -> list[int]:
+        """Whitelist chats in configuration order (best-effort)."""
+
+        ordered: list[int] = []
+        for entry in self._allowed_raw:
+            for chat_id, label in self._chat_labels.items():
+                if label == entry and chat_id not in ordered:
+                    ordered.append(chat_id)
+        for chat_id in sorted(self._allowed_ids):
+            if chat_id not in ordered:
+                ordered.append(chat_id)
+        return ordered
 
     @property
     def trigger(self) -> str:
@@ -89,15 +106,19 @@ class UserSourceReader:
         """Resolve the whitelist to durable chat ids; unresolvable entries are skipped."""
 
         resolved: set[int] = set()
+        labels: dict[int, str] = {}
         for entry in self._allowed_raw:
             try:
                 entity = await self._client.get_entity(entry)
-                resolved.add(int(utils.get_peer_id(entity)))
+                peer_id = int(utils.get_peer_id(entity))
+                resolved.add(peer_id)
+                labels[peer_id] = str(entry)
             except Exception as exc:  # noqa: BLE001 - a bad entry must not abort startup
                 self._log.warning(
                     "source whitelist entry could not be resolved: %s", type(exc).__name__
                 )
         self._allowed_ids = resolved
+        self._chat_labels = labels
         return len(resolved)
 
     def matches_trigger(self, text: str | None) -> bool:

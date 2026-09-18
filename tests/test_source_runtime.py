@@ -62,6 +62,50 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await coordinator.toggle_latest())
         self.assertTrue(coordinator.effective_latest())
 
+    async def test_grab_latest_dispatches_media_from_the_selected_source(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        captured: list[tuple[int, list]] = []
+
+        class _Reader:
+            def ordered_chats(self):
+                return [-1001, -1002]
+
+            def label_for(self, chat_id):
+                return { -1001: "@first", -1002: "@second"}[chat_id]
+
+            async def capture_latest(self, chat_id, **_kwargs):
+                return ["media"] if chat_id == -1002 else []
+
+        async def _media(owner_id, media):
+            captured.append((int(owner_id), list(media)))
+
+        coordinator._reader = _Reader()
+        coordinator._client = object()
+        coordinator._on_trigger_media = _media
+        count, label = await coordinator.grab_latest(1)
+        self.assertEqual((count, label), (1, "@second"))
+        self.assertEqual(captured, [(7, ["media"])])
+
+    async def test_grab_latest_reports_when_the_source_has_no_media(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+
+        class _Reader:
+            def ordered_chats(self):
+                return [-1001]
+
+            def label_for(self, chat_id):
+                return "@first"
+
+            async def capture_latest(self, chat_id, **_kwargs):
+                return []
+
+        coordinator._reader = _Reader()
+        coordinator._client = object()
+        count, label = await coordinator.grab_latest(0)
+        self.assertEqual((count, label), (0, "@first"))
+
     async def test_check_now_processes_pending_triggers(self) -> None:
         coordinator = self._coordinator()
         coordinator._user_id = 7

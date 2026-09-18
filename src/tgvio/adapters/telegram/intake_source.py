@@ -109,6 +109,40 @@ class IntakeSourceMixin:
             )
         return True
 
+    async def handle_grab(self, event, argument: str) -> bool:
+        """``/grab [n]``: publish the newest media of the nth whitelisted source."""
+
+        coordinator = getattr(self, "_source", None)
+        if coordinator is None or not hasattr(coordinator, "grab_latest"):
+            return False
+        index = 0
+        raw = (argument or "").strip()
+        if raw.isdigit():
+            index = max(0, int(raw) - 1)
+        await self._safe_send(event.chat_id, "⏳ 正在抓取来源最近一条媒体…")
+        try:
+            count, label = await coordinator.grab_latest(index)
+        except Exception as exc:  # noqa: BLE001 - user-facing miss
+            log_event(
+                self._log,
+                logging.WARNING,
+                "source.grab.failed",
+                "Source grab failed",
+                exception_type=type(exc).__name__,
+            )
+            await self._safe_send(event.chat_id, "⚠️ 抓取失败，请稍后重试。")
+            return True
+        if count:
+            await self._safe_send(
+                event.chat_id, f"✅ 已抓取 {count} 个媒体（来源：{label}），正在下载与发布。"
+            )
+        else:
+            await self._safe_send(
+                event.chat_id,
+                f"⚠️ 来源 `{label or '未配置'}` 里没找到媒体；请确认已添加来源且该聊天有内容。",
+            )
+        return True
+
     async def accept_source_media(self, owner_id: int, media) -> None:
         await self._accept_and_schedule(int(owner_id), int(owner_id), media)
 

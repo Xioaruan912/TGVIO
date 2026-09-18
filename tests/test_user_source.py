@@ -209,6 +209,15 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         found = await reader.poll_triggers({-100555: 50}, limit=10)
         self.assertEqual(found, [(-100555, 60, 42)])
 
+    async def test_ordered_chats_follow_whitelist_order(self) -> None:
+        reader = UserSourceReader(FakeUserClient(), trigger="#tgvio")
+        reader._allowed_raw = ("@a", "@b")
+        reader._allowed_ids = {-1002, -1001}
+        reader._chat_labels = {-1001: "@a", -1002: "@b"}
+        self.assertEqual(reader.ordered_chats(), [-1001, -1002])
+        self.assertEqual(reader.label_for(-1001), "@a")
+        self.assertEqual(reader.label_for(-1099), "-1099")
+
     async def test_find_recent_triggers_searches_whitelisted_chats(self) -> None:
         trigger = _message(60, kind="document", chat_id=-100555)
         trigger.message = "#tgvio"
