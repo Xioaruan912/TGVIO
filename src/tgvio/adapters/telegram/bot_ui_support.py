@@ -16,6 +16,7 @@ COMMANDS: tuple[tuple[str, str], ...] = (
     ("resume", "恢复队列或指定任务"),
     ("jobs", "查看最近任务"),
     ("status", "查看运行与任务状态"),
+    ("source", "来源账号（个人 session）"),
     ("help", "查看使用说明"),
 )
 
