@@ -7,6 +7,7 @@ the intake runtime only receives the ready reader through a callback.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -31,6 +32,8 @@ _MAX_CHATS = 50
 
 ReaderReadyHook = Callable[[object, UserSourceReader, int], None]
 ReaderStoppedHook = Callable[[], None]
+TriggerMediaHook = Callable[[int, list], Awaitable[None]]
+NoticeHook = Callable[[str], Awaitable[None]]
 
 
 class SourceLoginError(RuntimeError):
@@ -60,6 +63,11 @@ class SourceCoordinator:
         self._user_id: int | None = None
         self._awaiting: str | None = None  # none | phone | code | password
         self._reader: UserSourceReader | None = None
+        self._trigger_seen: dict[int, int] = {}
+        self._poll_task: asyncio.Task | None = None
+        self._on_trigger_media: TriggerMediaHook | None = None
+        self._on_notice: NoticeHook | None = None
+        self._poll_seconds = max(5, int(getattr(settings, "source_poll_seconds", 15)))
         self._log = logging.getLogger("tgvio.telegram.source")
 
     # ---------------------------------------------------------------- status
@@ -87,11 +95,91 @@ class SourceCoordinator:
         *,
         on_reader_ready: ReaderReadyHook | None = None,
         on_reader_stopped: ReaderStoppedHook | None = None,
+        on_trigger_media: TriggerMediaHook | None = None,
+        on_notice: NoticeHook | None = None,
     ) -> None:
         if on_reader_ready is not None:
             self._on_reader_ready = on_reader_ready
         if on_reader_stopped is not None:
             self._on_reader_stopped = on_reader_stopped
+        if on_trigger_media is not None:
+            self._on_trigger_media = on_trigger_media
+        if on_notice is not None:
+            self._on_notice = on_notice
+
+    async def handle_trigger(
+        self,
+        chat_id: int,
+        message_id: int,
+        reply_to_msg_id: int | None,
+    ) -> None:
+        """Single entry point for a trigger message, from updates or polling."""
+
+        chat_id = int(chat_id)
+        message_id = int(message_id)
+        if message_id <= self._trigger_seen.get(chat_id, 0):
+            return
+        self._trigger_seen[chat_id] = message_id
+        reader = self._reader
+        if reader is None:
+            return
+        has_reply = reply_to_msg_id is not None
+        self._log.info("source.trigger.received reply=%s", has_reply)
+        try:
+            media = await reader.capture_at(chat_id, reply_to_msg_id) if has_reply else []
+            if not media and not has_reply and self.effective_latest():
+                media = await reader.capture_latest(chat_id)
+            if media and self._on_trigger_media is not None and self._user_id:
+                await self._on_trigger_media(int(self._user_id), media)
+            elif has_reply:
+                await self._notice("⚠️ 未能读取被回复的消息：可能已被删除或不是媒体。")
+            else:
+                await self._notice("⚠️ 没找到最近的媒体：请**长按目标消息 → 回复**，再发送触发词。")
+        except Exception as exc:  # noqa: BLE001 - user-facing miss
+            self._log.warning("source.trigger.failed type=%s", type(exc).__name__)
+            await self._notice("⚠️ 抓取失败，请稍后重试。")
+        finally:
+            if self.effective_delete_trigger():
+                try:
+                    await self._client.delete_messages(chat_id, [message_id])
+                except Exception:  # noqa: BLE001
+                    pass
+
+    async def _notice(self, text: str) -> None:
+        if self._on_notice is None:
+            return
+        try:
+            await self._on_notice(text)
+        except Exception:  # noqa: BLE001
+            pass
+
+    def _start_trigger_poll(self) -> None:
+        if self._poll_task is not None and not self._poll_task.done():
+            return
+        self._poll_task = asyncio.create_task(
+            self._trigger_poll_loop(), name="tgvio-source-trigger-poll"
+        )
+
+    async def _stop_trigger_poll(self) -> None:
+        task = self._poll_task
+        self._poll_task = None
+        if task is not None and not task.done():
+            task.cancel()
+            await asyncio.gather(task, return_exceptions=True)
+
+    async def _trigger_poll_loop(self) -> None:
+        while True:
+            await asyncio.sleep(self._poll_seconds)
+            reader = self._reader
+            if reader is None or self._client is None:
+                continue
+            try:
+                found = await reader.poll_triggers(self._trigger_seen)
+            except Exception as exc:  # noqa: BLE001
+                self._log.warning("source.trigger.poll_failed type=%s", type(exc).__name__)
+                continue
+            for chat_id, message_id, reply_to in found:
+                await self.handle_trigger(chat_id, message_id, reply_to)
 
     def effective_trigger(self) -> str:
         value = (self._flags.get("source_trigger") or self._settings.source_trigger or "").strip()
@@ -183,6 +271,7 @@ class SourceCoordinator:
         self._log.info("source.updates.ready")
 
     async def stop(self) -> None:
+        await self._stop_trigger_poll()
         self._reader = None
         if self._client is not None:
             try:
@@ -202,8 +291,10 @@ class SourceCoordinator:
             allowed_chats=self.effective_chats(),
         )
         await reader.prepare()
+        self._trigger_seen = await reader.seed_trigger_cursor()
         self._reader = reader
         self._awaiting = None
+        self._start_trigger_poll()
         if self._on_reader_ready is not None:
             self._on_reader_ready(client, reader, self._user_id)
 
@@ -287,6 +378,8 @@ class SourceCoordinator:
         return f"登录成功，已启用 {len(self._reader.allowed_ids)} 个来源。现在可以回复目标消息发 {self.effective_trigger()} 抓取。"
 
     async def logout(self) -> str:
+        await self._stop_trigger_poll()
+        self._trigger_seen = {}
         client = self._client
         self._reader = None
         self._awaiting = None

@@ -125,10 +125,60 @@ class UserSourceReader:
         return []
 
     async def capture_reply(self, event) -> list[IncomingMedia]:
-        reply = await event.get_reply_message()
-        if reply is None:
+        return await self.capture_at(
+            int(event.chat_id),
+            getattr(getattr(event, "message", None), "reply_to_msg_id", None),
+        )
+
+    async def capture_at(self, chat_id: int, reply_to_msg_id: int | None) -> list[IncomingMedia]:
+        if reply_to_msg_id is None:
             return []
-        return self._to_media_list(await self._expand(reply.message))
+        try:
+            message = await self._client.get_messages(int(chat_id), ids=int(reply_to_msg_id))
+        except Exception as exc:  # noqa: BLE001 - user-facing miss
+            self._log.warning("source.reply.failed type=%s", type(exc).__name__)
+            return []
+        if message is None:
+            return []
+        return self._to_media_list(await self._expand(message))
+
+    async def seed_trigger_cursor(self) -> dict[int, int]:
+        """Remember the newest message id per chat so history is never replayed."""
+
+        cursor: dict[int, int] = {}
+        for chat_id in sorted(self._allowed_ids):
+            try:
+                async for message in self._client.iter_messages(chat_id, limit=1):
+                    cursor[chat_id] = int(message.id)
+                    break
+            except Exception:  # noqa: BLE001
+                continue
+        return cursor
+
+    async def poll_triggers(
+        self,
+        after: dict[int, int],
+        *,
+        limit: int = 10,
+    ) -> list[tuple[int, int, int | None]]:
+        """Find new outgoing trigger messages; a fallback when updates are delayed."""
+
+        found: list[tuple[int, int, int | None]] = []
+        for chat_id in sorted(self._allowed_ids):
+            try:
+                async for message in self._client.iter_messages(chat_id, limit=max(1, int(limit))):
+                    if not getattr(message, "outgoing", False):
+                        continue
+                    if (getattr(message, "message", "") or "").strip() != self._trigger:
+                        continue
+                    if int(message.id) <= int(after.get(chat_id, 0)):
+                        continue
+                    found.append(
+                        (int(chat_id), int(message.id), getattr(message, "reply_to_msg_id", None))
+                    )
+            except Exception:  # noqa: BLE001
+                continue
+        return found
 
     async def resolve_link(self, url: str) -> list[IncomingMedia]:
         link: TelegramLink | None = parse_telegram_link(url)

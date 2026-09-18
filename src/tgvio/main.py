@@ -340,6 +340,8 @@ async def run(*, check_only: bool = False) -> None:
                     client, reader, user_id
                 ),
                 on_reader_stopped=intake_runtime.clear_source,
+                on_trigger_media=intake_runtime.accept_source_media,
+                on_notice=intake_runtime.notify_source_owner,
             )
             if await source_coordinator.start():
                 log_event(

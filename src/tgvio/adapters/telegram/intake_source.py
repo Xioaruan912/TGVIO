@@ -103,7 +103,30 @@ class IntakeSourceMixin:
             )
         return True
 
+    async def accept_source_media(self, owner_id: int, media) -> None:
+        await self._accept_and_schedule(int(owner_id), int(owner_id), media)
+
+    async def notify_source_owner(self, text: str) -> None:
+        owner_id = getattr(self, "_source_owner_id", None)
+        if owner_id is None:
+            users = getattr(self._settings, "allowed_users", ()) or ()
+            owner_id = users[0] if users else None
+        if owner_id is None:
+            return
+        await self._safe_send(int(owner_id), text)
+
     async def _on_source_trigger(self, event) -> None:
+        coordinator = getattr(self, "_source", None)
+        if coordinator is not None and hasattr(coordinator, "handle_trigger"):
+            await coordinator.handle_trigger(
+                int(event.chat_id),
+                int(event.message.id),
+                getattr(event.message, "reply_to_msg_id", None),
+            )
+            return
+        await self._on_source_trigger_fallback(event)
+
+    async def _on_source_trigger_fallback(self, event) -> None:
         reader = getattr(self, "_source_reader", None)
         if reader is None:
             return

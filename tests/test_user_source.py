@@ -144,8 +144,8 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         reader = UserSourceReader(client, trigger="#tgvio")
 
         class _Event:
-            async def get_reply_message(self):
-                return SimpleNamespace(message=target)
+            chat_id = -100555
+            message = SimpleNamespace(reply_to_msg_id=20)
 
         media = await reader.capture_reply(_Event())
         self.assertEqual([item.source_message_id for item in media], [19, 20, 21])

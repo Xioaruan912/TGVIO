@@ -145,6 +145,8 @@ Telegram 消息 / 链接
 - 下载：`main.py` 给 `RoutedMediaDownloader` 注册 `"user_source"` → 绑定 user client 的 `TelethonMediaDownloader`（低并发）；`PreviewService` 改用 routed downloader，因此受限来源也能出效果预览。
 - 边界：**不做自动监听**（不订阅来源新帖），只处理白名单 `TGVIO_SOURCE_CHATS` 里的主动触发；下载仍走既有 Job/恢复/去重/归档链路。`media_router.download_bounded()` 支持按来源路由做有界预览。
 - 一次性登录：`scripts/login_source_session.py`（已包含在 runtime 镜像）。
+- 触发可靠性：登录成功后 `SourceCoordinator` 会重连并 `catch_up()`，确保授权态 client 真正在收更新；同时每 `TGVIO_SOURCE_POLL_SECONDS`（默认 15s）轮询**你自己的触发消息**作为兜底。两条路径都走 `SourceCoordinator.handle_trigger()`，用 `(chat_id, message_id)` 游标去重，不会重复抓取；启动时用最新消息 id 播种游标，绝不回放历史。
+- 触发语义：回复目标消息即抓该条；不回复时默认抓该聊天最近一条媒体（`source_latest`，可在 `/source` 页面切换）；误把触发词发给 TGVIO 本身会得到用法提示。
 
 ---
 
