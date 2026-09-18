@@ -207,6 +207,49 @@ class ArchivePlannerTests(unittest.TestCase):
             with self.assertRaisesRegex(ArchivePlanningError, "canonical media missing"):
                 ArchivePlanner().plan(job)
 
+    def test_duplicate_content_gets_unique_remote_relpaths(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            payload = b"same-content"
+            items = []
+            for index in range(2):
+                path = root / f"copy-{index}.jpg"
+                path.write_bytes(payload)
+                items.append(
+                    MediaItem(
+                        index=index,
+                        kind=MediaKind.PHOTO,
+                        source=f"fixture:{index}",
+                        local_path=str(path),
+                        name="same.jpg",
+                        size_bytes=len(payload),
+                        mime_type="image/jpeg",
+                        sha256="a" * 64,
+                    )
+                )
+            job = Job(
+                id="dup" + "0" * 29,
+                owner_id=1,
+                destination="@channel",
+                state=JobState.PLANNED,
+                items=items,
+                created_at="2026-09-04 01:19:23",
+            )
+            plan = ArchivePlanner(remote_root="115/Pron", layout="v2").plan(
+                job,
+                day="2026-09-13",
+                day_seq=1,
+            )
+        relpaths = [obj.remote_relpath for obj in plan.package.objects]
+        self.assertEqual(len(relpaths), 2)
+        self.assertEqual(len(set(relpaths)), 2)
+        self.assertEqual(relpaths[0], "a" * 12 + ".jpg")
+        self.assertEqual(relpaths[1], "a" * 12 + "-2.jpg")
+        original_names = [
+            entry["original_name"] for entry in plan.package.manifest["media"]
+        ]
+        self.assertEqual(original_names, ["same.jpg", "same.jpg"])
+
     def test_remote_root_is_a_layout_prefix_not_a_second_package_identity(self) -> None:
         with TemporaryDirectory() as tmp:
             job = self._job(Path(tmp), 1)

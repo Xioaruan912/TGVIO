@@ -82,6 +82,44 @@ class ArchiveRepositoryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(loaded.archive_policy, ArchivePolicy.BEST_EFFORT)
         self.assertEqual(loaded.archive_policy_version, 2)
 
+    async def test_duplicate_content_persists_without_integrity_error(self) -> None:
+        first = self.root / "dup-a.jpg"
+        second = self.root / "dup-b.jpg"
+        first.write_bytes(b"same")
+        second.write_bytes(b"same")
+        job = Job(
+            id="4" * 32,
+            owner_id=42,
+            destination="@channel",
+            state=JobState.RECEIVED,
+            created_at="2026-09-04 01:19:23",
+            items=[
+                MediaItem(
+                    index=0,
+                    kind=MediaKind.PHOTO,
+                    source="fixture:0",
+                    local_path=str(first),
+                    name="same.jpg",
+                    size_bytes=4,
+                    sha256="d" * 64,
+                ),
+                MediaItem(
+                    index=1,
+                    kind=MediaKind.PHOTO,
+                    source="fixture:1",
+                    local_path=str(second),
+                    name="same.jpg",
+                    size_bytes=4,
+                    sha256="d" * 64,
+                ),
+            ],
+        )
+        await self.repo.create(job)
+        plan = ArchivePlanner(layout="v2").plan(job, day="2026-09-13", day_seq=1)
+        saved = await self.repo.save_archive_plan(plan)
+        self.assertEqual(len(saved.objects), 2)
+        self.assertEqual(len({obj.remote_relpath for obj in saved.objects}), 2)
+
     async def test_replanning_while_planned_is_idempotent_not_attempt_sprawl(self) -> None:
         job = await self._job()
         plan = ArchivePlanner().plan(job)

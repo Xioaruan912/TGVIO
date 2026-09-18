@@ -4,6 +4,7 @@ import asyncio
 from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
+from types import SimpleNamespace
 import unittest
 
 from tgvio.application.collection_editing import (
@@ -47,9 +48,16 @@ class _CoverFactory:
 class _Sender:
     def __init__(self) -> None:
         self.calls: list[tuple[int, str, bool]] = []
+        self.captions: list[str] = []
+        self.summaries: list[tuple[int, str]] = []
 
     async def send_preview(self, chat_id, path, *, spoiler, caption):
         self.calls.append((int(chat_id), str(path), bool(spoiler)))
+        self.captions.append(caption)
+
+    async def send_summary(self, chat_id, text, **_kwargs):
+        self.summaries.append((int(chat_id), text))
+        return SimpleNamespace(id=1)
 
 
 class PreviewServiceTests(unittest.IsolatedAsyncioTestCase):
@@ -133,6 +141,41 @@ class PreviewServiceTests(unittest.IsolatedAsyncioTestCase):
         draft = await self.editing.draft(session.id)
         assert draft is not None
         return session, draft
+
+    async def test_real_caption_and_structural_summary_are_sent(self) -> None:
+        session, draft = await self._session([IncomingMedia(
+            kind=MediaKind.PHOTO, source="telegram:42:20", size_bytes=10,
+            source_chat_id=42, source_message_id=20,
+        )])
+        await self.service.preview(
+            owner_id=7,
+            chat_id=42,
+            session_id=session.id,
+            expected_revision=draft.revision,
+            caption="真实配文 @channel",
+            summary="📦 预览结构\n封面：前 1 张图片",
+        )
+        self.assertEqual(self.sender.captions, ["真实配文 @channel"])
+        self.assertEqual(
+            self.sender.summaries,
+            [(42, "📦 预览结构\n封面：前 1 张图片")],
+        )
+
+    async def test_owner_thumbnail_is_previewed_without_downloading(self) -> None:
+        session, draft = await self._session([IncomingMedia(
+            kind=MediaKind.VIDEO, source="telegram:42:21", size_bytes=10,
+            source_chat_id=42, source_message_id=21,
+        )])
+        thumb = self.root / "owner-thumb.jpg"
+        thumb.write_bytes(b"thumb")
+        await self.repo.set_user_thumbnail_path(7, str(thumb))
+        await self.service.preview(
+            owner_id=7, chat_id=42, session_id=session.id,
+            expected_revision=draft.revision,
+        )
+        self.assertEqual(self.downloader.calls, 0)
+        self.assertEqual(self.cover.calls, 0)
+        self.assertEqual(self.sender.calls[-1][1], str(thumb))
 
     async def test_photo_preview_downloads_once_sends_and_cleans_cache(self) -> None:
         session, draft = await self._session(

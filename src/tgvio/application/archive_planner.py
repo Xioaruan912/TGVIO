@@ -82,6 +82,7 @@ class ArchivePlanner:
 
         objects: list[ArchiveObject] = []
         media_manifest: list[dict[str, object]] = []
+        used_relpaths: set[str] = set()
         for object_index, item in enumerate(candidates):
             local = self._canonical_path(item)
             if not local.is_file():
@@ -91,6 +92,11 @@ class ArchivePlanner:
             size = local.stat().st_size
             remote_name = self._remote_name(object_index, item, local, layout=self._layout)
             remote_relpath = remote_name if self._layout == "v2" else f"media/{remote_name}"
+            # Two items can legitimately share content (duplicate forwards), which
+            # would otherwise collide on UNIQUE(package_id, remote_relpath) and
+            # fail the whole job during prepare. Keep every object addressable.
+            remote_relpath = self._unique_relpath(remote_relpath, used_relpaths)
+            used_relpaths.add(remote_relpath)
             objects.append(
                 ArchiveObject(
                     package_id=package_id,
@@ -169,6 +175,28 @@ class ArchivePlanner:
         if not value:
             raise ArchivePlanningError(f"canonical path missing for item {item.index}")
         return Path(value)
+
+    @staticmethod
+    def _unique_relpath(relpath: str, used: set[str]) -> str:
+        """Return a package-unique relative path, adding a stable ``-N`` suffix."""
+
+        if relpath not in used:
+            return relpath
+        path = Path(relpath)
+        suffix = path.suffix
+        stem = path.name[: -len(suffix)] if suffix else path.name
+        parent = str(path.parent)
+        counter = 2
+        while True:
+            candidate_name = f"{stem}-{counter}{suffix}"
+            candidate = (
+                f"{parent}/{candidate_name}"
+                if parent not in {"", "."}
+                else candidate_name
+            )
+            if candidate not in used:
+                return candidate
+            counter += 1
 
     @classmethod
     def _remote_name(

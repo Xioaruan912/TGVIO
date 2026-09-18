@@ -22,16 +22,24 @@ class TelethonPreviewSender:
         *,
         spoiler: bool,
         caption: str,
-    ) -> None:
+    ):
         if spoiler:
-            await self._client.send_message(
+            return await self._client.send_message(
                 int(chat_id),
                 f"{caption}\n\n🔞 该封面为雪花内容，预览已隐藏；正式发布时会按你的显示设置遮挡。",
             )
-            return
-        await self._client.send_file(
+        return await self._client.send_file(
             int(chat_id),
             str(path),
             caption=caption,
             force_document=False,
+        )
+
+    async def send_summary(self, chat_id: int, text: str, *, buttons=None):
+        """Send the structural summary card that follows the preview cover."""
+
+        return await self._client.send_message(
+            int(chat_id),
+            text,
+            buttons=buttons,
         )

@@ -9,6 +9,7 @@ from tgvio.application.collection_editing import (
     DraftUnavailableError,
 )
 from tgvio.domain.collection_editing import DraftState
+from tgvio.domain.content import render_caption_template, split_template_buttons
 from tgvio.application.operation_tokens import OperationTokenInvalidError
 from tgvio.domain.intake import CollectionEntryKind
 
@@ -389,8 +390,19 @@ class IntakeEditMixin:
             await self._render_edit_panel(event.chat_id, owner_id, session_id, draft)
             return
         await self._safe_answer(event, "正在生成效果预览…")
+        progress = await self._safe_send(
+            int(event.chat_id),
+            "⏳ **正在生成效果预览…**\n正在下载封面素材并渲染；这一步不会发布，也不会归档。",
+        )
+        progress_id = getattr(progress, "id", None)
         task = asyncio.create_task(
-            self._run_preview(owner_id, int(event.chat_id), session_id, revision)
+            self._run_preview(
+                owner_id,
+                int(event.chat_id),
+                session_id,
+                revision,
+                int(progress_id) if progress_id is not None else None,
+            )
         )
         tasks = getattr(self, "_preview_tasks", None)
         if tasks is not None:
@@ -398,28 +410,111 @@ class IntakeEditMixin:
             task.add_done_callback(tasks.discard)
 
     async def _run_preview(
-        self, owner_id: int, chat_id: int, session_id: str, revision: int
+        self,
+        owner_id: int,
+        chat_id: int,
+        session_id: str,
+        revision: int,
+        progress_message_id: int | None = None,
     ) -> None:
         previews = getattr(self, "_previews", None)
         if previews is None:
             return
+        editing = await self._editing_service()
+        preference = await self._intake.get_user_preference(owner_id)
+        cover_mode = bool(getattr(self._settings, "cover_mode", True))
+        caption_text = ""
+        summary: str | None = None
+        if editing is not None:
+            content = await editing.preview_content(session_id)
+            if content is not None:
+                caption_text = content[0]
+            summary_preview = await editing.preview(
+                session_id=session_id,
+                cover_mode=cover_mode,
+            )
+            if summary_preview is not None:
+                summary = self._collection_preview_text(
+                    summary_preview, preference.spoiler_mode
+                )
+        caption = self._compose_preview_caption(caption_text, preference)
         try:
             result = await previews.preview(
                 owner_id=owner_id,
                 chat_id=chat_id,
                 session_id=session_id,
                 expected_revision=revision,
+                caption=caption,
+                summary=summary,
             )
             if result.state.value != "succeeded":
                 raise RuntimeError("preview unavailable")
-        except Exception:
+        except Exception as exc:
+            await self._preview_progress_failed(chat_id, progress_message_id, exc)
+            return
+        await self._preview_progress_succeeded(chat_id, progress_message_id)
+
+    def _compose_preview_caption(self, base: str, preference) -> str:
+        """Show the exact caption that will be published (collection text + footer + template)."""
+
+        parts = []
+        if (base or "").strip():
+            parts.append(base.strip())
+        footer = " ".join(
+            value
+            for value in (
+                getattr(self._settings, "channel_at", ""),
+                getattr(self._settings, "group_at", ""),
+            )
+            if value
+        ).strip()
+        if footer:
+            parts.append(footer)
+        template = (getattr(preference, "caption_template", "") or "").strip()
+        if template:
+            variables = {
+                "channel": getattr(self._settings, "channel_at", ""),
+                "group": getattr(self._settings, "group_at", ""),
+            }
             try:
-                await self._safe_send(
-                    chat_id,
-                    "🖼 未能生成效果预览；已保留文字预览，可继续编辑或直接确认发布。",
+                rendered, buttons = split_template_buttons(
+                    render_caption_template(template, variables)
                 )
-            except Exception:
-                pass
+            except ValueError:
+                rendered, buttons = "", ()
+            if rendered:
+                parts.append(rendered)
+            if buttons:
+                parts.append("（配文含按钮，正式发布时生效）")
+        body = "\n".join(parts).strip()
+        return (body or "（没有配文）")[:1024]
+
+    async def _preview_progress_succeeded(
+        self, chat_id: int, message_id: int | None
+    ) -> None:
+        if message_id is None:
+            return
+        try:
+            client = self._client
+            await client.delete_messages(int(chat_id), [int(message_id)])
+        except Exception:
+            pass
+
+    async def _preview_progress_failed(
+        self, chat_id: int, message_id: int | None, error: Exception
+    ) -> None:
+        detail = str(error).strip()
+        if not detail or detail.startswith("preview "):
+            detail = "生成失败，请稍后重试"
+        text = (
+            f"🖼 未能生成效果预览：{detail[:200]}\n"
+            "预览失败不影响发布；可继续编辑或直接确认发布。"
+        )
+        if message_id is not None and await self._safe_edit(
+            int(chat_id), int(message_id), text
+        ):
+            return
+        await self._safe_send(int(chat_id), text)
 
     async def _on_draft_style(self, event, action: str, owner_id: int) -> None:
         editing = await self._editing_service()

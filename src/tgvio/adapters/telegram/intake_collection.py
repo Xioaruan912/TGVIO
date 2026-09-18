@@ -41,21 +41,18 @@ class IntakeCollectionMixin:
         media_count, text_count = await self._intake.collection_counts(session.id)
         text = self._collection_status_text(media_count, text_count)
         buttons = self._collection_buttons(session.id)
-        if session.status_message_id is None:
-            message = await self._safe_send(chat_id, text, buttons=buttons)
-            message_id = getattr(message, "id", None)
-            if message_id is not None:
-                await self._repository.set_collection_status_message(
-                    session.id,
-                    int(chat_id),
-                    int(message_id),
-                )
-        else:
-            await self._safe_edit(
-                int(session.status_chat_id or chat_id),
-                int(session.status_message_id),
-                text,
-                buttons=buttons,
+        # Always post a fresh status at the bottom of the chat: editing an older
+        # message leaves the user scrolling up to find the collection controls.
+        message = await self._safe_send(chat_id, text, buttons=buttons)
+        message_id = getattr(message, "id", None)
+        if message_id is not None:
+            preview_sent = getattr(self, "_preview_sent", None)
+            if preview_sent is not None:
+                preview_sent.pop(session.id, None)
+            await self._repository.set_collection_status_message(
+                session.id,
+                int(chat_id),
+                int(message_id),
             )
 
     async def _end_collection(self, chat_id: int, owner_id: int) -> None:
@@ -103,17 +100,33 @@ class IntakeCollectionMixin:
             return
         text = self._collection_preview_text(preview, preference.spoiler_mode)
         buttons = self._preview_buttons(session.id, revision=revision)
-        target_chat = int(session.status_chat_id or chat_id)
-        if session.status_message_id is not None:
-            await self._safe_edit(target_chat, int(session.status_message_id), text, buttons=buttons)
+        preview_sent = getattr(self, "_preview_sent", None)
+        active_id = preview_sent.get(session.id) if preview_sent is not None else None
+        if active_id is not None and await self._safe_edit(
+            chat_id,
+            int(active_id),
+            text,
+            buttons=buttons,
+        ):
             return
+        previous_chat = int(session.status_chat_id or chat_id)
+        previous_id = int(session.status_message_id) if session.status_message_id else None
         message = await self._safe_send(chat_id, text, buttons=buttons)
         message_id = getattr(message, "id", None)
-        if message_id is not None:
-            await self._repository.set_collection_status_message(
-                session.id,
-                int(chat_id),
-                int(message_id),
+        if message_id is None:
+            return
+        if preview_sent is not None:
+            preview_sent[session.id] = int(message_id)
+        await self._repository.set_collection_status_message(
+            session.id,
+            int(chat_id),
+            int(message_id),
+        )
+        if previous_id is not None and previous_id != int(message_id):
+            await self._safe_edit(
+                previous_chat,
+                previous_id,
+                "⏹ **已结束收集**\n预览与确认请见下方最新消息。",
             )
 
     async def _announce_finalize_result(
@@ -200,6 +213,9 @@ class IntakeCollectionMixin:
             if session is None or session.id != session_id:
                 await self._safe_answer(event, "合集已经结束或已失效", alert=True)
                 return True
+            preview_sent = getattr(self, "_preview_sent", None)
+            if preview_sent is not None:
+                preview_sent.pop(session_id, None)
             await self._safe_answer(event, "正在发布合集")
             await self._confirm_collection(event.chat_id, owner_id)
             return True
@@ -209,6 +225,9 @@ class IntakeCollectionMixin:
             if session is None or session.id != session_id:
                 await self._safe_answer(event, "合集已经结束或已失效", alert=True)
                 return True
+            preview_sent = getattr(self, "_preview_sent", None)
+            if preview_sent is not None:
+                preview_sent.pop(session_id, None)
             await self._intake.cancel_collection(owner_id=owner_id, chat_id=int(event.chat_id))
             await self._safe_answer(event, "合集已放弃")
             if session.status_message_id is not None:
@@ -241,6 +260,9 @@ class IntakeCollectionMixin:
             if session is None or session.id != session_id:
                 await self._safe_answer(event, "合集已经结束或已失效", alert=True)
                 return True
+            preview_sent = getattr(self, "_preview_sent", None)
+            if preview_sent is not None:
+                preview_sent.pop(session_id, None)
             await self._intake.cancel_collection(owner_id=owner_id, chat_id=int(event.chat_id))
             await self._safe_answer(event, "合集已取消")
             if session.status_message_id is not None:

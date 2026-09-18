@@ -130,6 +130,8 @@ class PreviewService:
         chat_id: int,
         session_id: str,
         expected_revision: int,
+        caption: str | None = None,
+        summary: str | None = None,
     ) -> PreviewRequest:
         owner = int(owner_id)
         draft = await self._repository.get_draft(session_id)
@@ -189,7 +191,8 @@ class PreviewService:
 
             try:
                 return await asyncio.wait_for(
-                    self._run(request, item, int(chat_id)), timeout=max(1.0, remaining)
+                    self._run(request, item, int(chat_id), caption, summary),
+                    timeout=max(1.0, remaining),
                 )
             except asyncio.TimeoutError:
                 await self._fail(request.id, "timeout")
@@ -216,7 +219,14 @@ class PreviewService:
         )
 
     # ------------------------------------------------------------------- work
-    async def _run(self, request: PreviewRequest, item: MediaItem, chat_id: int) -> PreviewRequest:
+    async def _run(
+        self,
+        request: PreviewRequest,
+        item: MediaItem,
+        chat_id: int,
+        caption: str | None = None,
+        summary: str | None = None,
+    ) -> PreviewRequest:
         cache_dir = self._safe_dir(request.id)
         if cache_dir is None:
             await self._fail(request.id, "unsafe_path")
@@ -226,7 +236,9 @@ class PreviewService:
             request.id, state=PreviewState.RUNNING, cache_dir=str(cache_dir)
         )
         try:
-            await self._generate_and_send(request, item, cache_dir, chat_id)
+            await self._generate_and_send(
+                request, item, cache_dir, chat_id, caption, summary
+            )
             await self._repository.update_preview_request(
                 request.id, state=PreviewState.SUCCEEDED
             )
@@ -245,8 +257,17 @@ class PreviewService:
         updated = await self._repository.get_preview_request(request.id)
         return updated or request
 
-    async def _generate_and_send(self, request, item, cache_dir, chat_id):
-        _, cover = await self._generate(item, cache_dir)
+    async def _generate_and_send(
+        self,
+        request,
+        item,
+        cache_dir,
+        chat_id,
+        caption: str | None = None,
+        summary: str | None = None,
+    ):
+        preference = await self._repository.get_user_preference(request.owner_id)
+        _, cover = await self._generate(item, cache_dir, preference)
         # Re-check owner/revision/state/TTL immediately before sending.
         draft = await self._repository.get_draft(request.session_id)
         if (
@@ -254,7 +275,6 @@ class PreviewService:
             or request.expires_at <= int(self._now())
         ):
             raise DraftRevisionConflict("preview is stale")
-        preference = await self._repository.get_user_preference(request.owner_id)
         spoiler = bool(item.spoiler) or preference.spoiler_mode in {
             SpoilerMode.ASK,
             SpoilerMode.ALWAYS_SPOILER,
@@ -262,10 +282,20 @@ class PreviewService:
         # A single send; an uncertain response is never auto-retried.
         await self._sender.send_preview(
             int(chat_id), cover, spoiler=spoiler,
-            caption="🖼 效果预览（示意，非像素级最终结果）\n确认前不会发布，也不会归档。",
+            caption=caption
+            or "🖼 效果预览（示意，非像素级最终结果）\n确认前不会发布，也不会归档。",
         )
+        if summary:
+            await self._sender.send_summary(int(chat_id), summary)
 
-    async def _generate(self, item: MediaItem, cache_dir: Path):
+    async def _generate(self, item: MediaItem, cache_dir: Path, preference=None):
+        # An owner-supplied thumbnail is the real published cover, so preview it
+        # directly instead of downloading and截帧 a frame.
+        custom = getattr(preference, "thumbnail_path", None) if preference else None
+        if custom:
+            custom_path = Path(str(custom))
+            if custom_path.is_file() and not custom_path.is_symlink():
+                return None, custom_path
         downloaded = await self._download_bounded(item, cache_dir)
         local_path = getattr(downloaded, "local_path", None)
         source = Path(local_path) if local_path else None

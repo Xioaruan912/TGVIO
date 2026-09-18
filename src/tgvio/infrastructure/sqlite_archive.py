@@ -55,6 +55,12 @@ class SQLiteArchiveRepositoryMixin(SQLiteArchiveDeletionRepositoryMixin):
                     "DELETE FROM archive_packages WHERE job_id=?",
                     (package.job_id,),
                 )
+            # Re-planning a PLANNED package must be idempotent even if the
+            # package row was recreated; clear any stale child rows first.
+            await conn.execute(
+                "DELETE FROM archive_objects WHERE package_id=?",
+                (package.id,),
+            )
             await conn.execute(
                 """
                 INSERT INTO archive_packages(

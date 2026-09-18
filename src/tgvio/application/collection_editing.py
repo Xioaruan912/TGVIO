@@ -336,6 +336,22 @@ class CollectionEditingService:
             caption = IntakeService._join_collection_texts(text_entries)
         return media, entry_ids, caption
 
+    async def preview_content(
+        self,
+        session_id: str,
+    ) -> tuple[str, list[IncomingMedia]] | None:
+        """Real caption and ordered media used when this draft is published.
+
+        Mirrors the confirm snapshot so the effect preview can show the exact
+        caption instead of a generic notice.
+        """
+
+        draft = await self._repository.get_draft(session_id)
+        if draft is None:
+            return None
+        media, _entry_ids, caption = await self._ordered_media(session_id)
+        return caption, media
+
     async def preview(
         self,
         *,

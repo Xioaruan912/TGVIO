@@ -34,6 +34,7 @@ class TelethonIntakeRuntime(IntakeStatusMixin, IntakeCollectionMixin, IntakeEdit
         self._pending_batches: dict[tuple[int, int], _PendingBatch] = {}
         self._flush_tasks: set[asyncio.Task] = set()
         self._preview_tasks: set[asyncio.Task] = set()
+        self._preview_sent: dict[str, int] = {}
         self._semaphore = asyncio.Semaphore(settings.worker_concurrency)
         repository = getattr(processor, "repository", None)
         if repository is None:

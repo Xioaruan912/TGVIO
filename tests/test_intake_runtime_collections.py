@@ -21,11 +21,17 @@ class FakeClient:
         self.handlers: list[tuple[object, object]] = []
         self.sent: list[dict[str, object]] = []
         self.edits: list[dict[str, object]] = []
+        self.deleted: list[int] = []
         self.fail_edit_ids: set[int] = set()
         self._next_id = 1000
 
     def add_event_handler(self, handler, event) -> None:
         self.handlers.append((handler, event))
+
+    async def delete_messages(self, chat_id, message_ids, **kwargs) -> bool:
+        for message_id in message_ids:
+            self.deleted.append(int(message_id))
+        return True
 
     async def send_message(self, chat_id, text, **kwargs):
         self._next_id += 1
@@ -61,6 +67,15 @@ class RecordingRunner:
     async def process(self, job):
         self.calls.append(job.id)
         return job
+
+
+class RecordingPreviews:
+    def __init__(self) -> None:
+        self.calls: list[dict[str, object]] = []
+
+    async def preview(self, **kwargs):
+        self.calls.append(kwargs)
+        return SimpleNamespace(state=SimpleNamespace(value="succeeded"))
 
 
 class FakeEvent:
@@ -542,14 +557,46 @@ class IntakeEditingRuntimeTests(unittest.IsolatedAsyncioTestCase):
     async def test_visual_preview_visible_on_first_preview_page_without_running_it(self):
         self.runtime._previews = SimpleNamespace()
         await self.runtime._begin_collection(42, 7)
+        status_id = self.client.sent[-1]["id"]
         await self.runtime._on_message(FakeEvent(message=media_message(10)))
         await self.runtime._end_collection(42, 7)
-        buttons = [b for row in self.client.edits[-1]["buttons"] for b in row]
+        preview_messages = [
+            message for message in self.client.sent if message.get("buttons")
+        ]
+        self.assertTrue(preview_messages)
+        self.assertNotEqual(preview_messages[-1]["id"], status_id)
+        buttons = [b for row in preview_messages[-1]["buttons"] for b in row]
         self.assertEqual(buttons[0].text, "🖼 生成效果预览")
         self.assertTrue(buttons[0].data.startswith(b"intake:pv:"))
         self.assertTrue(all(len(b.data) <= 64 for b in buttons))
+        ended = [
+            edit for edit in self.client.edits if "已结束收集" in str(edit["text"])
+        ]
+        self.assertTrue(ended)
+        self.assertEqual(int(ended[-1]["message_id"]), int(status_id))
         self.assertEqual(await self.repo.list_recent(owner_id=7), [])
         self.assertEqual(self.runner.calls, [])
+
+    async def test_end_posts_a_new_message_instead_of_editing_the_old_status(self) -> None:
+        await self.runtime._begin_collection(42, 7)
+        status = self.client.sent[-1]
+        await self.runtime._on_message(FakeEvent(message=media_message(11)))
+        before_edits = len(self.client.edits)
+        await self.runtime._end_collection(42, 7)
+        self.assertGreater(len(self.client.sent), 1)
+        self.assertEqual(self.client.sent[-1]["chat_id"], 42)
+        # The old collection status must be marked ended, never reused as preview.
+        marked = [
+            edit
+            for edit in self.client.edits[before_edits:]
+            if int(edit["message_id"]) == int(status["id"])
+        ]
+        self.assertTrue(marked)
+        self.assertIn("已结束", str(marked[-1]["text"]))
+        self.assertIsNone(marked[-1].get("buttons"))
+        session = await self.intake.open_collection(owner_id=7, chat_id=42)
+        assert session is not None
+        self.assertEqual(int(session.status_message_id), int(self.client.sent[-1]["id"]))
 
     async def test_new_and_legacy_navigation_text_never_becomes_caption(self):
         from telethon import events
@@ -612,6 +659,37 @@ class IntakeEditingRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(payloads)
         self.assertTrue(all(len(payload) <= 64 for payload in payloads))
         self.assertTrue(any(payload.startswith(b"intake:ed:") for payload in payloads))
+
+    async def test_effect_preview_reports_progress_and_passes_real_caption(self) -> None:
+        previews = RecordingPreviews()
+        self.runtime._previews = previews
+        await self.runtime._begin_collection(42, 7)
+        session = await self.intake.open_collection(owner_id=7, chat_id=42)
+        assert session is not None
+        await self.runtime._on_message(FakeEvent(message=media_message(12)))
+        await self.intake.add_collection_text(
+            session, text="真实配文", source_chat_id=42, source_message_id=13
+        )
+        draft = await self.editing.draft(session.id)
+        assert draft is not None
+        event = FakeEvent(
+            chat_id=42,
+            sender_id=7,
+            data=f"intake:pv:{session.id}:{draft.revision}".encode(),
+        )
+        await self.runtime._on_intake_callback(event)
+        await self._drain()
+        self.assertTrue(previews.calls)
+        call = previews.calls[-1]
+        self.assertIn("真实配文", str(call["caption"]))
+        self.assertIn("合集发布预览", str(call["summary"]))
+        progress = [
+            message
+            for message in self.client.sent
+            if "正在生成效果预览" in str(message["text"])
+        ]
+        self.assertTrue(progress)
+        self.assertIn(int(progress[-1]["id"]), self.client.deleted)
 
     async def test_caption_message_updates_draft_and_leaves_caption_out_of_media(self) -> None:
         await self.runtime._begin_collection(42, 7)
