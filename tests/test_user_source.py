@@ -171,6 +171,16 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         cursor = await reader.seed_trigger_cursor()
         self.assertEqual(cursor, {-100555: 35})
 
+    async def test_seed_cursor_rewinds_to_a_recent_unhandled_trigger(self) -> None:
+        trigger = _message(38, kind="document")
+        trigger.message = "#tgvio"
+        trigger.outgoing = True
+        client = FakeUserClient({40: _message(40), 38: trigger})
+        reader = UserSourceReader(client, trigger="#tgvio")
+        reader._allowed_ids = {-100555}
+        cursor = await reader.seed_trigger_cursor()
+        self.assertEqual(cursor, {-100555: 37})
+
     async def test_poll_triggers_finds_only_new_outgoing_matches(self) -> None:
         old = _message(50, kind="document")
         old.message = "#tgvio"

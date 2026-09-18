@@ -144,18 +144,33 @@ class UserSourceReader:
         return self._to_media_list(await self._expand(message))
 
     async def seed_trigger_cursor(self) -> dict[int, int]:
-        """Cursor per chat: look a few messages back so a recent trigger still counts.
+        """Cursor per chat that also picks up recent, not-yet-handled triggers.
 
-        Re-processing the same message is safe: intake dedupes by
-        ``(chat_id, message_id)`` so an already accepted job is never repeated.
+        Scans a small bounded window of the whitelisted chat; if any outgoing
+        trigger is found the cursor rewinds just below it so it is processed
+        once. Handled triggers are deleted, and intake dedupes by
+        ``(chat_id, message_id)``, so this can never double-publish.
         """
 
         cursor: dict[int, int] = {}
         for chat_id in sorted(self._allowed_ids):
             try:
-                async for message in self._client.iter_messages(chat_id, limit=1):
-                    cursor[chat_id] = max(0, int(message.id) - _REPLAY_WINDOW)
-                    break
+                newest: int | None = None
+                oldest_trigger: int | None = None
+                async for message in self._client.iter_messages(chat_id, limit=_LATEST_SCAN):
+                    message_id = int(message.id)
+                    if newest is None:
+                        newest = message_id
+                    if getattr(message, "outgoing", False) and (
+                        getattr(message, "message", "") or ""
+                    ).strip() == self._trigger:
+                        oldest_trigger = message_id
+                if newest is None:
+                    continue
+                if oldest_trigger is not None:
+                    cursor[chat_id] = max(0, oldest_trigger - 1)
+                else:
+                    cursor[chat_id] = max(0, newest - _REPLAY_WINDOW)
             except Exception:  # noqa: BLE001
                 continue
         return cursor
