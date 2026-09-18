@@ -21,6 +21,7 @@ from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 _ALBUM_SPAN = 11
 _LATEST_SCAN = 25
 _REPLAY_WINDOW = 5
+_SEED_SCAN = 120
 
 
 class UserSourceDownloader:
@@ -73,6 +74,7 @@ class UserSourceReader:
         self._trigger = (trigger or "#tgvio").strip() or "#tgvio"
         self._allowed_raw = tuple(entry for entry in (allowed_chats or ()) if str(entry).strip())
         self._allowed_ids: set[int] = set()
+        self.seed_report: dict[str, int] = {}
         self._log = logging.getLogger("tgvio.telegram.source")
 
     @property
@@ -143,27 +145,31 @@ class UserSourceReader:
             return []
         return self._to_media_list(await self._expand(message))
 
-    async def seed_trigger_cursor(self) -> dict[int, int]:
+    async def seed_trigger_cursor(self, *, limit: int = _SEED_SCAN) -> dict[int, int]:
         """Cursor per chat that also picks up recent, not-yet-handled triggers.
 
-        Scans a small bounded window of the whitelisted chat; if any outgoing
-        trigger is found the cursor rewinds just below it so it is processed
-        once. Handled triggers are deleted, and intake dedupes by
+        Scans a bounded window of the whitelisted chat; if any outgoing trigger
+        is found the cursor rewinds just below it so it is processed once.
+        Handled triggers are deleted, and intake dedupes by
         ``(chat_id, message_id)``, so this can never double-publish.
         """
 
         cursor: dict[int, int] = {}
+        scanned = 0
+        triggers = 0
         for chat_id in sorted(self._allowed_ids):
             try:
                 newest: int | None = None
                 oldest_trigger: int | None = None
-                async for message in self._client.iter_messages(chat_id, limit=_LATEST_SCAN):
+                async for message in self._client.iter_messages(chat_id, limit=max(1, int(limit))):
+                    scanned += 1
                     message_id = int(message.id)
                     if newest is None:
                         newest = message_id
                     if getattr(message, "outgoing", False) and (
                         getattr(message, "message", "") or ""
                     ).strip() == self._trigger:
+                        triggers += 1
                         oldest_trigger = message_id
                 if newest is None:
                     continue
@@ -173,6 +179,7 @@ class UserSourceReader:
                     cursor[chat_id] = max(0, newest - _REPLAY_WINDOW)
             except Exception:  # noqa: BLE001
                 continue
+        self.seed_report = {"chats": len(cursor), "scanned": scanned, "triggers": triggers}
         return cursor
 
     async def poll_triggers(

@@ -292,6 +292,13 @@ class SourceCoordinator:
         )
         await reader.prepare()
         self._trigger_seen = await reader.seed_trigger_cursor()
+        report = getattr(reader, "seed_report", {}) or {}
+        self._log.info(
+            "source.poll.seed chats=%s scanned=%s triggers=%s",
+            report.get("chats", 0),
+            report.get("scanned", 0),
+            report.get("triggers", 0),
+        )
         self._reader = reader
         self._awaiting = None
         self._start_trigger_poll()
