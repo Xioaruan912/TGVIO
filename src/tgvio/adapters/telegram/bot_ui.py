@@ -73,6 +73,7 @@ from tgvio.adapters.telegram.bot_ui_result import BotUIResultMixin
 from tgvio.adapters.telegram.bot_ui_drafts import BotUIDraftsMixin
 from tgvio.adapters.telegram.bot_ui_styles import BotUIStylesMixin
 from tgvio.adapters.telegram.bot_ui_content import BotUIContentMixin
+from tgvio.adapters.telegram.bot_ui_source import BotUISourceMixin
 from tgvio.adapters.telegram.bot_ui_archive import BotUIArchiveMixin
 from tgvio.adapters.telegram.bot_ui_fixture import BotUIFixtureMixin
 
@@ -84,6 +85,7 @@ class TelethonBotUI(
     BotUIDraftsMixin,
     BotUIStylesMixin,
     BotUIContentMixin,
+    BotUISourceMixin,
     BotUIJobsMixin,
     BotUIFormatMixin,
 ):
@@ -104,6 +106,7 @@ class TelethonBotUI(
         diagnostic_service: DiagnosticSnapshotService | None = None,
         runtime_flags: object | None = None,
         intake: object | None = None,
+        source_coordinator: object | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -120,6 +123,7 @@ class TelethonBotUI(
         self._diagnostic_service = diagnostic_service
         self._runtime_flags = runtime_flags
         self._intake = intake
+        self._source = source_coordinator
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 
@@ -269,6 +273,9 @@ class TelethonBotUI(
                 int(event.sender_id),
                 argument,
             )
+        elif command == "source":
+            text, buttons = await self._source_page(int(event.sender_id))
+            await event.respond(text, buttons=buttons, parse_mode="md")
         elif command == "retry":
             await self._retry_job(event, int(event.sender_id), argument.strip() or None)
         elif command == "cancel":
@@ -444,6 +451,8 @@ class TelethonBotUI(
             await self._show_content_callback(event, owner_id)
             return
         if await self._handle_content_callback(event, owner_id, action):
+            return
+        if await self._handle_source_callback(event, owner_id, action):
             return
         if action == "ui:settings":
             quiet = await self._quiet_enabled(owner_id)

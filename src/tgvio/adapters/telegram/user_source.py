@@ -16,8 +16,47 @@ from telethon import utils
 from tgvio.domain.job import MediaKind
 from tgvio.domain.telegram_links import TelegramLink, parse_telegram_link
 from tgvio.application.intake import IncomingMedia
+from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 
 _ALBUM_SPAN = 11
+
+
+class UserSourceDownloader:
+    """Routes ``user_source`` items through whichever personal client is ready.
+
+    The session may be authorized after startup (in-Bot login), so the delegate
+    downloader is resolved lazily instead of being bound once at wiring time.
+    """
+
+    def __init__(
+        self,
+        coordinator,
+        *,
+        download_workers: int = 4,
+        part_size_kb: int = 512,
+        shard_retries: int = 3,
+    ) -> None:
+        self._coordinator = coordinator
+        self._download_workers = max(1, int(download_workers))
+        self._part_size_kb = int(part_size_kb)
+        self._shard_retries = max(0, int(shard_retries))
+
+    def _delegate(self) -> TelethonMediaDownloader:
+        client = getattr(self._coordinator, "client", None)
+        if client is None:
+            raise RuntimeError("source session is not ready")
+        return TelethonMediaDownloader(
+            client,
+            download_workers=self._download_workers,
+            part_size_kb=self._part_size_kb,
+            shard_retries=self._shard_retries,
+        )
+
+    async def download(self, item, target_dir, progress_callback=None):
+        return await self._delegate().download(item, target_dir, progress_callback)
+
+    async def download_bounded(self, item, target_dir, *, max_bytes):
+        return await self._delegate().download_bounded(item, target_dir, max_bytes=max_bytes)
 
 
 class UserSourceReader:

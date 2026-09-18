@@ -1,24 +1,92 @@
 from __future__ import annotations
 
 from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
+from tgvio.adapters.telegram.source_runtime import SourceLoginError
 from tgvio.domain.telegram_links import is_telegram_link
+
+_CANCEL_WORDS = {"取消", "/cancel", "cancel", "退出"}
 
 
 class IntakeSourceMixin:
-    """Owner-driven personal-session intake: reply trigger and Telegram links.
+    """Owner-driven personal-session intake: reply trigger, links and setup.
 
-    The owner session is optional; when it is not configured none of these
-    handlers are registered and every method is a no-op.
+    The source session is optional; while it is not ready every method is a
+    no-op, and setup prompts are only consumed from the owner's private chat.
     """
+
+    def set_source(self, client, reader, owner_id: int) -> None:
+        self._source_client = client
+        self._source_reader = reader
+        self._source_owner_id = int(owner_id)
+        self.register_source_handlers(client)
+        log_event(
+            self._log,
+            logging.INFO,
+            "source.reader.ready",
+            "Source reader attached",
+            resolved_chats=len(getattr(reader, "allowed_ids", ()) or ()),
+        )
+
+    def clear_source(self) -> None:
+        self._source_client = None
+        self._source_reader = None
+        self._source_handler_client = None
 
     def register_source_handlers(self, client) -> None:
         reader = getattr(self, "_source_reader", None)
         if client is None or reader is None:
             return
+        if getattr(self, "_source_handler_client", None) is client:
+            return
+        # The filter reads the current reader dynamically, so refreshing the
+        # whitelist or trigger never needs a second registration.
         client.add_event_handler(
             self._on_source_trigger,
-            events.NewMessage(outgoing=True, func=reader.is_trigger),
+            events.NewMessage(outgoing=True, func=self._is_source_trigger),
         )
+        self._source_handler_client = client
+
+    def _is_source_trigger(self, event) -> bool:
+        reader = getattr(self, "_source_reader", None)
+        return bool(reader is not None and reader.is_trigger(event))
+
+    def source_delete_trigger(self) -> bool:
+        coordinator = getattr(self, "_source", None)
+        if coordinator is not None and hasattr(coordinator, "effective_delete_trigger"):
+            return bool(coordinator.effective_delete_trigger())
+        return bool(getattr(self._settings, "source_delete_trigger", True))
+
+    async def handle_source_input(self, raw_text: str, chat_id: int, sender_id: int) -> bool:
+        coordinator = getattr(self, "_source", None)
+        if coordinator is None or not hasattr(coordinator, "awaiting"):
+            return False
+        phase = coordinator.awaiting
+        if not phase:
+            return False
+        text = (raw_text or "").strip()
+        if not text or text.startswith("/") and text not in _CANCEL_WORDS:
+            return False
+        if text in _CANCEL_WORDS:
+            coordinator.set_awaiting(None)
+            await self._safe_send(chat_id, "已取消。")
+            return True
+        try:
+            if phase == "phone":
+                reply = await coordinator.request_code(text)
+            elif phase == "code":
+                reply = await coordinator.submit_code(text)
+            elif phase == "password":
+                reply = await coordinator.submit_password(text)
+            elif phase == "add_chat":
+                reply = await coordinator.add_chat(text)
+            else:
+                coordinator.set_awaiting(None)
+                return False
+        except SourceLoginError as exc:
+            await self._safe_send(chat_id, f"⚠️ {exc}")
+            return True
+        await self._safe_send(chat_id, reply)
+        return True
 
     async def handle_source_link(self, raw_text: str, chat_id: int, sender_id: int) -> bool:
         reader = getattr(self, "_source_reader", None)
@@ -62,7 +130,7 @@ class IntakeSourceMixin:
             )
             await self._safe_send(int(owner_id), "⚠️ 抓取失败，请稍后重试。")
         finally:
-            if bool(getattr(self._settings, "source_delete_trigger", True)):
+            if self.source_delete_trigger():
                 await self._delete_source_trigger(event)
 
     async def _delete_source_trigger(self, event) -> None:

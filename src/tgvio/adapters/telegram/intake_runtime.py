@@ -29,6 +29,7 @@ class TelethonIntakeRuntime(
         source_client: object | None = None,
         source_reader: object | None = None,
         source_owner_id: int | None = None,
+        source_coordinator: object | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -37,6 +38,7 @@ class TelethonIntakeRuntime(
         self._flags = flags
         self._editing = editing
         self._previews = previews
+        self._source = source_coordinator
         self._source_client = source_client
         self._source_reader = source_reader
         self._source_owner_id = int(source_owner_id) if source_owner_id else None
@@ -176,6 +178,10 @@ class TelethonIntakeRuntime(
         ):
             return
         if raw_text in NAV_BUTTONS or raw_text.lstrip().startswith("/") or raw_text in COLLECTION_BUTTONS:
+            return
+
+        # In-Bot source setup consumes the owner's next text (phone, code, chat).
+        if await self.handle_source_input(raw_text, int(event.chat_id), int(event.sender_id)):
             return
 
         incoming = self._from_message(event.message, event.chat_id)

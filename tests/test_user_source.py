@@ -287,5 +287,89 @@ class RouterBoundedRoutingTests(unittest.IsolatedAsyncioTestCase):
             await router.download_bounded(item, Path("."), max_bytes=10)
 
 
+class FakeCoordinator:
+    def __init__(self, phase: str | None, *, delete: bool = True) -> None:
+        self.awaiting = phase
+        self.calls: list[tuple[str, str]] = []
+        self._delete = delete
+
+    def set_awaiting(self, phase):
+        self.awaiting = phase
+
+    def effective_delete_trigger(self) -> bool:
+        return self._delete
+
+    async def request_code(self, value):
+        self.calls.append(("phone", value))
+        self.awaiting = "code"
+        return "code sent"
+
+    async def submit_code(self, value):
+        self.calls.append(("code", value))
+        self.awaiting = None
+        return "logged in"
+
+    async def submit_password(self, value):
+        self.calls.append(("password", value))
+        self.awaiting = None
+        return "logged in"
+
+    async def add_chat(self, value):
+        self.calls.append(("add_chat", value))
+        self.awaiting = None
+        return "added"
+
+
+class SourceInputTests(unittest.IsolatedAsyncioTestCase):
+    def _host(self, coordinator: FakeCoordinator) -> SourceMixinHost:
+        host = SourceMixinHost()
+        host._source = coordinator
+        return host
+
+    async def test_login_phases_are_dispatched_and_confirmed(self) -> None:
+        coordinator = FakeCoordinator("phone")
+        host = self._host(coordinator)
+        self.assertTrue(await host.handle_source_input("+8613800138000", 7, 7))
+        self.assertEqual(coordinator.calls, [("phone", "+8613800138000")])
+        self.assertEqual(coordinator.awaiting, "code")
+        self.assertTrue(any("code sent" in text for _chat, text in host.sent))
+
+        self.assertTrue(await host.handle_source_input("12345", 7, 7))
+        self.assertEqual(coordinator.calls[-1], ("code", "12345"))
+
+    async def test_add_chat_phase(self) -> None:
+        coordinator = FakeCoordinator("add_chat")
+        host = self._host(coordinator)
+        self.assertTrue(await host.handle_source_input("-100123", 7, 7))
+        self.assertEqual(coordinator.calls, [("add_chat", "-100123")])
+
+    async def test_cancel_clears_phase(self) -> None:
+        coordinator = FakeCoordinator("phone")
+        host = self._host(coordinator)
+        self.assertTrue(await host.handle_source_input("取消", 7, 7))
+        self.assertIsNone(coordinator.awaiting)
+        self.assertEqual(coordinator.calls, [])
+
+    async def test_no_phase_or_command_is_ignored(self) -> None:
+        host = self._host(FakeCoordinator(None))
+        self.assertFalse(await host.handle_source_input("hello", 7, 7))
+        command_host = self._host(FakeCoordinator("phone"))
+        self.assertFalse(await command_host.handle_source_input("/start", 7, 7))
+
+    async def test_login_error_keeps_the_phase_for_retry(self) -> None:
+        from tgvio.adapters.telegram.source_runtime import SourceLoginError
+
+        class _Failing(FakeCoordinator):
+            async def submit_code(self, value):
+                self.calls.append(("code", value))
+                raise SourceLoginError("验证码不正确，请重新输入")
+
+        coordinator = _Failing("code")
+        host = self._host(coordinator)
+        await host.handle_source_input("0000", 7, 7)
+        self.assertEqual(coordinator.awaiting, "code")
+        self.assertTrue(any("验证码不正确" in text for _chat, text in host.sent))
+
+
 if __name__ == "__main__":
     unittest.main()

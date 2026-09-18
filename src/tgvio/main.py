@@ -15,8 +15,8 @@ from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 from tgvio.adapters.telegram.message_remover import TelethonPublishedMessageRemover
 from tgvio.adapters.telegram.publish_transport import TelethonPublishTransport
 from tgvio.adapters.telegram.telethon_gateway import TelethonGateway
-from tgvio.adapters.telegram.user_gateway import TelethonUserGateway
-from tgvio.adapters.telegram.user_source import UserSourceReader
+from tgvio.adapters.telegram.source_runtime import SourceCoordinator
+from tgvio.adapters.telegram.user_source import UserSourceDownloader
 from tgvio.adapters.url_downloader import UrlMediaDownloader
 from tgvio.adapters.webdav_archive import WebDavArchiveTransport
 from tgvio.application.archive_deletion import ArchiveDeletionService
@@ -220,49 +220,29 @@ async def run(*, check_only: bool = False) -> None:
         )
         operation_tokens = OperationTokenService(repository)
         collection_editing = CollectionEditingService(repository, intake, operation_tokens)
-        source_gateway: TelethonUserGateway | None = None
-        source_reader: UserSourceReader | None = None
-        source_owner_id: int | None = None
-        source_session = settings.source_session
-        if source_session is not None and Path(f"{source_session}.session").is_file():
-            source_gateway = TelethonUserGateway(settings, Path(source_session))
-            await source_gateway.start()
-            source_owner_id = source_gateway.user_id
-            source_reader = UserSourceReader(
-                source_gateway.client,
-                trigger=settings.source_trigger,
-                allowed_chats=settings.source_chats,
-            )
-            resolved_chats = await source_reader.prepare()
-            log_event(
-                logger,
-                logging.INFO,
-                "source.reader.ready",
-                "Personal-account source reader started",
-                resolved_chats=resolved_chats,
-                configured_chats=len(settings.source_chats),
-            )
-        elif source_session is not None:
-            log_event(
-                logger,
-                logging.WARNING,
-                "source.reader.unconfigured",
-                "Source reader requested but no authorized session file exists yet",
+        source_coordinator: SourceCoordinator | None = None
+        if settings.source_session is not None:
+            source_coordinator = SourceCoordinator(
+                settings,
+                repository,
+                runtime_flags,
+                Path(settings.source_session),
             )
 
         async def _stop_clients() -> None:
             await gateway.stop()
-            if source_gateway is not None:
-                await source_gateway.stop()
+            if source_coordinator is not None:
+                await source_coordinator.stop()
+
         download_routes: dict[str, object] = {
             "url": UrlMediaDownloader(
                 private_network_policy=settings.url_private_network_policy,
                 cookies_file=settings.ytdlp_cookies_file or None,
             )
         }
-        if source_gateway is not None:
-            download_routes["user_source"] = TelethonMediaDownloader(
-                source_gateway.client,
+        if source_coordinator is not None:
+            download_routes["user_source"] = UserSourceDownloader(
+                source_coordinator,
                 download_workers=settings.source_download_workers,
                 part_size_kb=settings.telegram_part_size_kb,
                 shard_retries=settings.telegram_shard_retries,
@@ -352,10 +332,22 @@ async def run(*, check_only: bool = False) -> None:
             flags=runtime_flags,
             editing=collection_editing,
             previews=preview_service,
-            source_client=(source_gateway.client if source_gateway is not None else None),
-            source_reader=source_reader,
-            source_owner_id=source_owner_id,
+            source_coordinator=source_coordinator,
         )
+        if source_coordinator is not None:
+            source_coordinator.set_hooks(
+                on_reader_ready=lambda client, reader, user_id: intake_runtime.set_source(
+                    client, reader, user_id
+                ),
+                on_reader_stopped=intake_runtime.clear_source,
+            )
+            if await source_coordinator.start():
+                log_event(
+                    logger,
+                    logging.INFO,
+                    "source.reader.ready",
+                    "Personal-account source reader started from saved session",
+                )
         auto_recovery_runtime = AutoRecoveryRuntime(
             AutoRecoveryService(
                 repository,
@@ -485,6 +477,7 @@ async def run(*, check_only: bool = False) -> None:
             diagnostic_service=diagnostic_service,
             runtime_flags=runtime_flags,
             intake=intake,
+            source_coordinator=source_coordinator,
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()
