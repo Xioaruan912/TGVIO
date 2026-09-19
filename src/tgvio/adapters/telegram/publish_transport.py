@@ -419,9 +419,12 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
             )
             return receipts
         if root is None:
+            # Expected race: the automatic forward may not be visible yet. The
+            # discussion steps resolve the root again themselves; only a real
+            # failure there raises. Keep this off the WARNING channel.
             log_event(
                 self._log,
-                logging.WARNING,
+                logging.DEBUG,
                 "publish.discussion_root.not_observed",
                 "Linked discussion automatic-forward was not observed after channel send",
                 job_id=job.id,
@@ -474,6 +477,7 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
 
     @staticmethod
     def _caption(item: MediaItem, step: PublishStep) -> str:
+        header = TelethonPublishTransport._caption_header(item, step)
         text = item.caption if step.params.get("forward_caption", True) else ""
         collection_caption = ""
         if (
@@ -481,11 +485,22 @@ class TelethonPublishTransport(PublishAlbumMixin, PublishReferenceMixin, Publish
             and step.params.get("collection_caption")
         ):
             collection_caption = str(step.params.get("collection_caption") or "").strip()
-        body = "\n".join(part for part in (collection_caption, text or "") if part)
+        template = str(step.params.get("caption_template") or "").strip()
+        body = "\n".join(
+            part for part in (header, collection_caption, text or "", template) if part
+        )
         return TelethonPublishTransport._with_footer(
             body,
             TelethonPublishTransport._footer(step),
         )
+
+    @staticmethod
+    def _caption_header(item: MediaItem, step: PublishStep) -> str:
+        """The set header, only on the first media of a step."""
+
+        if step.params.get("caption_header_item_index") != item.index:
+            return ""
+        return str(step.params.get("caption_header") or "").strip()
 
     @staticmethod
     def _footer(step: PublishStep) -> str:

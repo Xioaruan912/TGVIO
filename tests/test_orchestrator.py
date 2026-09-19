@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 from dataclasses import replace
+from datetime import datetime
 import unittest
+from zoneinfo import ZoneInfo
 
 from tgvio.application.orchestrator import JobOrchestrator, PlanningPolicy
 from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
@@ -10,6 +12,62 @@ from tgvio.domain.publish import PublishStepKind, PublishTarget
 
 class DummyRepository:
     pass
+
+
+class _DisplayNumberRepository:
+    def __init__(self, display_no: int | None) -> None:
+        self.display_no = display_no
+        self.saved = None
+
+    async def get_display_no(self, job_id: str) -> int | None:
+        return self.display_no
+
+    async def save_publish_plan(self, plan) -> None:
+        self.saved = plan
+
+    async def transition(self, *args, **kwargs):
+        return None
+
+    async def set_job_progress(self, progress) -> None:
+        return None
+
+
+class MarkPlannedNumberingTests(unittest.IsolatedAsyncioTestCase):
+    def _job(self) -> Job:
+        return Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            items=[
+                MediaItem(index=i, kind=MediaKind.VIDEO, source=f"v{i}") for i in range(2)
+            ],
+        )
+
+    def _orchestrator(self, repo) -> JobOrchestrator:
+        return JobOrchestrator(
+            repo,
+            PlanningPolicy(),
+            clock=lambda: datetime(2026, 9, 15, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+
+    async def test_business_day_number_is_inserted_into_the_header(self) -> None:
+        repo = _DisplayNumberRepository(15)
+        plan = await self._orchestrator(repo).mark_planned(self._job())
+        self.assertEqual(
+            plan.steps[0].params["caption_header"], "🗂 09-15 #15 · 2 个视频"
+        )
+        self.assertIs(repo.saved, plan)
+
+    async def test_missing_number_leaves_the_header_numberless(self) -> None:
+        repo = _DisplayNumberRepository(None)
+        plan = await self._orchestrator(repo).mark_planned(self._job())
+        self.assertEqual(plan.steps[0].params["caption_header"], "🗂 09-15 · 2 个视频")
+
+    async def test_repository_without_display_numbers_is_tolerated(self) -> None:
+        plan = await self._orchestrator(_DisplayNumberRepository(None)).mark_planned(
+            self._job()
+        )
+        self.assertIn("09-15", plan.steps[0].params["caption_header"])
 
 
 class OrchestratorTests(unittest.TestCase):
@@ -247,6 +305,114 @@ class OrchestratorTests(unittest.TestCase):
         self.assertEqual(
             album_steps[0].params["caption_template"],
             "@channel | 2026-09-15 第1集/共2集 2video",
+        )
+
+    def test_set_header_marks_the_first_item_of_every_step(self) -> None:
+        photos = [
+            MediaItem(index=i, kind=MediaKind.PHOTO, source=f"photo-{i}")
+            for i in range(12)
+        ]
+        video = MediaItem(
+            index=12,
+            kind=MediaKind.VIDEO,
+            source="video-0",
+            metadata={"telegram_streamable_candidate": True},
+        )
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            items=photos + [video],
+        )
+        orchestrator = JobOrchestrator(
+            DummyRepository(),
+            PlanningPolicy(),
+            clock=lambda: datetime(2026, 9, 15, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+        plan = orchestrator.plan(job)
+        for step in plan.steps:
+            self.assertEqual(step.params["caption_header"], "🗂 09-15 · 13 个媒体")
+            self.assertEqual(
+                step.params["caption_header_item_index"], step.item_indexes[0]
+            )
+
+    def test_source_label_is_part_of_the_header(self) -> None:
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={"source_label": "@xiaodeFile_bot"},
+            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="v0")],
+        )
+        orchestrator = JobOrchestrator(
+            DummyRepository(),
+            PlanningPolicy(),
+            clock=lambda: datetime(2026, 9, 15, 10, 30, tzinfo=ZoneInfo("Asia/Shanghai")),
+        )
+        plan = orchestrator.plan(job)
+        self.assertEqual(
+            plan.steps[0].params["caption_header"],
+            "🗂 09-15 · 1 个视频 · @xiaodeFile_bot",
+        )
+
+    def test_source_albums_are_never_mixed_into_one_step(self) -> None:
+        policy = PlanningPolicy(cover_mode=False)
+        first_album = [
+            MediaItem(index=i, kind=MediaKind.VIDEO, source=f"a{i}", grouped_id=11)
+            for i in range(5)
+        ]
+        second_album = [
+            MediaItem(index=5 + i, kind=MediaKind.VIDEO, source=f"b{i}", grouped_id=22)
+            for i in range(7)
+        ]
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            items=first_album + second_album,
+        )
+        plan = JobOrchestrator(DummyRepository(), policy).plan(job)
+        self.assertEqual(
+            [step.item_indexes for step in plan.steps],
+            [(0, 1, 2, 3, 4), (5, 6, 7, 8, 9, 10, 11)],
+        )
+        self.assertTrue(
+            all("分卷" not in step.params["caption_header"] for step in plan.steps)
+        )
+
+    def test_oversized_album_is_labelled_with_parts(self) -> None:
+        policy = PlanningPolicy(cover_mode=False)
+        album = [
+            MediaItem(index=i, kind=MediaKind.VIDEO, source=f"v{i}", grouped_id=99)
+            for i in range(12)
+        ]
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            items=album,
+        )
+        plan = JobOrchestrator(DummyRepository(), policy).plan(job)
+        self.assertEqual(
+            [step.item_indexes for step in plan.steps], [tuple(range(10)), (10, 11)]
+        )
+        self.assertIn("分卷 1/2", plan.steps[0].params["caption_header"])
+        self.assertIn("分卷 2/2", plan.steps[1].params["caption_header"])
+
+    def test_loose_media_still_packs_into_album_sized_steps(self) -> None:
+        policy = PlanningPolicy(cover_mode=False)
+        items = [
+            MediaItem(index=i, kind=MediaKind.VIDEO, source=f"v{i}") for i in range(12)
+        ]
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            items=items,
+        )
+        plan = JobOrchestrator(DummyRepository(), policy).plan(job)
+        self.assertEqual(
+            [step.item_indexes for step in plan.steps], [tuple(range(10)), (10, 11)]
         )
 
     def test_caption_template_button_line_becomes_caption_buttons(self) -> None:

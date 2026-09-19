@@ -62,8 +62,15 @@ class BotUIResultMixin:
             labels.get(card.telegram_state, card.telegram_state),
             f"🎬 媒体：`{card.media_total}` 个 · `{self._human_bytes(size)}`",
             f"📢 已确认消息：`{card.confirmed_messages}` 条",
-            f"☁️ WebDAV：{archive_labels.get(card.archive_state, card.archive_state or '未知')}",
         ]
+        if card.discussion_message_ids:
+            lines.append(
+                f"💬 评论区：`{len(card.discussion_message_ids)}` 条 · "
+                f"消息 `{card.discussion_range}`"
+            )
+        lines.append(
+            f"☁️ WebDAV：{archive_labels.get(card.archive_state, card.archive_state or '未知')}"
+        )
         if card.link_url is None and card.link_reason:
             lines.append(f"🔗 {card.link_reason}")
         lines.append("──────────")

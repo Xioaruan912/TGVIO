@@ -31,7 +31,7 @@ _MAX_CHATS = 50
 
 ReaderReadyHook = Callable[[object, UserSourceReader, int], None]
 ReaderStoppedHook = Callable[[], None]
-SourceMediaHook = Callable[[int, list], Awaitable[None]]
+SourceMediaHook = Callable[[int, list, str], Awaitable[None]]
 NoticeHook = Callable[[str], Awaitable[None]]
 
 
@@ -160,11 +160,11 @@ class SourceCoordinator:
         if target is None or self._reader is None or self._user_id is None:
             return (0, "")
         chat_id, label = target
-        self._log.info("source.grab.message chat=%s message_id=%s", chat_id, int(message_id))
+        self._log.info("source.grab.message chat=%s message_id=%s label=%s", chat_id, int(message_id), label)
         media = await self._reader.capture_at(chat_id, int(message_id))
         if not media:
             return (0, label)
-        await self._dispatch(media)
+        await self._dispatch(media, label)
         return (len(media), label)
 
     async def grab_latest(
@@ -183,18 +183,19 @@ class SourceCoordinator:
         if not media:
             return (0, label)
         self._log.info(
-            "source.grab.latest chat=%s items=%s photo_only=%s",
+            "source.grab.latest chat=%s items=%s photo_only=%s label=%s",
             chat_id,
             len(media),
             photo_only,
+            label,
         )
-        await self._dispatch(media)
+        await self._dispatch(media, label)
         return (len(media), label)
 
-    async def _dispatch(self, media: list) -> None:
+    async def _dispatch(self, media: list, label: str = "") -> None:
         if self._on_source_media is None or self._user_id is None:
             return
-        await self._on_source_media(int(self._user_id), media)
+        await self._on_source_media(int(self._user_id), media, str(label or ""))
 
     async def notice(self, text: str) -> None:
         if self._on_notice is None:

@@ -131,6 +131,53 @@ class FavoritesAndResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(revoked.link_url)
         self.assertEqual(revoked.confirmed_messages, 0)
 
+    async def test_result_card_lists_every_published_reference(self) -> None:
+        job = await self._job("j3")
+        plan = PublishPlan(job_id="j3", steps=(), summary={})
+        await self.repo.save_publish_plan(plan)
+        await self.repo.record_publish_effects(
+            (
+                PublishEffect(
+                    plan_id=plan.id,
+                    step_index=0,
+                    effect_type="telegram_channel_message",
+                    external_chat_id="-100123",
+                    external_message_id="1375",
+                    detail={},
+                ),
+                PublishEffect(
+                    plan_id=plan.id,
+                    step_index=1,
+                    effect_type="telegram_discussion_message",
+                    external_chat_id="-100999",
+                    external_message_id="4244",
+                    detail={},
+                ),
+                PublishEffect(
+                    plan_id=plan.id,
+                    step_index=1,
+                    effect_type="telegram_discussion_message",
+                    external_chat_id="-100999",
+                    external_message_id="4245",
+                    detail={},
+                ),
+                PublishEffect(
+                    plan_id=plan.id,
+                    step_index=1,
+                    effect_type="telegram_discussion_message",
+                    external_chat_id="-100999",
+                    external_message_id="4245",
+                    detail={},
+                ),
+            )
+        )
+        job.state = JobState.SUCCEEDED
+        await self.repo.save(job)
+        card = await ResultCardService(self.repo).build(job)
+        self.assertEqual(card.channel_message_ids, ("1375",))
+        self.assertEqual(card.discussion_message_ids, ("4244", "4245"))
+        self.assertEqual(card.discussion_range, "4244–4245")
+
     async def test_result_card_marks_uncertain_publish(self) -> None:
         job = await self._job("j2", destination="@mychannel")
         job.state = JobState.FAILED

@@ -436,8 +436,11 @@ class TelethonIntakeRuntime(
         chat_id: int,
         sender_id: int,
         media: Iterable[IncomingMedia],
+        *,
+        policy_extra: dict | None = None,
     ) -> None:
         batch = list(media)
+        policy: dict = {"display_expected": True, **(policy_extra or {})}
         if hasattr(self._intake, "accept_once") and hasattr(
             self._intake,
             "get_user_preference",
@@ -447,7 +450,7 @@ class TelethonIntakeRuntime(
                 owner_id=int(sender_id),
                 destination=self._settings.destination,
                 media=batch,
-                policy={"display_expected": True},
+                policy=policy,
                 spoiler_mode=preference.spoiler_mode,
                 ask_timeout_seconds=int(
                     getattr(self._settings, "spoiler_confirm_timeout_seconds", 60)
@@ -471,13 +474,19 @@ class TelethonIntakeRuntime(
             )
             return
         job = accepted.job
+        first = job.items[0] if job.items else None
+        groups = {item.grouped_id for item in job.items if item.grouped_id is not None}
         log_event(
             self._log,
             logging.INFO,
             "intake.job.accepted",
             job_id=job.id,
+            job_no=await self._display_number(job),
             item_count=len(job.items),
             input_kinds=",".join(sorted({item.kind.value for item in job.items})),
+            source_chat_id=(first.source_chat_id if first is not None else None),
+            source_message_id=(first.source_message_id if first is not None else None),
+            grouped_id=(next(iter(groups)) if len(groups) == 1 else None),
         )
         await self._announce_job(int(chat_id), job)
 
@@ -519,12 +528,25 @@ class TelethonIntakeRuntime(
             return None
         return await repository.get_accepted_order(job_id)
 
-    async def _job_label(self, job_id: str) -> str:
-        accepted_order = await self._accepted_order(job_id)
-        return f"任务 #{accepted_order}" if accepted_order is not None else "任务"
+    async def _display_number(self, job: Job | str) -> int | None:
+        job_id = job.id if hasattr(job, "id") else str(job)
+        repository = self._repository
+        getter = getattr(repository, "get_display_no", None)
+        if callable(getter):
+            try:
+                value = await getter(job_id)
+            except Exception:  # noqa: BLE001 - fall back to the durable order
+                value = None
+            if value is not None:
+                return int(value)
+        return await self._accepted_order(job_id)
+
+    async def _job_label(self, job: Job) -> str:
+        number = await self._display_number(job)
+        return f"任务 #{number}" if number is not None else "任务"
 
     async def _accepted_status_text(self, job: Job) -> str:
-        label = await self._job_label(job.id)
+        label = await self._job_label(job)
         return (
             f"✅ 已接收 · **{label}**\n"
             f"媒体：{len(job.items)}\n"

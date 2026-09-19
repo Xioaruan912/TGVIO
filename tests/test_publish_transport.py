@@ -1122,6 +1122,50 @@ class TelethonPublishTransportTests(unittest.IsolatedAsyncioTestCase):
         _entity, _file, kwargs = self.client.send_calls[0]
         self.assertEqual(kwargs["caption"], "@channel @group")
 
+    def test_caption_header_is_only_on_the_first_media_of_a_step(self) -> None:
+        first = self._item(0, MediaKind.PHOTO, caption="")
+        second = self._item(1, MediaKind.PHOTO, caption="")
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.CHANNEL_COVER_ALBUM,
+            target=PublishTarget.CHANNEL,
+            item_indexes=(0, 1),
+            params={
+                "forward_caption": False,
+                "caption_footer": "@channel @group",
+                "caption_header": "🗂 09-19 #15 · 2 个图片 · @source",
+                "caption_header_item_index": 0,
+                "strategies": {"0": "native", "1": "native"},
+            },
+        )
+        self.assertEqual(
+            self.transport._caption(first, step),
+            "🗂 09-19 #15 · 2 个图片 · @source\n@channel @group",
+        )
+        self.assertEqual(self.transport._caption(second, step), "@channel @group")
+
+    def test_caption_template_is_applied_at_publish_time(self) -> None:
+        item = self._item(0, MediaKind.VIDEO, caption="原文")
+        step = PublishStep(
+            index=0,
+            kind=PublishStepKind.DISCUSSION_VIDEO_ALBUM,
+            target=PublishTarget.DISCUSSION,
+            item_indexes=(0,),
+            params={
+                "forward_caption": True,
+                "caption_footer": "@channel",
+                "caption_header": "🗂 09-19 #2 · 1 个视频",
+                "caption_header_item_index": 0,
+                # The orchestrator renders the owner template before planning.
+                "caption_template": "第1集/共1集",
+                "strategies": {"0": "native"},
+            },
+        )
+        self.assertEqual(
+            self.transport._caption(item, step),
+            "🗂 09-19 #2 · 1 个视频\n原文\n第1集/共1集\n@channel",
+        )
+
     def test_caption_footer_preserves_telegram_1024_limit(self) -> None:
         item = self._item(0, MediaKind.PHOTO, caption="x" * 2000)
         step = PublishStep(

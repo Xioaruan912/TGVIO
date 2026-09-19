@@ -26,6 +26,29 @@ class _RenderContext:
     part_count: int
     item_total: int
     rendered_at: datetime
+    header_base: str = ""
+
+
+_NO_GROUP = object()
+
+_KIND_WORDS = {
+    MediaKind.VIDEO: "个视频",
+    MediaKind.PHOTO: "个图片",
+    MediaKind.AUDIO: "个音频",
+    MediaKind.DOCUMENT: "个文件",
+}
+
+
+def _with_header_number(header: str, display_no: int | None) -> str:
+    """Insert the business-day task number after the leading date segment."""
+
+    text = (header or "").strip()
+    if not text or display_no is None:
+        return text
+    head, separator, rest = text.partition(" · ")
+    if not separator:
+        return f"{text} #{display_no}"
+    return f"{head} #{display_no}{separator}{rest}"
 
 
 @dataclass(frozen=True, slots=True)
@@ -106,7 +129,9 @@ class JobOrchestrator:
                         collection_caption_item_index=chosen_cover.index,
                     )
                 )
-                for chunk in self._chunks(photos, self._active.album_limit):
+                for chunk, part_index, part_count in self._chunk_parts(
+                    photos, self._active.album_limit
+                ):
                     steps.append(
                         self._step(
                             steps,
@@ -114,6 +139,7 @@ class JobOrchestrator:
                             PublishTarget.DISCUSSION,
                             chunk,
                             mode="photo_album",
+                            part=(part_index, part_count),
                         )
                     )
             else:
@@ -149,7 +175,9 @@ class JobOrchestrator:
                     )
 
                 overflow_photos = ordered_photos[self._active.cover_limit :]
-                for chunk in self._chunks(overflow_photos, self._active.album_limit):
+                for chunk, part_index, part_count in self._chunk_parts(
+                    overflow_photos, self._active.album_limit
+                ):
                     steps.append(
                         self._step(
                             steps,
@@ -157,6 +185,7 @@ class JobOrchestrator:
                             PublishTarget.DISCUSSION,
                             chunk,
                             mode="photo_album",
+                            part=(part_index, part_count),
                         )
                     )
 
@@ -228,6 +257,24 @@ class JobOrchestrator:
 
     async def mark_planned(self, job: Job) -> PublishPlan:
         plan = self.plan(job)
+        display_no = await self._display_no(job.id)
+        if display_no is not None:
+            steps = tuple(
+                replace(
+                    step,
+                    params={
+                        **step.params,
+                        "caption_header": _with_header_number(
+                            str(step.params.get("caption_header", "") or ""),
+                            display_no,
+                        ),
+                    },
+                )
+                if step.params.get("caption_header")
+                else step
+                for step in plan.steps
+            )
+            plan = replace(plan, steps=steps)
         await self._repository.save_publish_plan(plan)
         await self._repository.transition(
             job.id,
@@ -251,12 +298,23 @@ class JobOrchestrator:
             "publish.plan.created",
             job_id=job.id,
             plan_id=plan.id,
+            job_no=display_no,
             step_count=len(plan.steps),
             item_count=len(job.items),
             channel_steps=plan.summary.get("channel_steps", 0),
             discussion_steps=plan.summary.get("discussion_steps", 0),
         )
         return plan
+
+    async def _display_no(self, job_id: str) -> int | None:
+        getter = getattr(self._repository, "get_display_no", None)
+        if not callable(getter):
+            return None
+        try:
+            value = await getter(job_id)
+        except Exception:  # noqa: BLE001 - a missing number must not block planning
+            return None
+        return None if value is None else int(value)
 
     @staticmethod
     def _chosen_cover(job: Job, items: list[MediaItem]) -> MediaItem | None:
@@ -272,6 +330,7 @@ class JobOrchestrator:
         thumbnail_path = str(job.policy.get("thumbnail_path", "") or "").strip()
         part_index = self._policy_int(job, "collection_part_index", 0)
         part_count = self._policy_int(job, "collection_part_count", 0)
+        rendered_at = self._clock()
         return _RenderContext(
             template=template,
             thumbnail_path=thumbnail_path,
@@ -280,8 +339,43 @@ class JobOrchestrator:
             part_index=part_index,
             part_count=part_count,
             item_total=max(0, int(item_total)),
-            rendered_at=self._clock(),
+            rendered_at=rendered_at,
+            header_base=self._header_base(job, rendered_at),
         )
+
+    @classmethod
+    def _header_base(cls, job: Job, rendered_at: datetime) -> str:
+        """Owner-visible set identity shared by every step of one job.
+
+        ``🗂 09-19 · 21 个媒体 · @source`` — the business-day task number is
+        inserted later (``mark_planned``), once the repository assigned it.
+        """
+
+        counts: dict[MediaKind, int] = {}
+        for item in job.items:
+            counts[item.kind] = counts.get(item.kind, 0) + 1
+        total = sum(counts.values())
+        if total <= 0:
+            return ""
+        if len(counts) == 1:
+            word = _KIND_WORDS.get(next(iter(counts)), "个媒体")
+        else:
+            word = "个媒体"
+        segments = [f"🗂 {rendered_at.strftime('%m-%d')}", f"{total} {word}"]
+        label = str(job.policy.get("source_label", "") or "").strip()
+        if label:
+            segments.append(label)
+        return " · ".join(segments)
+
+    def _section_header(self, part: tuple[int, int] | None) -> str:
+        base = ""
+        if self._render_context is not None:
+            base = self._render_context.header_base
+        if not base:
+            return ""
+        if part is not None and part[1] > 1:
+            return f"{base} · 分卷 {part[0]}/{part[1]}"
+        return base
 
     @staticmethod
     def _policy_int(job: Job, key: str, default: int) -> int:
@@ -342,9 +436,11 @@ class JobOrchestrator:
         mode: str,
         collection_caption: str = "",
         collection_caption_item_index: int | None = None,
+        part: tuple[int, int] | None = None,
     ) -> PublishStep:
         batch = tuple(items)
         strategies = {str(item.index): self._strategy(item) for item in batch}
+        header = self._section_header(part)
         params: dict[str, object] = {
             "mode": mode,
             "strategies": strategies,
@@ -356,6 +452,14 @@ class JobOrchestrator:
                     "collection_caption_item_index": collection_caption_item_index,
                 }
                 if collection_caption and collection_caption_item_index is not None
+                else {}
+            ),
+            **(
+                {
+                    "caption_header": header,
+                    "caption_header_item_index": batch[0].index,
+                }
+                if header and batch
                 else {}
             ),
             **self._step_caption_fields(batch),
@@ -378,12 +482,15 @@ class JobOrchestrator:
         target: PublishTarget,
     ) -> None:
         album_buffer: list[MediaItem] = []
+        buffer_group: object = _NO_GROUP
 
         def flush_album() -> None:
-            nonlocal album_buffer
+            nonlocal album_buffer, buffer_group
             if not album_buffer:
                 return
-            for chunk in self._chunks(album_buffer, self._active.album_limit):
+            for chunk, part_index, part_count in self._chunk_parts(
+                album_buffer, self._active.album_limit
+            ):
                 steps.append(
                     self._step(
                         steps,
@@ -391,9 +498,11 @@ class JobOrchestrator:
                         target,
                         chunk,
                         mode="video_album",
+                        part=(part_index, part_count),
                     )
                 )
             album_buffer = []
+            buffer_group = _NO_GROUP
 
         for item in videos:
             strategy = self._strategy(item)
@@ -409,11 +518,22 @@ class JobOrchestrator:
                         mode="document" if document_mode else "video",
                     )
                 )
-            else:
-                album_buffer.append(item)
-                if len(album_buffer) >= self._active.album_limit:
-                    flush_album()
+                continue
+            if album_buffer and not self._same_album(buffer_group, item):
+                flush_album()
+            album_buffer.append(item)
+            buffer_group = item.grouped_id
         flush_album()
+
+    @staticmethod
+    def _same_album(buffer_group: object, item: MediaItem) -> bool:
+        """True when ``item`` continues the album currently buffered."""
+
+        if buffer_group is _NO_GROUP:
+            return False
+        if item.grouped_id is None:
+            return buffer_group is None
+        return buffer_group == item.grouped_id
 
     def _append_channel_media_steps(
         self,
@@ -421,12 +541,15 @@ class JobOrchestrator:
         media_items: list[MediaItem],
     ) -> None:
         group_buffer: list[MediaItem] = []
+        buffer_group: object = _NO_GROUP
 
         def flush_group() -> None:
-            nonlocal group_buffer
+            nonlocal group_buffer, buffer_group
             if not group_buffer:
                 return
-            for chunk in self._chunks(group_buffer, self._active.album_limit):
+            for chunk, part_index, part_count in self._chunk_parts(
+                group_buffer, self._active.album_limit
+            ):
                 steps.append(
                     self._step(
                         steps,
@@ -434,9 +557,11 @@ class JobOrchestrator:
                         PublishTarget.CHANNEL,
                         chunk,
                         mode="media_group" if len(chunk) > 1 else chunk[0].kind.value,
+                        part=(part_index, part_count),
                     )
                 )
             group_buffer = []
+            buffer_group = _NO_GROUP
 
         for item in media_items:
             strategy = self._strategy(item)
@@ -452,10 +577,11 @@ class JobOrchestrator:
                         mode="document" if document_mode else item.kind.value,
                     )
                 )
-            else:
-                group_buffer.append(item)
-                if len(group_buffer) >= self._active.album_limit:
-                    flush_group()
+                continue
+            if group_buffer and not self._same_album(buffer_group, item):
+                flush_group()
+            group_buffer.append(item)
+            buffer_group = item.grouped_id
         flush_group()
 
     @staticmethod
@@ -473,7 +599,50 @@ class JobOrchestrator:
             return "remux_faststart"
         return "native"
 
+    @classmethod
+    def _chunks(cls, items: list[MediaItem], size: int) -> Iterable[list[MediaItem]]:
+        for chunk, _part_index, _part_count in cls._chunk_parts(items, size):
+            yield chunk
+
+    @classmethod
+    def _chunk_parts(
+        cls,
+        items: list[MediaItem],
+        size: int,
+    ) -> Iterable[tuple[list[MediaItem], int, int]]:
+        """Chunk items while never splitting one source album across chunks.
+
+        ``grouped_id`` marks a native source album; its members always stay in the
+        same step (unless the album itself exceeds ``size``, in which case every
+        chunk is labelled ``分卷 i/n``). Items without a ``grouped_id`` keep the
+        previous "pack consecutive loose media together" behaviour.
+        """
+
+        if not items:
+            return
+        chunks: list[list[MediaItem]] = []
+        for run in cls._album_runs(items):
+            for start in range(0, len(run), size):
+                chunks.append(run[start : start + size])
+        total = len(chunks)
+        for index, chunk in enumerate(chunks, start=1):
+            yield (chunk, index, total)
+
     @staticmethod
-    def _chunks(items: list[MediaItem], size: int) -> Iterable[list[MediaItem]]:
-        for start in range(0, len(items), size):
-            yield items[start : start + size]
+    def _album_runs(items: list[MediaItem]) -> Iterable[list[MediaItem]]:
+        current: list[MediaItem] = []
+        group: object = _NO_GROUP
+        for item in items:
+            value = item.grouped_id
+            if current and (
+                (value is not None and value == group)
+                or (value is None and group is None)
+            ):
+                current.append(item)
+                continue
+            if current:
+                yield current
+            current = [item]
+            group = value if value is not None else None
+        if current:
+            yield current

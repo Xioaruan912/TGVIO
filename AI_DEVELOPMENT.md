@@ -130,6 +130,8 @@ Telegram 消息 / 链接
 - 服务与快照在 `application/content_prefs.py`：`ContentPreferenceService` 负责校验/保存，`content_policy_snapshot()` 产出冻结进任务的数据。
 - **接受任务时冻结**：`application/intake.py` 的 `_apply_content_policy()` 把偏好写入 `Job.policy`（`thumbnail_path` / `caption_template` / `ytdlp`），显式传入的同名 policy 优先。之后修改偏好只影响新任务。
 - 发布时：`application/orchestrator.py` 渲染模板为 `caption_template`、解析 `caption_buttons`、把 `thumbnail_path` 写入 step params；`adapters/telegram/publish_transport.py` 使用自定义缩略图（失败回退自动截帧）并只在**单条媒体**上附加按钮（相册不支持按钮）。
+- **分组标头**：`orchestrator._header_base()` 为每个任务生成 `🗂 09-19 · 21 个媒体 · @来源`，`mark_planned()` 取出业务日编号后插入成 `🗂 09-19 #15 · …`；step params 里以 `caption_header` + `caption_header_item_index` 保存，`publish_transport._caption()` 只把它加在该 step **第一条**媒体的配文上（封面帖、每个评论区相册、单条文档、大文件分卷共用）。同一相册超过 10 条时追加 `分卷 i/n`。
+- **相册边界**：`orchestrator._chunk_parts()` / `_album_runs()` 按 `grouped_id`（来源相册）切块，同一来源相册绝不跨 step 与其它相册混组；`grouped_id` 为空（散件）时保持原来的"连续打包到 10 条"行为。
 - 下载时：`application/media_downloader.py` 把 `job.policy["ytdlp"]` 合并进 URL 媒体项，`adapters/url_downloader.py` 据此选择 `format`、音频提取后处理器与可选的 `cookiefile`（路径来自 `TGVIO_YTDLP_COOKIES_FILE`，服务端配置）。
 - 音频：`MediaKind.AUDIO` 走 document step，但发布时以可播放音频属性（`DocumentAttributeAudio` + `audio/mpeg`）发送，不强制作为文件。
 - Bot UI 在 `adapters/telegram/bot_ui_content.py`（页面、回调、`/thumb`、`/caption`），入口按钮在设置页。

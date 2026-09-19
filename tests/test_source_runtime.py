@@ -111,7 +111,7 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         coordinator._reader = FakeReader(media=["media"])
         coordinator._client = object()
 
-        async def _media(owner_id, media):
+        async def _media(owner_id, media, label=""):
             captured.append((int(owner_id), list(media)))
 
         coordinator._on_source_media = _media
@@ -142,7 +142,7 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         coordinator._reader = reader
         coordinator._client = object()
 
-        async def _media(owner_id, media):
+        async def _media(owner_id, media, label=""):
             captured.append((int(owner_id), list(media)))
 
         coordinator._on_source_media = _media

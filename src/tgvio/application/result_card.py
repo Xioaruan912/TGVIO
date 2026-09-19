@@ -24,6 +24,17 @@ class ResultCard:
     link_reason: str | None
     undo_remaining: int = 0
     favorited: bool = False
+    channel_message_ids: tuple[str, ...] = ()
+    discussion_message_ids: tuple[str, ...] = ()
+
+    @property
+    def discussion_range(self) -> str:
+        """``4207–4264`` style range of the published discussion messages."""
+
+        if not self.discussion_message_ids:
+            return ""
+        first, last = self.discussion_message_ids[0], self.discussion_message_ids[-1]
+        return first if first == last else f"{first}–{last}"
 
 
 def public_post_link(
@@ -74,6 +85,13 @@ class ResultCardService:
                 if effect.effect_type == "telegram_channel_message"
             )
         )
+        discussion_ids = list(
+            dict.fromkeys(
+                str(effect.external_message_id)
+                for effect in visible
+                if effect.effect_type == "telegram_discussion_message"
+            )
+        )
         package = await self._repository.get_archive_package_for_job(job.id)
         archive_state = package.state.value if package is not None else None
 
@@ -105,4 +123,6 @@ class ResultCardService:
             link_reason=link_reason,
             undo_remaining=int(undo_remaining),
             favorited=bool(favorited),
+            channel_message_ids=tuple(channel_ids),
+            discussion_message_ids=tuple(discussion_ids),
         )

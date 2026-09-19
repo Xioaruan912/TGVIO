@@ -45,11 +45,13 @@ class PublishExecutionEngine:
 
     async def execute(self, job: Job, plan: PublishPlan) -> Job:
         started_at = time.monotonic()
+        job_no = await self._display_no(job)
         log_event(
             self._log,
             logging.INFO,
             "publish.job.started",
             job_id=job.id,
+            job_no=job_no,
             plan_id=plan.id,
             state=job.state.value,
             step_count=len(plan.steps),
@@ -117,6 +119,7 @@ class PublishExecutionEngine:
                     logging.INFO,
                     "publish.step.started",
                     job_id=job.id,
+                    job_no=job_no,
                     plan_id=plan.id,
                     step_index=step.index,
                     step_kind=step.kind.value,
@@ -139,6 +142,7 @@ class PublishExecutionEngine:
                         "publish.step.partial",
                         "Publish step produced only partial confirmed effects",
                         job_id=job.id,
+                        job_no=job_no,
                         plan_id=plan.id,
                         step_index=step.index,
                         receipt_count=len(exc.receipts),
@@ -176,6 +180,7 @@ class PublishExecutionEngine:
                     logging.INFO,
                     "publish.step.completed",
                     job_id=job.id,
+                    job_no=job_no,
                     plan_id=plan.id,
                     step_index=step.index,
                     receipt_count=len(receipts),
@@ -212,6 +217,7 @@ class PublishExecutionEngine:
                 "publish.job.failed",
                 "Publish execution failed",
                 job_id=job.id,
+                job_no=job_no,
                 plan_id=plan.id,
                 step_index=active_step_index,
                 error_code=failure_code,
@@ -266,6 +272,7 @@ class PublishExecutionEngine:
             logging.INFO,
             "publish.job.completed",
             job_id=job.id,
+            job_no=job_no,
             plan_id=plan.id,
             step_count=len(plan.steps),
             duration_ms=int((time.monotonic() - started_at) * 1000),
@@ -275,6 +282,16 @@ class PublishExecutionEngine:
     async def _safe_checkpoint(self, job: Job, detail: str) -> None:
         if self._control is not None:
             await self._control.safe_checkpoint(job, detail=detail)
+
+    async def _display_no(self, job: Job) -> int | None:
+        getter = getattr(self._repository, "get_display_no", None)
+        if not callable(getter):
+            return None
+        try:
+            value = await getter(job.id)
+        except Exception:  # noqa: BLE001 - logging must never block publishing
+            return None
+        return None if value is None else int(value)
 
     async def _reconcile_inflight(self, job: Job, plan: PublishPlan) -> None:
         current = await self._repository.get_publish_plan(job.id)

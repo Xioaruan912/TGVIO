@@ -123,8 +123,13 @@ class IntakeSourceMixin:
             )
         return True
 
-    async def accept_source_media(self, owner_id: int, media) -> None:
-        await self._accept_and_schedule(int(owner_id), int(owner_id), media)
+    async def accept_source_media(self, owner_id: int, media, label: str = "") -> None:
+        await self._accept_and_schedule(
+            int(owner_id),
+            int(owner_id),
+            media,
+            policy_extra={"source_label": str(label).strip()} if str(label).strip() else None,
+        )
 
     async def notify_source_owner(self, text: str) -> None:
         owner_id = getattr(self, "_source_owner_id", None)

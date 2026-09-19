@@ -166,8 +166,7 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 continue
             if filter == JobListFilter.HISTORY:
                 continue
-            get_order = getattr(self._repository, "get_accepted_order", None)
-            accepted_order = await get_order(job.id) if callable(get_order) else None
+            accepted_order = await self._display_number(job)
             entries.append(
                 JobListEntry(
                     job=job,

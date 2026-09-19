@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import asyncio
+from datetime import datetime
 import logging
+from zoneinfo import ZoneInfo
 
 from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
 from tgvio.application.collection_editing import (
@@ -455,9 +457,13 @@ class IntakeEditMixin:
         await self._preview_progress_succeeded(chat_id, progress_message_id)
 
     def _compose_preview_caption(self, base: str, preference) -> str:
-        """Show the exact caption that will be published (collection text + footer + template)."""
+        """Show the exact caption that will be published (header + text + footer + template)."""
 
-        parts = []
+        parts = [
+            "🗂 "
+            + datetime.now(ZoneInfo("Asia/Shanghai")).strftime("%m-%d")
+            + " #编号 · 数量 · 来源（发布时自动加分组标头）"
+        ]
         if (base or "").strip():
             parts.append(base.strip())
         footer = " ".join(

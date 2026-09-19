@@ -18,7 +18,7 @@ class IntakeStatusMixin:
         previous_item: int | None = None
         previous_current = 0
         previous_time = time.monotonic()
-        accepted_order = await self._accepted_order(job_id)
+        accepted_order = await self._display_number(job_id)
         quiet_owner: bool | None = None
         try:
             while True:

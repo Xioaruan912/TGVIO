@@ -17,6 +17,8 @@ class PublishLargeFileMixin:
         receipts: list[PublishReceipt] = []
         playable = bundle.mode == "playable_video_segments"
         caption = item.caption if step.params.get("forward_caption", True) else ""
+        header = self._caption_header(item, step)
+        template = str(step.params.get("caption_template") or "").strip()
         note = (
             f"🎞 可独立播放视频分段：{bundle.original_name}\n"
             f"共 {len(bundle.parts)} 段；manifest 含原文件和每段 SHA-256。"
@@ -26,8 +28,9 @@ class PublishLargeFileMixin:
                 f"共 {len(bundle.parts)} 卷；下载 manifest 和全部 part 后可校验重组。"
             )
         )
-        if caption:
-            note = f"{note}\n{caption}"
+        note = "\n".join(
+            part for part in (header, note, caption or "", template) if part
+        )
         note = self._with_footer(note, self._footer(step))
         try:
             manifest_sent = await self._send_visible_file(
