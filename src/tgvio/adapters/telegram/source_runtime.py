@@ -7,7 +7,6 @@ the intake runtime only receives the ready reader through a callback.
 
 from __future__ import annotations
 
-import asyncio
 import json
 import logging
 from pathlib import Path
@@ -25,14 +24,14 @@ from telethon.errors import (
 
 from tgvio.config import Settings
 from tgvio.application.runtime_flags import RuntimeFlags
-from tgvio.adapters.telegram.user_source import UserSourceReader
+from tgvio.adapters.telegram.user_source import SourceMediaSummary, UserSourceReader
 
 _WHITELIST_FLAG = "source_chats"
 _MAX_CHATS = 50
 
 ReaderReadyHook = Callable[[object, UserSourceReader, int], None]
 ReaderStoppedHook = Callable[[], None]
-TriggerMediaHook = Callable[[int, list], Awaitable[None]]
+SourceMediaHook = Callable[[int, list], Awaitable[None]]
 NoticeHook = Callable[[str], Awaitable[None]]
 
 
@@ -61,13 +60,10 @@ class SourceCoordinator:
         self._phone: str | None = None
         self._phone_code_hash: str | None = None
         self._user_id: int | None = None
-        self._awaiting: str | None = None  # none | phone | code | password
+        self._awaiting: str | None = None  # none | phone | code | password | add_chat
         self._reader: UserSourceReader | None = None
-        self._trigger_seen: dict[int, int] = {}
-        self._poll_task: asyncio.Task | None = None
-        self._on_trigger_media: TriggerMediaHook | None = None
+        self._on_source_media: SourceMediaHook | None = None
         self._on_notice: NoticeHook | None = None
-        self._poll_seconds = max(5, int(getattr(settings, "source_poll_seconds", 15)))
         self._log = logging.getLogger("tgvio.telegram.source")
 
     # ---------------------------------------------------------------- status
@@ -95,96 +91,112 @@ class SourceCoordinator:
         *,
         on_reader_ready: ReaderReadyHook | None = None,
         on_reader_stopped: ReaderStoppedHook | None = None,
-        on_trigger_media: TriggerMediaHook | None = None,
+        on_source_media: SourceMediaHook | None = None,
         on_notice: NoticeHook | None = None,
     ) -> None:
         if on_reader_ready is not None:
             self._on_reader_ready = on_reader_ready
         if on_reader_stopped is not None:
             self._on_reader_stopped = on_reader_stopped
-        if on_trigger_media is not None:
-            self._on_trigger_media = on_trigger_media
+        if on_source_media is not None:
+            self._on_source_media = on_source_media
         if on_notice is not None:
             self._on_notice = on_notice
 
-    async def handle_trigger(
-        self,
-        chat_id: int,
-        message_id: int,
-        reply_to_msg_id: int | None,
-    ) -> None:
-        """Single entry point for a trigger message, from updates or polling."""
+    # -------------------------------------------------------------- selection
+    def source_count(self) -> int:
+        if self._reader is None:
+            return len(self.effective_chats())
+        return len(self._reader.ordered_chats())
 
-        chat_id = int(chat_id)
-        message_id = int(message_id)
-        if message_id <= self._trigger_seen.get(chat_id, 0):
-            return
-        self._trigger_seen[chat_id] = message_id
+    def source_label(self, index: int = 0) -> str:
         reader = self._reader
         if reader is None:
-            return
-        has_reply = reply_to_msg_id is not None
-        self._log.info("source.trigger.received reply=%s", has_reply)
-        try:
-            media = await reader.capture_at(chat_id, reply_to_msg_id) if has_reply else []
-            if not media and not has_reply and self.effective_latest():
-                media = await reader.capture_latest(chat_id)
-            if media and self._on_trigger_media is not None and self._user_id:
-                await self._on_trigger_media(int(self._user_id), media)
-            elif has_reply:
-                await self._notice("⚠️ 未能读取被回复的消息：可能已被删除或不是媒体。")
-            else:
-                await self._notice("⚠️ 没找到最近的媒体：请**长按目标消息 → 回复**，再发送触发词。")
-        except Exception as exc:  # noqa: BLE001 - user-facing miss
-            self._log.warning("source.trigger.failed type=%s", type(exc).__name__)
-            await self._notice("⚠️ 抓取失败，请稍后重试。")
-        finally:
-            if self.effective_delete_trigger():
-                try:
-                    await self._client.delete_messages(chat_id, [message_id])
-                except Exception:  # noqa: BLE001
-                    pass
-
-    async def grab_latest(self, index: int = 0) -> tuple[int, str]:
-        """Reliable owner command: publish the newest media of a whitelisted chat.
-
-        This does not depend on the owner's outgoing trigger message being seen;
-        the bot chat command plus reading the source chat are both reliable.
-        """
-
-        reader = self._reader
-        if reader is None or self._client is None or self._user_id is None:
-            return (0, "")
+            entries = self.effective_chats()
+            return entries[index] if 0 <= index < len(entries) else ""
         chats = reader.ordered_chats()
         if not chats:
-            return (0, "")
+            return ""
+        if not 0 <= int(index) < len(chats):
+            index = 0
+        return reader.label_for(chats[int(index)])
+
+    def _chat_for(self, index: int) -> tuple[int, str] | None:
+        reader = self._reader
+        if reader is None or self._client is None:
+            return None
+        chats = reader.ordered_chats()
+        if not chats:
+            return None
         if not 0 <= int(index) < len(chats):
             index = 0
         chat_id = chats[int(index)]
-        label = reader.label_for(chat_id)
-        media = await reader.capture_latest(chat_id)
+        return (chat_id, reader.label_for(chat_id))
+
+    async def list_media(
+        self,
+        source_index: int = 0,
+        *,
+        page: int = 0,
+        page_size: int = 10,
+    ) -> tuple[list[SourceMediaSummary], bool, str]:
+        """Recent media groups of one source (newest first, albums collapsed)."""
+
+        target = self._chat_for(source_index)
+        if target is None or self._reader is None:
+            return ([], False, "")
+        chat_id, label = target
+        summaries, has_more = await self._reader.list_recent_media(
+            chat_id,
+            limit=page_size,
+            offset=max(0, int(page)) * page_size,
+        )
+        return (summaries, has_more, label)
+
+    async def grab_message(self, source_index: int, message_id: int) -> tuple[int, str]:
+        """Publish one specific message/album selected by the operator."""
+
+        target = self._chat_for(source_index)
+        if target is None or self._reader is None or self._user_id is None:
+            return (0, "")
+        chat_id, label = target
+        self._log.info("source.grab.message chat=%s message_id=%s", chat_id, int(message_id))
+        media = await self._reader.capture_at(chat_id, int(message_id))
         if not media:
             return (0, label)
-        if self._on_trigger_media is not None:
-            await self._on_trigger_media(int(self._user_id), media)
+        await self._dispatch(media)
         return (len(media), label)
 
-    async def check_now(self) -> tuple[int, int]:
-        """Manual "check now": search and process any pending trigger messages."""
+    async def grab_latest(
+        self,
+        source_index: int = 0,
+        *,
+        photo_only: bool = False,
+    ) -> tuple[int, str]:
+        """Publish the newest media group of one source."""
 
-        reader = self._reader
-        if reader is None:
-            return (0, 0)
-        found = await reader.find_recent_triggers(limit=20)
-        processed = 0
-        for chat_id, message_id, reply_to in found:
-            if message_id <= self._trigger_seen.get(chat_id, 0):
-                continue
-            await self.handle_trigger(chat_id, message_id, reply_to)
-            processed += 1
-        return (len(found), processed)
+        target = self._chat_for(source_index)
+        if target is None or self._reader is None or self._user_id is None:
+            return (0, "")
+        chat_id, label = target
+        media = await self._reader.capture_latest(chat_id, photo_only=photo_only)
+        if not media:
+            return (0, label)
+        self._log.info(
+            "source.grab.latest chat=%s items=%s photo_only=%s",
+            chat_id,
+            len(media),
+            photo_only,
+        )
+        await self._dispatch(media)
+        return (len(media), label)
 
-    async def _notice(self, text: str) -> None:
+    async def _dispatch(self, media: list) -> None:
+        if self._on_source_media is None or self._user_id is None:
+            return
+        await self._on_source_media(int(self._user_id), media)
+
+    async def notice(self, text: str) -> None:
         if self._on_notice is None:
             return
         try:
@@ -192,55 +204,7 @@ class SourceCoordinator:
         except Exception:  # noqa: BLE001
             pass
 
-    def _start_trigger_poll(self) -> None:
-        if self._poll_task is not None and not self._poll_task.done():
-            return
-        self._poll_task = asyncio.create_task(
-            self._trigger_poll_loop(), name="tgvio-source-trigger-poll"
-        )
-
-    async def _stop_trigger_poll(self) -> None:
-        task = self._poll_task
-        self._poll_task = None
-        if task is not None and not task.done():
-            task.cancel()
-            await asyncio.gather(task, return_exceptions=True)
-
-    async def _trigger_poll_loop(self) -> None:
-        while True:
-            await asyncio.sleep(self._poll_seconds)
-            reader = self._reader
-            if reader is None or self._client is None:
-                continue
-            try:
-                found = await reader.poll_triggers(self._trigger_seen)
-            except Exception as exc:  # noqa: BLE001
-                self._log.warning("source.trigger.poll_failed type=%s", type(exc).__name__)
-                continue
-            for chat_id, message_id, reply_to in found:
-                await self.handle_trigger(chat_id, message_id, reply_to)
-
-    def effective_trigger(self) -> str:
-        value = (self._flags.get("source_trigger") or self._settings.source_trigger or "").strip()
-        return value or "#tgvio"
-
-    def effective_delete_trigger(self) -> bool:
-        raw = self._flags.get("source_delete_trigger")
-        if raw is None:
-            return bool(self._settings.source_delete_trigger)
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-    def effective_latest(self) -> bool:
-        raw = self._flags.get("source_latest")
-        if raw is None:
-            return bool(getattr(self._settings, "source_latest", True))
-        return str(raw).strip().lower() in {"1", "true", "yes", "on"}
-
-    async def toggle_latest(self) -> bool:
-        value = not self.effective_latest()
-        await self._flags.set(self._repository, "source_latest", "true" if value else "false")
-        return value
-
+    # ------------------------------------------------------------- whitelist
     def effective_chats(self) -> tuple[str, ...]:
         raw = self._flags.get(_WHITELIST_FLAG)
         if not raw:
@@ -298,19 +262,18 @@ class SourceCoordinator:
         return True
 
     async def _start_updates(self) -> None:
-        """Make sure the authorized client is actually receiving updates."""
+        """Sync missed updates once; only used for link/entity resolution."""
 
         client = self._client
         if client is None:
             return
         try:
             await client.catch_up()
-        except Exception as exc:  # noqa: BLE001 - best effort sync of missed updates
+        except Exception as exc:  # noqa: BLE001 - best effort sync
             self._log.warning("source.updates.catch_up_failed type=%s", type(exc).__name__)
         self._log.info("source.updates.ready")
 
     async def stop(self) -> None:
-        await self._stop_trigger_poll()
         self._reader = None
         if self._client is not None:
             try:
@@ -324,22 +287,11 @@ class SourceCoordinator:
             return
         me = await client.get_me()
         self._user_id = int(getattr(me, "id", 0) or 0)
-        reader = UserSourceReader(
-            client,
-            trigger=self.effective_trigger(),
-            allowed_chats=self.effective_chats(),
-        )
-        await reader.prepare()
-        self._trigger_seen = await reader.seed_trigger_cursor()
-        report = getattr(reader, "seed_report", {}) or {}
-        self._log.info(
-            "source.poll.seed chats=%s triggers=%s",
-            report.get("chats", 0),
-            report.get("triggers", 0),
-        )
+        reader = UserSourceReader(client, allowed_chats=self.effective_chats())
+        resolved = await reader.prepare()
         self._reader = reader
         self._awaiting = None
-        self._start_trigger_poll()
+        self._log.info("source.reader.resolved chats=%s", resolved)
         if self._on_reader_ready is not None:
             self._on_reader_ready(client, reader, self._user_id)
 
@@ -410,9 +362,8 @@ class SourceCoordinator:
             session_file.chmod(0o600)
         except OSError:
             pass
-        # The client connected while unauthorized; reconnect so Telethon starts
-        # the update loop and syncs state on an authorized session. Without this
-        # the reader could never see the owner's outgoing trigger messages.
+        # The client connected while unauthorized; reconnect so Telethon runs on
+        # an authorized session before we read chats with it.
         await self._reconnect_after_login()
         await self._ensure_reader()
         chats = self.effective_chats()
@@ -420,11 +371,12 @@ class SourceCoordinator:
             return "登录成功，但还【没有来源白名单】。请点「➕ 添加来源」把我允许读取的聊天加进来。"
         if self._reader is None or not self._reader.allowed_ids:
             return "登录成功，但白名单里的来源都无法解析；请检查名称或 ID 后重试。"
-        return f"登录成功，已启用 {len(self._reader.allowed_ids)} 个来源。现在可以回复目标消息发 {self.effective_trigger()} 抓取。"
+        return (
+            "登录成功，已启用 "
+            f"{len(self._reader.allowed_ids)} 个来源。用 `/pick` 选择要发布的内容。"
+        )
 
     async def logout(self) -> str:
-        await self._stop_trigger_poll()
-        self._trigger_seen = {}
         client = self._client
         self._reader = None
         self._awaiting = None

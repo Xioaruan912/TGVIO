@@ -57,10 +57,6 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.ytdlp_cookies_file, "")
         self.assertEqual(settings.source_session, Path("/app/session/source_user"))
         self.assertEqual(settings.source_chats, ())
-        self.assertEqual(settings.source_trigger, "#tgvio")
-        self.assertTrue(settings.source_delete_trigger)
-        self.assertTrue(settings.source_latest)
-        self.assertEqual(settings.source_poll_seconds, 15)
         self.assertEqual(settings.source_download_workers, 4)
         self.assertTrue(settings.safe_summary()["source_session_configured"])
         self.assertEqual(settings.static_proxy_url, "")
@@ -365,8 +361,6 @@ class SourceReaderSettingsTests(unittest.TestCase):
                 **BASE_ENV,
                 "TGVIO_SOURCE_SESSION": "/data/source_user",
                 "TGVIO_SOURCE_CHATS": "@a, -1001234567890",
-                "TGVIO_SOURCE_TRIGGER": "存一下",
-                "TGVIO_SOURCE_TRIGGER_DELETE": "false",
                 "TGVIO_SOURCE_DOWNLOAD_WORKERS": "6",
             },
             clear=True,
@@ -374,8 +368,6 @@ class SourceReaderSettingsTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertEqual(settings.source_session, Path("/data/source_user"))
         self.assertEqual(settings.source_chats, ("@a", "-1001234567890"))
-        self.assertEqual(settings.source_trigger, "存一下")
-        self.assertFalse(settings.source_delete_trigger)
         self.assertEqual(settings.source_download_workers, 6)
         summary = settings.safe_summary()
         self.assertEqual(summary["source_chat_count"], 2)
@@ -388,15 +380,6 @@ class SourceReaderSettingsTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertIsNone(settings.source_session)
         self.assertFalse(settings.safe_summary()["source_session_configured"])
-
-    def test_source_trigger_must_be_a_single_token(self) -> None:
-        for value in ("two words", "x" * 40):
-            with self.subTest(value=value), patch.dict(
-                os.environ,
-                {**BASE_ENV, "TGVIO_SOURCE_TRIGGER": value},
-                clear=True,
-            ), self.assertRaises(ConfigError):
-                Settings.from_env()
 
     def test_source_download_workers_range(self) -> None:
         with patch.dict(

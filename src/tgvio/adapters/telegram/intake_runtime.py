@@ -114,8 +114,6 @@ class TelethonIntakeRuntime(
             self._on_intake_callback,
             events.CallbackQuery(pattern=b"^intake:"),
         )
-        if self._source_client is not None and self._source_reader is not None:
-            self.register_source_handlers(self._source_client)
 
     async def stop(self) -> None:
         recovery = getattr(self, "_submission_recovery_task", None)
@@ -182,8 +180,6 @@ class TelethonIntakeRuntime(
 
         # In-Bot source setup consumes the owner's next text (phone, code, chat).
         if await self.handle_source_input(raw_text, int(event.chat_id), int(event.sender_id)):
-            return
-        if await self.handle_trigger_misuse(raw_text, int(event.chat_id)):
             return
 
         incoming = self._from_message(event.message, event.chat_id)

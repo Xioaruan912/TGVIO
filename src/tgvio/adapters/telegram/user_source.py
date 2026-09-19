@@ -1,13 +1,15 @@
-"""Owner-driven "push" reader backed by the personal-account session.
+"""Owner-driven source reader backed by the personal-account session.
 
-The owner points at content explicitly — by replying to a message with the
-configured trigger, or by sending a Telegram message link — and this reader
-turns that single message (plus its media group, when present) into durable
-``IncomingMedia`` items. It never scans chats on its own.
+The owner picks content from the TGVIO chat (``/grab`` or ``/pick``) or sends a
+Telegram message link; this reader reads that message — including the whole
+media group when it is an album — and turns it into durable ``IncomingMedia``.
+It never listens to source chats on its own.
 """
 
 from __future__ import annotations
 
+from dataclasses import dataclass
+from datetime import datetime
 import logging
 from typing import Sequence
 
@@ -19,9 +21,29 @@ from tgvio.application.intake import IncomingMedia
 from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 
 _ALBUM_SPAN = 11
-_LATEST_SCAN = 25
-_REPLAY_WINDOW = 5
-_SEED_SCAN = 120
+_LATEST_SCAN = 20
+_LIST_WINDOW = 400
+
+
+@dataclass(frozen=True, slots=True)
+class SourceMediaSummary:
+    """One selectable item: a single media message or a full media group."""
+
+    message_id: int
+    kinds: tuple[MediaKind, ...]
+    item_count: int
+    size_bytes: int
+    duration_seconds: float | None
+    date: datetime | None
+    grouped_id: int | None
+
+    @property
+    def has_video(self) -> bool:
+        return any(kind in {MediaKind.VIDEO, MediaKind.AUDIO} for kind in self.kinds)
+
+    @property
+    def is_photo_only(self) -> bool:
+        return all(kind == MediaKind.PHOTO for kind in self.kinds)
 
 
 class UserSourceDownloader:
@@ -67,15 +89,12 @@ class UserSourceReader:
         self,
         client,
         *,
-        trigger: str = "#tgvio",
         allowed_chats: Sequence[str] | None = None,
     ) -> None:
         self._client = client
-        self._trigger = (trigger or "#tgvio").strip() or "#tgvio"
         self._allowed_raw = tuple(entry for entry in (allowed_chats or ()) if str(entry).strip())
         self._allowed_ids: set[int] = set()
         self._chat_labels: dict[int, str] = {}
-        self.seed_report: dict[str, int] = {}
         self._log = logging.getLogger("tgvio.telegram.source")
 
     def label_for(self, chat_id: int) -> str:
@@ -93,10 +112,6 @@ class UserSourceReader:
             if chat_id not in ordered:
                 ordered.append(chat_id)
         return ordered
-
-    @property
-    def trigger(self) -> str:
-        return self._trigger
 
     @property
     def allowed_ids(self) -> frozenset[int]:
@@ -121,154 +136,80 @@ class UserSourceReader:
         self._chat_labels = labels
         return len(resolved)
 
-    def matches_trigger(self, text: str | None) -> bool:
-        return (text or "").strip().casefold() == self._trigger.casefold()
+    # ------------------------------------------------------------------ list
+    async def list_recent_media(
+        self,
+        chat_id: int,
+        *,
+        limit: int = 10,
+        offset: int = 0,
+    ) -> tuple[list[SourceMediaSummary], bool]:
+        """Newest-first media groups; albums collapse into a single entry."""
 
-    def is_trigger(self, event) -> bool:
-        if not getattr(event, "outgoing", False):
-            return False
-        text = getattr(event, "raw_text", "") or ""
-        chat_id = getattr(event, "chat_id", None)
-        if chat_id is None:
-            return False
-        if int(chat_id) in self._allowed_ids:
-            self._log.info(
-                "source.update.outgoing trigger=%s",
-                self.matches_trigger(text),
-            )
-        else:
-            if self.matches_trigger(text):
-                self._log.info("source.trigger.rejected reason=not_whitelisted")
-            return False
-        return self.matches_trigger(text)
-
-    async def capture_latest(self, chat_id: int, *, limit: int = _LATEST_SCAN) -> list[IncomingMedia]:
-        """Capture the newest media message in a whitelisted chat."""
-
+        page_size = max(1, int(limit))
+        start = max(0, int(offset))
+        want = start + page_size + 1
+        summaries: list[SourceMediaSummary] = []
+        position_by_group: dict[int, int] = {}
         try:
-            async for message in self._client.iter_messages(int(chat_id), limit=max(1, int(limit))):
+            async for message in self._client.iter_messages(
+                int(chat_id),
+                limit=_LIST_WINDOW,
+            ):
                 item = self._to_media(message)
-                if item is not None:
-                    return self._to_media_list(await self._expand(message))
+                if item is None:
+                    continue
+                grouped = item.grouped_id
+                if grouped is not None and grouped in position_by_group:
+                    position = position_by_group[grouped]
+                    summaries[position] = self._merge(summaries[position], message, item)
+                else:
+                    if grouped is not None:
+                        position_by_group[grouped] = len(summaries)
+                    summaries.append(self._summarize(message, item))
+                if len(summaries) >= want:
+                    break
         except Exception as exc:  # noqa: BLE001 - user-facing miss
-            self._log.warning("source.latest.failed type=%s", type(exc).__name__)
-            return []
+            self._log.warning("source.list.failed type=%s", type(exc).__name__)
+            return ([], False)
+        page = summaries[start : start + page_size]
+        has_more = len(summaries) > start + page_size
+        return (page, has_more)
+
+    # --------------------------------------------------------------- capture
+    async def capture_latest(
+        self,
+        chat_id: int,
+        *,
+        photo_only: bool = False,
+        limit: int = _LATEST_SCAN,
+    ) -> list[IncomingMedia]:
+        """Capture the newest media group, preferring real content over photos."""
+
+        page, _has_more = await self.list_recent_media(chat_id, limit=limit)
+        if photo_only:
+            candidates = list(page)
+        else:
+            candidates = [summary for summary in page if not summary.is_photo_only]
+            if not candidates:
+                candidates = list(page)
+        for summary in candidates:
+            captured = await self.capture_at(chat_id, summary.message_id)
+            if captured:
+                return captured
         return []
 
-    async def capture_reply(self, event) -> list[IncomingMedia]:
-        return await self.capture_at(
-            int(event.chat_id),
-            getattr(getattr(event, "message", None), "reply_to_msg_id", None),
-        )
-
-    async def capture_at(self, chat_id: int, reply_to_msg_id: int | None) -> list[IncomingMedia]:
-        if reply_to_msg_id is None:
+    async def capture_at(self, chat_id: int, message_id: int | None) -> list[IncomingMedia]:
+        if message_id is None:
             return []
         try:
-            message = await self._client.get_messages(int(chat_id), ids=int(reply_to_msg_id))
+            message = await self._client.get_messages(int(chat_id), ids=int(message_id))
         except Exception as exc:  # noqa: BLE001 - user-facing miss
-            self._log.warning("source.reply.failed type=%s", type(exc).__name__)
+            self._log.warning("source.capture.failed type=%s", type(exc).__name__)
             return []
         if message is None:
             return []
         return self._to_media_list(await self._expand(message))
-
-    async def find_recent_triggers(
-        self,
-        *,
-        limit: int = 20,
-    ) -> list[tuple[int, int, int | None]]:
-        """Server-side search for your trigger messages in every whitelisted chat."""
-
-        found: list[tuple[int, int, int | None]] = []
-        for chat_id in sorted(self._allowed_ids):
-            try:
-                async for message in self._client.iter_messages(
-                    chat_id,
-                    limit=max(1, int(limit)),
-                    search=self._trigger,
-                ):
-                    if not getattr(message, "outgoing", False):
-                        continue
-                    if not self.matches_trigger(getattr(message, "message", "")):
-                        continue
-                    found.append(
-                        (int(chat_id), int(message.id), getattr(message, "reply_to_msg_id", None))
-                    )
-            except Exception as exc:  # noqa: BLE001
-                self._log.warning("source.search.failed type=%s", type(exc).__name__)
-        found.sort(key=lambda item: item[1], reverse=True)
-        return found
-
-    async def seed_trigger_cursor(self, *, limit: int = _SEED_SCAN) -> dict[int, int]:
-        """Cursor per chat that also picks up recent, not-yet-handled triggers.
-
-        Uses a server-side search so a trigger is found even when the source bot
-        has sent far more than the scan window since. Handled triggers are
-        deleted, and intake dedupes by ``(chat_id, message_id)``, so this can
-        never double-publish.
-        """
-
-        cursor: dict[int, int] = {}
-        matches: dict[int, list[int]] = {}
-        triggers = 0
-        for chat_id in sorted(self._allowed_ids):
-            try:
-                async for message in self._client.iter_messages(
-                    chat_id,
-                    limit=max(1, int(limit)),
-                    search=self._trigger,
-                ):
-                    if not getattr(message, "outgoing", False):
-                        continue
-                    if not self.matches_trigger(getattr(message, "message", "")):
-                        continue
-                    triggers += 1
-                    matches.setdefault(chat_id, []).append(int(message.id))
-            except Exception:  # noqa: BLE001
-                continue
-        for chat_id in sorted(self._allowed_ids):
-            newest: int | None = None
-            try:
-                async for message in self._client.iter_messages(chat_id, limit=1):
-                    newest = int(message.id)
-                    break
-            except Exception:  # noqa: BLE001
-                continue
-            if newest is None:
-                continue
-            chat_matches = matches.get(chat_id) or []
-            if chat_matches:
-                cursor[chat_id] = max(0, min(chat_matches) - 1)
-            else:
-                cursor[chat_id] = max(0, newest - _REPLAY_WINDOW)
-        self.seed_report = {"chats": len(cursor), "triggers": triggers}
-        return cursor
-
-    async def poll_triggers(
-        self,
-        after: dict[int, int],
-        *,
-        limit: int = 10,
-    ) -> list[tuple[int, int, int | None]]:
-        """Find new outgoing trigger messages; a fallback when updates are delayed."""
-
-        found: list[tuple[int, int, int | None]] = []
-        for chat_id in sorted(self._allowed_ids):
-            try:
-                async for message in self._client.iter_messages(chat_id, limit=max(1, int(limit))):
-                    if not getattr(message, "outgoing", False):
-                        continue
-                    if not self.matches_trigger(getattr(message, "message", "")):
-                        continue
-                    if int(message.id) <= int(after.get(chat_id, 0)):
-                        continue
-                    found.append(
-                        (int(chat_id), int(message.id), getattr(message, "reply_to_msg_id", None))
-                    )
-            except Exception:  # noqa: BLE001
-                continue
-        return found
 
     async def resolve_link(self, url: str) -> list[IncomingMedia]:
         link: TelegramLink | None = parse_telegram_link(url)
@@ -297,11 +238,50 @@ class UserSourceReader:
                     max_id=int(message.id) + _ALBUM_SPAN,
                 )
             ]
-        except Exception:  # noqa: BLE001 - fall back to the single replied message
+        except Exception:  # noqa: BLE001 - fall back to the single message
             return [message]
         album = [item for item in nearby if getattr(item, "grouped_id", None) == grouped]
         album.sort(key=lambda item: int(item.id))
         return album or [message]
+
+    # ---------------------------------------------------------------- helpers
+    @classmethod
+    def _summarize(cls, message, item: IncomingMedia) -> SourceMediaSummary:
+        return SourceMediaSummary(
+            message_id=int(item.source_message_id or message.id),
+            kinds=(item.kind,),
+            item_count=1,
+            size_bytes=int(item.size_bytes or 0),
+            duration_seconds=cls._message_duration(message),
+            date=getattr(message, "date", None),
+            grouped_id=item.grouped_id,
+        )
+
+    @classmethod
+    def _merge(cls, summary: SourceMediaSummary, message, item: IncomingMedia) -> SourceMediaSummary:
+        kinds = tuple(dict.fromkeys((*summary.kinds, item.kind)))
+        duration = summary.duration_seconds or cls._message_duration(message)
+        return SourceMediaSummary(
+            message_id=summary.message_id,
+            kinds=kinds,
+            item_count=summary.item_count + 1,
+            size_bytes=summary.size_bytes + int(item.size_bytes or 0),
+            duration_seconds=duration,
+            date=summary.date or getattr(message, "date", None),
+            grouped_id=summary.grouped_id,
+        )
+
+    @staticmethod
+    def _message_duration(message) -> float | None:
+        for attribute in ("video", "audio", "voice"):
+            media = getattr(message, attribute, None)
+            duration = getattr(media, "duration", None)
+            if duration:
+                try:
+                    return float(duration)
+                except (TypeError, ValueError):
+                    continue
+        return None
 
     def _to_media_list(self, messages) -> list[IncomingMedia]:
         media: list[IncomingMedia] = []

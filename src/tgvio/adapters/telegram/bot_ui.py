@@ -276,6 +276,8 @@ class TelethonBotUI(
         elif command == "source":
             text, buttons = await self._source_page(int(event.sender_id))
             await event.respond(text, buttons=buttons, parse_mode="md")
+        elif command == "pick":
+            await self._pick_command(event, int(event.sender_id), argument)
         elif command == "retry":
             await self._retry_job(event, int(event.sender_id), argument.strip() or None)
         elif command == "cancel":

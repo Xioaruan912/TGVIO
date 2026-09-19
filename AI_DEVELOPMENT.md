@@ -140,13 +140,13 @@ Telegram 消息 / 链接
 
 - `adapters/telegram/source_runtime.py`（`SourceCoordinator`）：在 **Bot 内**完成个人账号登录（手机号→验证码→两步密码）、退出、白名单增删，并把白名单持久化到 `runtime_flags`（`source_chats`）；登录成功后**热启动**读取器（无需登 VPS、无需重启容器）。Telethon client 凭据来自 `TGVIO_SOURCE_SESSION`（默认 `session/source_user`），**没有 bot_token**。
 - `adapters/telegram/bot_ui_source.py`（`BotUISourceMixin`）：`/source` 与设置页「🔐 来源登录」页面、回调与提示；输入由 `IntakeSourceMixin.handle_source_input()` 在私聊里消费。
-- `adapters/telegram/user_source.py` + `domain/telegram_links.py`：`UserSourceReader` 只响应**所有者主动触发**——回复目标消息并发 `TGVIO_SOURCE_TRIGGER`（默认 `#tgvio`），或发送 `t.me` 消息链接；按 `grouped_id` 自动补全媒体组，产出 `IncomingMedia(source_type="user_source", source_chat_id, source_message_id, ...)`。
-- `adapters/telegram/intake_source.py`（`IntakeSourceMixin`）：把触发器注册到 user client，抓取后调用现有 `_accept_and_schedule()` 入队，并按 `TGVIO_SOURCE_TRIGGER_DELETE` 删除触发消息。
+- `adapters/telegram/user_source.py` + `domain/telegram_links.py`：`UserSourceReader` 只响应**所有者主动选择**——`list_recent_media()` 分页列出最近媒体（按 `grouped_id` 合并相册、每页 10 条），`capture_at()` 抓指定消息，或发送 `t.me` 消息链接；产出 `IncomingMedia(source_type="user_source", source_chat_id, source_message_id, ...)`。
+- `adapters/telegram/intake_source.py`（`IntakeSourceMixin`）：`/pick` 选择、`/grab [来源序号] [photo]` 抓最近一条（默认跳过纯图片）、`t.me` 链接解析，抓取后调用现有 `_accept_and_schedule()` 入队。
 - 下载：`main.py` 给 `RoutedMediaDownloader` 注册 `"user_source"` → 绑定 user client 的 `TelethonMediaDownloader`（低并发）；`PreviewService` 改用 routed downloader，因此受限来源也能出效果预览。
-- 边界：**不做自动监听**（不订阅来源新帖），只处理白名单 `TGVIO_SOURCE_CHATS` 里的主动触发；下载仍走既有 Job/恢复/去重/归档链路。`media_router.download_bounded()` 支持按来源路由做有界预览。
+- 边界：**不做自动监听**（不订阅来源新帖、不响应触发词），只处理白名单 `TGVIO_SOURCE_CHATS` 里的主动选择；下载仍走既有 Job/恢复/去重/归档链路。`media_router.download_bounded()` 支持按来源路由做有界预览。
 - 一次性登录：`scripts/login_source_session.py`（已包含在 runtime 镜像）。
-- 触发可靠性：登录成功后 `SourceCoordinator` 会重连并 `catch_up()`，确保授权态 client 真正在收更新；同时每 `TGVIO_SOURCE_POLL_SECONDS`（默认 15s）轮询**你自己的触发消息**作为兜底。两条路径都走 `SourceCoordinator.handle_trigger()`，用 `(chat_id, message_id)` 游标去重，不会重复抓取；启动时用最新消息 id 播种游标，绝不回放历史。
-- 触发语义：回复目标消息即抓该条；不回复时默认抓该聊天最近一条媒体（`source_latest`，可在 `/source` 页面切换）；误把触发词发给 TGVIO 本身会得到用法提示。
+- 早期版本曾用「回复目标消息 + `#tgvio` 触发词」：实测在 bot 私聊来源里永远收不到出站更新（`source.update.outgoing=0`），已**彻底移除**，不要再恢复该机制。
+- 选片页：`/pick [来源序号] [页码]` 或 `/source` →「📥 选择最近媒体」；回调 `ui:pick:<src>:<page>`、`ui:sp:<src>:<page>`、`ui:sg:<src>:<mid>`。
 
 ---
 

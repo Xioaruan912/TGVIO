@@ -24,13 +24,37 @@ def _settings(**overrides):
         "api_hash": "hash",
         "source_session": None,
         "source_chats": ("@env",),
-        "source_trigger": "#env",
-        "source_delete_trigger": True,
-        "source_latest": True,
         "source_download_workers": 4,
     }
     values.update(overrides)
     return SimpleNamespace(**values)
+
+
+class FakeReader:
+    def __init__(self, *, chats=(-1001, -1002), media=None) -> None:
+        self._chats = list(chats)
+        self._media = media or []
+        self.listed: list[tuple[int, int, int]] = []
+        self.captured_at: list[tuple[int, int]] = []
+        self.latest: list[tuple[int, bool]] = []
+
+    def ordered_chats(self):
+        return list(self._chats)
+
+    def label_for(self, chat_id):
+        return {-1001: "@first", -1002: "@second"}.get(int(chat_id), str(chat_id))
+
+    async def list_recent_media(self, chat_id, *, limit=10, offset=0):
+        self.listed.append((int(chat_id), int(limit), int(offset)))
+        return (list(self._media), False)
+
+    async def capture_at(self, chat_id, message_id):
+        self.captured_at.append((int(chat_id), int(message_id)))
+        return list(self._media)
+
+    async def capture_latest(self, chat_id, *, photo_only=False, **_kwargs):
+        self.latest.append((int(chat_id), bool(photo_only)))
+        return list(self._media)
 
 
 class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
@@ -48,195 +72,109 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_defaults_come_from_settings(self) -> None:
         coordinator = self._coordinator()
-        self.assertEqual(coordinator.effective_trigger(), "#env")
         self.assertEqual(coordinator.effective_chats(), ("@env",))
-        self.assertTrue(coordinator.effective_delete_trigger())
-        self.assertTrue(coordinator.effective_latest())
         self.assertEqual(coordinator.status_line(), "未登录")
-
-    async def test_latest_toggle_persists(self) -> None:
-        coordinator = self._coordinator()
-        self.assertFalse(await coordinator.toggle_latest())
-        self.assertFalse(coordinator.effective_latest())
-        self.assertEqual(self.repo.flags["source_latest"], "false")
-        self.assertTrue(await coordinator.toggle_latest())
-        self.assertTrue(coordinator.effective_latest())
-
-    async def test_grab_latest_dispatches_media_from_the_selected_source(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-        captured: list[tuple[int, list]] = []
-
-        class _Reader:
-            def ordered_chats(self):
-                return [-1001, -1002]
-
-            def label_for(self, chat_id):
-                return { -1001: "@first", -1002: "@second"}[chat_id]
-
-            async def capture_latest(self, chat_id, **_kwargs):
-                return ["media"] if chat_id == -1002 else []
-
-        async def _media(owner_id, media):
-            captured.append((int(owner_id), list(media)))
-
-        coordinator._reader = _Reader()
-        coordinator._client = object()
-        coordinator._on_trigger_media = _media
-        count, label = await coordinator.grab_latest(1)
-        self.assertEqual((count, label), (1, "@second"))
-        self.assertEqual(captured, [(7, ["media"])])
-
-    async def test_grab_latest_reports_when_the_source_has_no_media(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-
-        class _Reader:
-            def ordered_chats(self):
-                return [-1001]
-
-            def label_for(self, chat_id):
-                return "@first"
-
-            async def capture_latest(self, chat_id, **_kwargs):
-                return []
-
-        coordinator._reader = _Reader()
-        coordinator._client = object()
-        count, label = await coordinator.grab_latest(0)
-        self.assertEqual((count, label), (0, "@first"))
-
-    async def test_check_now_processes_pending_triggers(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-        processed: list[tuple[int, int]] = []
-
-        class _Reader:
-            async def find_recent_triggers(self, **_kwargs):
-                return [(5, 100, None), (5, 99, 42)]
-
-        async def _handle(chat_id, message_id, reply_to):
-            processed.append((int(chat_id), int(message_id)))
-
-        coordinator._reader = _Reader()
-        coordinator.handle_trigger = _handle
-        coordinator._trigger_seen = {5: 0}
-        found, count = await coordinator.check_now()
-        self.assertEqual(found, 2)
-        self.assertEqual(count, 2)
-        self.assertEqual(processed, [(5, 100), (5, 99)])
-
-    async def test_check_now_ignores_already_seen_triggers(self) -> None:
-        coordinator = self._coordinator()
-
-        class _Reader:
-            async def find_recent_triggers(self, **_kwargs):
-                return [(5, 10, None)]
-
-        coordinator._reader = _Reader()
-        coordinator._trigger_seen = {5: 10}
-        found, count = await coordinator.check_now()
-        self.assertEqual(found, 1)
-        self.assertEqual(count, 0)
-
-    async def test_handle_trigger_dedupes_and_dispatches_media(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-        captured: list[tuple[int, list]] = []
-        notices: list[str] = []
-        deleted: list[tuple[int, int]] = []
-
-        class _Reader:
-            def __init__(self) -> None:
-                self.replies: list[tuple[int, int]] = []
-
-            async def capture_at(self, chat_id, reply_to_msg_id):
-                self.replies.append((chat_id, reply_to_msg_id))
-                return ["media"]
-
-            async def capture_latest(self, chat_id, **_kwargs):
-                return ["latest"]
-
-        class _Client:
-            async def delete_messages(self, chat_id, message_ids, **_kwargs):
-                deleted.append((int(chat_id), int(message_ids[0])))
-
-        async def _media(owner_id, media):
-            captured.append((int(owner_id), list(media)))
-
-        async def _notice(text):
-            notices.append(str(text))
-
-        reader = _Reader()
-        coordinator._reader = reader
-        coordinator._client = _Client()
-        coordinator._trigger_seen = {5: 10}
-        coordinator.set_hooks(on_trigger_media=_media, on_notice=_notice)
-
-        await coordinator.handle_trigger(5, 11, 99)
-        self.assertEqual(reader.replies, [(5, 99)])
-        self.assertEqual(captured, [(7, ["media"])])
-        self.assertEqual(deleted, [(5, 11)])
-        # A duplicate delivery of the same trigger message is ignored.
-        await coordinator.handle_trigger(5, 11, 99)
-        self.assertEqual(len(reader.replies), 1)
-
-    async def test_handle_trigger_without_reply_falls_back_to_latest(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-        captured: list[tuple[int, list]] = []
-
-        class _Reader:
-            async def capture_at(self, chat_id, reply_to_msg_id):
-                return []
-
-            async def capture_latest(self, chat_id, **_kwargs):
-                return ["latest"]
-
-        coordinator._reader = _Reader()
-
-        async def _record(owner_id, media):
-            captured.append((int(owner_id), list(media)))
-
-        coordinator._on_trigger_media = _record
-        await coordinator.handle_trigger(5, 1, None)
-        self.assertEqual(captured, [(7, ["latest"])])
-
-    async def test_handle_trigger_without_media_notices_the_owner(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-        notices: list[str] = []
-
-        class _Reader:
-            async def capture_at(self, chat_id, reply_to_msg_id):
-                return []
-
-            async def capture_latest(self, chat_id, **_kwargs):
-                return []
-
-        coordinator._reader = _Reader()
-
-        async def _notice(text):
-            notices.append(str(text))
-
-        coordinator._on_notice = _notice
-        await coordinator.handle_trigger(5, 1, 42)
-        self.assertTrue(notices)
-        self.assertIn("未能读取", notices[0])
+        self.assertEqual(coordinator.source_count(), 1)
+        self.assertEqual(coordinator.source_label(0), "@env")
+        self.assertFalse(coordinator.active)
 
     async def test_runtime_flags_override_settings(self) -> None:
         coordinator = self._coordinator()
-        await self.flags.set(self.repo, "source_trigger", "#custom")
-        await self.flags.set(self.repo, "source_delete_trigger", "false")
         await self.flags.set(self.repo, "source_chats", json.dumps(["@a", "-1001"]))
-        self.assertEqual(coordinator.effective_trigger(), "#custom")
-        self.assertFalse(coordinator.effective_delete_trigger())
         self.assertEqual(coordinator.effective_chats(), ("@a", "-1001"))
 
     async def test_invalid_stored_whitelist_falls_back_to_settings(self) -> None:
         coordinator = self._coordinator()
         await self.flags.set(self.repo, "source_chats", "{not json")
         self.assertEqual(coordinator.effective_chats(), ("@env",))
+
+    async def test_list_media_pages_through_the_selected_source(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader(media=["a", "b"])
+        coordinator._reader = reader
+        coordinator._client = object()
+
+        media, has_more, label = await coordinator.list_media(1, page=2, page_size=10)
+        self.assertEqual(label, "@second")
+        self.assertEqual(reader.listed, [(-1002, 10, 20)])
+        self.assertEqual(media, ["a", "b"])
+        self.assertFalse(has_more)
+
+    async def test_list_media_without_a_reader_is_empty(self) -> None:
+        coordinator = self._coordinator()
+        self.assertEqual(await coordinator.list_media(0), ([], False, ""))
+
+    async def test_grab_message_dispatches_the_selected_message(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        captured: list[tuple[int, list]] = []
+        coordinator._reader = FakeReader(media=["media"])
+        coordinator._client = object()
+
+        async def _media(owner_id, media):
+            captured.append((int(owner_id), list(media)))
+
+        coordinator._on_source_media = _media
+        count, label = await coordinator.grab_message(1, 30506)
+        self.assertEqual((count, label), (1, "@second"))
+        self.assertEqual(coordinator._reader.captured_at, [(-1002, 30506)])
+        self.assertEqual(captured, [(7, ["media"])])
+
+    async def test_grab_message_reports_a_deleted_message(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        coordinator._reader = FakeReader(media=[])
+        coordinator._client = object()
+        count, label = await coordinator.grab_message(0, 404)
+        self.assertEqual((count, label), (0, "@first"))
+
+    async def test_grab_latest_dispatches_media_from_the_selected_source(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        captured: list[tuple[int, list]] = []
+
+        class _Reader(FakeReader):
+            async def capture_latest(self, chat_id, *, photo_only=False, **_kwargs):
+                self.latest.append((int(chat_id), bool(photo_only)))
+                return ["media"] if int(chat_id) == -1002 else []
+
+        reader = _Reader()
+        coordinator._reader = reader
+        coordinator._client = object()
+
+        async def _media(owner_id, media):
+            captured.append((int(owner_id), list(media)))
+
+        coordinator._on_source_media = _media
+        count, label = await coordinator.grab_latest(1)
+        self.assertEqual((count, label), (1, "@second"))
+        self.assertEqual(reader.latest, [(-1002, False)])
+        self.assertEqual(captured, [(7, ["media"])])
+
+    async def test_grab_latest_passes_the_photo_only_flag(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        reader = FakeReader(media=["photo"])
+        coordinator._reader = reader
+        coordinator._client = object()
+        count, _label = await coordinator.grab_latest(0, photo_only=True)
+        self.assertEqual(count, 1)
+        self.assertEqual(reader.latest, [(-1001, True)])
+
+    async def test_grab_latest_reports_when_the_source_has_no_media(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        coordinator._reader = FakeReader(media=[])
+        coordinator._client = object()
+        count, label = await coordinator.grab_latest(0)
+        self.assertEqual((count, label), (0, "@first"))
+
+    async def test_grab_without_a_ready_client_is_a_noop(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        coordinator._reader = FakeReader(media=["media"])
+        self.assertEqual(await coordinator.grab_latest(0), (0, ""))
+        self.assertEqual(await coordinator.grab_message(0, 5), (0, ""))
 
     async def test_add_chat_requires_a_ready_client(self) -> None:
         coordinator = self._coordinator()
