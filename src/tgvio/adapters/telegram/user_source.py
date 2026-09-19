@@ -8,6 +8,8 @@ It never listens to source chats on its own.
 
 from __future__ import annotations
 
+import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 from datetime import datetime
 import logging
@@ -25,6 +27,17 @@ _ALBUM_SPAN = 11
 _LATEST_SCAN = 20
 _LIST_WINDOW = 400
 _THUMBNAIL_MAX_BYTES = 1024 * 1024
+_PHOTO_FALLBACK_MAX_BYTES = 2 * 1024 * 1024
+_VIDEO_PARTIAL_MAX_BYTES = 4 * 1024 * 1024
+_VIDEO_PARTIAL_TIMEOUT = 6.0
+
+
+@dataclass(frozen=True, slots=True)
+class ThumbnailCandidate:
+    """A local preview source: an image, or a video fragment needing a frame."""
+
+    path: Path
+    needs_frame: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -38,13 +51,19 @@ class SourceMediaSummary:
     duration_seconds: float | None
     date: datetime | None
     grouped_id: int | None
+    video_count: int = 0
+    photo_count: int = 0
 
     @property
     def has_video(self) -> bool:
+        if self.video_count:
+            return True
         return any(kind in {MediaKind.VIDEO, MediaKind.AUDIO} for kind in self.kinds)
 
     @property
     def is_photo_only(self) -> bool:
+        if self.item_count and self.photo_count == self.item_count:
+            return True
         return all(kind == MediaKind.PHOTO for kind in self.kinds)
 
 
@@ -218,11 +237,12 @@ class UserSourceReader:
         chat_id: int,
         message_id: int,
         target_dir: Path,
-    ) -> Path | None:
-        """Download only the embedded thumbnail of one message.
+    ) -> ThumbnailCandidate | None:
+        """Resolve a cheap visual preview for one message.
 
-        Thumbnails are 10-50 KB server-side previews, so the owner can see what a
-        pick contains without downloading the real media.
+        Order: the embedded server thumbnail (10-50 KB) first; for photos without
+        one, the original image (bounded); for videos without one, the first few
+        megabytes plus a frame extraction request. Never returns unbounded work.
         """
 
         try:
@@ -230,36 +250,139 @@ class UserSourceReader:
         except Exception as exc:  # noqa: BLE001 - a missing preview is not fatal
             self._log.warning("source.thumb.fetch_failed type=%s", type(exc).__name__)
             return None
-        if message is None or not self._message_has_thumbnail(message):
+        if message is None:
             return None
         target = Path(target_dir)
         try:
             target.mkdir(parents=True, exist_ok=True)
         except OSError:
             return None
-        path = target / f"thumb-{int(message_id)}.jpg"
+        if self._message_has_thumbnail(message):
+            candidate = await self._download_thumb(message, target, int(message_id))
+            if candidate is not None:
+                return candidate
+        return await self._download_fallback(message, target, int(message_id))
+
+    async def _download_thumb(
+        self,
+        message,
+        target: Path,
+        message_id: int,
+    ) -> ThumbnailCandidate | None:
+        path = target / f"thumb-{message_id}.jpg"
         try:
             downloaded = await self._client.download_media(
                 message,
                 file=str(path),
                 thumb=-1,
             )
-        except Exception as exc:  # noqa: BLE001 - previews degrade to "no image"
+        except Exception as exc:  # noqa: BLE001 - previews degrade to no image
             self._log.info("source.thumb.download_failed type=%s", type(exc).__name__)
             return None
         result = Path(downloaded) if downloaded else path
+        if not self._usable(result, _THUMBNAIL_MAX_BYTES):
+            return None
+        return ThumbnailCandidate(path=result)
+
+    async def _download_fallback(
+        self,
+        message,
+        target: Path,
+        message_id: int,
+    ) -> ThumbnailCandidate | None:
+        if getattr(message, "photo", None) is not None:
+            remote_size = int(getattr(getattr(message, "file", None), "size", 0) or 0)
+            if remote_size > _PHOTO_FALLBACK_MAX_BYTES:
+                return None
+            path = target / f"photo-{message_id}.jpg"
+            if await self._stream_limited(message, path, _PHOTO_FALLBACK_MAX_BYTES, 20.0):
+                if remote_size and path.stat().st_size != remote_size:
+                    # A truncated image cannot be decoded; do not pretend it is one.
+                    path.unlink(missing_ok=True)
+                    return None
+                self._log.info("source.thumb.fallback kind=photo message_id=%s", message_id)
+                return ThumbnailCandidate(path=path)
+            return None
+        if self._is_video(message):
+            path = target / f"clip-{message_id}.mp4"
+            if await self._stream_limited(
+                message, path, _VIDEO_PARTIAL_MAX_BYTES, _VIDEO_PARTIAL_TIMEOUT
+            ):
+                self._log.info("source.thumb.fallback kind=video message_id=%s", message_id)
+                return ThumbnailCandidate(path=path, needs_frame=True)
+        return None
+
+    async def _stream_limited(
+        self,
+        message,
+        path: Path,
+        limit: int,
+        timeout: float,
+    ) -> bool:
+        """Write at most ``limit`` bytes of the media within ``timeout`` seconds."""
+
+        media = getattr(message, "media", None)
+        if media is None:
+            return False
+
+        async def _run() -> bool:
+            written = 0
+            iterator = self._client.iter_download(media, request_size=256 * 1024)
+            try:
+                with path.open("xb") as handle:
+                    async for chunk in iterator:
+                        payload = bytes(chunk)
+                        if not payload:
+                            continue
+                        remaining = limit - written
+                        if remaining <= 0:
+                            break
+                        handle.write(payload[:remaining])
+                        written += min(len(payload), remaining)
+                        if written >= limit:
+                            break
+            finally:
+                close = getattr(iterator, "close", None) or getattr(iterator, "aclose", None)
+                if close is not None:
+                    with suppress(Exception):
+                        await close()
+            return written > 0
+
+        try:
+            ok = await asyncio.wait_for(_run(), timeout=timeout)
+        except (asyncio.TimeoutError, TimeoutError):
+            ok = path.is_file() and path.stat().st_size > 0
+        except Exception as exc:  # noqa: BLE001 - previews are best effort
+            self._log.info("source.thumb.stream_failed type=%s", type(exc).__name__)
+            ok = False
+        if not ok:
+            path.unlink(missing_ok=True)
+            return False
+        return True
+
+    @staticmethod
+    def _is_video(message) -> bool:
+        if getattr(message, "video", None) is not None:
+            return True
+        document = getattr(message, "document", None)
+        if document is None:
+            return False
+        return str(getattr(document, "mime_type", "") or "").startswith("video")
+
+    @staticmethod
+    def _usable(path: Path, limit: int) -> bool:
         try:
             if (
-                not result.is_file()
-                or result.is_symlink()
-                or result.stat().st_size <= 0
-                or result.stat().st_size > _THUMBNAIL_MAX_BYTES
+                not path.is_file()
+                or path.is_symlink()
+                or path.stat().st_size <= 0
+                or path.stat().st_size > limit
             ):
-                result.unlink(missing_ok=True)
-                return None
+                path.unlink(missing_ok=True)
+                return False
         except OSError:
-            return None
-        return result
+            return False
+        return True
 
     @staticmethod
     def _message_has_thumbnail(message) -> bool:
@@ -315,6 +438,8 @@ class UserSourceReader:
             duration_seconds=cls._message_duration(message),
             date=getattr(message, "date", None),
             grouped_id=item.grouped_id,
+            video_count=1 if item.kind == MediaKind.VIDEO else 0,
+            photo_count=1 if item.kind == MediaKind.PHOTO else 0,
         )
 
     @classmethod
@@ -329,6 +454,8 @@ class UserSourceReader:
             duration_seconds=duration,
             date=summary.date or getattr(message, "date", None),
             grouped_id=summary.grouped_id,
+            video_count=summary.video_count + (1 if item.kind == MediaKind.VIDEO else 0),
+            photo_count=summary.photo_count + (1 if item.kind == MediaKind.PHOTO else 0),
         )
 
     @staticmethod

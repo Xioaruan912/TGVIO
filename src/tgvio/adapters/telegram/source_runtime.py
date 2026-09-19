@@ -158,8 +158,8 @@ class SourceCoordinator:
         source_index: int,
         message_id: int,
         target_dir: Path,
-    ) -> Path | None:
-        """Fetch only the embedded thumbnail of one picked message."""
+    ):
+        """Fetch a cheap preview source for one picked message."""
 
         target = self._chat_for(source_index)
         if target is None or self._reader is None:

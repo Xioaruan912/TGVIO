@@ -49,6 +49,7 @@ from tgvio.application.collection_editing import CollectionEditingService
 from tgvio.application.previews import PreviewService
 from tgvio.application.pick_previews import PickPreviewService
 from tgvio.infrastructure.thumbnail_grid import ThumbnailGridBuilder
+from tgvio.infrastructure.video_frame import VideoFrameExtractor
 from tgvio.adapters.telegram.preview_sender import TelethonPreviewSender
 from tgvio.application.job_diagnostics import JobDiagnosticService
 from tgvio.application.job_control import JobControlService
@@ -501,6 +502,7 @@ async def run(*, check_only: bool = False) -> None:
                     source_coordinator.thumbnail,
                     ThumbnailGridBuilder(),
                     cache_root=settings.download_dir,
+                    frame_extractor=VideoFrameExtractor(),
                     concurrency=2,
                     timeout_seconds=settings.preview_timeout_seconds,
                 )

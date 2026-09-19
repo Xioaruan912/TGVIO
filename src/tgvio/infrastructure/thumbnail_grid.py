@@ -50,8 +50,6 @@ class ThumbnailGridBuilder:
         count = len([slot for slot in slots])
         if count == 0:
             return []
-        columns = min(self._columns, count)
-        rows = (count + columns - 1) // columns
         args: list[str] = ["-y", "-hide_banner", "-loglevel", "error"]
         for slot in slots:
             if slot is None:
@@ -73,17 +71,24 @@ class ThumbnailGridBuilder:
                 f"pad={self._tile}:{self._tile}:(ow-iw)/2:(oh-ih)/2:color=black,"
                 f"setsar=1[v{index}]"
             )
-        layout = "|".join(
-            f"{(index % columns) * self._tile}_{(index // columns) * self._tile}"
-            for index in range(count)
-        )
-        joined = "".join(f"[v{index}]" for index in range(count))
-        filters.append(f"{joined}xstack=inputs={count}:layout={layout}[grid]")
+        if count == 1:
+            # xstack requires at least two inputs; a one-tile sheet is the image
+            # itself, already scaled and padded by the filter above.
+            grid_input = "[v0]"
+        else:
+            columns = min(self._columns, count)
+            layout = "|".join(
+                f"{(index % columns) * self._tile}_{(index // columns) * self._tile}"
+                for index in range(count)
+            )
+            joined = "".join(f"[v{index}]" for index in range(count))
+            filters.append(f"{joined}xstack=inputs={count}:layout={layout}[grid]")
+            grid_input = "[grid]"
         args += [
             "-filter_complex",
             ";".join(filters),
             "-map",
-            "[grid]",
+            grid_input,
             "-frames:v",
             "1",
             "-update",
@@ -122,6 +127,7 @@ class ThumbnailGridBuilder:
             "telegram.preview.grid_failed",
             "Thumbnail grid could not be produced within budget",
             tile_count=len(slots),
+            filled=len([slot for slot in slots if slot is not None]),
         )
         return None
 

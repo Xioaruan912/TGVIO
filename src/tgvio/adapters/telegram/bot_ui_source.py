@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from datetime import datetime, timezone
-from zoneinfo import ZoneInfo
 
 from telethon import Button
 
@@ -11,13 +9,6 @@ from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
 from tgvio.adapters.telegram.source_runtime import SourceCoordinator, SourceLoginError
 from tgvio.domain.job import MediaKind
 
-_LOCAL_TZ = ZoneInfo("Asia/Shanghai")
-_KIND_LABELS: dict[MediaKind, str] = {
-    MediaKind.PHOTO: "🖼",
-    MediaKind.VIDEO: "🎬",
-    MediaKind.AUDIO: "🎵",
-    MediaKind.DOCUMENT: "📄",
-}
 _KIND_WORDS: dict[MediaKind, str] = {
     MediaKind.PHOTO: "🖼 图片",
     MediaKind.VIDEO: "🎬 视频",
@@ -69,36 +60,25 @@ class BotUISourceMixin:
 
     @staticmethod
     def _summary_composition(summary) -> str:
-        counts: dict[MediaKind, int] = {}
-        for kind in summary.kinds:
-            counts[kind] = counts.get(kind, 0) + 1
-        return " ".join(
-            f"{_KIND_LABELS.get(kind, '')}{count}" for kind, count in counts.items()
-        )
+        parts: list[str] = []
+        if summary.video_count:
+            parts.append(f"🎬{summary.video_count}")
+        if summary.photo_count:
+            parts.append(f"🖼{summary.photo_count}")
+        if not parts:
+            parts.append(f"📄{summary.item_count}")
+        return " ".join(parts)
 
     @classmethod
     def _summary_label(cls, summary) -> str:
         if summary.item_count > 1:
-            composition = cls._summary_composition(summary)
-            return f"🧩 相册 {summary.item_count} 项 · {composition}".strip()
+            return f"相册 {summary.item_count} 项 · {cls._summary_composition(summary)}".strip()
         kinds = summary.kinds or ()
         return _KIND_WORDS.get(kinds[0], "媒体") if kinds else "媒体"
 
     @classmethod
     def _summary_line(cls, summary) -> str:
-        return (
-            f"{cls._summary_label(summary)} · {cls._human_bytes(summary.size_bytes)}"
-            f" · {cls._summary_time(summary)} · #{summary.message_id}"
-        )
-
-    @staticmethod
-    def _summary_time(summary) -> str:
-        date = summary.date
-        if date is None:
-            return "--:--"
-        if date.tzinfo is None:
-            date = date.replace(tzinfo=timezone.utc)
-        return date.astimezone(_LOCAL_TZ).strftime("%m-%d %H:%M")
+        return f"{cls._summary_label(summary)} · {cls._human_bytes(summary.size_bytes)}"
 
     # ----------------------------------------------------------- source page
     async def _source_page(self, owner_id: int) -> tuple[str, list]:
@@ -170,9 +150,9 @@ class BotUISourceMixin:
         self._pick_cache()[(int(owner_id), int(source_index), int(page))] = {
             summary.message_id: summary for summary in summaries
         }
-        header = f"📥 **选择要发布的内容**｜来源：`{label or '未配置'}`｜第 {page + 1} 页"
+        header = f"选择要发布的内容 · {label or '未配置'} · 第 {page + 1} 页"
         if video_only:
-            header += "｜🎬 只看视频"
+            header += " · 只看视频"
         lines = [header, "──────────"]
         rows: list[list] = []
         if not summaries:
@@ -192,7 +172,6 @@ class BotUISourceMixin:
                 ]
             )
         lines.append("──────────")
-        lines.append("📥 = 抓取（先确认）· 👁 = 只看缩略图")
         nav: list = []
         if page > 0:
             nav.append(Button.inline("⬅️ 上一页", f"ui:sp:{int(source_index)}:{page - 1}".encode()))
@@ -287,22 +266,23 @@ class BotUISourceMixin:
         if preview is None or preview.image is None:
             available = 0 if preview is None else preview.fetched
             if progress_id is not None:
-                await self._edit_text(
-                    chat_id,
-                    int(progress_id),
-                    f"⚠️ 缩略图不可用（{available}/{total}）；可点每行 👁 单独看。",
-                )
+                if available:
+                    warning = (
+                        f"⚠️ 预览图生成失败（已取到 {available}/{total}）；"
+                        "可点每行 👁 单独看。"
+                    )
+                else:
+                    warning = f"⚠️ 没有取到缩略图（0/{total}）；可点每行 👁 单独看。"
+                await self._edit_text(chat_id, int(progress_id), warning)
             return
         previous = self._pick_grid_messages().pop(int(owner_id), None)
         if previous is not None:
             await self._delete_message(chat_id, previous)
         if progress_id is not None:
             await self._delete_message(chat_id, int(progress_id))
-        columns, rows = getattr(service, "grid_shape", lambda count: (5, 2))(total)
-        caption = (
-            f"🖼 第 {page + 1} 页缩略图 · {columns}×{rows}\n"
-            "位置从左到右、从上到下依次对应上面列表的 1)…N)。"
-        )
+        caption = f"第 {page + 1} 页缩略图 · 位置对应列表 1–{total}"
+        if getattr(preview, "fetched", total) < total:
+            caption += f"（{preview.fetched}/{preview.total} 张有预览）"
         message = await self._send_photo(
             chat_id,
             preview.image,
@@ -350,7 +330,7 @@ class BotUISourceMixin:
                 await self._edit_text(
                     chat_id,
                     int(progress_id),
-                    f"⚠️ `#{message_id}` 没有可用缩略图；可直接点 📥 抓取。",
+                    "⚠️ 这条取不到预览；可直接点 📥 抓取。",
                 )
             return
         if progress_id is not None:
@@ -358,9 +338,7 @@ class BotUISourceMixin:
         previous = self._pick_preview_messages().pop(int(owner_id), None)
         if previous is not None:
             await self._delete_message(chat_id, previous)
-        caption = f"👁 `#{message_id}`"
-        if summary is not None:
-            caption += f"\n{self._summary_line(summary)}"
+        caption = f"👁 {self._summary_line(summary)}" if summary is not None else "👁 预览"
         message = await self._send_photo(
             chat_id,
             preview.image,
@@ -416,12 +394,12 @@ class BotUISourceMixin:
             int(message_id)
         )
         lines = [
-            f"📥 **确认抓取** `#{message_id}`",
+            "确认抓取",
             "──────────",
         ]
-        lines.append(self._summary_line(summary) if summary is not None else f"`#{message_id}`")
+        lines.append(self._summary_line(summary) if summary is not None else "这条媒体")
         if summary is not None and summary.item_count > 1:
-            lines.append(f"这将整组抓取 `{summary.item_count}` 项（来源相册不会被拆开）。")
+            lines.append(f"整组抓取 {summary.item_count} 项（来源相册不会被拆开）。")
         lines.append("──────────")
         rows = [
             [

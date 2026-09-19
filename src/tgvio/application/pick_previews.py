@@ -20,7 +20,7 @@ from typing import Awaitable, Callable, Sequence
 from tgvio.observability import log_event
 
 ProgressCallback = Callable[[int, int], Awaitable[None]]
-ThumbnailFetcher = Callable[[int, int, Path], Awaitable[Path | None]]
+ThumbnailFetcher = Callable[[int, int, Path], Awaitable[object | None]]
 
 _STALE_SECONDS = 3600
 _MAX_ITEMS = 10
@@ -46,6 +46,7 @@ class PickPreviewService:
         grid_builder,
         *,
         cache_root: Path,
+        frame_extractor=None,
         max_items: int = _MAX_ITEMS,
         concurrency: int = 2,
         timeout_seconds: float = 45.0,
@@ -53,6 +54,7 @@ class PickPreviewService:
     ) -> None:
         self._fetch = fetch_thumbnail
         self._grid = grid_builder
+        self._frames = frame_extractor
         self._root = Path(cache_root)
         self._max_items = max(1, min(int(max_items), _MAX_ITEMS))
         self._concurrency = max(1, int(concurrency))
@@ -111,6 +113,31 @@ class PickPreviewService:
         if callable(builder):
             return builder(int(count))
         return (0, 0)
+
+    async def _resolve_image(self, candidate, directory: Path, message_id: int) -> Path | None:
+        """Turn a fetch result into a local image, extracting a frame if needed."""
+
+        if candidate is None:
+            return None
+        path = getattr(candidate, "path", candidate)
+        if path is None:
+            return None
+        source = Path(path)
+        if not getattr(candidate, "needs_frame", False):
+            return source
+        if self._frames is None:
+            return None
+        try:
+            return await self._frames.extract(source, directory / f"frame-{message_id}.jpg")
+        except Exception as exc:  # noqa: BLE001 - a missing frame is not fatal
+            log_event(
+                self._log,
+                logging.INFO,
+                "telegram.preview.frame_failed",
+                "Video fragment could not be turned into a frame",
+                exception_type=type(exc).__name__,
+            )
+            return None
 
     # ---------------------------------------------------------------- builds
     async def build_page(
@@ -174,7 +201,8 @@ class PickPreviewService:
             async with semaphore:
                 if self._now() >= deadline:
                     return
-                path = await self._fetch(int(source_index), int(message_id), directory)
+                candidate = await self._fetch(int(source_index), int(message_id), directory)
+                path = await self._resolve_image(candidate, directory, int(message_id))
                 if path is None:
                     return
                 images[position] = path
@@ -212,6 +240,13 @@ class PickPreviewService:
                 exception_type=type(exc).__name__,
             )
         if not any(image is not None for image in images):
+            log_event(
+                self._log,
+                logging.INFO,
+                "telegram.preview.empty",
+                "No preview image could be resolved for this page",
+                total=total,
+            )
             self.release(token)
             return PickPreview(
                 token=token, image=None, slots=tuple(False for _ in images),

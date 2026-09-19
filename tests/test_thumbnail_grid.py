@@ -38,6 +38,42 @@ class GridBuildTests(unittest.IsolatedAsyncioTestCase):
         if cls.ffmpeg is None:
             raise unittest.SkipTest("ffmpeg is not installed")
 
+    def test_single_slot_does_not_use_xstack(self) -> None:
+        builder = ThumbnailGridBuilder(tile=96)
+        args = builder.build_args([Path("/tmp/a.jpg")], Path("/tmp/out.jpg"))
+        joined = " ".join(args)
+        self.assertNotIn("xstack", joined)
+        self.assertIn("-map [v0]", joined)
+
+    async def test_real_ffmpeg_builds_a_single_tile(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tile = root / "one.jpg"
+            subprocess.run(
+                [
+                    self.ffmpeg,
+                    "-y",
+                    "-hide_banner",
+                    "-loglevel",
+                    "error",
+                    "-f",
+                    "lavfi",
+                    "-i",
+                    "color=c=green:s=80x60",
+                    "-frames:v",
+                    "1",
+                    "-update",
+                    "1",
+                    str(tile),
+                ],
+                check=True,
+            )
+            builder = ThumbnailGridBuilder(tile=96)
+            output = root / "single.jpg"
+            result = await builder.build([tile], output)
+            self.assertEqual(result, output)
+            self.assertTrue(output.read_bytes().startswith(b"\xff\xd8"))
+
     async def test_real_ffmpeg_tiles_thumbnails_and_placeholders(self) -> None:
         with TemporaryDirectory() as tmp:
             root = Path(tmp)

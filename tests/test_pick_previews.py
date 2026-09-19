@@ -37,6 +37,34 @@ def _fetcher(available: set[int]):
     return fetch
 
 
+class FakeCandidate:
+    def __init__(self, path: Path, needs_frame: bool = False) -> None:
+        self.path = path
+        self.needs_frame = needs_frame
+
+
+class FakeFrames:
+    def __init__(self, *, ok: bool = True) -> None:
+        self.ok = ok
+        self.calls: list[tuple[str, str]] = []
+
+    async def extract(self, source: Path, output: Path):
+        self.calls.append((str(source), str(output)))
+        if not self.ok:
+            return None
+        Path(output).write_bytes(b"frame")
+        return Path(output)
+
+
+def _candidate_fetcher(tmp: Path, *, needs_frame: bool):
+    async def fetch(source_index: int, message_id: int, target_dir: Path):
+        path = Path(target_dir) / f"clip-{message_id}.mp4"
+        path.write_bytes(b"v" * 10)
+        return FakeCandidate(path, needs_frame=needs_frame)
+
+    return fetch
+
+
 class PickPreviewServiceTests(unittest.IsolatedAsyncioTestCase):
     def _service(self, root: Path, fetch, grid=None, **kwargs) -> PickPreviewService:
         return PickPreviewService(fetch, grid or FakeGrid(), cache_root=root, **kwargs)
@@ -127,6 +155,54 @@ class PickPreviewServiceTests(unittest.IsolatedAsyncioTestCase):
             service = self._service(Path(tmp), _fetcher(set()))
             self.assertIsNone(service._safe_dir("../escape"))
             service.release("../escape")
+
+
+class FrameFallbackTests(unittest.IsolatedAsyncioTestCase):
+    async def test_video_fragment_is_turned_into_a_frame(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            frames = FakeFrames()
+            grid = FakeGrid()
+            service = PickPreviewService(
+                _candidate_fetcher(root, needs_frame=True),
+                grid,
+                cache_root=root,
+                frame_extractor=frames,
+            )
+            preview = await service.build_single(0, 8381)
+            self.assertEqual(len(frames.calls), 1)
+            self.assertIsNotNone(preview.image)
+            self.assertEqual(preview.fetched, 1)
+            self.assertEqual(grid.calls, [(1, (True,))])
+
+    async def test_undecodable_fragment_yields_no_image(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            service = PickPreviewService(
+                _candidate_fetcher(root, needs_frame=True),
+                FakeGrid(),
+                cache_root=root,
+                frame_extractor=FakeFrames(ok=False),
+            )
+            with self.assertLogs("tgvio.telegram.preview", level="INFO") as captured:
+                preview = await service.build_single(0, 8381)
+            self.assertIsNone(preview.image)
+            self.assertEqual(preview.fetched, 0)
+            self.assertTrue(
+                any("No preview image could be resolved" in line for line in captured.output),
+                captured.output,
+            )
+
+    async def test_missing_frame_extractor_is_tolerated(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            service = PickPreviewService(
+                _candidate_fetcher(root, needs_frame=True),
+                FakeGrid(),
+                cache_root=root,
+            )
+            preview = await service.build_single(0, 8381)
+            self.assertIsNone(preview.image)
 
 
 if __name__ == "__main__":

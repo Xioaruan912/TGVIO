@@ -23,7 +23,13 @@ def _summary(
     grouped_id: int | None = None,
     duration: float | None = 95.0,
     caption: str = "",
+    video_count: int | None = None,
+    photo_count: int | None = None,
 ) -> SourceMediaSummary:
+    if video_count is None:
+        video_count = item_count if kinds == (MediaKind.VIDEO,) else 0
+    if photo_count is None:
+        photo_count = item_count if kinds == (MediaKind.PHOTO,) else 0
     summary = SourceMediaSummary(
         message_id=message_id,
         kinds=kinds,
@@ -32,6 +38,8 @@ def _summary(
         duration_seconds=duration,
         date=datetime(2026, 9, 19, 3, 30, tzinfo=timezone.utc),
         grouped_id=grouped_id,
+        video_count=video_count,
+        photo_count=photo_count,
     )
     return summary
 
@@ -185,6 +193,8 @@ class PickPageTests(unittest.IsolatedAsyncioTestCase):
                 item_count=10,
                 size=3 * 1024,
                 grouped_id=99,
+                video_count=3,
+                photo_count=7,
             )
         ]
         ui = _UI(FakeCoordinator(pages={0: summaries}))
@@ -192,10 +202,12 @@ class PickPageTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(len(visible), 4)
         self.assertIn("4)", text)
-        self.assertIn("🧩 相册 10 项 · 🖼1 🎬1", text)
-        self.assertIn("🎬 视频", text)
-        self.assertIn("#30506", text)
-        self.assertIn("📥 = 抓取（先确认）· 👁 = 只看缩略图", text)
+        self.assertIn("相册 10 项 · 🎬3 🖼7 · 3.0KB", text)
+        self.assertIn("🎬 视频 · 1.0KB", text)
+        self.assertNotIn("#30506", text)
+        self.assertNotIn("🧩", text)
+        self.assertNotIn("📥 = 抓取", text)
+        self.assertIn("选择要发布的内容 · @xiaodeFile_bot · 第 1 页", text)
 
         encoded = _callbacks(rows)
         self.assertIn(b"ui:sg:0:30506:0", encoded)
@@ -214,7 +226,13 @@ class PickPageTests(unittest.IsolatedAsyncioTestCase):
     async def test_video_only_filter_hides_photo_only_rows(self) -> None:
         photo = _summary(400, kinds=(MediaKind.PHOTO,))
         video = _summary(401, kinds=(MediaKind.VIDEO,))
-        mixed = _summary(402, kinds=(MediaKind.PHOTO, MediaKind.VIDEO), item_count=2)
+        mixed = _summary(
+            402,
+            kinds=(MediaKind.PHOTO, MediaKind.VIDEO),
+            item_count=2,
+            video_count=1,
+            photo_count=1,
+        )
         ui = _UI(FakeCoordinator(pages={0: [photo, video, mixed]}))
 
         text, _rows, visible = await ui._pick_render(7, 0, 0)
@@ -224,7 +242,7 @@ class PickPageTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(await ui._handle_source_callback(event, 7, "ui:sf:0:0"))
         text, rows, visible = await ui._pick_render(7, 0, 0)
         self.assertEqual([summary.message_id for summary in visible], [401, 402])
-        self.assertIn("🎬 只看视频", text)
+        self.assertIn("只看视频", text)
         self.assertIn(b"ui:sf:0:0", _callbacks(rows))
 
     async def test_pick_page_offers_previous_and_next_page(self) -> None:
@@ -290,9 +308,22 @@ class PickGridTests(unittest.IsolatedAsyncioTestCase):
         await ui._handle_source_callback(_Event(), 7, "ui:pick:0:0")
         await _drain(ui)
         self.assertEqual(ui._client.photos, [])
-        warnings = [text for _chat, _mid, text in ui._client.edits if "缩略图不可用" in text]
+        warnings = [text for _chat, _mid, text in ui._client.edits if "没有取到缩略图" in text]
         self.assertTrue(warnings, ui._client.edits)
         self.assertIn("0/3", warnings[-1])
+
+    async def test_grid_failure_with_thumbnails_has_its_own_warning(self) -> None:
+        service = FakePreviewService(image=None, failures=1)
+        coordinator = FakeCoordinator(
+            pages={0: [_summary(10), _summary(11), _summary(12)]}
+        )
+        ui = _UI(coordinator, service)
+        await ui._handle_source_callback(_Event(), 7, "ui:pick:0:0")
+        await _drain(ui)
+        self.assertEqual(ui._client.photos, [])
+        warnings = [text for _chat, _mid, text in ui._client.edits if "预览图生成失败" in text]
+        self.assertTrue(warnings, ui._client.edits)
+        self.assertIn("2/3", warnings[-1])
 
     async def test_grid_requests_run_without_a_service(self) -> None:
         ui = _UI(FakeCoordinator(pages={0: [_summary(10)]}), None)
@@ -326,8 +357,8 @@ class PickPreviewButtonTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(service.built[-1], ("single", 0, 30506))
         self.assertEqual(len(ui._client.photos), 1)
         chat, path, caption, buttons = ui._client.photos[0]
-        self.assertIn("#30506", caption)
-        self.assertIn("🎬 视频", caption)
+        self.assertEqual(caption, "👁 🎬 视频 · 2.0KB")
+        self.assertTrue(all(len(data) <= 64 for data in _callbacks(buttons)))
         self.assertEqual(service.released, ["tok-single"])
         self.assertIn(b"ui:sg:0:30506:0", _callbacks(buttons))
 
@@ -338,7 +369,7 @@ class PickPreviewButtonTests(unittest.IsolatedAsyncioTestCase):
         await ui._handle_source_callback(event, 7, "ui:pick:0:0")
         await ui._handle_source_callback(event, 7, "ui:sv:0:30506:0")
         self.assertEqual(ui._client.photos, [])
-        self.assertTrue(any("没有可用缩略图" in text for _chat, _mid, text in ui._client.edits))
+        self.assertTrue(any("取不到预览" in text for _chat, _mid, text in ui._client.edits))
 
 
 class PickConfirmTests(unittest.IsolatedAsyncioTestCase):
