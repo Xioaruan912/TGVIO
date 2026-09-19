@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
+from datetime import datetime, timedelta
+from zoneinfo import ZoneInfo
 
 from telethon import Button
 
 from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
 from tgvio.adapters.telegram.source_runtime import SourceCoordinator, SourceLoginError
 from tgvio.domain.job import MediaKind
+
+_LOCAL_TZ = ZoneInfo("Asia/Shanghai")
 
 _KIND_WORDS: dict[MediaKind, str] = {
     MediaKind.PHOTO: "🖼 图片",
@@ -18,7 +22,17 @@ _KIND_WORDS: dict[MediaKind, str] = {
 _PICK_PAGE_SIZE = 10
 _PREVIEW_TTL_SECONDS = 60
 
-_ACTIONS = ("ui:source", "ui:pick", "ui:sp:", "ui:sg", "ui:sy", "ui:sn", "ui:sv", "ui:sf")
+_ACTIONS = (
+    "ui:source",
+    "ui:pick",
+    "ui:sp:",
+    "ui:sg",
+    "ui:sy",
+    "ui:sn",
+    "ui:sv",
+    "ui:sf",
+    "ui:sd",
+)
 
 
 class BotUISourceMixin:
@@ -43,6 +57,21 @@ class BotUISourceMixin:
             cache = {}
             self._pick_page_cache = cache
         return cache
+
+    def _pick_window(self) -> dict[int, str]:
+        state = getattr(self, "_pick_windows", None)
+        if state is None:
+            state = {}
+            self._pick_windows = state
+        return state
+
+    def _window_since(self, owner_id: int) -> datetime:
+        """Start of the visible window: today, or today plus yesterday."""
+
+        start = datetime.now(_LOCAL_TZ).replace(hour=0, minute=0, second=0, microsecond=0)
+        if self._pick_window().get(int(owner_id)) == "2d":
+            start -= timedelta(days=1)
+        return start
 
     def _pick_grid_messages(self) -> dict[int, int]:
         state = getattr(self, "_pick_grid_msgs", None)
@@ -87,7 +116,7 @@ class BotUISourceMixin:
             "🔐 **来源账号（个人 session）**",
             "──────────",
             "用你自己的账号读取「机器人看不到的内容」，再发布到频道。",
-            "不会自动监听：只处理你用 `/pick` 或 `/grab` 选择的内容。",
+            "不会自动监听：只处理你用 `/pick` 选择的内容。",
             "──────────",
         ]
         rows: list[list] = []
@@ -141,7 +170,10 @@ class BotUISourceMixin:
         if coordinator is None:
             return ("来源功能未装配。", [[Button.inline("🏠 首页", b"ui:home")]], [])
         summaries, has_more, label = await coordinator.list_media(
-            source_index, page=page, page_size=_PICK_PAGE_SIZE
+            source_index,
+            page=page,
+            page_size=_PICK_PAGE_SIZE,
+            since=self._window_since(owner_id),
         )
         summaries = list(summaries)
         video_only = bool(self._pick_filter().get(int(owner_id)))
@@ -150,6 +182,7 @@ class BotUISourceMixin:
         self._pick_cache()[(int(owner_id), int(source_index), int(page))] = {
             summary.message_id: summary for summary in summaries
         }
+        window = self._pick_window().get(int(owner_id), "today")
         header = f"选择要发布的内容 · {label or '未配置'} · 第 {page + 1} 页"
         if video_only:
             header += " · 只看视频"
@@ -179,7 +212,32 @@ class BotUISourceMixin:
             nav.append(Button.inline("下一页 ➡️", f"ui:sp:{int(source_index)}:{page + 1}".encode()))
         if nav:
             rows.append(nav)
-        filter_label = "🖼 全部" if video_only else "🎬 只看视频"
+        source_row: list = []
+        whitelist = coordinator.whitelist()
+        for index, entry in enumerate(whitelist[:5]):
+            prefix = "✅ " if index == int(source_index) else ""
+            source_row.append(
+                Button.inline(
+                    f"{prefix}{entry[:20]}",
+                    f"ui:pick:{index}:0".encode(),
+                )
+            )
+        if source_row:
+            rows.append(source_row)
+        window_label = "今天 ✅" if window == "today" else "今天"
+        rows.append(
+            [
+                Button.inline(
+                    window_label,
+                    f"ui:sd:{int(source_index)}:{int(page)}:t".encode(),
+                ),
+                Button.inline(
+                    "近2天" + (" ✅" if window == "2d" else ""),
+                    f"ui:sd:{int(source_index)}:{int(page)}:d".encode(),
+                ),
+            ]
+        )
+        filter_label = "只看视频 ✅" if video_only else "只看视频"
         rows.append(
             [
                 Button.inline(
@@ -319,18 +377,40 @@ class BotUISourceMixin:
         summary = self._pick_cache().get((int(owner_id), int(source_index), int(page)), {}).get(
             int(message_id)
         )
-        progress = await self._send_text(chat_id, f"⏳ 正在获取 `#{message_id}` 的缩略图 …")
+        coordinator = self._source_coordinator()
+        group_ids: list[int] = []
+        if coordinator is not None:
+            with suppress(Exception):
+                group_ids = await coordinator.group_message_ids(source_index, int(message_id))
+        if not group_ids:
+            group_ids = [int(message_id)]
+        total = len(group_ids)
+        progress = await self._send_text(
+            chat_id, f"⏳ 正在生成整组缩略图 0/{total} …"
+        )
         progress_id = getattr(progress, "id", None)
+        last = 0
+
+        async def report(done: int, count: int) -> None:
+            nonlocal last
+            if progress_id is None or done == last:
+                return
+            last = done
+            await self._edit_text(
+                chat_id, int(progress_id), f"⏳ 正在生成整组缩略图 {done}/{count} …"
+            )
+
         try:
-            preview = await service.build_single(source_index, int(message_id))
+            preview = await service.build_page(source_index, group_ids, progress=report)
         except Exception:  # noqa: BLE001
             preview = None
         if preview is None or preview.image is None:
             if progress_id is not None:
+                available = 0 if preview is None else preview.fetched
                 await self._edit_text(
                     chat_id,
                     int(progress_id),
-                    "⚠️ 这条取不到预览；可直接点 📥 抓取。",
+                    f"⚠️ 整组预览生成失败（{available}/{total}）；可直接点 📥 抓取。",
                 )
             return
         if progress_id is not None:
@@ -338,7 +418,8 @@ class BotUISourceMixin:
         previous = self._pick_preview_messages().pop(int(owner_id), None)
         if previous is not None:
             await self._delete_message(chat_id, previous)
-        caption = f"👁 {self._summary_line(summary)}" if summary is not None else "👁 预览"
+        label = self._summary_line(summary) if summary is not None else "整组预览"
+        caption = f"👁 {label}\n位置对应组内第 1–{total} 项"
         message = await self._send_photo(
             chat_id,
             preview.image,
@@ -346,7 +427,7 @@ class BotUISourceMixin:
             [
                 [
                     Button.inline(
-                        "📥 抓取这条",
+                        "📥 抓取整组",
                         f"ui:sg:{int(source_index)}:{int(message_id)}:{int(page)}".encode(),
                     ),
                     Button.inline(
@@ -526,6 +607,17 @@ class BotUISourceMixin:
             source_index, page = self._two_ints(action, 2, 3)
             current = self._pick_filter()
             current[int(owner_id)] = not bool(current.get(int(owner_id)))
+            await self._show_pick_callback(event, owner_id, source_index, max(0, page))
+            return True
+        if action.startswith("ui:sd:"):
+            parts = action.split(":")
+            try:
+                source_index = int(parts[2])
+                page = int(parts[3])
+                window = "2d" if parts[4] == "d" else "today"
+            except (IndexError, ValueError):
+                source_index, page, window = 0, 0, "today"
+            self._pick_window()[int(owner_id)] = window
             await self._show_pick_callback(event, owner_id, source_index, max(0, page))
             return True
         if action.startswith("ui:sn:"):

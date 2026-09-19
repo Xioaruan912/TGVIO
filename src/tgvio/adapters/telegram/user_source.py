@@ -1,6 +1,6 @@
 """Owner-driven source reader backed by the personal-account session.
 
-The owner picks content from the TGVIO chat (``/grab`` or ``/pick``) or sends a
+The owner picks content from the TGVIO chat (``/pick``) or sends a
 Telegram message link; this reader reads that message — including the whole
 media group when it is an album — and turns it into durable ``IncomingMedia``.
 It never listens to source chats on its own.
@@ -24,7 +24,6 @@ from tgvio.application.intake import IncomingMedia
 from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 
 _ALBUM_SPAN = 11
-_LATEST_SCAN = 20
 _LIST_WINDOW = 400
 _THUMBNAIL_MAX_BYTES = 1024 * 1024
 _PHOTO_FALLBACK_MAX_BYTES = 2 * 1024 * 1024
@@ -164,8 +163,9 @@ class UserSourceReader:
         *,
         limit: int = 10,
         offset: int = 0,
+        since: datetime | None = None,
     ) -> tuple[list[SourceMediaSummary], bool]:
-        """Newest-first media groups; albums collapse into a single entry."""
+        """Newest-first media groups within ``since``; albums collapse into one entry."""
 
         page_size = max(1, int(limit))
         start = max(0, int(offset))
@@ -177,6 +177,9 @@ class UserSourceReader:
                 int(chat_id),
                 limit=_LIST_WINDOW,
             ):
+                sent_at = getattr(message, "date", None)
+                if since is not None and sent_at is not None and sent_at < since:
+                    break
                 item = self._to_media(message)
                 if item is None:
                     continue
@@ -198,27 +201,18 @@ class UserSourceReader:
         return (page, has_more)
 
     # --------------------------------------------------------------- capture
-    async def capture_latest(
-        self,
-        chat_id: int,
-        *,
-        photo_only: bool = False,
-        limit: int = _LATEST_SCAN,
-    ) -> list[IncomingMedia]:
-        """Capture the newest media group, preferring real content over photos."""
+    async def group_message_ids(self, chat_id: int, message_id: int) -> list[int]:
+        """All message ids of one source album (or just the one message)."""
 
-        page, _has_more = await self.list_recent_media(chat_id, limit=limit)
-        if photo_only:
-            candidates = list(page)
-        else:
-            candidates = [summary for summary in page if not summary.is_photo_only]
-            if not candidates:
-                candidates = list(page)
-        for summary in candidates:
-            captured = await self.capture_at(chat_id, summary.message_id)
-            if captured:
-                return captured
-        return []
+        try:
+            message = await self._client.get_messages(int(chat_id), ids=int(message_id))
+        except Exception as exc:  # noqa: BLE001 - a missing group is not fatal
+            self._log.warning("source.group.failed type=%s", type(exc).__name__)
+            return []
+        if message is None:
+            return []
+        expanded = await self._expand(message)
+        return [int(item.id) for item in expanded][:10]
 
     async def capture_at(self, chat_id: int, message_id: int | None) -> list[IncomingMedia]:
         if message_id is None:

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -31,12 +32,13 @@ def _settings(**overrides):
 
 
 class FakeReader:
-    def __init__(self, *, chats=(-1001, -1002), media=None) -> None:
+    def __init__(self, *, chats=(-1001, -1002), media=None, group=None) -> None:
         self._chats = list(chats)
         self._media = media or []
-        self.listed: list[tuple[int, int, int]] = []
+        self._group = group if group is not None else [1, 2, 3]
+        self.listed: list[tuple[int, int, int, object]] = []
         self.captured_at: list[tuple[int, int]] = []
-        self.latest: list[tuple[int, bool]] = []
+        self.groups: list[tuple[int, int]] = []
 
     def ordered_chats(self):
         return list(self._chats)
@@ -44,17 +46,17 @@ class FakeReader:
     def label_for(self, chat_id):
         return {-1001: "@first", -1002: "@second"}.get(int(chat_id), str(chat_id))
 
-    async def list_recent_media(self, chat_id, *, limit=10, offset=0):
-        self.listed.append((int(chat_id), int(limit), int(offset)))
+    async def list_recent_media(self, chat_id, *, limit=10, offset=0, since=None):
+        self.listed.append((int(chat_id), int(limit), int(offset), since))
         return (list(self._media), False)
 
     async def capture_at(self, chat_id, message_id):
         self.captured_at.append((int(chat_id), int(message_id)))
         return list(self._media)
 
-    async def capture_latest(self, chat_id, *, photo_only=False, **_kwargs):
-        self.latest.append((int(chat_id), bool(photo_only)))
-        return list(self._media)
+    async def group_message_ids(self, chat_id, message_id):
+        self.groups.append((int(chat_id), int(message_id)))
+        return list(self._group)
 
 
 class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
@@ -96,13 +98,35 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
 
         media, has_more, label = await coordinator.list_media(1, page=2, page_size=10)
         self.assertEqual(label, "@second")
-        self.assertEqual(reader.listed, [(-1002, 10, 20)])
+        self.assertEqual(reader.listed, [(-1002, 10, 20, None)])
         self.assertEqual(media, ["a", "b"])
         self.assertFalse(has_more)
+
+    async def test_list_media_forwards_the_window_start(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader()
+        coordinator._reader = reader
+        coordinator._client = object()
+        since = datetime(2026, 9, 19, tzinfo=timezone.utc)
+        await coordinator.list_media(0, page=0, page_size=10, since=since)
+        self.assertEqual(reader.listed, [(-1001, 10, 0, since)])
 
     async def test_list_media_without_a_reader_is_empty(self) -> None:
         coordinator = self._coordinator()
         self.assertEqual(await coordinator.list_media(0), ([], False, ""))
+
+    async def test_group_message_ids_uses_the_selected_source(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader(group=[7, 8, 9])
+        coordinator._reader = reader
+        coordinator._client = object()
+        ids = await coordinator.group_message_ids(1, 30506)
+        self.assertEqual(ids, [7, 8, 9])
+        self.assertEqual(reader.groups, [(-1002, 30506)])
+
+    async def test_group_message_ids_without_a_reader_is_empty(self) -> None:
+        coordinator = self._coordinator()
+        self.assertEqual(await coordinator.group_message_ids(0, 5), [])
 
     async def test_grab_message_dispatches_the_selected_message(self) -> None:
         coordinator = self._coordinator()
@@ -128,53 +152,9 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         count, label = await coordinator.grab_message(0, 404)
         self.assertEqual((count, label), (0, "@first"))
 
-    async def test_grab_latest_dispatches_media_from_the_selected_source(self) -> None:
+    async def test_grab_latest_is_gone(self) -> None:
         coordinator = self._coordinator()
-        coordinator._user_id = 7
-        captured: list[tuple[int, list]] = []
-
-        class _Reader(FakeReader):
-            async def capture_latest(self, chat_id, *, photo_only=False, **_kwargs):
-                self.latest.append((int(chat_id), bool(photo_only)))
-                return ["media"] if int(chat_id) == -1002 else []
-
-        reader = _Reader()
-        coordinator._reader = reader
-        coordinator._client = object()
-
-        async def _media(owner_id, media, label=""):
-            captured.append((int(owner_id), list(media)))
-
-        coordinator._on_source_media = _media
-        count, label = await coordinator.grab_latest(1)
-        self.assertEqual((count, label), (1, "@second"))
-        self.assertEqual(reader.latest, [(-1002, False)])
-        self.assertEqual(captured, [(7, ["media"])])
-
-    async def test_grab_latest_passes_the_photo_only_flag(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-        reader = FakeReader(media=["photo"])
-        coordinator._reader = reader
-        coordinator._client = object()
-        count, _label = await coordinator.grab_latest(0, photo_only=True)
-        self.assertEqual(count, 1)
-        self.assertEqual(reader.latest, [(-1001, True)])
-
-    async def test_grab_latest_reports_when_the_source_has_no_media(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-        coordinator._reader = FakeReader(media=[])
-        coordinator._client = object()
-        count, label = await coordinator.grab_latest(0)
-        self.assertEqual((count, label), (0, "@first"))
-
-    async def test_grab_without_a_ready_client_is_a_noop(self) -> None:
-        coordinator = self._coordinator()
-        coordinator._user_id = 7
-        coordinator._reader = FakeReader(media=["media"])
-        self.assertEqual(await coordinator.grab_latest(0), (0, ""))
-        self.assertEqual(await coordinator.grab_message(0, 5), (0, ""))
+        self.assertFalse(hasattr(coordinator, "grab_latest"))
 
     async def test_add_chat_requires_a_ready_client(self) -> None:
         coordinator = self._coordinator()

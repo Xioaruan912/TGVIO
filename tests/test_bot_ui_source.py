@@ -47,11 +47,19 @@ def _summary(
 class FakeCoordinator:
     active = True
 
-    def __init__(self, *, pages: dict[int, list] | None = None, count: int = 2) -> None:
+    def __init__(
+        self,
+        *,
+        pages: dict[int, list] | None = None,
+        count: int = 2,
+        group_ids: list[int] | None = None,
+    ) -> None:
         self.pages = {0: [_summary(30506)]} if pages is None else pages
         self.count = count
+        self.group_ids = group_ids
         self.grabbed: list[tuple[int, int]] = []
-        self.listed: list[tuple[int, int, int]] = []
+        self.listed: list[tuple[int, int, int, object]] = []
+        self.groups: list[tuple[int, int]] = []
 
     def status_line(self) -> str:
         return "已登录 · user_id `7` · 白名单 `2/2` 生效"
@@ -65,9 +73,22 @@ class FakeCoordinator:
     def set_awaiting(self, phase) -> None:
         self.phase = phase
 
-    async def list_media(self, source_index: int = 0, *, page: int = 0, page_size: int = 10):
-        self.listed.append((int(source_index), int(page), int(page_size)))
+    async def list_media(
+        self,
+        source_index: int = 0,
+        *,
+        page: int = 0,
+        page_size: int = 10,
+        since=None,
+    ):
+        self.listed.append((int(source_index), int(page), int(page_size), since))
         return (list(self.pages.get(page, [])), (page + 1) in self.pages, "@xiaodeFile_bot")
+
+    async def group_message_ids(self, source_index: int, message_id: int):
+        self.groups.append((int(source_index), int(message_id)))
+        if self.group_ids is not None:
+            return list(self.group_ids)
+        return [int(message_id)]
 
     async def grab_message(self, source_index: int, message_id: int):
         self.grabbed.append((int(source_index), int(message_id)))
@@ -245,6 +266,37 @@ class PickPageTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("只看视频", text)
         self.assertIn(b"ui:sf:0:0", _callbacks(rows))
 
+    async def test_window_defaults_to_today_and_can_extend_to_two_days(self) -> None:
+        ui = _UI(FakeCoordinator(pages={0: [_summary(1)]}))
+        coordinator = ui._source
+        await ui._handle_source_callback(_Event(), 7, "ui:pick:0:0")
+        first_since = coordinator.listed[-1][3]
+        self.assertEqual((first_since.hour, first_since.minute), (0, 0))
+
+        await ui._handle_source_callback(_Event(), 7, "ui:sd:0:0:d")
+        two_day_since = coordinator.listed[-1][3]
+        self.assertEqual((first_since - two_day_since).days, 1)
+
+        text, rows, _visible = await ui._pick_render(7, 0, 0)
+        labels = [button.text for row in rows for button in row]
+        self.assertTrue(any("近2天 ✅" in label for label in labels))
+
+        await ui._handle_source_callback(_Event(), 7, "ui:sd:0:0:t")
+        self.assertEqual(coordinator.listed[-1][3], first_since)
+
+    async def test_source_switcher_marks_the_current_source(self) -> None:
+        ui = _UI(FakeCoordinator(pages={0: [_summary(1)], 1: [_summary(2)]}))
+        text, rows, _visible = await ui._pick_render(7, 0, 0)
+        labels = [button.text for row in rows for button in row]
+        data = _callbacks(rows)
+        self.assertIn("✅ @xiaodeFile_bot", labels)
+        self.assertIn("@chunziyuan_bot", labels)
+        self.assertIn(b"ui:pick:1:0", data)
+        self.assertTrue(all(len(item) <= 64 for item in data))
+
+        await ui._handle_source_callback(_Event(), 7, "ui:pick:1:0")
+        self.assertEqual(ui._source.listed[-1][0], 1)
+
     async def test_pick_page_offers_previous_and_next_page(self) -> None:
         ui = _UI(FakeCoordinator(pages={0: [_summary(1)], 1: [_summary(2)]}))
         text, rows, _visible = await ui._pick_render(7, 0, 0)
@@ -354,13 +406,40 @@ class PickPreviewButtonTests(unittest.IsolatedAsyncioTestCase):
         await ui._handle_source_callback(event, 7, "ui:pick:0:0")
         await ui._handle_source_callback(event, 7, "ui:sv:0:30506:0")
 
-        self.assertEqual(service.built[-1], ("single", 0, 30506))
+        self.assertEqual(service.built[-1], ("page", 0, (30506,)))
         self.assertEqual(len(ui._client.photos), 1)
         chat, path, caption, buttons = ui._client.photos[0]
-        self.assertEqual(caption, "👁 🎬 视频 · 2.0KB")
+        self.assertIn("🎬 视频 · 2.0KB", caption)
+        self.assertIn("位置对应组内第 1–1 项", caption)
         self.assertTrue(all(len(data) <= 64 for data in _callbacks(buttons)))
-        self.assertEqual(service.released, ["tok-single"])
+        self.assertEqual(service.released, ["tok"])
         self.assertIn(b"ui:sg:0:30506:0", _callbacks(buttons))
+
+    async def test_group_preview_uses_every_message_of_the_album(self) -> None:
+        service = FakePreviewService(image=self.image)
+        coordinator = FakeCoordinator(
+            pages={
+                0: [
+                    _summary(
+                        30506,
+                        kinds=(MediaKind.VIDEO, MediaKind.PHOTO),
+                        item_count=3,
+                        video_count=2,
+                        photo_count=1,
+                    )
+                ]
+            },
+            group_ids=[30506, 30507, 30508],
+        )
+        ui = _UI(coordinator, service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sv:0:30506:0")
+
+        self.assertEqual(coordinator.groups, [(0, 30506)])
+        self.assertEqual(service.built[-1], ("page", 0, (30506, 30507, 30508)))
+        caption = ui._client.photos[-1][2]
+        self.assertIn("位置对应组内第 1–3 项", caption)
 
     async def test_single_preview_without_thumbnail_warns(self) -> None:
         service = FakePreviewService(image=None)
@@ -369,7 +448,9 @@ class PickPreviewButtonTests(unittest.IsolatedAsyncioTestCase):
         await ui._handle_source_callback(event, 7, "ui:pick:0:0")
         await ui._handle_source_callback(event, 7, "ui:sv:0:30506:0")
         self.assertEqual(ui._client.photos, [])
-        self.assertTrue(any("取不到预览" in text for _chat, _mid, text in ui._client.edits))
+        self.assertTrue(
+            any("整组预览生成失败" in text for _chat, _mid, text in ui._client.edits)
+        )
 
 
 class PickConfirmTests(unittest.IsolatedAsyncioTestCase):

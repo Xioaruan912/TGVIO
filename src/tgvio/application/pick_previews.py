@@ -9,8 +9,10 @@ publish pipeline and never keeps media on disk.
 from __future__ import annotations
 
 import asyncio
+from contextlib import suppress
 from dataclasses import dataclass
 import logging
+import os
 from pathlib import Path
 import secrets
 import shutil
@@ -23,6 +25,7 @@ ProgressCallback = Callable[[int, int], Awaitable[None]]
 ThumbnailFetcher = Callable[[int, int, Path], Awaitable[object | None]]
 
 _STALE_SECONDS = 3600
+_CACHE_TTL_SECONDS = 48 * 3600
 _MAX_ITEMS = 10
 
 
@@ -47,6 +50,7 @@ class PickPreviewService:
         *,
         cache_root: Path,
         frame_extractor=None,
+        key_provider=None,
         max_items: int = _MAX_ITEMS,
         concurrency: int = 2,
         timeout_seconds: float = 45.0,
@@ -55,7 +59,10 @@ class PickPreviewService:
         self._fetch = fetch_thumbnail
         self._grid = grid_builder
         self._frames = frame_extractor
+        self._key_provider = key_provider
         self._root = Path(cache_root)
+        self._cache_root = Path(cache_root) / "pickthumb"
+        self._cache_ttl = float(_CACHE_TTL_SECONDS)
         self._max_items = max(1, min(int(max_items), _MAX_ITEMS))
         self._concurrency = max(1, int(concurrency))
         self._timeout = max(5.0, float(timeout_seconds))
@@ -64,13 +71,13 @@ class PickPreviewService:
 
     # ------------------------------------------------------------- lifecycle
     def sweep(self) -> int:
-        """Best-effort removal of preview directories left by a crash."""
+        """Best-effort removal of preview directories and expired image cache."""
 
         removed = 0
         try:
             entries = list(self._root.iterdir())
         except OSError:
-            return 0
+            entries = []
         cutoff = self._now() - _STALE_SECONDS
         for entry in entries:
             if not entry.name.startswith("pickpreview-"):
@@ -84,7 +91,79 @@ class PickPreviewService:
                 removed += 1
             except OSError:
                 continue
+        removed += self._sweep_cache()
         return removed
+
+    def _sweep_cache(self) -> int:
+        """Drop cached thumbnails older than the retention window."""
+
+        if not self._cache_root.is_dir():
+            return 0
+        cutoff = self._now() - self._cache_ttl
+        removed = 0
+        try:
+            folders = list(self._cache_root.iterdir())
+        except OSError:
+            return 0
+        for folder in folders[:200]:
+            try:
+                if folder.is_symlink() or not folder.is_dir():
+                    continue
+                for entry in list(folder.iterdir())[:500]:
+                    try:
+                        if entry.is_file() and entry.stat().st_mtime < cutoff:
+                            entry.unlink(missing_ok=True)
+                            removed += 1
+                    except OSError:
+                        continue
+                if not any(folder.iterdir()):
+                    folder.rmdir()
+            except OSError:
+                continue
+        return removed
+
+    def _cache_dir(self, source_index: int) -> Path | None:
+        if self._key_provider is None:
+            return None
+        try:
+            key = str(self._key_provider(int(source_index)) or "")
+        except Exception:  # noqa: BLE001 - a missing key only disables caching
+            return None
+        if not key or not all(c.isalnum() or c in "-_" for c in key):
+            return None
+        return self._cache_root / key
+
+    def _cached_image(self, cache_dir: Path | None, message_id: int) -> Path | None:
+        if cache_dir is None or not cache_dir.is_dir():
+            return None
+        try:
+            entries = list(cache_dir.glob(f"{int(message_id)}.*"))
+        except OSError:
+            return None
+        for entry in entries:
+            try:
+                if entry.is_symlink() or not entry.is_file():
+                    continue
+                stat = entry.stat()
+                if stat.st_size > 0 and (self._now() - stat.st_mtime) < self._cache_ttl:
+                    return entry
+            except OSError:
+                continue
+        return None
+
+    def _store_image(self, cache_dir: Path | None, message_id: int, source: Path) -> Path:
+        if cache_dir is None:
+            return source
+        try:
+            cache_dir.mkdir(parents=True, exist_ok=True)
+            target = cache_dir / f"{int(message_id)}{source.suffix or '.jpg'}"
+            shutil.copyfile(source, target)
+            stamp = self._now()
+            with suppress(OSError):
+                os.utime(target, (stamp, stamp))
+            return target
+        except OSError:
+            return source
 
     def _safe_dir(self, token: str) -> Path | None:
         value = str(token or "")
@@ -195,17 +274,22 @@ class PickPreviewService:
         lock = asyncio.Lock()
         semaphore = asyncio.Semaphore(self._concurrency)
         deadline = self._now() + self._timeout
+        cache_dir = self._cache_dir(source_index)
 
         async def one(position: int, message_id: int) -> None:
             nonlocal fetched
             async with semaphore:
                 if self._now() >= deadline:
                     return
-                candidate = await self._fetch(int(source_index), int(message_id), directory)
-                path = await self._resolve_image(candidate, directory, int(message_id))
-                if path is None:
-                    return
-                images[position] = path
+                cached = self._cached_image(cache_dir, message_id)
+                if cached is not None:
+                    images[position] = cached
+                else:
+                    candidate = await self._fetch(int(source_index), int(message_id), directory)
+                    path = await self._resolve_image(candidate, directory, int(message_id))
+                    if path is None:
+                        return
+                    images[position] = self._store_image(cache_dir, int(message_id), Path(path))
                 async with lock:
                     fetched += 1
                     done = fetched

@@ -133,12 +133,19 @@ class SourceCoordinator:
         chat_id = chats[int(index)]
         return (chat_id, reader.label_for(chat_id))
 
+    def source_key(self, index: int = 0) -> str:
+        """Stable cache key for one source (its chat id), independent of order."""
+
+        target = self._chat_for(index)
+        return "" if target is None else str(int(target[0]))
+
     async def list_media(
         self,
         source_index: int = 0,
         *,
         page: int = 0,
         page_size: int = 10,
+        since=None,
     ) -> tuple[list[SourceMediaSummary], bool, str]:
         """Recent media groups of one source (newest first, albums collapsed)."""
 
@@ -150,8 +157,22 @@ class SourceCoordinator:
             chat_id,
             limit=page_size,
             offset=max(0, int(page)) * page_size,
+            since=since,
         )
         return (summaries, has_more, label)
+
+    async def group_message_ids(
+        self,
+        source_index: int,
+        message_id: int,
+    ) -> list[int]:
+        """Every message id of one picked album (or just the message)."""
+
+        target = self._chat_for(source_index)
+        if target is None or self._reader is None:
+            return []
+        chat_id, _label = target
+        return await self._reader.group_message_ids(chat_id, int(message_id))
 
     async def thumbnail(
         self,
@@ -178,31 +199,6 @@ class SourceCoordinator:
         media = await self._reader.capture_at(chat_id, int(message_id))
         if not media:
             return (0, label)
-        await self._dispatch(media, label)
-        return (len(media), label)
-
-    async def grab_latest(
-        self,
-        source_index: int = 0,
-        *,
-        photo_only: bool = False,
-    ) -> tuple[int, str]:
-        """Publish the newest media group of one source."""
-
-        target = self._chat_for(source_index)
-        if target is None or self._reader is None or self._user_id is None:
-            return (0, "")
-        chat_id, label = target
-        media = await self._reader.capture_latest(chat_id, photo_only=photo_only)
-        if not media:
-            return (0, label)
-        self._log.info(
-            "source.grab.latest chat=%s items=%s photo_only=%s label=%s",
-            chat_id,
-            len(media),
-            photo_only,
-            label,
-        )
         await self._dispatch(media, label)
         return (len(media), label)
 

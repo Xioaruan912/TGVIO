@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 from types import SimpleNamespace
@@ -154,29 +155,48 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         summaries, _has_more = await reader.list_recent_media(-100555, limit=10)
         self.assertEqual([item.message_id for item in summaries], [29])
 
-    async def test_capture_latest_skips_photo_only_ads(self) -> None:
-        newest_photo = _message(50, kind="photo")
-        older_video = _message(49, kind="video")
-        client = FakeUserClient({50: newest_photo, 49: older_video})
-        reader = UserSourceReader(client)
-        media = await reader.capture_latest(-100555)
-        self.assertEqual([item.source_message_id for item in media], [49])
-        self.assertEqual(media[0].kind, MediaKind.VIDEO)
+    async def test_list_recent_media_stops_at_the_window_start(self) -> None:
+        now = datetime(2026, 9, 19, 12, 0, tzinfo=timezone.utc)
 
-    async def test_capture_latest_photo_only_mode(self) -> None:
-        newest_photo = _message(50, kind="photo")
-        older_video = _message(49, kind="video")
-        client = FakeUserClient({50: newest_photo, 49: older_video})
-        reader = UserSourceReader(client)
-        media = await reader.capture_latest(-100555, photo_only=True)
-        self.assertEqual([item.source_message_id for item in media], [50])
-        self.assertEqual(media[0].kind, MediaKind.PHOTO)
+        def _sized(message_id: int, *, hours_ago: float, kind: str = "video"):
+            message = _message(message_id, kind=kind)
+            message.date = now - timedelta(hours=hours_ago)
+            return message
 
-    async def test_capture_latest_falls_back_to_photo_without_video(self) -> None:
-        client = FakeUserClient({50: _message(50, kind="photo")})
+        client = FakeUserClient(
+            {
+                40: _sized(40, hours_ago=1),
+                39: _sized(39, hours_ago=5),
+                38: _sized(38, hours_ago=25),
+            }
+        )
         reader = UserSourceReader(client)
-        media = await reader.capture_latest(-100555)
-        self.assertEqual([item.source_message_id for item in media], [50])
+        since = now - timedelta(hours=3)
+        summaries, _has_more = await reader.list_recent_media(
+            -100555, limit=10, since=since
+        )
+        self.assertEqual([item.message_id for item in summaries], [40])
+
+    async def test_group_message_ids_expands_one_album(self) -> None:
+        target = _message(20, grouped_id=99)
+        sibling_a = _message(19, grouped_id=99, kind="photo")
+        sibling_b = _message(21, grouped_id=99)
+        client = FakeUserClient({20: target, 19: sibling_a, 21: sibling_b})
+        reader = UserSourceReader(client)
+        self.assertEqual(await reader.group_message_ids(-100555, 20), [19, 20, 21])
+
+    async def test_group_message_ids_for_a_single_message(self) -> None:
+        client = FakeUserClient({20: _message(20)})
+        reader = UserSourceReader(client)
+        self.assertEqual(await reader.group_message_ids(-100555, 20), [20])
+
+    async def test_group_message_ids_missing_message_is_empty(self) -> None:
+        reader = UserSourceReader(FakeUserClient())
+        self.assertEqual(await reader.group_message_ids(-100555, 404), [])
+
+    async def test_capture_latest_is_gone(self) -> None:
+        reader = UserSourceReader(FakeUserClient())
+        self.assertFalse(hasattr(reader, "capture_latest"))
 
     async def test_capture_at_expands_the_media_group(self) -> None:
         target = _message(20, grouped_id=99)
@@ -402,63 +422,10 @@ class SourceMixinHost(IntakeSourceMixin):
         self.sent.append((int(chat_id), str(text)))
 
 
-class FakeGrabCoordinator:
-    def __init__(self, count: int = 1, *, label: str = "@src") -> None:
-        self.count = count
-        self.label = label
-        self.calls: list[tuple[int, bool]] = []
-
-    def source_label(self, index: int) -> str:
-        return self.label
-
-    async def grab_latest(self, index: int = 0, *, photo_only: bool = False):
-        self.calls.append((int(index), bool(photo_only)))
-        return (self.count, self.label)
-
-
-class _GrabEvent:
-    chat_id = 7
-
-    def __init__(self, message_id: int = 55) -> None:
-        self.message = SimpleNamespace(id=message_id)
-
-
 class SourceMixinTests(unittest.IsolatedAsyncioTestCase):
-    async def test_grab_defaults_to_video_only(self) -> None:
-        coordinator = FakeGrabCoordinator()
+    async def test_grab_handler_is_gone(self) -> None:
         host = SourceMixinHost()
-        host._source = coordinator
-        self.assertTrue(await host.handle_grab(_GrabEvent(), ""))
-        self.assertEqual(coordinator.calls, [(0, False)])
-        self.assertTrue(any("已抓取 1 个媒体" in text for _chat, text in host.sent))
-
-    async def test_grab_accepts_source_index_and_photo_flag(self) -> None:
-        coordinator = FakeGrabCoordinator()
-        host = SourceMixinHost()
-        host._source = coordinator
-        self.assertTrue(await host.handle_grab(_GrabEvent(), "2 photo"))
-        self.assertEqual(coordinator.calls, [(1, True)])
-
-    async def test_grab_without_media_points_at_pick(self) -> None:
-        host = SourceMixinHost()
-        host._source = FakeGrabCoordinator(count=0)
-        await host.handle_grab(_GrabEvent(), "")
-        self.assertEqual(host.accepted, [])
-        self.assertTrue(any("/pick" in text for _chat, text in host.sent))
-
-    async def test_grab_failure_is_reported(self) -> None:
-        class _Failing(FakeGrabCoordinator):
-            async def grab_latest(self, index: int = 0, *, photo_only: bool = False):
-                raise RuntimeError("boom")
-
-        host = SourceMixinHost()
-        host._source = _Failing()
-        self.assertTrue(await host.handle_grab(_GrabEvent(), ""))
-        self.assertTrue(any("抓取失败" in text for _chat, text in host.sent))
-
-    async def test_grab_is_a_noop_without_a_coordinator(self) -> None:
-        host = SourceMixinHost()
-        self.assertFalse(await host.handle_grab(_GrabEvent(), ""))
+        self.assertFalse(hasattr(host, "handle_grab"))
 
     async def test_link_branch_only_handles_telegram_links(self) -> None:
         media = [IncomingMedia(kind=MediaKind.PHOTO, source="telegram:-100:1")]

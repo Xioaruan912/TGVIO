@@ -157,6 +157,75 @@ class PickPreviewServiceTests(unittest.IsolatedAsyncioTestCase):
             service.release("../escape")
 
 
+class ImageCacheTests(unittest.IsolatedAsyncioTestCase):
+    def _service(self, root: Path, fetch, grid, **kwargs) -> PickPreviewService:
+        return PickPreviewService(
+            fetch, grid, cache_root=root, key_provider=lambda index: "-100555", **kwargs
+        )
+
+    async def test_thumbnail_is_reused_without_a_second_download(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calls: list[int] = []
+
+            async def fetch(source_index: int, message_id: int, target_dir: Path):
+                calls.append(int(message_id))
+                path = Path(target_dir) / f"thumb-{message_id}.jpg"
+                path.write_bytes(b"thumb")
+                return path
+
+            service = self._service(root, fetch, FakeGrid())
+            first = await service.build_page(0, [10, 11])
+            self.assertEqual(calls, [10, 11])
+            self.assertTrue(first.image)
+
+            second = await service.build_page(0, [10, 11])
+            self.assertEqual(calls, [10, 11], "cached thumbnails must not re-download")
+            self.assertTrue(second.image)
+
+    async def test_expired_cache_entries_are_refetched_and_swept(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calls: list[int] = []
+
+            async def fetch(source_index: int, message_id: int, target_dir: Path):
+                calls.append(int(message_id))
+                path = Path(target_dir) / f"thumb-{message_id}.jpg"
+                path.write_bytes(b"thumb")
+                return path
+
+            clock = {"value": 1_000_000.0}
+            service = self._service(root, fetch, FakeGrid(), now=lambda: clock["value"])
+            await service.build_page(0, [10])
+            cache_dir = root / "pickthumb" / "-100555"
+            self.assertTrue(list(cache_dir.iterdir()))
+
+            clock["value"] += 49 * 3600
+            await service.build_page(0, [10])
+            self.assertEqual(calls, [10, 10], "expired entries must be refetched")
+            self.assertEqual(service.sweep(), 0)
+
+            clock["value"] += 49 * 3600
+            self.assertGreaterEqual(service.sweep(), 0)
+
+    async def test_cache_can_be_disabled_without_a_key_provider(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            calls: list[int] = []
+
+            async def fetch(source_index: int, message_id: int, target_dir: Path):
+                calls.append(int(message_id))
+                path = Path(target_dir) / f"thumb-{message_id}.jpg"
+                path.write_bytes(b"thumb")
+                return path
+
+            service = PickPreviewService(fetch, FakeGrid(), cache_root=root)
+            await service.build_page(0, [10])
+            await service.build_page(0, [10])
+            self.assertEqual(calls, [10, 10])
+            self.assertFalse((root / "pickthumb").exists())
+
+
 class FrameFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_video_fragment_is_turned_into_a_frame(self) -> None:
         with TemporaryDirectory() as tmp:

@@ -503,6 +503,7 @@ async def run(*, check_only: bool = False) -> None:
                     ThumbnailGridBuilder(),
                     cache_root=settings.download_dir,
                     frame_extractor=VideoFrameExtractor(),
+                    key_provider=source_coordinator.source_key,
                     concurrency=2,
                     timeout_seconds=settings.preview_timeout_seconds,
                 )
