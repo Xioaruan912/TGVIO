@@ -107,6 +107,7 @@ class TelethonBotUI(
         runtime_flags: object | None = None,
         intake: object | None = None,
         source_coordinator: object | None = None,
+        pick_previews: object | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -123,7 +124,7 @@ class TelethonBotUI(
         self._diagnostic_service = diagnostic_service
         self._runtime_flags = runtime_flags
         self._intake = intake
-        self._source = source_coordinator
+        self._source, self._pick_previews = source_coordinator, pick_previews
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 

@@ -148,7 +148,8 @@ Telegram 消息 / 链接
 - 边界：**不做自动监听**（不订阅来源新帖、不响应触发词），只处理白名单 `TGVIO_SOURCE_CHATS` 里的主动选择；下载仍走既有 Job/恢复/去重/归档链路。`media_router.download_bounded()` 支持按来源路由做有界预览。
 - 一次性登录：`scripts/login_source_session.py`（已包含在 runtime 镜像）。
 - 早期版本曾用「回复目标消息 + `#tgvio` 触发词」：实测在 bot 私聊来源里永远收不到出站更新（`source.update.outgoing=0`），已**彻底移除**，不要再恢复该机制。
-- 选片页：`/pick [来源序号] [页码]` 或 `/source` →「📥 选择最近媒体」；回调 `ui:pick:<src>:<page>`、`ui:sp:<src>:<page>`、`ui:sg:<src>:<mid>`。
+- 选片页：`/pick [来源序号] [页码]` 或 `/source` →「📥 选择最近媒体」；回调 `ui:pick:<src>:<page>`、`ui:sp:<src>:<page>`、`ui:sg:<src>:<mid>:<page>`（确认卡）、`ui:sy:`（确认抓取）、`ui:sn:`（取消）、`ui:sv:<src>:<mid>:<page>`（👁 单条预览）、`ui:sf:<src>:<page>`（只看视频）。
+- 视觉预览（r2-35）：`UserSourceReader.fetch_thumbnail()` 只用个人 session 取**内嵌缩略图**（`download_media(..., thumb=-1)`，≤1MB，失败返回 None，不下载整文件）；`application/pick_previews.py`（`PickPreviewService`）做有界编排——并发 2、单页最多 10 格、整体超时、临时目录 `downloads/pickpreview-<token>`（`release()` 立即删除，启动首次调用 `sweep()` 清理崩溃残留）；`infrastructure/thumbnail_grid.py`（`ThumbnailGridBuilder`）用 ffmpeg `scale/pad/xstack` 拼图（**不依赖字体**，位置即行号），输出 ≤1MB，失败自动提高 q 值重试。UI 侧先发/更新 `⏳ 正在生成… n/N` 进度消息，完成后删除进度、替换上一张网格、发送图片并在发送后释放临时目录。
 
 ---
 

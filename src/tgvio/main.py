@@ -47,6 +47,8 @@ from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
 from tgvio.application.collection_editing import CollectionEditingService
 from tgvio.application.previews import PreviewService
+from tgvio.application.pick_previews import PickPreviewService
+from tgvio.infrastructure.thumbnail_grid import ThumbnailGridBuilder
 from tgvio.adapters.telegram.preview_sender import TelethonPreviewSender
 from tgvio.application.job_diagnostics import JobDiagnosticService
 from tgvio.application.job_control import JobControlService
@@ -494,6 +496,17 @@ async def run(*, check_only: bool = False) -> None:
             runtime_flags=runtime_flags,
             intake=intake,
             source_coordinator=source_coordinator,
+            pick_previews=(
+                PickPreviewService(
+                    source_coordinator.thumbnail,
+                    ThumbnailGridBuilder(),
+                    cache_root=settings.download_dir,
+                    concurrency=2,
+                    timeout_seconds=settings.preview_timeout_seconds,
+                )
+                if source_coordinator is not None
+                else None
+            ),
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()

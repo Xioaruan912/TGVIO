@@ -153,6 +153,20 @@ class SourceCoordinator:
         )
         return (summaries, has_more, label)
 
+    async def thumbnail(
+        self,
+        source_index: int,
+        message_id: int,
+        target_dir: Path,
+    ) -> Path | None:
+        """Fetch only the embedded thumbnail of one picked message."""
+
+        target = self._chat_for(source_index)
+        if target is None or self._reader is None:
+            return None
+        chat_id, _label = target
+        return await self._reader.fetch_thumbnail(chat_id, int(message_id), target_dir)
+
     async def grab_message(self, source_index: int, message_id: int) -> tuple[int, str]:
         """Publish one specific message/album selected by the operator."""
 

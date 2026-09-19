@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime
 import logging
+from pathlib import Path
 from typing import Sequence
 
 from telethon import utils
@@ -23,6 +24,7 @@ from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 _ALBUM_SPAN = 11
 _LATEST_SCAN = 20
 _LIST_WINDOW = 400
+_THUMBNAIL_MAX_BYTES = 1024 * 1024
 
 
 @dataclass(frozen=True, slots=True)
@@ -210,6 +212,64 @@ class UserSourceReader:
         if message is None:
             return []
         return self._to_media_list(await self._expand(message))
+
+    async def fetch_thumbnail(
+        self,
+        chat_id: int,
+        message_id: int,
+        target_dir: Path,
+    ) -> Path | None:
+        """Download only the embedded thumbnail of one message.
+
+        Thumbnails are 10-50 KB server-side previews, so the owner can see what a
+        pick contains without downloading the real media.
+        """
+
+        try:
+            message = await self._client.get_messages(int(chat_id), ids=int(message_id))
+        except Exception as exc:  # noqa: BLE001 - a missing preview is not fatal
+            self._log.warning("source.thumb.fetch_failed type=%s", type(exc).__name__)
+            return None
+        if message is None or not self._message_has_thumbnail(message):
+            return None
+        target = Path(target_dir)
+        try:
+            target.mkdir(parents=True, exist_ok=True)
+        except OSError:
+            return None
+        path = target / f"thumb-{int(message_id)}.jpg"
+        try:
+            downloaded = await self._client.download_media(
+                message,
+                file=str(path),
+                thumb=-1,
+            )
+        except Exception as exc:  # noqa: BLE001 - previews degrade to "no image"
+            self._log.info("source.thumb.download_failed type=%s", type(exc).__name__)
+            return None
+        result = Path(downloaded) if downloaded else path
+        try:
+            if (
+                not result.is_file()
+                or result.is_symlink()
+                or result.stat().st_size <= 0
+                or result.stat().st_size > _THUMBNAIL_MAX_BYTES
+            ):
+                result.unlink(missing_ok=True)
+                return None
+        except OSError:
+            return None
+        return result
+
+    @staticmethod
+    def _message_has_thumbnail(message) -> bool:
+        photo = getattr(message, "photo", None)
+        if photo is not None:
+            return bool(getattr(photo, "sizes", None))
+        document = getattr(message, "document", None)
+        if document is not None:
+            return bool(getattr(document, "thumbs", None))
+        return False
 
     async def resolve_link(self, url: str) -> list[IncomingMedia]:
         link: TelegramLink | None = parse_telegram_link(url)

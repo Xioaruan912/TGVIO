@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
+from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
@@ -220,6 +221,63 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         client.entities["@chan"] = SimpleNamespace(id=5)
         reader = UserSourceReader(client)
         self.assertEqual(await reader.resolve_link("https://t.me/chan/999"), [])
+
+
+class ThumbnailFetchTests(unittest.IsolatedAsyncioTestCase):
+    def _client(self, message, payload: bytes = b"jpeg"):
+        calls: list[dict] = []
+
+        class _Client:
+            async def get_messages(self, chat_id, ids):
+                return message
+
+            async def download_media(self, target, file=None, thumb=None):
+                calls.append({"message": target, "file": file, "thumb": thumb})
+                if payload is None:
+                    raise RuntimeError("boom")
+                Path(file).write_bytes(payload)
+                return str(file)
+
+        return _Client(), calls
+
+    async def test_fetch_thumbnail_uses_the_largest_server_thumbnail(self) -> None:
+        message = SimpleNamespace(
+            photo=SimpleNamespace(sizes=[object()]), document=None, video=None
+        )
+        client, calls = self._client(message)
+        reader = UserSourceReader(client)
+        with TemporaryDirectory() as tmp:
+            path = await reader.fetch_thumbnail(-100, 42, Path(tmp))
+            self.assertIsNotNone(path)
+            self.assertTrue(path.is_file())
+            self.assertEqual(calls[0]["thumb"], -1)
+
+    async def test_message_without_thumbnail_is_skipped(self) -> None:
+        message = SimpleNamespace(photo=None, document=None, video=object())
+        client, calls = self._client(message)
+        reader = UserSourceReader(client)
+        with TemporaryDirectory() as tmp:
+            self.assertIsNone(await reader.fetch_thumbnail(-100, 42, Path(tmp)))
+            self.assertEqual(calls, [])
+
+    async def test_oversized_thumbnail_is_rejected_and_removed(self) -> None:
+        message = SimpleNamespace(
+            photo=SimpleNamespace(sizes=[object()]), document=None, video=None
+        )
+        client, _calls = self._client(message, payload=b"x" * (1024 * 1024 + 1))
+        reader = UserSourceReader(client)
+        with TemporaryDirectory() as tmp:
+            self.assertIsNone(await reader.fetch_thumbnail(-100, 42, Path(tmp)))
+            self.assertEqual(list(Path(tmp).iterdir()), [])
+
+    async def test_download_failure_degrades_to_no_preview(self) -> None:
+        message = SimpleNamespace(
+            photo=SimpleNamespace(sizes=[object()]), document=None, video=None
+        )
+        client, _calls = self._client(message, payload=None)
+        reader = UserSourceReader(client)
+        with TemporaryDirectory() as tmp:
+            self.assertIsNone(await reader.fetch_thumbnail(-100, 42, Path(tmp)))
 
 
 class FakeReader:
