@@ -4,7 +4,7 @@ set -Eeuo pipefail
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 deploy_key=${TGVIO_DEPLOY_KEY:-/root/.ssh/tgvio_hostdzire_ed25519}
 known_hosts="$repo_root/deploy/hostdzire_known_hosts"
-expected_host_fingerprint='SHA256:1QFIKfh+MeSYTGuU/8PsGjlGfDDzVrJXqT+ilmSfqAw'
+expected_host_fingerprint='SHA256:4jVPtdkmcLxiNRxkpunrZNxiN3WWr4o4gZg7RsnoyAE'
 
 usage() {
   printf 'usage: %s --check RELEASE_ID\n' "$0" >&2

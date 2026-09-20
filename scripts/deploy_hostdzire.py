@@ -31,7 +31,7 @@ HOST = "199.47.242.40"
 PORT = 22
 USER = "root"
 HOST_ALIAS = "HostDZire"
-EXPECTED_HOST_FINGERPRINT = "SHA256:1QFIKfh+MeSYTGuU/8PsGjlGfDDzVrJXqT+ilmSfqAw"
+EXPECTED_HOST_FINGERPRINT = "SHA256:4jVPtdkmcLxiNRxkpunrZNxiN3WWr4o4gZg7RsnoyAE"
 DEFAULT_KEY = Path("/root/.ssh/tgvio_hostdzire_ed25519")
 RELEASE_ROOT = "/root/TGVIO-releases"
 
