@@ -1,8 +1,10 @@
 """ffmpeg contact-sheet builder for ``/pick`` previews.
 
 Tiles up to N small thumbnails into one bounded JPEG so the owner can see a whole
-page of picks at a glance. It never needs fonts: the grid position is the row
-number, so no text is drawn.
+page of picks at a glance. Every tile carries its 1-based position so the sheet
+can be read against the list without counting. The numbers are drawn with
+``drawtext`` and a DejaVu font; when that is unavailable the sheet is still
+produced, just without numbers.
 """
 
 from __future__ import annotations
@@ -18,6 +20,7 @@ _PLACEHOLDER = "0x1f1f1f"
 _MAX_COLUMNS = 5
 _MIN_QUALITY = 2
 _MAX_QUALITY = 12
+_DEFAULT_FONT = "/usr/share/fonts/truetype/dejavu/DejaVuSans-Bold.ttf"
 
 
 class ThumbnailGridBuilder:
@@ -29,14 +32,38 @@ class ThumbnailGridBuilder:
         columns: int = _MAX_COLUMNS,
         max_bytes: int = 1024 * 1024,
         timeout: float = 60.0,
+        fontfile: str = _DEFAULT_FONT,
+        numbered: bool = True,
     ) -> None:
         self._ffmpeg = ffmpeg_bin
         self._tile = max(96, int(tile))
         self._columns = max(1, min(int(columns), _MAX_COLUMNS))
         self._max_bytes = max(64 * 1024, int(max_bytes))
         self._timeout = max(5.0, float(timeout))
+        self._fontfile = str(fontfile)
+        self._numbered = bool(numbered)
         self._semaphore = asyncio.Semaphore(1)
         self._log = logging.getLogger("tgvio.telegram.preview")
+
+    def _number_filter(self, index: int) -> str:
+        """``drawtext`` snippet that stamps the tile's 1-based position."""
+
+        size = max(18, min(64, self._tile // 7))
+        margin = max(6, self._tile // 32)
+        font = self._fontfile.replace("\\", "\\\\").replace(":", "\\:").replace(",", "\\,")
+        return (
+            f"drawtext=fontfile={font}:text='{index + 1}':fontcolor=white"
+            f":fontsize={size}:box=1:boxcolor=black@0.55:boxborderw={margin}"
+            f":x={margin}:y={margin}"
+        )
+
+    def _font_available(self) -> bool:
+        if not self._numbered:
+            return False
+        try:
+            return Path(self._fontfile).is_file()
+        except OSError:
+            return False
 
     def build_args(
         self,
@@ -44,12 +71,14 @@ class ThumbnailGridBuilder:
         output: Path,
         *,
         quality: int = 3,
+        numbered: bool | None = None,
     ) -> list[str]:
         """Deterministic ffmpeg argv (also used by tests)."""
 
         count = len([slot for slot in slots])
         if count == 0:
             return []
+        draw_numbers = self._font_available() if numbered is None else bool(numbered)
         args: list[str] = ["-y", "-hide_banner", "-loglevel", "error"]
         for slot in slots:
             if slot is None:
@@ -65,12 +94,15 @@ class ThumbnailGridBuilder:
                 args += ["-i", str(slot)]
         filters: list[str] = []
         for index in range(count):
-            filters.append(
+            chain = (
                 f"[{index}:v]scale={self._tile}:{self._tile}"
                 ":force_original_aspect_ratio=decrease,"
                 f"pad={self._tile}:{self._tile}:(ow-iw)/2:(oh-ih)/2:color=black,"
-                f"setsar=1[v{index}]"
+                "setsar=1"
             )
+            if draw_numbers:
+                chain += "," + self._number_filter(index)
+            filters.append(f"{chain}[v{index}]")
         if count == 1:
             # xstack requires at least two inputs; a one-tile sheet is the image
             # itself, already scaled and padded by the filter above.
@@ -111,16 +143,37 @@ class ThumbnailGridBuilder:
         if not slots:
             return None
         output.parent.mkdir(parents=True, exist_ok=True)
+        numbered = self._font_available()
+        if self._numbered and not numbered:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "telegram.preview.grid_font_missing",
+                "Grid font is unavailable; building without tile numbers",
+                fontfile=self._fontfile,
+            )
+        modes = (True, False) if numbered else (False,)
         async with self._semaphore:
-            for quality in (3, 7, _MAX_QUALITY):
-                if await self._run_once(slots, output, quality):
-                    try:
-                        size = output.stat().st_size
-                    except OSError:
-                        continue
-                    if 0 < size <= self._max_bytes:
-                        return output
-                output.unlink(missing_ok=True)
+            for draw_numbers in modes:
+                for quality in (3, 7, _MAX_QUALITY):
+                    if await self._run_once(
+                        slots, output, quality, numbered=draw_numbers
+                    ):
+                        try:
+                            size = output.stat().st_size
+                        except OSError:
+                            continue
+                        if 0 < size <= self._max_bytes:
+                            if numbered and not draw_numbers:
+                                log_event(
+                                    self._log,
+                                    logging.WARNING,
+                                    "telegram.preview.grid_unnumbered",
+                                    "Tile numbers could not be drawn; using a plain grid",
+                                    tile_count=len(slots),
+                                )
+                            return output
+                    output.unlink(missing_ok=True)
         log_event(
             self._log,
             logging.WARNING,
@@ -136,8 +189,10 @@ class ThumbnailGridBuilder:
         slots: Sequence[Path | None],
         output: Path,
         quality: int,
+        *,
+        numbered: bool = False,
     ) -> bool:
-        args = self.build_args(slots, output, quality=quality)
+        args = self.build_args(slots, output, quality=quality, numbered=numbered)
         if not args:
             return False
         try:

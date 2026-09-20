@@ -25,7 +25,8 @@ _KIND_WORDS: dict[MediaKind, str] = {
     MediaKind.DOCUMENT: "📄 文件",
 }
 _PICK_PAGE_SIZE = 10
-_PREVIEW_TTL_SECONDS = 60
+_PREVIEW_TTL_SECONDS = 600
+_MAX_PREVIEW_MESSAGES = 10
 
 _ACTIONS = (
     "ui:source",
@@ -36,6 +37,7 @@ _ACTIONS = (
     "ui:sy",
     "ui:sn",
     "ui:sv",
+    "ui:pc",
     "ui:sf",
     "ui:sd",
     "ui:sk",
@@ -79,6 +81,13 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             self._pick_windows = state
         return state
 
+    def _pick_sources(self) -> dict[int, int]:
+        state = getattr(self, "_pick_sources_seen", None)
+        if state is None:
+            state = {}
+            self._pick_sources_seen = state
+        return state
+
     def _window_since(self, owner_id: int) -> datetime:
         """Start of the visible window: today, or today plus yesterday."""
 
@@ -94,12 +103,33 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             self._pick_grid_msgs = state
         return state
 
-    def _pick_preview_messages(self) -> dict[int, int]:
+    def _pick_preview_messages(self) -> dict[int, list[int]]:
         state = getattr(self, "_pick_preview_msgs", None)
         if state is None:
             state = {}
             self._pick_preview_msgs = state
         return state
+
+    def _preview_count(self, owner_id: int) -> int:
+        return len(self._pick_preview_messages().get(int(owner_id), []))
+
+    async def _track_preview(self, owner_id: int, chat_id: int, message_id: int) -> None:
+        """Remember one preview message so it stays until the owner acts."""
+
+        tracked = self._pick_preview_messages().setdefault(int(owner_id), [])
+        tracked.append(int(message_id))
+        while len(tracked) > _MAX_PREVIEW_MESSAGES:
+            oldest = tracked.pop(0)
+            await self._delete_message(chat_id, oldest)
+        self._schedule_preview_expiry(owner_id, chat_id, int(message_id))
+
+    async def _clear_pick_previews(self, owner_id: int, chat_id: int) -> int:
+        """Destroy every accumulated preview message; returns how many were sent."""
+
+        tracked = self._pick_preview_messages().pop(int(owner_id), [])
+        for message_id in tracked:
+            await self._delete_message(chat_id, int(message_id))
+        return len(tracked)
 
 
 
@@ -198,6 +228,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             since=self._window_since(owner_id),
             refresh=refresh,
         )
+        self._pick_sources()[int(owner_id)] = int(source_index)
         scan = list(scan)
         hidden = [summary for summary in scan if getattr(summary, "is_ad", False)]
         self._pick_hidden_cache()[(int(owner_id), int(source_index))] = list(hidden)
@@ -243,7 +274,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
                     ),
                     Button.inline(
                         f"👁 {position}",
-                        f"ui:sv:{int(source_index)}:{summary.message_id}:{int(page)}".encode(),
+                        f"ui:sv:{int(source_index)}:{summary.message_id}:{int(page)}:{position}".encode(),
                     ),
                     Button.inline(
                         ("✅ " if selected else "☑️ ") + str(position),
@@ -307,6 +338,16 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
                 Button.inline("🔄 刷新", f"ui:pr:{int(source_index)}:{int(page)}".encode()),
             ]
         )
+        previews = self._preview_count(owner_id)
+        if previews:
+            rows.append(
+                [
+                    Button.inline(
+                        f"🧹 清理预览 ({previews})",
+                        f"ui:pc:{int(source_index)}:{int(page)}".encode(),
+                    )
+                ]
+            )
         ads_label = "🚫 广告过滤 ✅" if ads_hidden else "🚫 广告过滤 ❌"
         ad_row = [
             Button.inline(ads_label, f"ui:sa:{int(source_index)}:{int(page)}".encode())
@@ -442,6 +483,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
         source_index: int,
         message_id: int,
         page: int,
+        position: int = 0,
     ) -> None:
         service = self._pick_preview_service()
         chat_id = int(event.chat_id)
@@ -490,11 +532,9 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             return
         if progress_id is not None:
             await self._delete_message(chat_id, int(progress_id))
-        previous = self._pick_preview_messages().pop(int(owner_id), None)
-        if previous is not None:
-            await self._delete_message(chat_id, previous)
         label = self._summary_line(summary) if summary is not None else "整组预览"
-        caption = f"👁 {label}\n位置对应组内第 1–{total} 项"
+        heading = f"👁 第 {int(position)} 项 · {label}" if int(position) > 0 else f"👁 {label}"
+        caption = f"{heading}\n位置对应组内第 1–{total} 项"
         message = await self._send_photo(
             chat_id,
             preview.image,
@@ -514,9 +554,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
         )
         service.release(preview.token)
         if message is not None and getattr(message, "id", None) is not None:
-            message_id_value = int(message.id)
-            self._pick_preview_messages()[int(owner_id)] = message_id_value
-            self._schedule_preview_expiry(owner_id, chat_id, message_id_value)
+            await self._track_preview(owner_id, chat_id, int(message.id))
 
     def _schedule_preview_expiry(self, owner_id: int, chat_id: int, message_id: int) -> None:
         task = asyncio.ensure_future(
@@ -532,9 +570,10 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             await asyncio.sleep(_PREVIEW_TTL_SECONDS)
         except asyncio.CancelledError:
             return
-        if self._pick_preview_messages().get(int(owner_id)) != int(message_id):
+        tracked = self._pick_preview_messages().get(int(owner_id), [])
+        if int(message_id) not in tracked:
             return
-        self._pick_preview_messages().pop(int(owner_id), None)
+        tracked.remove(int(message_id))
         await self._delete_message(chat_id, int(message_id))
 
     # ------------------------------------------------------- grab + confirm
@@ -674,10 +713,13 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             return True
         if action.startswith("ui:pick:"):
             source_index, page = self._two_ints(action, 2, 3)
+            if self._pick_sources().get(int(owner_id)) not in (None, int(source_index)):
+                await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._show_pick_callback(event, owner_id, source_index, page)
             return True
         if action.startswith("ui:pr:"):
             source_index, page = self._two_ints(action, 2, 3)
+            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._show_pick_callback(
                 event, owner_id, source_index, max(0, page), refresh=True
             )
@@ -719,6 +761,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
                 await self._safe_answer(event, "这一页已刷新，请重新选择", alert=True)
                 return True
             self._toggle_selection(owner_id, source_index, summary)
+            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._show_pick_callback(
                 event, owner_id, source_index, page, with_grid=False
             )
@@ -726,6 +769,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
         if action.startswith("ui:sx:"):
             source_index, page = self._two_ints(action, 2, 3)
             self._pick_selection().pop(int(owner_id), None)
+            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._safe_answer(event, "已清空选择")
             await self._show_pick_callback(
                 event, owner_id, source_index, max(0, page), with_grid=False
@@ -733,10 +777,12 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             return True
         if action.startswith("ui:sz:"):
             source_index, page = self._two_ints(action, 2, 3)
+            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._merge_confirm_card(event, owner_id, source_index, page)
             return True
         if action.startswith("ui:sm:"):
             source_index, page = self._two_ints(action, 2, 3)
+            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._publish_merged(event, owner_id, source_index, page)
             return True
         if action.startswith("ui:spm:"):
@@ -766,6 +812,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             return True
         if action.startswith("ui:sn:"):
             source_index, page = self._two_ints(action, 2, 3)
+            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._show_pick_callback(
                 event, owner_id, source_index, max(0, page), with_grid=False
             )
@@ -779,10 +826,23 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
                 source_index = int(parts[2])
                 message_id = int(parts[3])
                 page = int(parts[4]) if len(parts) > 4 else 0
+                position = int(parts[5]) if len(parts) > 5 else 0
             except ValueError:
                 await self._safe_answer(event, "操作已过期", alert=True)
                 return True
-            await self._preview_single(event, owner_id, source_index, message_id, page)
+            await self._preview_single(
+                event, owner_id, source_index, message_id, page, position
+            )
+            return True
+        if action.startswith("ui:pc:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            removed = await self._clear_pick_previews(owner_id, int(event.chat_id))
+            await self._safe_answer(
+                event, f"已清理 {removed} 张预览" if removed else "没有待清理的预览"
+            )
+            await self._show_pick_callback(
+                event, owner_id, source_index, max(0, page), with_grid=False
+            )
             return True
         if action.startswith("ui:sg:"):
             parts = action.split(":")
@@ -812,6 +872,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             except ValueError:
                 await self._safe_answer(event, "操作已过期", alert=True)
                 return True
+            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._confirmed_pick_callback(
                 event, owner_id, source_index, message_id, page
             )

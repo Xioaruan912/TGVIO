@@ -7,6 +7,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import time
 import unittest
+from unittest import mock
 
 from tgvio.adapters.telegram.bot_ui_format import BotUIFormatMixin
 from tgvio.adapters.telegram.bot_ui_source import BotUISourceMixin
@@ -269,7 +270,7 @@ class PickPageTests(unittest.IsolatedAsyncioTestCase):
 
         encoded = _callbacks(rows)
         self.assertIn(b"ui:sg:0:30506:0", encoded)
-        self.assertIn(b"ui:sv:0:30506:0", encoded)
+        self.assertIn(b"ui:sv:0:30506:0:1", encoded)
         self.assertIn(b"ui:sk:0:0:30506", encoded)
         self.assertIn(b"ui:pick:0:0", encoded)
         self.assertTrue(all(len(data) <= 64 for data in encoded))
@@ -513,6 +514,190 @@ class PickPreviewButtonTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("整组预览生成失败" in text for _chat, _mid, text in ui._client.edits)
         )
+
+
+class PreviewAccumulationTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.image = Path(self.tmp.name) / "thumb.jpg"
+        self.image.write_bytes(b"jpeg-bytes")
+
+    async def asyncTearDown(self) -> None:
+        for task in asyncio.all_tasks():
+            if task is not asyncio.current_task():
+                task.cancel()
+        self.tmp.cleanup()
+
+    def _pages(self):
+        return {
+            0: [
+                _summary(30506, kinds=(MediaKind.VIDEO,), size=2048),
+                _summary(30507, kinds=(MediaKind.PHOTO,), size=4096),
+            ]
+        }
+
+    def _tracked(self, ui) -> list[int]:
+        return list(ui._pick_preview_messages().get(7, []))
+
+    async def _open(self, ui, event, message_id: int, position: int) -> int:
+        before = set(self._tracked(ui))
+        await ui._handle_source_callback(event, 7, f"ui:sv:0:{message_id}:0:{position}")
+        added = [mid for mid in self._tracked(ui) if mid not in before]
+        self.assertEqual(len(added), 1, self._tracked(ui))
+        return added[0]
+
+    async def test_previews_accumulate_instead_of_replacing_each_other(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        first = await self._open(ui, event, 30506, 1)
+        ui._client.deleted.clear()
+        second = await self._open(ui, event, 30507, 2)
+
+        self.assertEqual(len(ui._client.photos), 2)
+        self.assertNotIn((7, first), ui._client.deleted)
+        self.assertEqual(self._tracked(ui), [first, second])
+
+    async def test_preview_caption_carries_the_row_position(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sv:0:30507:0:2")
+        caption = ui._client.photos[-1][2]
+        self.assertIn("👁 第 2 项 · 🖼 图片 · 4.0KB", caption)
+
+    async def test_selection_destroys_every_accumulated_preview(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        first = await self._open(ui, event, 30506, 1)
+        second = await self._open(ui, event, 30507, 2)
+        ui._client.deleted.clear()
+
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        self.assertEqual(ui._client.deleted, [(7, first), (7, second)])
+        self.assertFalse(self._tracked(ui))
+
+    async def test_manual_button_reports_and_clears(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        first = await self._open(ui, event, 30506, 1)
+        second = await self._open(ui, event, 30507, 2)
+
+        _text, rows, _visible = await ui._pick_render(7, 0, 0)
+        self.assertIn("🧹 清理预览 (2)", [button.text for row in rows for button in row])
+        self.assertIn(b"ui:pc:0:0", _callbacks(rows))
+
+        ui._client.deleted.clear()
+        await ui._handle_source_callback(event, 7, "ui:pc:0:0")
+        self.assertEqual(ui._client.deleted, [(7, first), (7, second)])
+        self.assertFalse(self._tracked(ui))
+        self.assertTrue(any("已清理 2 张预览" in str(answer) for answer in event.answers))
+
+    async def test_cleanup_button_disappears_when_nothing_is_tracked(self) -> None:
+        ui = _UI(FakeCoordinator(pages=self._pages()))
+        _text, rows, _visible = await ui._pick_render(7, 0, 0)
+        self.assertNotIn("清理预览", [button.text for row in rows for button in row])
+
+    async def test_cap_deletes_the_oldest_preview(self) -> None:
+        service = FakePreviewService(image=self.image)
+        rows = [
+            _summary(40000 + index, kinds=(MediaKind.PHOTO,), size=1024)
+            for index in range(12)
+        ]
+        ui = _UI(FakeCoordinator(pages={0: rows}), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        first = await self._open(ui, event, 40000, 1)
+        second = await self._open(ui, event, 40001, 2)
+        for index in range(2, 12):
+            await self._open(ui, event, 40000 + index, index + 1)
+
+        tracked = self._tracked(ui)
+        self.assertEqual(len(tracked), 10)
+        self.assertIn((7, first), ui._client.deleted)
+        self.assertIn((7, second), ui._client.deleted)
+        self.assertNotIn(first, tracked)
+
+    async def test_expiry_only_deletes_a_tracked_preview(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        tracked = await self._open(ui, event, 30506, 1)
+        ui._client.deleted.clear()
+
+        with mock.patch(
+            "tgvio.adapters.telegram.bot_ui_source._PREVIEW_TTL_SECONDS", 0.01
+        ):
+            await ui._expire_preview(7, 7, tracked)
+            self.assertIn((7, tracked), ui._client.deleted)
+            self.assertFalse(self._tracked(ui))
+
+            ui._client.deleted.clear()
+            await ui._expire_preview(7, 7, tracked)
+            self.assertNotIn((7, tracked), ui._client.deleted)
+
+    async def test_source_switch_clears_previews(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        first = await self._open(ui, event, 30506, 1)
+        second = await self._open(ui, event, 30507, 2)
+        ui._client.deleted.clear()
+
+        await ui._handle_source_callback(event, 7, "ui:pick:1:0")
+        self.assertFalse(self._tracked(ui))
+        self.assertEqual(ui._client.deleted, [(7, first), (7, second)])
+
+    async def test_refresh_clears_previews(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        tracked = await self._open(ui, event, 30506, 1)
+        ui._client.deleted.clear()
+
+        await ui._handle_source_callback(event, 7, "ui:pr:0:0")
+        self.assertIn((7, tracked), ui._client.deleted)
+        self.assertFalse(self._tracked(ui))
+        self.assertEqual(ui._source.refreshes, [0])
+
+    async def test_paging_keeps_the_previews(self) -> None:
+        service = FakePreviewService(image=self.image)
+        rows = [
+            _summary(50000 + index, kinds=(MediaKind.PHOTO,), size=1024)
+            for index in range(11)
+        ]
+        ui = _UI(FakeCoordinator(pages={0: rows}), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        tracked = await self._open(ui, event, 50000, 1)
+        ui._client.deleted.clear()
+
+        await ui._handle_source_callback(event, 7, "ui:sp:0:1")
+        self.assertNotIn((7, tracked), ui._client.deleted)
+        self.assertEqual(self._tracked(ui), [tracked])
+
+    async def test_publish_flow_clears_previews(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await self._open(ui, event, 30506, 1)
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        tracked = await self._open(ui, event, 30507, 2)
+        ui._client.deleted.clear()
+
+        await ui._handle_source_callback(event, 7, "ui:sz:0:0")
+        self.assertEqual(ui._client.deleted, [(7, tracked)])
+        self.assertFalse(self._tracked(ui))
 
 
 class MergeSelectionTests(unittest.IsolatedAsyncioTestCase):

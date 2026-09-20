@@ -30,6 +30,34 @@ class GridArgsTests(unittest.TestCase):
     def test_empty_slot_list_builds_nothing(self) -> None:
         self.assertEqual(ThumbnailGridBuilder().build_args([], Path("/tmp/out.jpg")), [])
 
+    def test_every_tile_is_numbered(self) -> None:
+        builder = ThumbnailGridBuilder(tile=320)
+        args = builder.build_args([None] * 10, Path("/tmp/out.jpg"))
+        joined = " ".join(args)
+        self.assertEqual(joined.count("drawtext="), 10)
+        for position in range(1, 11):
+            self.assertIn(f"text='{position}'", joined)
+        self.assertIn("fontcolor=white", joined)
+        self.assertIn("boxcolor=black@0.55", joined)
+        self.assertIn("DejaVuSans-Bold.ttf", joined)
+        self.assertIn("x=10:y=10", joined)
+
+    def test_numbers_scale_with_the_tile(self) -> None:
+        small = " ".join(ThumbnailGridBuilder(tile=96).build_args([None], Path("/tmp/o.jpg")))
+        large = " ".join(ThumbnailGridBuilder(tile=640).build_args([None], Path("/tmp/o.jpg")))
+        self.assertIn("fontsize=18", small)
+        self.assertIn("fontsize=64", large)
+
+    def test_numbering_can_be_disabled(self) -> None:
+        builder = ThumbnailGridBuilder(tile=320, numbered=False)
+        joined = " ".join(builder.build_args([None] * 3, Path("/tmp/out.jpg")))
+        self.assertNotIn("drawtext", joined)
+
+    def test_missing_font_falls_back_to_a_plain_grid(self) -> None:
+        builder = ThumbnailGridBuilder(fontfile="/tmp/definitely-missing-font.ttf")
+        joined = " ".join(builder.build_args([None] * 3, Path("/tmp/out.jpg")))
+        self.assertNotIn("drawtext", joined)
+
 
 class GridBuildTests(unittest.IsolatedAsyncioTestCase):
     @classmethod
@@ -111,6 +139,55 @@ class GridBuildTests(unittest.IsolatedAsyncioTestCase):
     async def test_unusable_slots_yield_no_image(self) -> None:
         builder = ThumbnailGridBuilder()
         self.assertIsNone(await builder.build([], Path("/tmp/never.jpg")))
+
+    async def _tile(self, root: Path, name: str, colour: str) -> Path:
+        path = root / name
+        subprocess.run(
+            [
+                self.ffmpeg,
+                "-y",
+                "-hide_banner",
+                "-loglevel",
+                "error",
+                "-f",
+                "lavfi",
+                "-i",
+                f"color=c={colour}:s=120x90",
+                "-frames:v",
+                "1",
+                "-update",
+                "1",
+                str(path),
+            ],
+            check=True,
+        )
+        return path
+
+    async def test_numbers_change_the_rendered_image(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            slots = [
+                await self._tile(root, "a.jpg", "red"),
+                await self._tile(root, "b.jpg", "blue"),
+            ]
+            plain = root / "plain.jpg"
+            numbered = root / "numbered.jpg"
+            builder = ThumbnailGridBuilder(tile=128, columns=2)
+            self.assertTrue(await builder._run_once(slots, plain, 3, numbered=False))
+            self.assertTrue(await builder._run_once(slots, numbered, 3, numbered=True))
+            self.assertNotEqual(plain.read_bytes(), numbered.read_bytes())
+
+    async def test_build_survives_a_missing_font(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            slots = [await self._tile(root, "a.jpg", "green")]
+            builder = ThumbnailGridBuilder(
+                tile=128, fontfile="/tmp/definitely-missing-font.ttf"
+            )
+            output = root / "grid.jpg"
+            result = await builder.build(slots, output)
+            self.assertEqual(result, output)
+            self.assertTrue(output.read_bytes().startswith(b"\xff\xd8"))
 
 
 if __name__ == "__main__":

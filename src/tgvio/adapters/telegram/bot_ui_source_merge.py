@@ -190,8 +190,7 @@ class BotUISourceMergeMixin:
         )
         service.release(preview.token)
         if message is not None and getattr(message, "id", None) is not None:
-            self._pick_preview_messages()[int(owner_id)] = int(message.id)
-            self._schedule_preview_expiry(owner_id, chat_id, int(message.id))
+            await self._track_preview(owner_id, chat_id, int(message.id))
 
     async def _publish_merged(
         self,

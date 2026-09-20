@@ -20,7 +20,7 @@ RUN python -m pip install \
 FROM ${PYTHON_IMAGE} AS runtime-base
 WORKDIR /app
 RUN apt-get update \
-    && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && apt-get install -y --no-install-recommends ffmpeg ca-certificates fonts-dejavu-core \
     && rm -rf /var/lib/apt/lists/*
 COPY --from=dependencies /opt/tgvio/site-packages /opt/tgvio/site-packages
 ENV PYTHONPATH=/app/src:/opt/tgvio/site-packages \
