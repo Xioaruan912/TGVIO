@@ -389,6 +389,24 @@ class SourceReaderSettingsTests(unittest.TestCase):
         ), self.assertRaises(ConfigError):
             Settings.from_env()
 
+    def test_merge_max_items_defaults_and_validates(self) -> None:
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            settings = Settings.from_env()
+        self.assertEqual(settings.source_merge_max_items, 100)
+        self.assertEqual(
+            settings.safe_summary()["source_merge_max_items"], 100
+        )
+
+        with patch.dict(
+            os.environ, {**BASE_ENV, "TGVIO_MERGE_MAX_ITEMS": "300"}, clear=True
+        ):
+            self.assertEqual(Settings.from_env().source_merge_max_items, 300)
+
+        with patch.dict(
+            os.environ, {**BASE_ENV, "TGVIO_MERGE_MAX_ITEMS": "0"}, clear=True
+        ), self.assertRaises(ConfigError):
+            Settings.from_env()
+
 
 class YtdlpCookieSettingsTests(unittest.TestCase):
     def test_cookies_path_is_optional_and_redacted(self) -> None:

@@ -226,6 +226,28 @@ class UserSourceReader:
             return []
         return self._to_media_list(await self._expand(message))
 
+    async def capture_many(
+        self,
+        chat_id: int,
+        message_ids: Sequence[int],
+    ) -> list[IncomingMedia]:
+        """Capture several picked groups in order, de-duplicating their items.
+
+        Used when the owner merges rows into one album: each row still expands to
+        its whole source album, and the union keeps the owner's order.
+        """
+
+        merged: list[IncomingMedia] = []
+        seen: set[tuple[int, int]] = set()
+        for message_id in message_ids:
+            for item in await self.capture_at(chat_id, int(message_id)):
+                key = (int(item.source_chat_id or 0), int(item.source_message_id or 0))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+        return merged
+
     async def fetch_thumbnail(
         self,
         chat_id: int,

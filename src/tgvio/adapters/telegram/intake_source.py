@@ -75,12 +75,23 @@ class IntakeSourceMixin:
             )
         return True
 
-    async def accept_source_media(self, owner_id: int, media, label: str = "") -> None:
-        await self._accept_and_schedule(
+    async def accept_source_media(
+        self,
+        owner_id: int,
+        media,
+        label: str = "",
+        merge: bool = False,
+    ) -> tuple[int, int]:
+        policy: dict = {}
+        if str(label).strip():
+            policy["source_label"] = str(label).strip()
+        if merge:
+            policy["merge_album"] = True
+        return await self._accept_and_schedule(
             int(owner_id),
             int(owner_id),
             media,
-            policy_extra={"source_label": str(label).strip()} if str(label).strip() else None,
+            policy_extra=policy or None,
         )
 
     async def notify_source_owner(self, text: str) -> None:

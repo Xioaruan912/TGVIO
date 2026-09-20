@@ -106,6 +106,7 @@ STEP_LABELS = {
     PublishStepKind.CHANNEL_DOCUMENT: "频道文件",
     PublishStepKind.DISCUSSION_PHOTO_ALBUM: "评论区图片组",
     PublishStepKind.DISCUSSION_VIDEO_ALBUM: "评论区视频组",
+    PublishStepKind.DISCUSSION_MEDIA_GROUP: "评论区合并相册",
     PublishStepKind.DISCUSSION_MEDIA: "评论区媒体",
     PublishStepKind.DISCUSSION_DOCUMENT: "评论区文件",
 }

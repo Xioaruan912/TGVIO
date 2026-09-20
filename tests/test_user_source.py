@@ -198,6 +198,23 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         reader = UserSourceReader(FakeUserClient())
         self.assertFalse(hasattr(reader, "capture_latest"))
 
+    async def test_capture_many_merges_groups_in_order_without_duplicates(self) -> None:
+        album_a = {10: _message(10, grouped_id=1), 11: _message(11, grouped_id=1, kind="photo")}
+        album_b = {20: _message(20, grouped_id=2)}
+        client = FakeUserClient({**album_a, **album_b})
+        reader = UserSourceReader(client)
+
+        media = await reader.capture_many(-100555, [10, 20, 10])
+        self.assertEqual(
+            [item.source_message_id for item in media], [10, 11, 20]
+        )
+
+    async def test_capture_many_skips_unreadable_rows(self) -> None:
+        client = FakeUserClient({10: _message(10)})
+        reader = UserSourceReader(client)
+        media = await reader.capture_many(-100555, [10, 404])
+        self.assertEqual([item.source_message_id for item in media], [10])
+
     async def test_capture_at_expands_the_media_group(self) -> None:
         target = _message(20, grouped_id=99)
         sibling_a = _message(19, grouped_id=99, kind="photo")

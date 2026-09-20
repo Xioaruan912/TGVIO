@@ -436,7 +436,9 @@ class TelethonIntakeRuntime(
         media: Iterable[IncomingMedia],
         *,
         policy_extra: dict | None = None,
-    ) -> None:
+    ) -> tuple[int, int]:
+        """Accept one batch; returns ``(accepted_items, skipped_items)``."""
+
         batch = list(media)
         policy: dict = {"display_expected": True, **(policy_extra or {})}
         if hasattr(self._intake, "accept_once") and hasattr(
@@ -470,7 +472,7 @@ class TelethonIntakeRuntime(
                 job_id=accepted.job.id,
                 item_count=len(batch),
             )
-            return
+            return (0, len(batch))
         job = accepted.job
         first = job.items[0] if job.items else None
         groups = {item.grouped_id for item in job.items if item.grouped_id is not None}
@@ -487,6 +489,7 @@ class TelethonIntakeRuntime(
             grouped_id=(next(iter(groups)) if len(groups) == 1 else None),
         )
         await self._announce_job(int(chat_id), job)
+        return (len(job.items), max(0, len(batch) - len(job.items)))
 
     async def _announce_job(
         self,

@@ -7,6 +7,7 @@ the intake runtime only receives the ready reader through a callback.
 
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 from pathlib import Path
@@ -28,10 +29,23 @@ from tgvio.adapters.telegram.user_source import SourceMediaSummary, UserSourceRe
 
 _WHITELIST_FLAG = "source_chats"
 _MAX_CHATS = 50
+_MERGE_READ_CONCURRENCY = 3
+_MERGE_ROW_TIMEOUT = 20.0
 
 ReaderReadyHook = Callable[[object, UserSourceReader, int], None]
 ReaderStoppedHook = Callable[[], None]
-SourceMediaHook = Callable[[int, list, str], Awaitable[None]]
+SourceMediaHook = Callable[[int, list, str, bool], Awaitable[object]]
+
+
+def _accepted_counts(result: object, submitted: int) -> tuple[int, int]:
+    """Normalise the intake hook result into ``(accepted, skipped)``."""
+
+    if isinstance(result, tuple) and len(result) == 2:
+        try:
+            return (int(result[0]), int(result[1]))
+        except (TypeError, ValueError):
+            pass
+    return (int(submitted), 0)
 NoticeHook = Callable[[str], Awaitable[None]]
 
 
@@ -188,24 +202,98 @@ class SourceCoordinator:
         chat_id, _label = target
         return await self._reader.fetch_thumbnail(chat_id, int(message_id), target_dir)
 
-    async def grab_message(self, source_index: int, message_id: int) -> tuple[int, str]:
+    async def grab_message(self, source_index: int, message_id: int) -> tuple[int, str, int, int]:
         """Publish one specific message/album selected by the operator."""
 
         target = self._chat_for(source_index)
         if target is None or self._reader is None or self._user_id is None:
-            return (0, "")
+            return (0, "", 0, 0)
         chat_id, label = target
         self._log.info("source.grab.message chat=%s message_id=%s label=%s", chat_id, int(message_id), label)
         media = await self._reader.capture_at(chat_id, int(message_id))
         if not media:
-            return (0, label)
-        await self._dispatch(media, label)
-        return (len(media), label)
+            return (0, label, 0, 0)
+        accepted = await self._dispatch(media, label)
+        return (len(media), label, *_accepted_counts(accepted, len(media)))
 
-    async def _dispatch(self, media: list, label: str = "") -> None:
+    async def grab_selection(
+        self,
+        selections: list[tuple[int, int]],
+    ) -> tuple[int, str, int, int, int]:
+        """Publish several picked rows as ONE job (merged album).
+
+        Returns ``(item_count, label, failed_rows, accepted, skipped)``. Rows are
+        read with bounded concurrency and a per-row timeout; a row that cannot be
+        read is skipped instead of failing the whole merge.
+        """
+
+        if self._reader is None or self._user_id is None or not selections:
+            return (0, "", 0, 0, 0)
+        grouped: dict[int, list[int]] = {}
+        for source_index, message_id in selections:
+            grouped.setdefault(int(source_index), []).append(int(message_id))
+        merged: list = []
+        seen: set[tuple[int, int]] = set()
+        labels: list[str] = []
+        failed = 0
+        semaphore = asyncio.Semaphore(_MERGE_READ_CONCURRENCY)
+
+        async def read(source_index: int, message_ids: list[int]):
+            target = self._chat_for(source_index)
+            if target is None:
+                return None
+            chat_id, label = target
+            async with semaphore:
+                try:
+                    media = await asyncio.wait_for(
+                        self._reader.capture_many(chat_id, message_ids),
+                        timeout=_MERGE_ROW_TIMEOUT,
+                    )
+                except Exception as exc:  # noqa: BLE001 - one bad row must not sink the merge
+                    self._log.warning(
+                        "source.merge.row_failed chat=%s type=%s",
+                        chat_id,
+                        type(exc).__name__,
+                    )
+                    return None
+            return (label, media)
+
+        results = await asyncio.gather(
+            *(read(index, ids) for index, ids in grouped.items())
+        )
+        for result in results:
+            if result is None:
+                failed += 1
+                continue
+            label, media = result
+            if label and label not in labels:
+                labels.append(label)
+            for item in media:
+                key = (int(item.source_chat_id or 0), int(item.source_message_id or 0))
+                if key in seen:
+                    continue
+                seen.add(key)
+                merged.append(item)
+        if not merged:
+            return (0, labels[0] if labels else "", failed, 0, 0)
+        label = labels[0] if len(labels) == 1 else "多个来源"
+        self._log.info(
+            "source.grab.selection rows=%s items=%s failed=%s label=%s",
+            len(selections),
+            len(merged),
+            failed,
+            label,
+        )
+        accepted = await self._dispatch(merged, label, merge=True)
+        accepted_count, skipped = _accepted_counts(accepted, len(merged))
+        return (len(merged), label, failed, accepted_count, skipped)
+
+    async def _dispatch(self, media: list, label: str = "", *, merge: bool = False):
         if self._on_source_media is None or self._user_id is None:
-            return
-        await self._on_source_media(int(self._user_id), media, str(label or ""))
+            return None
+        return await self._on_source_media(
+            int(self._user_id), media, str(label or ""), bool(merge)
+        )
 
     async def notice(self, text: str) -> None:
         if self._on_notice is None:

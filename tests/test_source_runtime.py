@@ -31,6 +31,10 @@ def _settings(**overrides):
     return SimpleNamespace(**values)
 
 
+def _item(chat_id: int, message_id: int):
+    return SimpleNamespace(source_chat_id=chat_id, source_message_id=message_id)
+
+
 class FakeReader:
     def __init__(self, *, chats=(-1001, -1002), media=None, group=None) -> None:
         self._chats = list(chats)
@@ -135,12 +139,13 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         coordinator._reader = FakeReader(media=["media"])
         coordinator._client = object()
 
-        async def _media(owner_id, media, label=""):
+        async def _media(owner_id, media, label="", merge=False):
             captured.append((int(owner_id), list(media)))
+            return (len(list(media)), 0)
 
         coordinator._on_source_media = _media
-        count, label = await coordinator.grab_message(1, 30506)
-        self.assertEqual((count, label), (1, "@second"))
+        count, label, accepted, skipped = await coordinator.grab_message(1, 30506)
+        self.assertEqual((count, label, accepted, skipped), (1, "@second", 1, 0))
         self.assertEqual(coordinator._reader.captured_at, [(-1002, 30506)])
         self.assertEqual(captured, [(7, ["media"])])
 
@@ -149,8 +154,71 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         coordinator._user_id = 7
         coordinator._reader = FakeReader(media=[])
         coordinator._client = object()
-        count, label = await coordinator.grab_message(0, 404)
-        self.assertEqual((count, label), (0, "@first"))
+        count, label, accepted, skipped = await coordinator.grab_message(0, 404)
+        self.assertEqual((count, label, accepted, skipped), (0, "@first", 0, 0))
+
+    async def test_grab_selection_merges_rows_into_one_dispatch(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        captured: list[tuple[int, list, bool]] = []
+
+        class _Reader(FakeReader):
+            async def capture_many(self, chat_id, message_ids):
+                self.groups.append((int(chat_id), tuple(int(mid) for mid in message_ids)))
+                if int(chat_id) == -1001:
+                    return [_item(-1001, 10), _item(-1001, 11)]
+                return [_item(-1002, 20)]
+
+        reader = _Reader()
+        coordinator._reader = reader
+        coordinator._client = object()
+
+        async def _media(owner_id, media, label="", merge=False):
+            captured.append((int(owner_id), list(media), bool(merge)))
+            return (len(list(media)), 1)
+
+        coordinator._on_source_media = _media
+        count, label, failed, accepted, skipped = await coordinator.grab_selection(
+            [(0, 10), (1, 20)]
+        )
+        self.assertEqual((count, label, failed, accepted, skipped), (3, "多个来源", 0, 3, 1))
+        self.assertEqual(len(captured), 1)
+        self.assertTrue(captured[0][2])
+        self.assertEqual([item.source_message_id for item in captured[0][1]], [10, 11, 20])
+
+    async def test_grab_selection_skips_a_row_that_cannot_be_read(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        captured: list[tuple[int, list, bool]] = []
+
+        class _Reader(FakeReader):
+            async def capture_many(self, chat_id, message_ids):
+                if int(chat_id) == -1002:
+                    raise RuntimeError("boom")
+                return [_item(-1001, 10)]
+
+        coordinator._reader = _Reader()
+        coordinator._client = object()
+
+        async def _media(owner_id, media, label="", merge=False):
+            captured.append((int(owner_id), list(media), bool(merge)))
+            return (len(list(media)), 0)
+
+        coordinator._on_source_media = _media
+        count, label, failed, _accepted, _skipped = await coordinator.grab_selection(
+            [(0, 10), (1, 20)]
+        )
+        self.assertEqual((count, label, failed), (1, "@first", 1))
+        self.assertEqual(len(captured), 1)
+        self.assertTrue(captured[0][2])
+        self.assertEqual([item.source_message_id for item in captured[0][1]], [10])
+
+    async def test_grab_selection_without_media_reports_failure(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        coordinator._reader = FakeReader(media=[])
+        coordinator._client = object()
+        self.assertEqual(await coordinator.grab_selection([]), (0, "", 0, 0, 0))
 
     async def test_grab_latest_is_gone(self) -> None:
         coordinator = self._coordinator()

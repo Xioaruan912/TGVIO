@@ -60,6 +60,11 @@ class FakeCoordinator:
         self.grabbed: list[tuple[int, int]] = []
         self.listed: list[tuple[int, int, int, object]] = []
         self.groups: list[tuple[int, int]] = []
+        self.selections: list[list[tuple[int, int]]] = []
+        self.merge_count = 3
+        self.merge_failed = 0
+        self.merge_accepted = 3
+        self.merge_skipped = 1
 
     def status_line(self) -> str:
         return "已登录 · user_id `7` · 白名单 `2/2` 生效"
@@ -92,7 +97,17 @@ class FakeCoordinator:
 
     async def grab_message(self, source_index: int, message_id: int):
         self.grabbed.append((int(source_index), int(message_id)))
-        return (self.count, "@xiaodeFile_bot")
+        return (self.count, "@xiaodeFile_bot", self.count, 0)
+
+    async def grab_selection(self, selections):
+        self.selections.append([(int(src), int(mid)) for src, mid in selections])
+        return (
+            self.merge_count,
+            "多个来源",
+            self.merge_failed,
+            self.merge_accepted,
+            self.merge_skipped,
+        )
 
     async def logout(self):
         return "已退出登录并删除 session。"
@@ -180,11 +195,14 @@ class _Event:
 
 
 class _UI(BotUIFormatMixin, BotUISourceMixin):
-    def __init__(self, coordinator: FakeCoordinator, service=None) -> None:
+    def __init__(self, coordinator: FakeCoordinator, service=None, **settings) -> None:
         self._source = coordinator
         self._pick_previews = service
         self._client = FakeClient()
         self._tasks: set[asyncio.Task] = set()
+        values = {"source_merge_max_items": 100}
+        values.update(settings)
+        self._settings = SimpleNamespace(**values)
 
     async def _edit_page(self, event, text, buttons):
         event.edits.append((text, buttons))
@@ -233,9 +251,10 @@ class PickPageTests(unittest.IsolatedAsyncioTestCase):
         encoded = _callbacks(rows)
         self.assertIn(b"ui:sg:0:30506:0", encoded)
         self.assertIn(b"ui:sv:0:30506:0", encoded)
+        self.assertIn(b"ui:sk:0:0:30506", encoded)
         self.assertIn(b"ui:pick:0:0", encoded)
         self.assertTrue(all(len(data) <= 64 for data in encoded))
-        self.assertEqual(len(rows[0]), 2)
+        self.assertEqual(len(rows[0]), 3)
 
     async def test_pick_page_never_renders_source_captions(self) -> None:
         ad = _summary(500, kinds=(MediaKind.PHOTO,), caption="会长新开VIP群，全是最新最猛的资源")
@@ -451,6 +470,113 @@ class PickPreviewButtonTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             any("整组预览生成失败" in text for _chat, _mid, text in ui._client.edits)
         )
+
+
+class MergeSelectionTests(unittest.IsolatedAsyncioTestCase):
+    def _pages(self):
+        return {
+            0: [
+                _summary(30506, kinds=(MediaKind.VIDEO,), item_count=10, video_count=10),
+                _summary(30507, kinds=(MediaKind.PHOTO,), item_count=4, photo_count=4),
+            ]
+        }
+
+    async def test_toggle_selection_updates_header_and_buttons(self) -> None:
+        coordinator = FakeCoordinator(pages=self._pages())
+        ui = _UI(coordinator)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+
+        text, rows = event.edits[-1]
+        self.assertIn("已选 1 组/10 项", text)
+        labels = [button.text for row in rows for button in row]
+        self.assertIn("✅ 1", labels)
+        self.assertIn("☑️ 2", labels)
+        self.assertIn("✅ 发布已选 (1)", labels)
+        data = _callbacks(rows)
+        self.assertIn(b"ui:sz:0:0", data)
+        self.assertIn(b"ui:sx:0:0", data)
+        self.assertTrue(all(len(item) <= 64 for item in data))
+
+    async def test_toggle_off_and_clear_reset_the_selection(self) -> None:
+        ui = _UI(FakeCoordinator(pages=self._pages()))
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        self.assertEqual(ui._selection_summary(7)["rows"], 0)
+
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30507")
+        self.assertEqual(ui._selection_summary(7)["rows"], 2)
+        await ui._handle_source_callback(event, 7, "ui:sx:0:0")
+        self.assertEqual(ui._selection_summary(7)["rows"], 0)
+
+    async def test_merge_confirm_card_shows_totals_without_publishing(self) -> None:
+        coordinator = FakeCoordinator(pages=self._pages())
+        ui = _UI(coordinator)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30507")
+        await ui._handle_source_callback(event, 7, "ui:sz:0:0")
+
+        text, rows = event.edits[-1]
+        self.assertIn("合并发布", text)
+        self.assertIn("共 2 组 · 14 项 · 🎬10 🖼4", text)
+        self.assertEqual(coordinator.selections, [])
+        data = _callbacks(rows)
+        self.assertIn(b"ui:sm:0:0", data)
+        self.assertIn(b"ui:spm:0:0", data)
+
+    async def test_publish_merged_submits_in_order_and_reports_skips(self) -> None:
+        coordinator = FakeCoordinator(pages=self._pages())
+        ui = _UI(coordinator)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30507")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sm:0:0")
+
+        self.assertEqual(coordinator.selections, [[(0, 30507), (0, 30506)]])
+        self.assertEqual(ui._selection_summary(7)["rows"], 0)
+        ack = "\n".join(text for _chat, text in ui._client.sent)
+        self.assertIn("已合并提交", ack)
+        self.assertIn("跳过", ack)
+        self.assertTrue(event.edits)
+
+    async def test_merge_limit_blocks_publishing(self) -> None:
+        coordinator = FakeCoordinator(pages=self._pages())
+        ui = _UI(coordinator, source_merge_max_items=5)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sz:0:0")
+        self.assertIn("超过一次上限", event.edits[-1][0])
+
+        await ui._handle_source_callback(event, 7, "ui:sm:0:0")
+        self.assertEqual(coordinator.selections, [])
+        self.assertIn("超过一次上限，请分批", event.answers)
+
+    async def test_merged_preview_uses_every_selected_group(self) -> None:
+        with TemporaryDirectory() as tmp:
+            image = Path(tmp) / "merge.jpg"
+            image.write_bytes(b"jpeg-bytes")
+            service = FakePreviewService(image=image)
+            coordinator = FakeCoordinator(pages=self._pages(), group_ids=[1, 2])
+            ui = _UI(coordinator, service)
+            event = _Event()
+            await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+            await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+            await ui._handle_source_callback(event, 7, "ui:spm:0:0")
+
+            self.assertEqual(coordinator.groups, [(0, 30506)])
+            self.assertEqual(service.built[-1], ("page", 0, (1, 2)))
+            self.assertTrue(ui._client.photos)
+            self.assertIn("合并预览", ui._client.photos[-1][2])
+            for task in list(ui._tasks):
+                task.cancel()
 
 
 class PickConfirmTests(unittest.IsolatedAsyncioTestCase):

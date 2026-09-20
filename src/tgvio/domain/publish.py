@@ -18,6 +18,7 @@ class PublishStepKind(StrEnum):
     CHANNEL_DOCUMENT = "channel_document"
     DISCUSSION_PHOTO_ALBUM = "discussion_photo_album"
     DISCUSSION_VIDEO_ALBUM = "discussion_video_album"
+    DISCUSSION_MEDIA_GROUP = "discussion_media_group"
     DISCUSSION_MEDIA = "discussion_media"
     DISCUSSION_DOCUMENT = "discussion_document"
 

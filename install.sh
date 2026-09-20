@@ -191,6 +191,7 @@ GROUP_ADV=(
   "TGVIO_SOURCE_SESSION|来源 session 文件路径（个人账号）|any"
   "TGVIO_SOURCE_CHATS|来源白名单（@名或-100ID，逗号分隔）|any"
   "TGVIO_SOURCE_DOWNLOAD_WORKERS|来源下载并发|int_range|1:16"
+  "TGVIO_MERGE_MAX_ITEMS|合并发布一次上限(项)|int_range|1:2000"
   "TGVIO_LOG_LEVEL|日志级别|choice|DEBUG,INFO,WARNING,ERROR,CRITICAL"
 )
 

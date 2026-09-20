@@ -118,6 +118,7 @@ class Settings:
     source_session: Path | None
     source_chats: tuple[str, ...]
     source_download_workers: int
+    source_merge_max_items: int
     static_proxy_url: str = field(repr=False)
     static_proxy_probe_timeout_seconds: int
     dashboard_enabled: bool
@@ -385,6 +386,9 @@ class Settings:
         source_download_workers = _int("TGVIO_SOURCE_DOWNLOAD_WORKERS", 4)
         if not 1 <= source_download_workers <= 16:
             raise ConfigError("TGVIO_SOURCE_DOWNLOAD_WORKERS out of range")
+        source_merge_max_items = _int("TGVIO_MERGE_MAX_ITEMS", 100)
+        if not 1 <= source_merge_max_items <= 2000:
+            raise ConfigError("TGVIO_MERGE_MAX_ITEMS out of range")
         return cls(
             environment=os.getenv("TGVIO_ENV", "development").strip() or "development",
             run_bot=_bool("TGVIO_RUN_BOT", False),
@@ -434,6 +438,7 @@ class Settings:
             source_session=source_session,
             source_chats=source_chats,
             source_download_workers=source_download_workers,
+            source_merge_max_items=source_merge_max_items,
             static_proxy_url=static_proxy_url,
             static_proxy_probe_timeout_seconds=static_proxy_probe_timeout_seconds,            dashboard_enabled=dashboard_enabled,
             dashboard_host=dashboard_host,
@@ -513,6 +518,7 @@ class Settings:
             "source_session_configured": bool(self.source_session),
             "source_chat_count": len(self.source_chats),
             "source_download_workers": self.source_download_workers,
+            "source_merge_max_items": self.source_merge_max_items,
             "static_proxy_configured": bool(self.static_proxy_url),
             "static_proxy_probe_timeout_seconds": self.static_proxy_probe_timeout_seconds,
             "dashboard_enabled": self.dashboard_enabled,

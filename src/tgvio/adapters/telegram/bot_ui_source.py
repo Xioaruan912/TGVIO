@@ -8,6 +8,7 @@ from zoneinfo import ZoneInfo
 from telethon import Button
 
 from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
+from tgvio.adapters.telegram.bot_ui_source_merge import BotUISourceMergeMixin
 from tgvio.adapters.telegram.source_runtime import SourceCoordinator, SourceLoginError
 from tgvio.domain.job import MediaKind
 
@@ -32,10 +33,15 @@ _ACTIONS = (
     "ui:sv",
     "ui:sf",
     "ui:sd",
+    "ui:sk",
+    "ui:sx",
+    "ui:sz",
+    "ui:sm",
+    "ui:spm",
 )
 
 
-class BotUISourceMixin:
+class BotUISourceMixin(BotUISourceMergeMixin):
     """In-Bot personal-account source setup and visual content picking."""
 
     def _source_coordinator(self) -> SourceCoordinator | None:
@@ -86,6 +92,12 @@ class BotUISourceMixin:
             state = {}
             self._pick_preview_msgs = state
         return state
+
+
+
+    @staticmethod
+
+
 
     @staticmethod
     def _summary_composition(summary) -> str:
@@ -186,12 +198,18 @@ class BotUISourceMixin:
         header = f"选择要发布的内容 · {label or '未配置'} · 第 {page + 1} 页"
         if video_only:
             header += " · 只看视频"
+        selection = self._selection_summary(owner_id)
+        if selection["rows"]:
+            header += f" · 已选 {selection['rows']} 组/{selection['items']} 项"
         lines = [header, "──────────"]
         rows: list[list] = []
         if not summaries:
             lines.append("这一页没有符合条件的媒体（可以翻页或关掉筛选）。")
         for position, summary in enumerate(summaries, start=1):
             lines.append(f"{position}) {self._summary_line(summary)}")
+            selected = self._selection_key(source_index, summary.message_id) in (
+                self._selection_for(owner_id)["meta"]
+            )
             rows.append(
                 [
                     Button.inline(
@@ -201,6 +219,10 @@ class BotUISourceMixin:
                     Button.inline(
                         f"👁 {position}",
                         f"ui:sv:{int(source_index)}:{summary.message_id}:{int(page)}".encode(),
+                    ),
+                    Button.inline(
+                        ("✅ " if selected else "☑️ ") + str(position),
+                        f"ui:sk:{int(source_index)}:{int(page)}:{summary.message_id}".encode(),
                     ),
                 ]
             )
@@ -212,6 +234,19 @@ class BotUISourceMixin:
             nav.append(Button.inline("下一页 ➡️", f"ui:sp:{int(source_index)}:{page + 1}".encode()))
         if nav:
             rows.append(nav)
+        if selection["rows"]:
+            rows.append(
+                [
+                    Button.inline(
+                        f"✅ 发布已选 ({selection['rows']})",
+                        f"ui:sz:{int(source_index)}:{int(page)}".encode(),
+                    ),
+                    Button.inline(
+                        "🧹 清空",
+                        f"ui:sx:{int(source_index)}:{int(page)}".encode(),
+                    ),
+                ]
+            )
         source_row: list = []
         whitelist = coordinator.whitelist()
         for index, entry in enumerate(whitelist[:5]):
@@ -517,15 +552,17 @@ class BotUISourceMixin:
         await self._safe_answer(event, "已提交，正在抓取…")
         chat_id = int(event.chat_id)
         try:
-            count, label = await coordinator.grab_message(source_index, message_id)
+            count, label, accepted, skipped = await coordinator.grab_message(
+                source_index, message_id
+            )
         except Exception:  # noqa: BLE001 - user-facing miss
             await self._send_text(chat_id, "⚠️ 抓取失败，请稍后重试。")
             return
         if count:
-            await self._send_text(
-                chat_id,
-                f"✅ 已抓取 `{count}` 个媒体（来源：`{label}`），正在下载与发布。",
-            )
+            lines = [f"✅ 已抓取 `{accepted}` 个媒体（来源：`{label}`），正在下载与发布。"]
+            if skipped:
+                lines.append(f"跳过 `{skipped}` 项：之前已经发布过。")
+            await self._send_text(chat_id, "\n".join(lines))
         else:
             await self._send_text(
                 chat_id,
@@ -619,6 +656,46 @@ class BotUISourceMixin:
                 source_index, page, window = 0, 0, "today"
             self._pick_window()[int(owner_id)] = window
             await self._show_pick_callback(event, owner_id, source_index, max(0, page))
+            return True
+        if action.startswith("ui:sk:"):
+            parts = action.split(":")
+            try:
+                source_index = int(parts[2])
+                page = int(parts[3])
+                message_id = int(parts[4])
+            except (IndexError, ValueError):
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return True
+            summary = self._pick_cache().get(
+                (int(owner_id), int(source_index), int(page)), {}
+            ).get(int(message_id))
+            if summary is None:
+                await self._safe_answer(event, "这一页已刷新，请重新选择", alert=True)
+                return True
+            self._toggle_selection(owner_id, source_index, summary)
+            await self._show_pick_callback(
+                event, owner_id, source_index, page, with_grid=False
+            )
+            return True
+        if action.startswith("ui:sx:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            self._pick_selection().pop(int(owner_id), None)
+            await self._safe_answer(event, "已清空选择")
+            await self._show_pick_callback(
+                event, owner_id, source_index, max(0, page), with_grid=False
+            )
+            return True
+        if action.startswith("ui:sz:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            await self._merge_confirm_card(event, owner_id, source_index, page)
+            return True
+        if action.startswith("ui:sm:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            await self._publish_merged(event, owner_id, source_index, page)
+            return True
+        if action.startswith("ui:spm:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            await self._merged_preview(event, owner_id, source_index, page)
             return True
         if action.startswith("ui:sn:"):
             source_index, page = self._two_ints(action, 2, 3)

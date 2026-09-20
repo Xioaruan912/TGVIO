@@ -415,6 +415,79 @@ class OrchestratorTests(unittest.TestCase):
             [step.item_indexes for step in plan.steps], [tuple(range(10)), (10, 11)]
         )
 
+    def test_merge_album_policy_packs_every_row_into_one_album(self) -> None:
+        items = [
+            MediaItem(index=0, kind=MediaKind.PHOTO, source="p0", grouped_id=11),
+            MediaItem(index=1, kind=MediaKind.PHOTO, source="p1", grouped_id=11),
+            MediaItem(index=2, kind=MediaKind.VIDEO, source="v0", grouped_id=22),
+            MediaItem(index=3, kind=MediaKind.VIDEO, source="v1", grouped_id=22),
+        ]
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={"merge_album": True},
+            items=items,
+        )
+        plan = JobOrchestrator(DummyRepository(), PlanningPolicy()).plan(job)
+        merged = [
+            step
+            for step in plan.steps
+            if step.kind == PublishStepKind.DISCUSSION_MEDIA_GROUP
+        ]
+        self.assertEqual(len(merged), 1)
+        self.assertEqual(merged[0].item_indexes, (0, 1, 2, 3))
+        self.assertEqual(plan.steps[0].kind, PublishStepKind.CHANNEL_VIDEO_COVER)
+        self.assertEqual(plan.steps[0].item_indexes, (2,))
+
+    def test_merge_album_splits_only_at_ten_items(self) -> None:
+        items = [
+            MediaItem(index=i, kind=MediaKind.PHOTO, source=f"p{i}", grouped_id=11)
+            for i in range(6)
+        ] + [
+            MediaItem(index=6 + i, kind=MediaKind.VIDEO, source=f"v{i}", grouped_id=22)
+            for i in range(6)
+        ]
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            policy={"merge_album": True},
+            items=items,
+        )
+        plan = JobOrchestrator(DummyRepository(), PlanningPolicy()).plan(job)
+        merged = [
+            step
+            for step in plan.steps
+            if step.kind == PublishStepKind.DISCUSSION_MEDIA_GROUP
+        ]
+        self.assertEqual([step.item_indexes for step in merged], [tuple(range(10)), (10, 11)])
+        self.assertIn("分卷 1/2", merged[0].params["caption_header"])
+        self.assertIn("分卷 2/2", merged[1].params["caption_header"])
+
+    def test_without_merge_album_source_albums_stay_separate(self) -> None:
+        items = [
+            MediaItem(index=0, kind=MediaKind.PHOTO, source="p0", grouped_id=11),
+            MediaItem(index=1, kind=MediaKind.PHOTO, source="p1", grouped_id=11),
+            MediaItem(index=2, kind=MediaKind.VIDEO, source="v0", grouped_id=22),
+            MediaItem(index=3, kind=MediaKind.VIDEO, source="v1", grouped_id=22),
+        ]
+        job = Job(
+            owner_id=42,
+            destination="@destination",
+            state=JobState.ANALYZED,
+            items=items,
+        )
+        plan = JobOrchestrator(DummyRepository(), PlanningPolicy()).plan(job)
+        kinds = [step.kind for step in plan.steps]
+        self.assertNotIn(PublishStepKind.DISCUSSION_MEDIA_GROUP, kinds)
+        self.assertEqual(plan.steps[0].kind, PublishStepKind.CHANNEL_COVER_ALBUM)
+        self.assertEqual(plan.steps[0].item_indexes, (0, 1))
+        video_steps = [
+            step for step in plan.steps if step.kind == PublishStepKind.DISCUSSION_VIDEO_ALBUM
+        ]
+        self.assertEqual([step.item_indexes for step in video_steps], [(2, 3)])
+
     def test_caption_template_button_line_becomes_caption_buttons(self) -> None:
         job = Job(
             owner_id=42,

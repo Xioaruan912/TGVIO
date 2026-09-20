@@ -115,8 +115,51 @@ class JobOrchestrator:
         ]
         collection_caption = str(job.policy.get("collection_caption", "") or "")
         chosen_cover = self._chosen_cover(job, items)
+        merge = bool(job.policy.get("merge_album"))
 
-        if self._active.cover_mode and (photos or videos):
+        if merge and (photos or videos):
+            # An owner-merged selection publishes as one channel cover post plus
+            # merged albums (photos and videos together) in the discussion.
+            cover_item = chosen_cover or (videos[0] if videos else photos[0])
+            if cover_item.kind == MediaKind.VIDEO:
+                steps.append(
+                    self._step(
+                        steps,
+                        PublishStepKind.CHANNEL_VIDEO_COVER,
+                        PublishTarget.CHANNEL,
+                        [cover_item],
+                        mode="generated_frame",
+                        collection_caption=collection_caption,
+                        collection_caption_item_index=cover_item.index,
+                    )
+                )
+            else:
+                steps.append(
+                    self._step(
+                        steps,
+                        PublishStepKind.CHANNEL_COVER_ALBUM,
+                        PublishTarget.CHANNEL,
+                        [cover_item],
+                        mode="photo_album",
+                        collection_caption=collection_caption,
+                        collection_caption_item_index=cover_item.index,
+                    )
+                )
+            self._append_merged_album_steps(
+                steps,
+                [item for item in items if item.kind in {MediaKind.PHOTO, MediaKind.VIDEO}],
+            )
+            for item in documents:
+                steps.append(
+                    self._step(
+                        steps,
+                        PublishStepKind.DISCUSSION_DOCUMENT,
+                        PublishTarget.DISCUSSION,
+                        [item],
+                        mode="document",
+                    )
+                )
+        elif self._active.cover_mode and (photos or videos):
             if chosen_cover is not None and chosen_cover.kind == MediaKind.VIDEO:
                 steps.append(
                     self._step(
@@ -534,6 +577,60 @@ class JobOrchestrator:
         if item.grouped_id is None:
             return buffer_group is None
         return buffer_group == item.grouped_id
+
+    def _append_merged_album_steps(
+        self,
+        steps: list[PublishStep],
+        media_items: list[MediaItem],
+    ) -> None:
+        """Owner-merged selection: one album per ``album_limit`` items.
+
+        ``grouped_id`` boundaries are deliberately ignored here (that is the whole
+        point of merging), while oversized/split strategies still get their own
+        step so a huge file is never forced into an album.
+        """
+
+        limit = self._active.album_limit
+        buffer: list[MediaItem] = []
+
+        def flush() -> None:
+            nonlocal buffer
+            if not buffer:
+                return
+            total = (len(buffer) + limit - 1) // limit
+            for index in range(total):
+                chunk = buffer[index * limit : (index + 1) * limit]
+                steps.append(
+                    self._step(
+                        steps,
+                        PublishStepKind.DISCUSSION_MEDIA_GROUP,
+                        PublishTarget.DISCUSSION,
+                        chunk,
+                        mode="media_group",
+                        part=(index + 1, total),
+                    )
+                )
+            buffer = []
+
+        for item in media_items:
+            strategy = self._strategy(item)
+            if strategy in {"split_playable", "document", "binary_volume"}:
+                flush()
+                document_mode = strategy in {"document", "binary_volume"}
+                steps.append(
+                    self._step(
+                        steps,
+                        PublishStepKind.DISCUSSION_DOCUMENT
+                        if document_mode
+                        else PublishStepKind.DISCUSSION_MEDIA,
+                        PublishTarget.DISCUSSION,
+                        [item],
+                        mode="document" if document_mode else "video",
+                    )
+                )
+                continue
+            buffer.append(item)
+        flush()
 
     def _append_channel_media_steps(
         self,
