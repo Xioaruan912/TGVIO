@@ -10,7 +10,8 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import suppress
-from dataclasses import dataclass
+from collections import Counter
+from dataclasses import dataclass, replace
 from datetime import datetime
 import logging
 from pathlib import Path
@@ -18,6 +19,13 @@ from typing import Sequence
 
 from telethon import utils
 
+from tgvio.domain.ad_filter import (
+    AD_THRESHOLD,
+    AdSignals,
+    ad_verdict,
+    content_fingerprint,
+    normalize_caption,
+)
 from tgvio.domain.job import MediaKind
 from tgvio.domain.telegram_links import TelegramLink, parse_telegram_link
 from tgvio.application.intake import IncomingMedia
@@ -52,6 +60,16 @@ class SourceMediaSummary:
     grouped_id: int | None
     video_count: int = 0
     photo_count: int = 0
+    caption: str = ""
+    fingerprint: str = ""
+    width: int | None = None
+    height: int | None = None
+    ad_score: int = 0
+    ad_reasons: tuple[str, ...] = ()
+
+    @property
+    def is_ad(self) -> bool:
+        return bool(self.ad_reasons) and self.ad_reasons != ("released",) and self.ad_score >= AD_THRESHOLD
 
     @property
     def has_video(self) -> bool:
@@ -164,14 +182,24 @@ class UserSourceReader:
         limit: int = 10,
         offset: int = 0,
         since: datetime | None = None,
+        learned: frozenset[str] | None = None,
+        released: frozenset[str] | None = None,
     ) -> tuple[list[SourceMediaSummary], bool]:
-        """Newest-first media groups within ``since``; albums collapse into one entry."""
+        """Newest-first media groups within ``since``; albums collapse into one entry.
+
+        The whole window is scanned (not just the requested page) so repeated
+        content can be scored without any extra request or download.
+        """
 
         page_size = max(1, int(limit))
         start = max(0, int(offset))
-        want = start + page_size + 1
         summaries: list[SourceMediaSummary] = []
         position_by_group: dict[int, int] = {}
+        file_ids: list[int | None] = []
+        fingerprints: list[str] = []
+        file_repeat: Counter[int] = Counter()
+        fingerprint_repeat: Counter[str] = Counter()
+        caption_files: dict[str, set[int]] = {}
         try:
             async for message in self._client.iter_messages(
                 int(chat_id),
@@ -187,18 +215,80 @@ class UserSourceReader:
                 if grouped is not None and grouped in position_by_group:
                     position = position_by_group[grouped]
                     summaries[position] = self._merge(summaries[position], message, item)
-                else:
-                    if grouped is not None:
-                        position_by_group[grouped] = len(summaries)
-                    summaries.append(self._summarize(message, item))
-                if len(summaries) >= want:
-                    break
+                    continue
+                if grouped is not None:
+                    position_by_group[grouped] = len(summaries)
+                summaries.append(self._summarize(message, item))
+                fingerprint = summaries[-1].fingerprint
+                fingerprints.append(fingerprint)
+                fingerprint_repeat[fingerprint] += 1
+                file_id = self._file_id(message)
+                file_ids.append(file_id)
+                if file_id is not None:
+                    file_repeat[file_id] += 1
+                caption = normalize_caption(summaries[-1].caption)
+                if caption:
+                    bucket = caption_files.setdefault(caption, set())
+                    if file_id is not None:
+                        bucket.add(file_id)
+                    elif fingerprint:
+                        bucket.add(hash(fingerprint))
         except Exception as exc:  # noqa: BLE001 - user-facing miss
             self._log.warning("source.list.failed type=%s", type(exc).__name__)
             return ([], False)
-        page = summaries[start : start + page_size]
-        has_more = len(summaries) > start + page_size
+        scored = [
+            self._score_summary(
+                summary,
+                file_repeats=file_repeat.get(file_ids[index] or -1, 1),
+                fingerprint_repeats=fingerprint_repeat.get(fingerprints[index], 1),
+                caption_files=len(caption_files.get(normalize_caption(summary.caption), ())) or 1,
+                learned=bool(learned) and summary.fingerprint in learned,
+                released=bool(released) and summary.fingerprint in released,
+            )
+            for index, summary in enumerate(summaries)
+        ]
+        page = scored[start : start + page_size]
+        has_more = len(scored) > start + page_size
         return (page, has_more)
+
+    @staticmethod
+    def _file_id(message) -> int | None:
+        for attribute in ("photo", "document"):
+            media = getattr(message, attribute, None)
+            value = getattr(media, "id", None)
+            if value:
+                return int(value)
+        return None
+
+    @staticmethod
+    def _score_summary(
+        summary: SourceMediaSummary,
+        *,
+        file_repeats: int,
+        fingerprint_repeats: int,
+        caption_files: int,
+        learned: bool,
+        released: bool,
+    ) -> SourceMediaSummary:
+        verdict = ad_verdict(
+            AdSignals(
+                item_count=summary.item_count,
+                kinds=summary.kinds,
+                fingerprint=summary.fingerprint,
+                fingerprint_repeats=fingerprint_repeats,
+                file_repeats=file_repeats,
+                caption_files=caption_files,
+                learned=learned,
+                released=released,
+            )
+        )
+        if verdict.score == summary.ad_score and verdict.reasons == summary.ad_reasons:
+            return summary
+        return replace(
+            summary,
+            ad_score=verdict.score,
+            ad_reasons=verdict.reasons,
+        )
 
     # --------------------------------------------------------------- capture
     async def group_message_ids(self, chat_id: int, message_id: int) -> list[int]:
@@ -446,6 +536,8 @@ class UserSourceReader:
     # ---------------------------------------------------------------- helpers
     @classmethod
     def _summarize(cls, message, item: IncomingMedia) -> SourceMediaSummary:
+        width, height = cls._message_dimensions(message)
+        caption = str(item.caption or "")
         return SourceMediaSummary(
             message_id=int(item.source_message_id or message.id),
             kinds=(item.kind,),
@@ -456,6 +548,16 @@ class UserSourceReader:
             grouped_id=item.grouped_id,
             video_count=1 if item.kind == MediaKind.VIDEO else 0,
             photo_count=1 if item.kind == MediaKind.PHOTO else 0,
+            caption=caption,
+            width=width,
+            height=height,
+            fingerprint=content_fingerprint(
+                kinds=(item.kind,),
+                size_bytes=int(item.size_bytes or 0),
+                width=width,
+                height=height,
+                caption=caption,
+            ),
         )
 
     @classmethod
@@ -472,7 +574,24 @@ class UserSourceReader:
             grouped_id=summary.grouped_id,
             video_count=summary.video_count + (1 if item.kind == MediaKind.VIDEO else 0),
             photo_count=summary.photo_count + (1 if item.kind == MediaKind.PHOTO else 0),
+            caption=summary.caption or str(item.caption or ""),
+            width=summary.width,
+            height=summary.height,
+            fingerprint=summary.fingerprint,
         )
+
+    @staticmethod
+    def _message_dimensions(message) -> tuple[int | None, int | None]:
+        for attribute in ("video", "photo", "document"):
+            media = getattr(message, attribute, None)
+            width = getattr(media, "w", None) or getattr(media, "width", None)
+            height = getattr(media, "h", None) or getattr(media, "height", None)
+            if width and height:
+                try:
+                    return int(width), int(height)
+                except (TypeError, ValueError):
+                    continue
+        return None, None
 
     @staticmethod
     def _message_duration(message) -> float | None:

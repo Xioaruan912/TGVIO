@@ -25,6 +25,8 @@ def _summary(
     caption: str = "",
     video_count: int | None = None,
     photo_count: int | None = None,
+    ad_score: int = 0,
+    ad_reasons: tuple[str, ...] = (),
 ) -> SourceMediaSummary:
     if video_count is None:
         video_count = item_count if kinds == (MediaKind.VIDEO,) else 0
@@ -40,6 +42,10 @@ def _summary(
         grouped_id=grouped_id,
         video_count=video_count,
         photo_count=photo_count,
+        caption=caption,
+        fingerprint=f"{kinds[0].value}|{size}|{message_id}",
+        ad_score=ad_score,
+        ad_reasons=ad_reasons,
     )
     return summary
 
@@ -61,6 +67,9 @@ class FakeCoordinator:
         self.listed: list[tuple[int, int, int, object]] = []
         self.groups: list[tuple[int, int]] = []
         self.selections: list[list[tuple[int, int]]] = []
+        self.released: list[tuple[int, str]] = []
+        self.refreshes: list[int] = []
+        self.more = False
         self.merge_count = 3
         self.merge_failed = 0
         self.merge_accepted = 3
@@ -85,9 +94,19 @@ class FakeCoordinator:
         page: int = 0,
         page_size: int = 10,
         since=None,
+        refresh: bool = False,
     ):
         self.listed.append((int(source_index), int(page), int(page_size), since))
-        return (list(self.pages.get(page, [])), (page + 1) in self.pages, "@xiaodeFile_bot")
+        if refresh:
+            self.refreshes.append(int(source_index))
+        # The picker always scans page 0 and slices client-side, so every
+        # configured row is returned for the first request.
+        items = [entry for group in self.pages.values() for entry in group]
+        return (items, self.more, "@xiaodeFile_bot")
+
+    async def release_fingerprint(self, source_index: int, fingerprint: str) -> bool:
+        self.released.append((int(source_index), str(fingerprint)))
+        return True
 
     async def group_message_ids(self, source_index: int, message_id: int):
         self.groups.append((int(source_index), int(message_id)))
@@ -316,13 +335,35 @@ class PickPageTests(unittest.IsolatedAsyncioTestCase):
         await ui._handle_source_callback(_Event(), 7, "ui:pick:1:0")
         self.assertEqual(ui._source.listed[-1][0], 1)
 
+    async def test_last_page_has_no_next_button(self) -> None:
+        rows_of = [_summary(200 + index) for index in range(25)]
+        ui = _UI(FakeCoordinator(pages={0: rows_of}))
+        text, rows, visible = await ui._pick_render(7, 0, 2)
+        self.assertEqual(len(visible), 5)
+        self.assertEqual([summary.message_id for summary in visible][0], 220)
+        self.assertIn(b"ui:sp:0:1", _callbacks(rows))
+        self.assertNotIn(b"ui:sp:0:3", _callbacks(rows))
+        self.assertNotIn("下一页", [button.text for row in rows for button in row])
+
+    async def test_refresh_button_bypasses_the_scan_cache(self) -> None:
+        coordinator = FakeCoordinator(pages={0: [_summary(1)]})
+        ui = _UI(coordinator)
+        await ui._handle_source_callback(_Event(), 7, "ui:pick:0:0")
+        self.assertEqual(coordinator.refreshes, [])
+        await ui._handle_source_callback(_Event(), 7, "ui:pr:0:0")
+        self.assertEqual(coordinator.refreshes, [0])
+
     async def test_pick_page_offers_previous_and_next_page(self) -> None:
-        ui = _UI(FakeCoordinator(pages={0: [_summary(1)], 1: [_summary(2)]}))
-        text, rows, _visible = await ui._pick_render(7, 0, 0)
+        rows_of = [_summary(100 + index) for index in range(11)]
+        ui = _UI(FakeCoordinator(pages={0: rows_of}))
+        text, rows, visible = await ui._pick_render(7, 0, 0)
         labels = [button.text for row in rows for button in row]
         self.assertIn("下一页 ➡️", labels)
         self.assertIn(b"ui:sp:0:1", _callbacks(rows))
-        text, rows, _visible = await ui._pick_render(7, 0, 1)
+        self.assertEqual(len(visible), 10)
+
+        text, rows, visible = await ui._pick_render(7, 0, 1)
+        self.assertEqual([summary.message_id for summary in visible], [110])
         self.assertIn(b"ui:sp:0:0", _callbacks(rows))
         self.assertNotIn(b"ui:sp:0:2", _callbacks(rows))
 
@@ -362,7 +403,9 @@ class PickGridTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_second_page_grid_replaces_the_previous_message(self) -> None:
         service = FakePreviewService(image=self.image)
-        coordinator = FakeCoordinator(pages={0: [_summary(10)], 1: [_summary(11)]})
+        coordinator = FakeCoordinator(
+            pages={0: [_summary(100 + index) for index in range(11)]}
+        )
         ui = _UI(coordinator, service)
         await ui._handle_source_callback(_Event(), 7, "ui:pick:0:0")
         await _drain(ui)
@@ -577,6 +620,88 @@ class MergeSelectionTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn("合并预览", ui._client.photos[-1][2])
             for task in list(ui._tasks):
                 task.cancel()
+
+
+class AdFilterUITests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.image = Path(self.tmp.name) / "grid.jpg"
+        self.image.write_bytes(b"jpeg-bytes")
+
+    async def asyncTearDown(self) -> None:
+        for task in asyncio.all_tasks():
+            if task is not asyncio.current_task():
+                task.cancel()
+        self.tmp.cleanup()
+
+    def _pages(self):
+        return {
+            0: [
+                _summary(
+                    30506,
+                    kinds=(MediaKind.PHOTO,),
+                    size=116647,
+                    caption="会长新开VIP群",
+                    ad_score=65,
+                    ad_reasons=("lone_photo", "same_content_x2"),
+                ),
+                _summary(30507, kinds=(MediaKind.VIDEO,), size=5_000_000),
+            ]
+        }
+
+    async def test_pick_page_hides_ads_and_offers_the_hidden_view(self) -> None:
+        ui = _UI(FakeCoordinator(pages=self._pages()))
+        text, rows, visible = await ui._pick_render(7, 0, 0)
+        self.assertEqual([summary.message_id for summary in visible], [30507])
+        self.assertIn("已隐藏 1 个疑似广告", text)
+        data = _callbacks(rows)
+        self.assertIn(b"ui:sh:0:0", data)
+        self.assertIn(b"ui:sa:0:0", data)
+        self.assertTrue(all(len(item) <= 64 for item in data))
+
+    async def test_hidden_page_shows_reasons_and_release_buttons(self) -> None:
+        ui = _UI(FakeCoordinator(pages=self._pages()))
+        event = _Event()
+        self.assertTrue(await ui._handle_source_callback(event, 7, "ui:sh:0:0"))
+        text, rows = event.edits[-1]
+        self.assertIn("被隐藏的疑似广告", text)
+        self.assertIn("疑似广告（孤立图片 · 同一内容出现 2 次）", text)
+        data = _callbacks(rows)
+        self.assertIn(b"ui:sr:0:30506:0", data)
+        self.assertIn(b"ui:sg:0:30506:0", data)
+        self.assertIn(b"ui:pick:0:0", data)
+        self.assertTrue(all(len(item) <= 64 for item in data))
+
+    async def test_release_moves_the_row_back_to_the_list(self) -> None:
+        coordinator = FakeCoordinator(pages=self._pages())
+        service = FakePreviewService(image=self.image)
+        ui = _UI(coordinator, service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:sh:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sr:0:30506:0")
+
+        self.assertEqual(len(coordinator.released), 1)
+        self.assertEqual(coordinator.released[0][0], 0)
+        self.assertTrue(coordinator.released[0][1])
+        self.assertTrue(any("已放行" in text for _chat, text in ui._client.sent))
+
+    async def test_toggle_shows_everything_again(self) -> None:
+        ui = _UI(FakeCoordinator(pages=self._pages()))
+        event = _Event()
+        self.assertTrue(await ui._handle_source_callback(event, 7, "ui:sa:0:0"))
+        self.assertFalse(ui._ads_hidden_enabled(7))
+        text, _rows, visible = await ui._pick_render(7, 0, 0)
+        self.assertEqual(len(visible), 2)
+        self.assertNotIn("已隐藏", text)
+
+    async def test_hidden_page_builds_a_thumbnail_grid(self) -> None:
+        service = FakePreviewService(image=self.image)
+        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:sh:0:0")
+        await _drain(ui)
+        self.assertTrue(service.built)
+        self.assertEqual(service.built[-1][2], (30506,))
 
 
 class PickConfirmTests(unittest.IsolatedAsyncioTestCase):

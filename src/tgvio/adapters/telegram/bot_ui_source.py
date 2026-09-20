@@ -8,6 +8,10 @@ from zoneinfo import ZoneInfo
 from telethon import Button
 
 from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
+from tgvio.adapters.telegram.bot_ui_source_ads import (
+    _PICK_SCAN_ITEMS,
+    BotUISourceAdsMixin,
+)
 from tgvio.adapters.telegram.bot_ui_source_merge import BotUISourceMergeMixin
 from tgvio.adapters.telegram.source_runtime import SourceCoordinator, SourceLoginError
 from tgvio.domain.job import MediaKind
@@ -26,6 +30,7 @@ _PREVIEW_TTL_SECONDS = 60
 _ACTIONS = (
     "ui:source",
     "ui:pick",
+    "ui:pr",
     "ui:sp:",
     "ui:sg",
     "ui:sy",
@@ -38,10 +43,13 @@ _ACTIONS = (
     "ui:sz",
     "ui:sm",
     "ui:spm",
+    "ui:sa",
+    "ui:sh",
+    "ui:sr",
 )
 
 
-class BotUISourceMixin(BotUISourceMergeMixin):
+class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
     """In-Bot personal-account source setup and visual content picking."""
 
     def _source_coordinator(self) -> SourceCoordinator | None:
@@ -175,29 +183,46 @@ class BotUISourceMixin(BotUISourceMergeMixin):
         owner_id: int,
         source_index: int = 0,
         page: int = 0,
+        *,
+        refresh: bool = False,
     ) -> tuple[str, list, list]:
         """Render one pick page: text, buttons and the visible summaries."""
 
         coordinator = self._source_coordinator()
         if coordinator is None:
             return ("来源功能未装配。", [[Button.inline("🏠 首页", b"ui:home")]], [])
-        summaries, has_more, label = await coordinator.list_media(
+        scan, _more_rows, label = await coordinator.list_media(
             source_index,
-            page=page,
-            page_size=_PICK_PAGE_SIZE,
+            page=0,
+            page_size=_PICK_SCAN_ITEMS,
             since=self._window_since(owner_id),
+            refresh=refresh,
         )
-        summaries = list(summaries)
+        scan = list(scan)
+        hidden = [summary for summary in scan if getattr(summary, "is_ad", False)]
+        self._pick_hidden_cache()[(int(owner_id), int(source_index))] = list(hidden)
+        ads_hidden = self._ads_hidden_enabled(owner_id)
+        visible = [s for s in scan if not (ads_hidden and getattr(s, "is_ad", False))]
         video_only = bool(self._pick_filter().get(int(owner_id)))
         if video_only:
-            summaries = [summary for summary in summaries if summary.has_video]
+            visible = [summary for summary in visible if summary.has_video]
+        start = max(0, int(page)) * _PICK_PAGE_SIZE
+        summaries = visible[start : start + _PICK_PAGE_SIZE]
+        # Only the rows we actually analysed can be paged through, otherwise a
+        # "next page" button would lead to pages that can never be filled.
+        has_more = len(visible) > start + _PICK_PAGE_SIZE
         self._pick_cache()[(int(owner_id), int(source_index), int(page))] = {
             summary.message_id: summary for summary in summaries
         }
         window = self._pick_window().get(int(owner_id), "today")
-        header = f"选择要发布的内容 · {label or '未配置'} · 第 {page + 1} 页"
+        header = f"选择要发布的内容 · {label or '未配置'} · 第 {int(page) + 1} 页"
         if video_only:
             header += " · 只看视频"
+        if hidden:
+            if ads_hidden:
+                header += f" · 已隐藏 {len(hidden)} 个疑似广告"
+            else:
+                header += f" · {len(hidden)} 个疑似广告（已显示）"
         selection = self._selection_summary(owner_id)
         if selection["rows"]:
             header += f" · 已选 {selection['rows']} 组/{selection['items']} 项"
@@ -279,9 +304,21 @@ class BotUISourceMixin(BotUISourceMergeMixin):
                     filter_label,
                     f"ui:sf:{int(source_index)}:{int(page)}".encode(),
                 ),
-                Button.inline("🔄 刷新", f"ui:pick:{int(source_index)}:{int(page)}".encode()),
+                Button.inline("🔄 刷新", f"ui:pr:{int(source_index)}:{int(page)}".encode()),
             ]
         )
+        ads_label = "🚫 广告过滤 ✅" if ads_hidden else "🚫 广告过滤 ❌"
+        ad_row = [
+            Button.inline(ads_label, f"ui:sa:{int(source_index)}:{int(page)}".encode())
+        ]
+        if hidden:
+            ad_row.append(
+                Button.inline(
+                    f"👀 查看被隐藏 ({len(hidden)})",
+                    f"ui:sh:{int(source_index)}:0".encode(),
+                )
+            )
+        rows.append(ad_row)
         rows.append([Button.inline("⬅️ 来源设置", b"ui:source"), Button.inline("🏠 首页", b"ui:home")])
         return "\n".join(lines), rows, summaries
 
@@ -293,8 +330,11 @@ class BotUISourceMixin(BotUISourceMergeMixin):
         page: int,
         *,
         with_grid: bool = True,
+        refresh: bool = False,
     ) -> None:
-        text, rows, summaries = await self._pick_render(owner_id, source_index, page)
+        text, rows, summaries = await self._pick_render(
+            owner_id, source_index, page, refresh=refresh
+        )
         await self._edit_page(event, text, rows)
         if with_grid:
             self._start_page_grid(
@@ -636,6 +676,12 @@ class BotUISourceMixin(BotUISourceMergeMixin):
             source_index, page = self._two_ints(action, 2, 3)
             await self._show_pick_callback(event, owner_id, source_index, page)
             return True
+        if action.startswith("ui:pr:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            await self._show_pick_callback(
+                event, owner_id, source_index, max(0, page), refresh=True
+            )
+            return True
         if action.startswith("ui:sp:"):
             source_index, page = self._two_ints(action, 2, 3)
             await self._show_pick_callback(event, owner_id, source_index, max(0, page))
@@ -696,6 +742,27 @@ class BotUISourceMixin(BotUISourceMergeMixin):
         if action.startswith("ui:spm:"):
             source_index, page = self._two_ints(action, 2, 3)
             await self._merged_preview(event, owner_id, source_index, page)
+            return True
+        if action.startswith("ui:sa:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            await self._toggle_ad_filter(event, owner_id, source_index, page)
+            return True
+        if action.startswith("ui:sh:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            await self._show_hidden_callback(event, owner_id, source_index, max(0, page))
+            return True
+        if action.startswith("ui:sr:"):
+            parts = action.split(":")
+            try:
+                source_index = int(parts[2])
+                message_id = int(parts[3])
+                page = int(parts[4]) if len(parts) > 4 else 0
+            except (IndexError, ValueError):
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return True
+            await self._release_ad_callback(
+                event, owner_id, source_index, message_id, page
+            )
             return True
         if action.startswith("ui:sn:"):
             source_index, page = self._two_ints(action, 2, 3)

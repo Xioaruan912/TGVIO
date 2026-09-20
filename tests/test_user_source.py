@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import logging
+import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -22,6 +23,9 @@ def _message(
     grouped_id: int | None = None,
     caption: str = "",
     size: int = 100,
+    media_id: int | None = None,
+    width: int | None = None,
+    height: int | None = None,
 ):
     fields = {
         "photo": None,
@@ -30,7 +34,8 @@ def _message(
         "audio": None,
         "voice": None,
     }
-    fields[kind] = object()
+    media = SimpleNamespace(id=media_id if media_id is not None else message_id, w=width, h=height)
+    fields[kind] = media
     return SimpleNamespace(
         id=message_id,
         chat_id=chat_id,
@@ -176,6 +181,108 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
             -100555, limit=10, since=since
         )
         self.assertEqual([item.message_id for item in summaries], [40])
+
+    async def test_list_recent_media_flags_repeated_lone_photos_as_ads(self) -> None:
+        client = FakeUserClient(
+            {
+                40: _message(
+                    40, kind="photo", caption="会长新开VIP群", size=116647,
+                    media_id=7, width=720, height=520,
+                ),
+                39: _message(
+                    39, kind="photo", caption="会长新开VIP群", size=116647,
+                    media_id=7, width=720, height=520,
+                ),
+            }
+        )
+        reader = UserSourceReader(client)
+        summaries, _has_more = await reader.list_recent_media(-100555, limit=10)
+        self.assertEqual(len(summaries), 2)
+        for summary in summaries:
+            self.assertTrue(summary.is_ad, summary)
+            self.assertIn("lone_photo", summary.ad_reasons)
+            self.assertIn("same_file_x2", summary.ad_reasons)
+
+    async def test_list_recent_media_keeps_albums_with_a_footer_caption(self) -> None:
+        album = {
+            30 + index: _message(
+                30 + index,
+                kind="video",
+                grouped_id=99,
+                caption="获取更多资源  https://t.me/+B6npSc_Xy65kYTY9",
+                size=5_000_000 + index,
+                media_id=100 + index,
+            )
+            for index in range(3)
+        }
+        reader = UserSourceReader(FakeUserClient(album))
+        summaries, _has_more = await reader.list_recent_media(-100555, limit=10)
+        self.assertEqual(len(summaries), 1)
+        self.assertFalse(summaries[0].is_ad)
+        self.assertEqual(summaries[0].ad_score, 0)
+
+    async def test_list_recent_media_honours_learned_and_released_sets(self) -> None:
+        message = _message(
+            50, kind="photo", size=500_000, media_id=9, width=1000, height=1000
+        )
+        reader = UserSourceReader(FakeUserClient({50: message}))
+        page, _has_more = await reader.list_recent_media(-100555, limit=10)
+        fingerprint = page[0].fingerprint
+        self.assertFalse(page[0].is_ad)
+
+        learned, _more = await reader.list_recent_media(
+            -100555, limit=10, learned=frozenset({fingerprint})
+        )
+        self.assertTrue(learned[0].is_ad)
+        self.assertIn("learned_ad", learned[0].ad_reasons)
+
+        released, _more = await reader.list_recent_media(
+            -100555,
+            limit=10,
+            learned=frozenset({fingerprint}),
+            released=frozenset({fingerprint}),
+        )
+        self.assertFalse(released[0].is_ad)
+
+    async def test_list_recent_media_carries_caption_and_dimensions(self) -> None:
+        client = FakeUserClient(
+            {
+                60: _message(
+                    60, kind="photo", caption="标题", size=1234,
+                    media_id=3, width=720, height=520,
+                )
+            }
+        )
+        reader = UserSourceReader(client)
+        page, _has_more = await reader.list_recent_media(-100555, limit=10)
+        self.assertEqual(page[0].caption, "标题")
+        self.assertEqual((page[0].width, page[0].height), (720, 520))
+        self.assertTrue(page[0].fingerprint)
+
+    async def test_a_full_window_is_scored_in_one_bounded_pass(self) -> None:
+        messages = {
+            1000 + index: _message(
+                1000 + index,
+                kind="video" if index % 3 else "photo",
+                grouped_id=None if index % 5 else 500 + index,
+                caption="获取更多资源  https://t.me/+B6npSc_Xy65kYTY9",
+                size=200_000 + index,
+                media_id=9000 + index,
+                width=720,
+                height=520,
+            )
+            for index in range(400)
+        }
+        reader = UserSourceReader(FakeUserClient(messages))
+        started = time.monotonic()
+        page, has_more = await reader.list_recent_media(-100555, limit=400)
+        elapsed = time.monotonic() - started
+        self.assertLess(elapsed, 1.0, "a 400-row scan must stay cheap")
+        self.assertGreater(len(page), 0)
+        self.assertIsInstance(has_more, bool)
+        for summary in page:
+            self.assertIn(summary.fingerprint, {entry.fingerprint for entry in page})
+            self.assertIsInstance(summary.ad_score, int)
 
     async def test_group_message_ids_expands_one_album(self) -> None:
         target = _message(20, grouped_id=99)

@@ -43,6 +43,7 @@ class FakeReader:
         self.listed: list[tuple[int, int, int, object]] = []
         self.captured_at: list[tuple[int, int]] = []
         self.groups: list[tuple[int, int]] = []
+        self.ad_inputs: list[tuple[object, object]] = []
 
     def ordered_chats(self):
         return list(self._chats)
@@ -50,8 +51,18 @@ class FakeReader:
     def label_for(self, chat_id):
         return {-1001: "@first", -1002: "@second"}.get(int(chat_id), str(chat_id))
 
-    async def list_recent_media(self, chat_id, *, limit=10, offset=0, since=None):
+    async def list_recent_media(
+        self,
+        chat_id,
+        *,
+        limit=10,
+        offset=0,
+        since=None,
+        learned=None,
+        released=None,
+    ):
         self.listed.append((int(chat_id), int(limit), int(offset), since))
+        self.ad_inputs.append((learned, released))
         return (list(self._media), False)
 
     async def capture_at(self, chat_id, message_id):
@@ -118,6 +129,39 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
     async def test_list_media_without_a_reader_is_empty(self) -> None:
         coordinator = self._coordinator()
         self.assertEqual(await coordinator.list_media(0), ([], False, ""))
+
+    async def test_list_media_reuses_a_recent_scan(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader(media=["a"])
+        coordinator._reader = reader
+        coordinator._client = object()
+
+        first, _more, _label = await coordinator.list_media(0, page=0, page_size=400)
+        second, _more, _label = await coordinator.list_media(0, page=0, page_size=400)
+        self.assertEqual(len(reader.listed), 1)
+        self.assertEqual([item for item in second], ["a"])
+        self.assertEqual(first, second)
+
+    async def test_list_media_refresh_bypasses_the_scan_cache(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader(media=["a"])
+        coordinator._reader = reader
+        coordinator._client = object()
+
+        await coordinator.list_media(0, page=0, page_size=400)
+        await coordinator.list_media(0, page=0, page_size=400, refresh=True)
+        self.assertEqual(len(reader.listed), 2)
+
+    async def test_list_media_scan_cache_is_dropped_after_a_release(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader(media=["a"])
+        coordinator._reader = reader
+        coordinator._client = object()
+
+        await coordinator.list_media(0, page=0, page_size=400)
+        self.assertTrue(await coordinator.release_fingerprint(0, "photo|1|2x3|x"))
+        await coordinator.list_media(0, page=0, page_size=400)
+        self.assertEqual(len(reader.listed), 2)
 
     async def test_group_message_ids_uses_the_selected_source(self) -> None:
         coordinator = self._coordinator()

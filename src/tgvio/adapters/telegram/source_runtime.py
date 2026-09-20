@@ -11,6 +11,7 @@ import asyncio
 import json
 import logging
 from pathlib import Path
+import time
 from typing import Awaitable, Callable
 
 from telethon import TelegramClient
@@ -28,6 +29,12 @@ from tgvio.application.runtime_flags import RuntimeFlags
 from tgvio.adapters.telegram.user_source import SourceMediaSummary, UserSourceReader
 
 _WHITELIST_FLAG = "source_chats"
+_AD_FLAG = "pick_ads"
+_AD_RELEASED_FLAG = "pick_ads_released"
+_AD_MAX_FINGERPRINTS = 200
+_AD_CACHE_SECONDS = 60.0
+_SCAN_CACHE_SECONDS = 300.0
+_SCAN_CACHE_ENTRIES = 20
 _MAX_CHATS = 50
 _MERGE_READ_CONCURRENCY = 3
 _MERGE_ROW_TIMEOUT = 20.0
@@ -78,6 +85,8 @@ class SourceCoordinator:
         self._reader: UserSourceReader | None = None
         self._on_source_media: SourceMediaHook | None = None
         self._on_notice: NoticeHook | None = None
+        self._ad_cache: dict[int, tuple[float, frozenset[str], frozenset[str]]] = {}
+        self._scan_cache: dict[tuple, tuple[float, list, bool]] = {}
         self._log = logging.getLogger("tgvio.telegram.source")
 
     # ---------------------------------------------------------------- status
@@ -160,20 +169,43 @@ class SourceCoordinator:
         page: int = 0,
         page_size: int = 10,
         since=None,
+        refresh: bool = False,
     ) -> tuple[list[SourceMediaSummary], bool, str]:
-        """Recent media groups of one source (newest first, albums collapsed)."""
+        """Recent media groups of one source (newest first, albums collapsed).
+
+        One scan is a metadata-only walk of the window, so the result is cached
+        for a few minutes; the picker's "refresh" button and a release bypass it.
+        """
 
         target = self._chat_for(source_index)
         if target is None or self._reader is None:
             return ([], False, "")
         chat_id, label = target
+        offset = max(0, int(page)) * int(page_size)
+        key = (int(chat_id), str(since), int(page_size), offset)
+        if not refresh:
+            cached = self._scan_cache.get(key)
+            if cached is not None and time.monotonic() - cached[0] < _SCAN_CACHE_SECONDS:
+                return (list(cached[1]), cached[2], label)
+        learned, released = await self._ad_fingerprints(chat_id)
         summaries, has_more = await self._reader.list_recent_media(
             chat_id,
             limit=page_size,
-            offset=max(0, int(page)) * page_size,
+            offset=offset,
             since=since,
+            learned=learned,
+            released=released,
         )
+        self._scan_cache[key] = (time.monotonic(), list(summaries), bool(has_more))
+        if len(self._scan_cache) > _SCAN_CACHE_ENTRIES:
+            oldest = min(self._scan_cache, key=lambda item: self._scan_cache[item][0])
+            self._scan_cache.pop(oldest, None)
         return (summaries, has_more, label)
+
+    def _drop_scan_cache(self, chat_id: int) -> None:
+        self._scan_cache = {
+            key: value for key, value in self._scan_cache.items() if int(key[0]) != int(chat_id)
+        }
 
     async def group_message_ids(
         self,
@@ -201,6 +233,71 @@ class SourceCoordinator:
             return None
         chat_id, _label = target
         return await self._reader.fetch_thumbnail(chat_id, int(message_id), target_dir)
+
+    # --------------------------------------------------------- ad fingerprints
+    async def _ad_fingerprints(self, chat_id: int) -> tuple[frozenset[str], frozenset[str]]:
+        """Learned ad fingerprints and the owner's released ones for one chat."""
+
+        cached = self._ad_cache.get(int(chat_id))
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _AD_CACHE_SECONDS:
+            return (cached[1], cached[2])
+        learned = await self._load_fingerprints(_AD_FLAG, int(chat_id))
+        released = await self._load_fingerprints(_AD_RELEASED_FLAG, int(chat_id))
+        self._ad_cache[int(chat_id)] = (now, learned, released)
+        return (learned, released)
+
+    async def _load_fingerprints(self, flag: str, chat_id: int) -> frozenset[str]:
+        raw = self._flags.get(f"{flag}_{int(chat_id)}")
+        if not raw:
+            return frozenset()
+        try:
+            parsed = json.loads(raw)
+        except (TypeError, ValueError):
+            return frozenset()
+        if not isinstance(parsed, list):
+            return frozenset()
+        return frozenset(str(entry) for entry in parsed if str(entry).strip())
+
+    async def release_fingerprint(self, source_index: int, fingerprint: str) -> bool:
+        """Remember that the owner accepted one suspected ad."""
+
+        target = self._chat_for(source_index)
+        value = str(fingerprint or "").strip()
+        if target is None or not value:
+            return False
+        chat_id = int(target[0])
+        _learned, released = await self._ad_fingerprints(chat_id)
+        updated = list(dict.fromkeys((*released, value)))[-_AD_MAX_FINGERPRINTS:]
+        await self._flags.set(
+            self._repository,
+            f"{_AD_RELEASED_FLAG}_{chat_id}",
+            json.dumps(updated),
+        )
+        self._ad_cache.pop(chat_id, None)
+        self._drop_scan_cache(chat_id)
+        self._log.info(
+            "source.ads.released chat=%s total=%s", chat_id, len(updated)
+        )
+        return True
+
+    async def remember_ad(self, source_index: int, fingerprint: str) -> None:
+        """Learn an ad fingerprint so it is recognised immediately next time."""
+
+        target = self._chat_for(source_index)
+        value = str(fingerprint or "").strip()
+        if target is None or not value:
+            return
+        chat_id = int(target[0])
+        learned, _released = await self._ad_fingerprints(chat_id)
+        updated = list(dict.fromkeys((*learned, value)))[-_AD_MAX_FINGERPRINTS:]
+        await self._flags.set(
+            self._repository,
+            f"{_AD_FLAG}_{chat_id}",
+            json.dumps(updated),
+        )
+        self._ad_cache.pop(chat_id, None)
+        self._drop_scan_cache(chat_id)
 
     async def grab_message(self, source_index: int, message_id: int) -> tuple[int, str, int, int]:
         """Publish one specific message/album selected by the operator."""
@@ -374,6 +471,7 @@ class SourceCoordinator:
 
     async def stop(self) -> None:
         self._reader = None
+        self._scan_cache = {}
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -389,6 +487,7 @@ class SourceCoordinator:
         reader = UserSourceReader(client, allowed_chats=self.effective_chats())
         resolved = await reader.prepare()
         self._reader = reader
+        self._scan_cache = {}
         self._awaiting = None
         self._log.info("source.reader.resolved chats=%s", resolved)
         if self._on_reader_ready is not None:
