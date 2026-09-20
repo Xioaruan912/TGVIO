@@ -210,7 +210,13 @@ def _verify_live_origin(repo: Path, head: str, github_user: str) -> None:
         raise DeployError("HEAD is not the current live origin/main commit")
 
 
-def _verify_control_preflight(repo: Path, report: dict[str, object], head: str) -> tuple[str, str]:
+def _verify_control_preflight(
+    repo: Path,
+    report: dict[str, object],
+    head: str,
+    *,
+    allow_foreign_production: bool = False,
+) -> tuple[str, str]:
     if not report.get("safe_to_deploy"):
         blockers = report.get("blockers")
         raise DeployError(f"HostDZire preflight is blocked: {blockers}")
@@ -234,7 +240,16 @@ def _verify_control_preflight(repo: Path, report: dict[str, object], head: str) 
         check=False,
     )
     if ancestor.returncode != 0:
-        raise DeployError("production commit is not an ancestor of the release commit")
+        if not allow_foreign_production:
+            raise DeployError("production commit is not an ancestor of the release commit")
+        print(
+            "warning: production commit "
+            f"{current_commit[:12]} is not an ancestor of {head[:12]}; "
+            "continuing because --allow-foreign-production was given "
+            "(restored/foreign host bootstrap)",
+            file=sys.stderr,
+            flush=True,
+        )
     created_at = datetime.fromisoformat(str(report["created_at"]))
     skew = abs((datetime.now(timezone.utc) - created_at).total_seconds())
     if skew > 300:
@@ -308,7 +323,12 @@ def deploy(args: argparse.Namespace) -> int:
         f"tee {shlex.quote(remote_dir + '/evidence/preflight-control.json')}"
     )
     control_report = _remote_json(ssh, preflight_command)
-    current_commit, current_manifest = _verify_control_preflight(repo, control_report, head)
+    current_commit, current_manifest = _verify_control_preflight(
+        repo,
+        control_report,
+        head,
+        allow_foreign_production=args.allow_foreign_production,
+    )
 
     remote_release = remote_dir + "/source/scripts/remote_release.sh"
     remote_args = [
@@ -353,6 +373,14 @@ def parser() -> argparse.ArgumentParser:
         type=Path,
         default=Path(os.getenv("TGVIO_DEPLOY_KEY", str(DEFAULT_KEY))),
         help="path to the dedicated HostDZire private key",
+    )
+    result.add_argument(
+        "--allow-foreign-production",
+        action="store_true",
+        help=(
+            "bootstrap a restored/foreign host whose running commit is not an "
+            "ancestor of the release commit (skips only the ancestry check)"
+        ),
     )
     return result
 
