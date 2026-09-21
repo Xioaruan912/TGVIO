@@ -38,6 +38,7 @@ from tgvio.application.operation_tokens import (
     OperationTokenService,
 )
 from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepository
+from tgvio.application.item_recovery import SkippedItemRecoveryService
 from tgvio.application.undo import (
     UndoOperationInvalidError,
     UndoService,
@@ -62,12 +63,8 @@ from tgvio.domain.operations import UndoStatus
 from tgvio.domain.publish import PublishPlan, PublishStepKind, PublishStepState, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
-
-
 from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
 from tgvio.adapters.telegram.bot_ui_format import BotUIFormatMixin
-
-
 from tgvio.adapters.telegram.bot_ui_jobs import BotUIJobsMixin
 from tgvio.adapters.telegram.bot_ui_result import BotUIResultMixin
 from tgvio.adapters.telegram.bot_ui_drafts import BotUIDraftsMixin
@@ -76,8 +73,6 @@ from tgvio.adapters.telegram.bot_ui_content import BotUIContentMixin
 from tgvio.adapters.telegram.bot_ui_source import BotUISourceMixin
 from tgvio.adapters.telegram.bot_ui_archive import BotUIArchiveMixin
 from tgvio.adapters.telegram.bot_ui_fixture import BotUIFixtureMixin
-
-
 class TelethonBotUI(
     BotUIFixtureMixin,
     BotUIArchiveMixin,
@@ -108,6 +103,7 @@ class TelethonBotUI(
         intake: object | None = None,
         source_coordinator: object | None = None,
         pick_previews: object | None = None,
+        item_recovery: SkippedItemRecoveryService | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -125,6 +121,7 @@ class TelethonBotUI(
         self._runtime_flags = runtime_flags
         self._intake = intake
         self._source, self._pick_previews = source_coordinator, pick_previews
+        self._item_recovery = item_recovery
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 
@@ -559,6 +556,8 @@ class TelethonBotUI(
             return
 
         job_actions = (
+            ("ui:item-recover-confirm:", self._run_item_recovery_callback),
+            ("ui:item-recover:", self._confirm_item_recovery_callback),
             ("ui:undo-confirm:", self._run_undo_callback),
             ("ui:undo:", self._confirm_undo_callback),
             ("ui:archive-delete-confirm:", self._run_archive_delete_callback),

@@ -45,6 +45,7 @@ from tgvio.adapters.telegram.alerts import TelegramOwnerNotifier
 from tgvio.domain.notifications import ALERT_EVENT_TYPES
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
+from tgvio.application.item_recovery import SkippedItemRecoveryService
 from tgvio.application.collection_editing import CollectionEditingService
 from tgvio.application.previews import PreviewService
 from tgvio.application.pick_previews import PickPreviewService
@@ -512,6 +513,7 @@ async def run(*, check_only: bool = False) -> None:
                 if source_coordinator is not None
                 else None
             ),
+            item_recovery=SkippedItemRecoveryService(repository),
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()

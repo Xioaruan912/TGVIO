@@ -90,7 +90,7 @@ class ContentPreferenceServiceTests(unittest.IsolatedAsyncioTestCase):
                 },
                 columns,
             )
-            self.assertEqual(
+            self.assertGreaterEqual(
                 connection.execute("PRAGMA user_version").fetchone()[0],
                 17,
             )

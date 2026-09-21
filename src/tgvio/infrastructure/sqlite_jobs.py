@@ -5,7 +5,17 @@ import time
 
 import aiosqlite
 
-from tgvio.domain.job import ALLOWED_TRANSITIONS, Job, JobEvent, JobState, MediaItem, MediaKind
+from tgvio.domain.job import (
+    ALLOWED_TRANSITIONS,
+    DOWNLOAD_SKIPPED_CODE_KEY,
+    DOWNLOAD_SKIPPED_KEY,
+    Job,
+    JobEvent,
+    JobState,
+    MediaItem,
+    MediaKind,
+    item_download_skipped,
+)
 from tgvio.domain.job_query import (
     FailurePage,
     FailureSummary,
@@ -20,6 +30,69 @@ class SQLiteJobRepositoryMixin:
     async def create(self, job: Job) -> None:
         async with self._write_transaction() as conn:
             await self._insert_new_job(conn, job)
+
+    async def create_skipped_item_recovery(
+        self,
+        parent_job_id: str,
+        *,
+        owner_id: int,
+    ) -> Job:
+        """Clone skipped terminal media once, without changing source intake ownership."""
+
+        async with self._write_transaction() as conn:
+            cursor = await conn.execute("SELECT * FROM jobs WHERE id=?", (parent_job_id,))
+            parent_row = await cursor.fetchone()
+            await cursor.close()
+            if parent_row is None:
+                raise KeyError(f"job not found: {parent_job_id}")
+            if int(parent_row["owner_id"]) != int(owner_id):
+                raise PermissionError("job owner mismatch")
+            parent_state = JobState(parent_row["state"])
+            if parent_state not in {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}:
+                raise ValueError("parent job is not terminal")
+
+            cursor = await conn.execute(
+                "SELECT child_job_id FROM item_recovery_jobs WHERE parent_job_id=?",
+                (parent_job_id,),
+            )
+            recovery_row = await cursor.fetchone()
+            await cursor.close()
+            if recovery_row is not None:
+                child_id = str(recovery_row["child_job_id"])
+            else:
+                cursor = await conn.execute(
+                    "SELECT * FROM job_items WHERE job_id=? ORDER BY item_index",
+                    (parent_job_id,),
+                )
+                item_rows = await cursor.fetchall()
+                await cursor.close()
+                skipped: list[MediaItem] = []
+                for row in item_rows:
+                    item = self._item_from_row(row)
+                    if item_download_skipped(item):
+                        skipped.append(self._reset_recovery_item(item, len(skipped)))
+                if not skipped:
+                    raise ValueError("parent job has no skipped items")
+                policy = json.loads(parent_row["policy_json"] or "{}")
+                if not isinstance(policy, dict):
+                    raise ValueError("parent job policy must be an object")
+                policy.pop("download_skipped", None)
+                child = Job(
+                    owner_id=int(parent_row["owner_id"]),
+                    destination=str(parent_row["destination"]),
+                    items=skipped,
+                    policy=policy,
+                )
+                await self._insert_new_job(conn, child)
+                await conn.execute(
+                    "INSERT INTO item_recovery_jobs(parent_job_id, child_job_id) VALUES(?,?)",
+                    (parent_job_id, child.id),
+                )
+                child_id = child.id
+        child = await self.get(child_id)
+        if child is None:
+            raise RuntimeError("skipped-item recovery child disappeared after create")
+        return child
 
     async def _insert_new_job(self, conn: aiosqlite.Connection, job: Job) -> None:
         await conn.execute(
@@ -602,6 +675,30 @@ class SQLiteJobRepositoryMixin:
                     json.dumps(item.metadata, ensure_ascii=False, separators=(",", ":")),
                 ),
             )
+
+    @staticmethod
+    def _reset_recovery_item(item: MediaItem, index: int) -> MediaItem:
+        """Keep source/presentation inputs while removing all downloaded/analyzed state."""
+
+        metadata = {}
+        source_type = item.metadata.get("source_type")
+        if isinstance(source_type, str) and source_type:
+            metadata["source_type"] = source_type
+        metadata.pop(DOWNLOAD_SKIPPED_KEY, None)
+        metadata.pop(DOWNLOAD_SKIPPED_CODE_KEY, None)
+        return MediaItem(
+            index=index,
+            kind=item.kind,
+            source=item.source,
+            caption=item.caption,
+            name=item.name,
+            size_bytes=item.size_bytes,
+            spoiler=item.spoiler,
+            grouped_id=item.grouped_id,
+            source_chat_id=item.source_chat_id,
+            source_message_id=item.source_message_id,
+            metadata=metadata,
+        )
 
     @staticmethod
     def _item_from_row(row: aiosqlite.Row) -> MediaItem:

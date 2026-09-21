@@ -744,6 +744,8 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             "plan",
             "retry",
             "retry-confirm",
+            "item-recover",
+            "item-recover-confirm",
             "cancel",
             "cancel-confirm",
             "hold",

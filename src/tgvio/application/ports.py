@@ -80,6 +80,8 @@ class PublishTransportUncertainError(RuntimeError):
 class JobRepository(Protocol):
     async def create(self, job: Job) -> None: ...
 
+    async def create_skipped_item_recovery(self, parent_job_id: str, *, owner_id: int) -> Job: ...
+
     async def lookup_intake_events(
         self,
         keys: tuple[IntakeEventKey, ...],

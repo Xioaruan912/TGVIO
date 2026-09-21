@@ -4,6 +4,8 @@ from telethon import Button
 
 from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
 from tgvio.application.result_card import ResultCard, ResultCardService
+from tgvio.application.item_recovery import SkippedItemRecoveryUnavailableError
+from tgvio.application.operation_tokens import OperationTokenInvalidError
 from tgvio.domain.job import Job, JobState
 
 
@@ -100,6 +102,15 @@ class BotUIResultMixin:
         )
         if card.undo_remaining > 0:
             rows.append([Button.inline("↩️ 撤销发布", self._callback_data("undo", job.id))])
+        if card.skipped_items:
+            rows.append(
+                [
+                    Button.inline(
+                        f"🔄 补发跳过项 ({card.skipped_items})",
+                        self._callback_data("item-recover", job.id),
+                    )
+                ]
+            )
         rows.append(
             [
                 Button.inline("🔎 任务详情", self._callback_data("job", job.id)),
@@ -148,6 +159,103 @@ class BotUIResultMixin:
             return
         card = await self._build_result(owner_id, job)
         await self._safe_answer(event, card.link_reason or "无法生成链接", alert=True)
+
+    async def _confirm_item_recovery_callback(self, event, owner_id: int, job_id: str) -> None:
+        job = await self._owned_job(owner_id, job_id)
+        if job is None:
+            await self._safe_answer(event, "没有找到对应任务", alert=True)
+            return
+        card = await self._build_result(owner_id, job)
+        if self._item_recovery is None or self._operation_tokens is None or not card.skipped_items:
+            await self._safe_answer(event, "当前没有可补发的跳过项", alert=True)
+            return
+        control = await self._repository.get_job_control(job.id)
+        payload = {
+            "job_id": job.id,
+            "state": job.state.value,
+            "skipped_items": card.skipped_items,
+            "retry_count": control.retry_count,
+        }
+        operation = await self._operation_tokens.issue(
+            owner_id=owner_id,
+            action="recover_skipped_items",
+            resource_type="job",
+            resource_id=job.id,
+            expected_revision=control.retry_count,
+            payload=payload,
+        )
+        await self._edit_page(
+            event,
+            (
+                "**确认补发跳过项**\n\n"
+                f"将为任务生成一个仅包含 `{card.skipped_items}` 个跳过媒体的新任务。\n"
+                "原任务和已发布消息不会改变；新任务会重新下载并按正常队列顺序发布。\n\n"
+                "确认令牌 5 分钟内有效，并且只能使用一次。"
+            ),
+            [
+                [
+                    Button.inline(
+                        "✅ 确认补发",
+                        self._callback_data("item-recover-confirm", operation.token),
+                    ),
+                    Button.inline("返回", self._callback_data("result", job.id)),
+                ]
+            ],
+        )
+
+    async def _run_item_recovery_callback(self, event, owner_id: int, token: str) -> None:
+        if self._item_recovery is None or self._operation_tokens is None:
+            await self._safe_answer(event, "补发服务未启用", alert=True)
+            return
+        try:
+            operation = await self._operation_tokens.inspect(
+                token=token, owner_id=owner_id, action="recover_skipped_items"
+            )
+            job = await self._owned_job(owner_id, operation.resource_id)
+            if job is None:
+                raise ValueError("job unavailable")
+            card = await self._build_result(owner_id, job)
+            control = await self._repository.get_job_control(job.id)
+            payload = {
+                "job_id": job.id,
+                "state": job.state.value,
+                "skipped_items": card.skipped_items,
+                "retry_count": control.retry_count,
+            }
+            await self._operation_tokens.consume(
+                token=token,
+                owner_id=owner_id,
+                action="recover_skipped_items",
+                resource_type="job",
+                resource_id=job.id,
+                expected_revision=control.retry_count,
+                payload=payload,
+            )
+            child = await self._item_recovery.recover(parent_job_id=job.id, owner_id=owner_id)
+        except (ValueError, SkippedItemRecoveryUnavailableError):
+            await self._edit_page(
+                event,
+                "**补发操作已过期**\n\n任务状态或跳过项已经变化。请重新打开任务结果。",
+                self._nav_buttons(),
+            )
+            return
+        except OperationTokenInvalidError:
+            await self._edit_page(
+                event,
+                "**补发操作已过期**\n\n请重新打开任务结果后再操作。",
+                self._nav_buttons(),
+            )
+            return
+        if self._schedule_job is not None:
+            self._schedule_job(child, chat_id=event.chat_id)
+        await self._edit_page(
+            event,
+            (
+                "**✅ 已创建补发任务**\n\n"
+                "跳过媒体已作为新任务进入队列；原任务和已发布消息保持不变。"
+            ),
+            [[Button.inline("🔎 查看补发任务", self._callback_data("job", child.id))]],
+        )
 
     async def _share_callback(self, event, owner_id: int, job_id: str) -> None:
         job = await self._repository.get(job_id)
