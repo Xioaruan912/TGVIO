@@ -66,6 +66,7 @@ class SourceMediaSummary:
     height: int | None = None
     ad_score: int = 0
     ad_reasons: tuple[str, ...] = ()
+    already_submitted: bool = False
 
     @property
     def is_ad(self) -> bool:
@@ -184,6 +185,7 @@ class UserSourceReader:
         since: datetime | None = None,
         learned: frozenset[str] | None = None,
         released: frozenset[str] | None = None,
+        submitted: frozenset[int] | None = None,
     ) -> tuple[list[SourceMediaSummary], bool]:
         """Newest-first media groups within ``since``; albums collapse into one entry.
 
@@ -244,6 +246,7 @@ class UserSourceReader:
                 caption_files=len(caption_files.get(normalize_caption(summary.caption), ())) or 1,
                 learned=bool(learned) and summary.fingerprint in learned,
                 released=bool(released) and summary.fingerprint in released,
+                submitted=bool(submitted) and int(summary.message_id) in submitted,
             )
             for index, summary in enumerate(summaries)
         ]
@@ -269,6 +272,7 @@ class UserSourceReader:
         caption_files: int,
         learned: bool,
         released: bool,
+        submitted: bool = False,
     ) -> SourceMediaSummary:
         verdict = ad_verdict(
             AdSignals(
@@ -282,12 +286,17 @@ class UserSourceReader:
                 released=released,
             )
         )
-        if verdict.score == summary.ad_score and verdict.reasons == summary.ad_reasons:
+        if (
+            verdict.score == summary.ad_score
+            and verdict.reasons == summary.ad_reasons
+            and bool(submitted) == summary.already_submitted
+        ):
             return summary
         return replace(
             summary,
             ad_score=verdict.score,
             ad_reasons=verdict.reasons,
+            already_submitted=bool(submitted),
         )
 
     # --------------------------------------------------------------- capture

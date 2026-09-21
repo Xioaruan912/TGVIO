@@ -70,7 +70,34 @@ class BotUISourceMergeMixin:
             "videos": int(summary.video_count),
             "photos": int(summary.photo_count),
             "bytes": int(summary.size_bytes),
+            "label": self._summary_line(summary),
         }
+
+    def _drop_selection_row(
+        self,
+        owner_id: int,
+        source_index: int,
+        message_id: int,
+    ) -> bool:
+        """Remove one row from the ordered selection; False when not selected."""
+
+        selection = self._selection_for(owner_id)
+        key = self._selection_key(source_index, message_id)
+        if key not in selection["meta"]:
+            return False
+        selection["meta"].pop(key, None)
+        selection["order"] = [entry for entry in selection["order"] if entry != key]
+        return True
+
+    def _selection_rows(self, owner_id: int) -> list[tuple[int, int, str]]:
+        """``(source_index, message_id, label)`` in selection order."""
+
+        selection = self._selection_for(owner_id)
+        rows: list[tuple[int, int, str]] = []
+        for key in selection["order"]:
+            entry = selection["meta"].get(key) or {}
+            rows.append((int(key[0]), int(key[1]), str(entry.get("label") or f"#{key[1]}")))
+        return rows
 
     def _selection_composition(self, totals: dict) -> str:
         parts: list[str] = []
@@ -107,19 +134,85 @@ class BotUISourceMergeMixin:
             return
         limit = self._merge_limit()
         lines = ["合并发布", "──────────", *self._selection_lines(owner_id)]
+        for position, (_src, _mid, label) in enumerate(self._selection_rows(owner_id), start=1):
+            lines.append(f"{position}) {label}")
         if totals["items"] > limit:
             lines.append(
                 f"⚠️ 超过一次上限 {limit} 项；请分批，或调大 `TGVIO_MERGE_MAX_ITEMS`。"
             )
         lines.append("──────────")
-        rows = [
+        rows: list[list] = []
+        for position, (src, mid, _label) in enumerate(self._selection_rows(owner_id), start=1):
+            rows.append(
+                [
+                    Button.inline(
+                        f"🗑 移除 {position}",
+                        f"ui:srm:{int(src)}:{int(page)}:{int(mid)}".encode(),
+                    )
+                ]
+            )
+        rows.append(
             [
                 Button.inline("✅ 发布", f"ui:sm:{int(source_index)}:{int(page)}".encode()),
                 Button.inline("👁 预览", f"ui:spm:{int(source_index)}:{int(page)}".encode()),
-            ],
-            [Button.inline("❌ 取消", f"ui:sx:{int(source_index)}:{int(page)}".encode())],
-        ]
+            ]
+        )
+        rows.append([Button.inline("❌ 取消", f"ui:sx:{int(source_index)}:{int(page)}".encode())])
         await self._edit_page(event, "\n".join(lines), rows)
+
+    async def _toggle_preview_selection(
+        self,
+        event,
+        owner_id: int,
+        source_index: int,
+        message_id: int,
+        page: int,
+    ) -> None:
+        """Selection toggled straight from a preview thumbnail."""
+
+        if self._row_submitted(owner_id, source_index, message_id, page):
+            await self._safe_answer(event, "这条已经提交过了，不会再抓取", alert=True)
+            return
+        summary = self._pick_cache().get(
+            (int(owner_id), int(source_index), int(page)), {}
+        ).get(int(message_id))
+        if summary is None:
+            await self._safe_answer(event, "这一页已刷新，请重新打开列表", alert=True)
+            return
+        self._toggle_selection(owner_id, source_index, summary)
+        selected = self._preview_selected(owner_id, source_index, message_id)
+        await self._safe_answer(event, "已加入合并发布" if selected else "已移出合并发布")
+        chat_id = int(event.chat_id)
+        preview_id = self._preview_message_id(owner_id, event)
+        if preview_id is not None:
+            await self._refresh_preview(owner_id, chat_id, preview_id)
+        await self._refresh_list_page(owner_id, chat_id)
+
+    async def _remove_from_selection(
+        self,
+        event,
+        owner_id: int,
+        source_index: int,
+        message_id: int,
+        page: int,
+    ) -> None:
+        """Drop one row from the ordered selection (confirm card or preview)."""
+
+        removed = self._drop_selection_row(owner_id, source_index, message_id)
+        chat_id = int(event.chat_id)
+        preview_id = self._preview_message_id(owner_id, event)
+        if preview_id is not None:
+            await self._refresh_preview(owner_id, chat_id, preview_id)
+        await self._refresh_list_page(owner_id, chat_id)
+        await self._safe_answer(
+            event, "已从排序移除" if removed else "这项已经不在选择里了"
+        )
+        if self._is_preview_message(owner_id, event):
+            return
+        if self._selection_summary(owner_id)["rows"]:
+            await self._merge_confirm_card(event, owner_id, source_index, page)
+        else:
+            await self._refresh_list_page(owner_id, chat_id)
 
     async def _merged_preview(
         self,
@@ -228,16 +321,17 @@ class BotUISourceMergeMixin:
             return
         if progress_id is not None:
             await self._delete_message(chat_id, int(progress_id))
-        if not count:
-            detail = f"（{failed} 组读取失败）" if failed else ""
-            await self._send_text(chat_id, f"⚠️ 没有读到可用媒体{detail}；已刷新列表。")
-        else:
+        if count:
+            await self._clear_pick_previews(owner_id, chat_id)
             lines = [f"✅ 已合并提交 `{accepted}` 项（来源：`{label}`），正在下载与发布。"]
             if skipped:
                 lines.append(f"跳过 `{skipped}` 项：之前已经发布过。")
             if failed:
                 lines.append(f"跳过 `{failed}` 组：读取失败。")
             await self._send_text(chat_id, "\n".join(lines))
+        else:
+            detail = f"（{failed} 组读取失败）" if failed else ""
+            await self._send_text(chat_id, f"⚠️ 没有读到可用媒体{detail}；已刷新列表。")
         await self._show_pick_callback(
-            event, owner_id, source_index, page, with_grid=False
+            event, owner_id, source_index, page, with_grid=False, refresh=True
         )

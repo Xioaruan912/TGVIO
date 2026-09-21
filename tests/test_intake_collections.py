@@ -1,13 +1,14 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import replace
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from tgvio.application.intake import IncomingMedia, IntakeService
 from tgvio.domain.intake import JobDisplayMessage, SpoilerMode
-from tgvio.domain.job import MediaKind
+from tgvio.domain.job import JobState, MediaKind
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
 
@@ -58,6 +59,34 @@ class IntakeCollectionTests(unittest.IsolatedAsyncioTestCase):
             (self.intake._event_key(incoming(1)),)  # type: ignore[arg-type]
         )
         self.assertEqual(set(events.values()), {first.job.id})
+
+    async def test_list_intake_source_ids_scopes_by_chat_and_state(self) -> None:
+        first = await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[incoming(1)],
+        )
+        await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[incoming(3)],
+        )
+        other = incoming(5)
+        other = replace(other, source_chat_id=99)
+        await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[other],
+        )
+
+        ids = await self.repo.list_intake_source_ids(42)
+        self.assertEqual(ids, {1, 3})
+        self.assertEqual(await self.repo.list_intake_source_ids(99), {5})
+
+        await self.repo.transition(
+            first.job.id, JobState.CANCELLED, event_type="job.cancelled"
+        )
+        self.assertEqual(await self.repo.list_intake_source_ids(42), {3})
 
     async def test_cross_connection_concurrent_replay_still_creates_one_job(self) -> None:
         second_repo = SQLiteJobRepository(self.database)

@@ -18,6 +18,38 @@ from tgvio.domain.job import Job
 
 
 class SQLiteIntakeRepositoryMixin:
+    async def list_intake_source_ids(
+        self,
+        source_chat_id: int,
+        *,
+        exclude_states: tuple[str, ...] = ("failed", "cancelled"),
+    ) -> set[int]:
+        """Source message ids of one chat that are already attached to a job.
+
+        Failed and cancelled jobs are excluded so those rows stay re-grabbable
+        from the picker; everything else counts as "already submitted".
+        """
+
+        conn = self._require()
+        params: list[object] = [int(source_chat_id)]
+        clause = ""
+        if exclude_states:
+            placeholders = ",".join("?" for _ in exclude_states)
+            clause = f" AND j.state NOT IN ({placeholders})"
+            params.extend(str(state) for state in exclude_states)
+        cursor = await conn.execute(
+            f"""
+            SELECT e.source_message_id AS source_message_id
+            FROM intake_events e
+            JOIN jobs j ON j.id = e.job_id
+            WHERE e.source_chat_id = ?{clause}
+            """,
+            tuple(params),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        return {int(row["source_message_id"]) for row in rows}
+
     async def lookup_intake_events(
         self,
         keys: tuple[IntakeEventKey, ...],

@@ -44,6 +44,7 @@ class FakeReader:
         self.captured_at: list[tuple[int, int]] = []
         self.groups: list[tuple[int, int]] = []
         self.ad_inputs: list[tuple[object, object]] = []
+        self.submitted_inputs: list[object] = []
 
     def ordered_chats(self):
         return list(self._chats)
@@ -60,9 +61,11 @@ class FakeReader:
         since=None,
         learned=None,
         released=None,
+        submitted=None,
     ):
         self.listed.append((int(chat_id), int(limit), int(offset), since))
         self.ad_inputs.append((learned, released))
+        self.submitted_inputs.append(submitted)
         return (list(self._media), False)
 
     async def capture_at(self, chat_id, message_id):
@@ -72,6 +75,18 @@ class FakeReader:
     async def group_message_ids(self, chat_id, message_id):
         self.groups.append((int(chat_id), int(message_id)))
         return list(self._group)
+
+
+class FakeSubmittedRepository:
+    """Minimal repository exposing the intake lookup used by the picker."""
+
+    def __init__(self, ids: dict[int, set[int]] | None = None) -> None:
+        self.ids = {int(chat): set(values) for chat, values in (ids or {}).items()}
+        self.calls: list[int] = []
+
+    async def list_intake_source_ids(self, chat_id: int, **_kwargs) -> set[int]:
+        self.calls.append(int(chat_id))
+        return set(self.ids.get(int(chat_id), set()))
 
 
 class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
@@ -125,6 +140,35 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         since = datetime(2026, 9, 19, tzinfo=timezone.utc)
         await coordinator.list_media(0, page=0, page_size=10, since=since)
         self.assertEqual(reader.listed, [(-1001, 10, 0, since)])
+
+    async def test_list_media_forwards_the_submitted_ids(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader(media=["a"])
+        coordinator._reader = reader
+        coordinator._client = object()
+        coordinator._repository = FakeSubmittedRepository({-1001: {11, 12}})
+
+        await coordinator.list_media(0, page=0, page_size=10)
+        self.assertEqual(reader.submitted_inputs, [frozenset({11, 12})])
+
+    async def test_list_media_scan_cache_is_dropped_after_a_grab(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader(media=["a"])
+        coordinator._reader = reader
+        coordinator._client = object()
+        coordinator._user_id = 7
+        coordinator._repository = FakeSubmittedRepository({-1001: {11}})
+
+        async def _hook(owner_id, media, label="", merge=False):
+            return (len(list(media)), 0)
+
+        coordinator._on_source_media = _hook
+        await coordinator.list_media(0, page=0, page_size=10)
+        self.assertEqual(len(reader.listed), 1)
+        self.assertEqual(await coordinator.grab_message(0, 11), (1, "@first", 1, 0))
+        await coordinator.list_media(0, page=0, page_size=10)
+        self.assertEqual(len(reader.listed), 2)
+        self.assertEqual(reader.submitted_inputs[-1], frozenset({11}))
 
     async def test_list_media_without_a_reader_is_empty(self) -> None:
         coordinator = self._coordinator()

@@ -35,6 +35,7 @@ _AD_MAX_FINGERPRINTS = 200
 _AD_CACHE_SECONDS = 60.0
 _SCAN_CACHE_SECONDS = 300.0
 _SCAN_CACHE_ENTRIES = 20
+_SUBMITTED_CACHE_SECONDS = 60.0
 _MAX_CHATS = 50
 _MERGE_READ_CONCURRENCY = 3
 _MERGE_ROW_TIMEOUT = 20.0
@@ -87,6 +88,7 @@ class SourceCoordinator:
         self._on_notice: NoticeHook | None = None
         self._ad_cache: dict[int, tuple[float, frozenset[str], frozenset[str]]] = {}
         self._scan_cache: dict[tuple, tuple[float, list, bool]] = {}
+        self._submitted_cache: dict[int, tuple[float, frozenset[int]]] = {}
         self._log = logging.getLogger("tgvio.telegram.source")
 
     # ---------------------------------------------------------------- status
@@ -188,6 +190,7 @@ class SourceCoordinator:
             if cached is not None and time.monotonic() - cached[0] < _SCAN_CACHE_SECONDS:
                 return (list(cached[1]), cached[2], label)
         learned, released = await self._ad_fingerprints(chat_id)
+        submitted = await self._submitted_ids(chat_id)
         summaries, has_more = await self._reader.list_recent_media(
             chat_id,
             limit=page_size,
@@ -195,12 +198,36 @@ class SourceCoordinator:
             since=since,
             learned=learned,
             released=released,
+            submitted=submitted,
         )
         self._scan_cache[key] = (time.monotonic(), list(summaries), bool(has_more))
         if len(self._scan_cache) > _SCAN_CACHE_ENTRIES:
             oldest = min(self._scan_cache, key=lambda item: self._scan_cache[item][0])
             self._scan_cache.pop(oldest, None)
         return (summaries, has_more, label)
+
+    async def _submitted_ids(self, chat_id: int) -> frozenset[int]:
+        """Source messages of one chat that already belong to a live job."""
+
+        cached = self._submitted_cache.get(int(chat_id))
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _SUBMITTED_CACHE_SECONDS:
+            return cached[1]
+        loader = getattr(self._repository, "list_intake_source_ids", None)
+        ids: frozenset[int] = frozenset()
+        if loader is not None:
+            try:
+                ids = frozenset(int(value) for value in await loader(int(chat_id)))
+            except Exception as exc:  # noqa: BLE001 - the picker must still work
+                self._log.warning(
+                    "source.submitted.failed type=%s", type(exc).__name__
+                )
+                ids = frozenset()
+        self._submitted_cache[int(chat_id)] = (now, ids)
+        return ids
+
+    def _drop_submitted_cache(self, chat_id: int) -> None:
+        self._submitted_cache.pop(int(chat_id), None)
 
     def _drop_scan_cache(self, chat_id: int) -> None:
         self._scan_cache = {
@@ -311,7 +338,14 @@ class SourceCoordinator:
         if not media:
             return (0, label, 0, 0)
         accepted = await self._dispatch(media, label)
+        self._forget_scan(chat_id)
         return (len(media), label, *_accepted_counts(accepted, len(media)))
+
+    def _forget_scan(self, chat_id: int) -> None:
+        """A submitted row must disappear from the picker immediately."""
+
+        self._drop_submitted_cache(int(chat_id))
+        self._drop_scan_cache(int(chat_id))
 
     async def grab_selection(
         self,
@@ -382,6 +416,13 @@ class SourceCoordinator:
             label,
         )
         accepted = await self._dispatch(merged, label, merge=True)
+        touched: set[int] = set()
+        for index, _message_id in selections:
+            target = self._chat_for(index)
+            if target is not None:
+                touched.add(int(target[0]))
+        for chat_id in touched:
+            self._forget_scan(chat_id)
         accepted_count, skipped = _accepted_counts(accepted, len(merged))
         return (len(merged), label, failed, accepted_count, skipped)
 
@@ -472,6 +513,7 @@ class SourceCoordinator:
     async def stop(self) -> None:
         self._reader = None
         self._scan_cache = {}
+        self._submitted_cache = {}
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -488,6 +530,7 @@ class SourceCoordinator:
         resolved = await reader.prepare()
         self._reader = reader
         self._scan_cache = {}
+        self._submitted_cache = {}
         self._awaiting = None
         self._log.info("source.reader.resolved chats=%s", resolved)
         if self._on_reader_ready is not None:

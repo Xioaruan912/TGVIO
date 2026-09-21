@@ -284,6 +284,20 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
             self.assertIn(summary.fingerprint, {entry.fingerprint for entry in page})
             self.assertIsInstance(summary.ad_score, int)
 
+    async def test_list_recent_media_marks_already_submitted_rows(self) -> None:
+        client = FakeUserClient(
+            {
+                70: _message(70, kind="video", size=500),
+                69: _message(69, kind="photo", size=400),
+            }
+        )
+        reader = UserSourceReader(client)
+        page, _has_more = await reader.list_recent_media(
+            -100555, limit=10, submitted=frozenset({70})
+        )
+        flags = {summary.message_id: summary.already_submitted for summary in page}
+        self.assertEqual(flags, {70: True, 69: False})
+
     async def test_group_message_ids_expands_one_album(self) -> None:
         target = _message(20, grouped_id=99)
         sibling_a = _message(19, grouped_id=99, kind="photo")

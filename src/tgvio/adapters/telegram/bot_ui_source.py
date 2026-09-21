@@ -12,7 +12,10 @@ from tgvio.adapters.telegram.bot_ui_source_ads import (
     _PICK_SCAN_ITEMS,
     BotUISourceAdsMixin,
 )
+from tgvio.adapters.telegram.bot_ui_source_done import BotUISourceDoneMixin
+from tgvio.adapters.telegram.bot_ui_source_pick import BotUISourcePickMixin
 from tgvio.adapters.telegram.bot_ui_source_merge import BotUISourceMergeMixin
+from tgvio.adapters.telegram.bot_ui_source_preview import BotUISourcePreviewMixin
 from tgvio.adapters.telegram.source_runtime import SourceCoordinator, SourceLoginError
 from tgvio.domain.job import MediaKind
 
@@ -25,8 +28,6 @@ _KIND_WORDS: dict[MediaKind, str] = {
     MediaKind.DOCUMENT: "📄 文件",
 }
 _PICK_PAGE_SIZE = 10
-_PREVIEW_TTL_SECONDS = 600
-_MAX_PREVIEW_MESSAGES = 10
 
 _ACTIONS = (
     "ui:source",
@@ -38,6 +39,9 @@ _ACTIONS = (
     "ui:sn",
     "ui:sv",
     "ui:pc",
+    "ui:pk",
+    "ui:ps",
+    "ui:srm",
     "ui:sf",
     "ui:sd",
     "ui:sk",
@@ -51,7 +55,13 @@ _ACTIONS = (
 )
 
 
-class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
+class BotUISourceMixin(
+    BotUISourceMergeMixin,
+    BotUISourcePickMixin,
+    BotUISourceAdsMixin,
+    BotUISourcePreviewMixin,
+    BotUISourceDoneMixin,
+):
     """In-Bot personal-account source setup and visual content picking."""
 
     def _source_coordinator(self) -> SourceCoordinator | None:
@@ -103,33 +113,51 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             self._pick_grid_msgs = state
         return state
 
-    def _pick_preview_messages(self) -> dict[int, list[int]]:
-        state = getattr(self, "_pick_preview_msgs", None)
+    def _pick_list_messages(self) -> dict[int, int]:
+        """Message id of the rendered pick page, so previews can refresh it."""
+
+        state = getattr(self, "_pick_list_msgs", None)
         if state is None:
             state = {}
-            self._pick_preview_msgs = state
+            self._pick_list_msgs = state
         return state
 
-    def _preview_count(self, owner_id: int) -> int:
-        return len(self._pick_preview_messages().get(int(owner_id), []))
+    def _pick_pages(self) -> dict[int, tuple[int, int]]:
+        """Last rendered ``(source_index, page)`` of the pick list."""
 
-    async def _track_preview(self, owner_id: int, chat_id: int, message_id: int) -> None:
-        """Remember one preview message so it stays until the owner acts."""
+        state = getattr(self, "_pick_last_pages", None)
+        if state is None:
+            state = {}
+            self._pick_last_pages = state
+        return state
 
-        tracked = self._pick_preview_messages().setdefault(int(owner_id), [])
-        tracked.append(int(message_id))
-        while len(tracked) > _MAX_PREVIEW_MESSAGES:
-            oldest = tracked.pop(0)
-            await self._delete_message(chat_id, oldest)
-        self._schedule_preview_expiry(owner_id, chat_id, int(message_id))
+    async def _refresh_list_page(self, owner_id: int, chat_id: int) -> None:
+        """Re-render the tracked list message (selection changed from elsewhere)."""
 
-    async def _clear_pick_previews(self, owner_id: int, chat_id: int) -> int:
-        """Destroy every accumulated preview message; returns how many were sent."""
+        tracked = self._pick_list_messages().get(int(owner_id))
+        last = self._pick_pages().get(int(owner_id))
+        if tracked is None or last is None:
+            return
+        source_index, page = last
+        text, rows, _summaries = await self._pick_render(
+            owner_id, source_index, page
+        )
+        await self._edit_text_buttons(chat_id, int(tracked), text, rows)
 
-        tracked = self._pick_preview_messages().pop(int(owner_id), [])
-        for message_id in tracked:
-            await self._delete_message(chat_id, int(message_id))
-        return len(tracked)
+    async def _edit_text_buttons(self, chat_id: int, message_id: int, text: str, buttons) -> bool:
+        try:
+            await self._client.edit_message(
+                int(chat_id),
+                int(message_id),
+                text,
+                buttons=buttons,
+                parse_mode="md",
+            )
+            return True
+        except Exception as exc:  # noqa: BLE001 - the page may be gone
+            if type(exc).__name__ == "MessageNotModifiedError":
+                return True
+            return False
 
 
 
@@ -207,375 +235,6 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
         rows.append([Button.inline("⬅️ 返回", b"ui:source"), Button.inline("🏠 首页", b"ui:home")])
         return text, rows
 
-    # ------------------------------------------------------------- pick page
-    async def _pick_render(
-        self,
-        owner_id: int,
-        source_index: int = 0,
-        page: int = 0,
-        *,
-        refresh: bool = False,
-    ) -> tuple[str, list, list]:
-        """Render one pick page: text, buttons and the visible summaries."""
-
-        coordinator = self._source_coordinator()
-        if coordinator is None:
-            return ("来源功能未装配。", [[Button.inline("🏠 首页", b"ui:home")]], [])
-        scan, _more_rows, label = await coordinator.list_media(
-            source_index,
-            page=0,
-            page_size=_PICK_SCAN_ITEMS,
-            since=self._window_since(owner_id),
-            refresh=refresh,
-        )
-        self._pick_sources()[int(owner_id)] = int(source_index)
-        scan = list(scan)
-        hidden = [summary for summary in scan if getattr(summary, "is_ad", False)]
-        self._pick_hidden_cache()[(int(owner_id), int(source_index))] = list(hidden)
-        ads_hidden = self._ads_hidden_enabled(owner_id)
-        visible = [s for s in scan if not (ads_hidden and getattr(s, "is_ad", False))]
-        video_only = bool(self._pick_filter().get(int(owner_id)))
-        if video_only:
-            visible = [summary for summary in visible if summary.has_video]
-        start = max(0, int(page)) * _PICK_PAGE_SIZE
-        summaries = visible[start : start + _PICK_PAGE_SIZE]
-        # Only the rows we actually analysed can be paged through, otherwise a
-        # "next page" button would lead to pages that can never be filled.
-        has_more = len(visible) > start + _PICK_PAGE_SIZE
-        self._pick_cache()[(int(owner_id), int(source_index), int(page))] = {
-            summary.message_id: summary for summary in summaries
-        }
-        window = self._pick_window().get(int(owner_id), "today")
-        header = f"选择要发布的内容 · {label or '未配置'} · 第 {int(page) + 1} 页"
-        if video_only:
-            header += " · 只看视频"
-        if hidden:
-            if ads_hidden:
-                header += f" · 已隐藏 {len(hidden)} 个疑似广告"
-            else:
-                header += f" · {len(hidden)} 个疑似广告（已显示）"
-        selection = self._selection_summary(owner_id)
-        if selection["rows"]:
-            header += f" · 已选 {selection['rows']} 组/{selection['items']} 项"
-        lines = [header, "──────────"]
-        rows: list[list] = []
-        if not summaries:
-            lines.append("这一页没有符合条件的媒体（可以翻页或关掉筛选）。")
-        for position, summary in enumerate(summaries, start=1):
-            lines.append(f"{position}) {self._summary_line(summary)}")
-            selected = self._selection_key(source_index, summary.message_id) in (
-                self._selection_for(owner_id)["meta"]
-            )
-            rows.append(
-                [
-                    Button.inline(
-                        f"📥 {position}",
-                        f"ui:sg:{int(source_index)}:{summary.message_id}:{int(page)}".encode(),
-                    ),
-                    Button.inline(
-                        f"👁 {position}",
-                        f"ui:sv:{int(source_index)}:{summary.message_id}:{int(page)}:{position}".encode(),
-                    ),
-                    Button.inline(
-                        ("✅ " if selected else "☑️ ") + str(position),
-                        f"ui:sk:{int(source_index)}:{int(page)}:{summary.message_id}".encode(),
-                    ),
-                ]
-            )
-        lines.append("──────────")
-        nav: list = []
-        if page > 0:
-            nav.append(Button.inline("⬅️ 上一页", f"ui:sp:{int(source_index)}:{page - 1}".encode()))
-        if has_more:
-            nav.append(Button.inline("下一页 ➡️", f"ui:sp:{int(source_index)}:{page + 1}".encode()))
-        if nav:
-            rows.append(nav)
-        if selection["rows"]:
-            rows.append(
-                [
-                    Button.inline(
-                        f"✅ 发布已选 ({selection['rows']})",
-                        f"ui:sz:{int(source_index)}:{int(page)}".encode(),
-                    ),
-                    Button.inline(
-                        "🧹 清空",
-                        f"ui:sx:{int(source_index)}:{int(page)}".encode(),
-                    ),
-                ]
-            )
-        source_row: list = []
-        whitelist = coordinator.whitelist()
-        for index, entry in enumerate(whitelist[:5]):
-            prefix = "✅ " if index == int(source_index) else ""
-            source_row.append(
-                Button.inline(
-                    f"{prefix}{entry[:20]}",
-                    f"ui:pick:{index}:0".encode(),
-                )
-            )
-        if source_row:
-            rows.append(source_row)
-        window_label = "今天 ✅" if window == "today" else "今天"
-        rows.append(
-            [
-                Button.inline(
-                    window_label,
-                    f"ui:sd:{int(source_index)}:{int(page)}:t".encode(),
-                ),
-                Button.inline(
-                    "近2天" + (" ✅" if window == "2d" else ""),
-                    f"ui:sd:{int(source_index)}:{int(page)}:d".encode(),
-                ),
-            ]
-        )
-        filter_label = "只看视频 ✅" if video_only else "只看视频"
-        rows.append(
-            [
-                Button.inline(
-                    filter_label,
-                    f"ui:sf:{int(source_index)}:{int(page)}".encode(),
-                ),
-                Button.inline("🔄 刷新", f"ui:pr:{int(source_index)}:{int(page)}".encode()),
-            ]
-        )
-        previews = self._preview_count(owner_id)
-        if previews:
-            rows.append(
-                [
-                    Button.inline(
-                        f"🧹 清理预览 ({previews})",
-                        f"ui:pc:{int(source_index)}:{int(page)}".encode(),
-                    )
-                ]
-            )
-        ads_label = "🚫 广告过滤 ✅" if ads_hidden else "🚫 广告过滤 ❌"
-        ad_row = [
-            Button.inline(ads_label, f"ui:sa:{int(source_index)}:{int(page)}".encode())
-        ]
-        if hidden:
-            ad_row.append(
-                Button.inline(
-                    f"👀 查看被隐藏 ({len(hidden)})",
-                    f"ui:sh:{int(source_index)}:0".encode(),
-                )
-            )
-        rows.append(ad_row)
-        rows.append([Button.inline("⬅️ 来源设置", b"ui:source"), Button.inline("🏠 首页", b"ui:home")])
-        return "\n".join(lines), rows, summaries
-
-    async def _show_pick_callback(
-        self,
-        event,
-        owner_id: int,
-        source_index: int,
-        page: int,
-        *,
-        with_grid: bool = True,
-        refresh: bool = False,
-    ) -> None:
-        text, rows, summaries = await self._pick_render(
-            owner_id, source_index, page, refresh=refresh
-        )
-        await self._edit_page(event, text, rows)
-        if with_grid:
-            self._start_page_grid(
-                owner_id,
-                int(event.chat_id),
-                source_index,
-                page,
-                [summary.message_id for summary in summaries],
-            )
-
-    # ------------------------------------------------------------ grid build
-    def _start_page_grid(
-        self,
-        owner_id: int,
-        chat_id: int,
-        source_index: int,
-        page: int,
-        message_ids: list[int],
-    ) -> None:
-        service = self._pick_preview_service()
-        if service is None or not message_ids:
-            return
-        task = asyncio.ensure_future(
-            self._build_page_grid(owner_id, chat_id, source_index, page, list(message_ids))
-        )
-        tasks = getattr(self, "_tasks", None)
-        if tasks is not None:
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-
-    async def _build_page_grid(
-        self,
-        owner_id: int,
-        chat_id: int,
-        source_index: int,
-        page: int,
-        message_ids: list[int],
-    ) -> None:
-        service = self._pick_preview_service()
-        if service is None:
-            return
-        total = len(message_ids)
-        progress = await self._send_text(chat_id, f"⏳ 正在生成第 {page + 1} 页缩略图 0/{total} …")
-        progress_id = getattr(progress, "id", None)
-        last = 0
-
-        async def report(done: int, count: int) -> None:
-            nonlocal last
-            if progress_id is None or done == last:
-                return
-            last = done
-            await self._edit_text(
-                chat_id,
-                int(progress_id),
-                f"⏳ 正在生成第 {page + 1} 页缩略图 {done}/{count} …",
-            )
-
-        try:
-            preview = await service.build_page(source_index, message_ids, progress=report)
-        except Exception:  # noqa: BLE001 - previews must never break picking
-            preview = None
-        if preview is None or preview.image is None:
-            available = 0 if preview is None else preview.fetched
-            if progress_id is not None:
-                if available:
-                    warning = (
-                        f"⚠️ 预览图生成失败（已取到 {available}/{total}）；"
-                        "可点每行 👁 单独看。"
-                    )
-                else:
-                    warning = f"⚠️ 没有取到缩略图（0/{total}）；可点每行 👁 单独看。"
-                await self._edit_text(chat_id, int(progress_id), warning)
-            return
-        previous = self._pick_grid_messages().pop(int(owner_id), None)
-        if previous is not None:
-            await self._delete_message(chat_id, previous)
-        if progress_id is not None:
-            await self._delete_message(chat_id, int(progress_id))
-        caption = f"第 {page + 1} 页缩略图 · 位置对应列表 1–{total}"
-        if getattr(preview, "fetched", total) < total:
-            caption += f"（{preview.fetched}/{preview.total} 张有预览）"
-        message = await self._send_photo(
-            chat_id,
-            preview.image,
-            caption,
-            [
-                [
-                    Button.inline(
-                        "🔄 整页刷新",
-                        f"ui:pick:{int(source_index)}:{int(page)}".encode(),
-                    ),
-                    Button.inline("⬅️ 返回列表", b"ui:source"),
-                ]
-            ],
-        )
-        service.release(preview.token)
-        if message is not None and getattr(message, "id", None) is not None:
-            self._pick_grid_messages()[int(owner_id)] = int(message.id)
-
-    # --------------------------------------------------------- row previews
-    async def _preview_single(
-        self,
-        event,
-        owner_id: int,
-        source_index: int,
-        message_id: int,
-        page: int,
-        position: int = 0,
-    ) -> None:
-        service = self._pick_preview_service()
-        chat_id = int(event.chat_id)
-        if service is None:
-            await self._safe_answer(event, "预览不可用", alert=True)
-            return
-        await self._safe_answer(event, "正在获取预览…")
-        summary = self._pick_cache().get((int(owner_id), int(source_index), int(page)), {}).get(
-            int(message_id)
-        )
-        coordinator = self._source_coordinator()
-        group_ids: list[int] = []
-        if coordinator is not None:
-            with suppress(Exception):
-                group_ids = await coordinator.group_message_ids(source_index, int(message_id))
-        if not group_ids:
-            group_ids = [int(message_id)]
-        total = len(group_ids)
-        progress = await self._send_text(
-            chat_id, f"⏳ 正在生成整组缩略图 0/{total} …"
-        )
-        progress_id = getattr(progress, "id", None)
-        last = 0
-
-        async def report(done: int, count: int) -> None:
-            nonlocal last
-            if progress_id is None or done == last:
-                return
-            last = done
-            await self._edit_text(
-                chat_id, int(progress_id), f"⏳ 正在生成整组缩略图 {done}/{count} …"
-            )
-
-        try:
-            preview = await service.build_page(source_index, group_ids, progress=report)
-        except Exception:  # noqa: BLE001
-            preview = None
-        if preview is None or preview.image is None:
-            if progress_id is not None:
-                available = 0 if preview is None else preview.fetched
-                await self._edit_text(
-                    chat_id,
-                    int(progress_id),
-                    f"⚠️ 整组预览生成失败（{available}/{total}）；可直接点 📥 抓取。",
-                )
-            return
-        if progress_id is not None:
-            await self._delete_message(chat_id, int(progress_id))
-        label = self._summary_line(summary) if summary is not None else "整组预览"
-        heading = f"👁 第 {int(position)} 项 · {label}" if int(position) > 0 else f"👁 {label}"
-        caption = f"{heading}\n位置对应组内第 1–{total} 项"
-        message = await self._send_photo(
-            chat_id,
-            preview.image,
-            caption,
-            [
-                [
-                    Button.inline(
-                        "📥 抓取整组",
-                        f"ui:sg:{int(source_index)}:{int(message_id)}:{int(page)}".encode(),
-                    ),
-                    Button.inline(
-                        "⬅️ 返回列表",
-                        f"ui:pick:{int(source_index)}:{int(page)}".encode(),
-                    ),
-                ]
-            ],
-        )
-        service.release(preview.token)
-        if message is not None and getattr(message, "id", None) is not None:
-            await self._track_preview(owner_id, chat_id, int(message.id))
-
-    def _schedule_preview_expiry(self, owner_id: int, chat_id: int, message_id: int) -> None:
-        task = asyncio.ensure_future(
-            self._expire_preview(owner_id, chat_id, message_id)
-        )
-        tasks = getattr(self, "_tasks", None)
-        if tasks is not None:
-            tasks.add(task)
-            task.add_done_callback(tasks.discard)
-
-    async def _expire_preview(self, owner_id: int, chat_id: int, message_id: int) -> None:
-        try:
-            await asyncio.sleep(_PREVIEW_TTL_SECONDS)
-        except asyncio.CancelledError:
-            return
-        tracked = self._pick_preview_messages().get(int(owner_id), [])
-        if int(message_id) not in tracked:
-            return
-        tracked.remove(int(message_id))
-        await self._delete_message(chat_id, int(message_id))
-
     # ------------------------------------------------------- grab + confirm
     async def _confirm_pick_callback(
         self,
@@ -628,6 +287,9 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
         if coordinator is None:
             await self._safe_answer(event, "来源功能不可用", alert=True)
             return
+        if self._row_submitted(owner_id, source_index, message_id, page):
+            await self._safe_answer(event, "这条已经提交过了，不会再抓取", alert=True)
+            return
         await self._safe_answer(event, "已提交，正在抓取…")
         chat_id = int(event.chat_id)
         try:
@@ -638,6 +300,7 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             await self._send_text(chat_id, "⚠️ 抓取失败，请稍后重试。")
             return
         if count:
+            await self._clear_pick_previews(owner_id, chat_id)
             lines = [f"✅ 已抓取 `{accepted}` 个媒体（来源：`{label}`），正在下载与发布。"]
             if skipped:
                 lines.append(f"跳过 `{skipped}` 项：之前已经发布过。")
@@ -686,9 +349,12 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
         page = max(0, numbers[1] - 1) if len(numbers) > 1 else 0
         text, rows, summaries = await self._pick_render(owner_id, source_index, page)
         try:
-            await event.respond(text, buttons=rows, parse_mode="md")
+            sent = await event.respond(text, buttons=rows, parse_mode="md")
         except Exception:  # noqa: BLE001
-            await self._send_text(int(event.chat_id), text)
+            sent = await self._send_text(int(event.chat_id), text)
+        sent_id = getattr(sent, "id", None)
+        if sent_id is not None:
+            self._pick_list_messages()[int(owner_id)] = int(sent_id)
         self._start_page_grid(
             owner_id,
             int(event.chat_id),
@@ -713,13 +379,10 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             return True
         if action.startswith("ui:pick:"):
             source_index, page = self._two_ints(action, 2, 3)
-            if self._pick_sources().get(int(owner_id)) not in (None, int(source_index)):
-                await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._show_pick_callback(event, owner_id, source_index, page)
             return True
         if action.startswith("ui:pr:"):
             source_index, page = self._two_ints(action, 2, 3)
-            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._show_pick_callback(
                 event, owner_id, source_index, max(0, page), refresh=True
             )
@@ -754,6 +417,9 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             except (IndexError, ValueError):
                 await self._safe_answer(event, "操作已过期", alert=True)
                 return True
+            if self._row_submitted(owner_id, source_index, message_id, page):
+                await self._safe_answer(event, "这条已经提交过了，不会再抓取", alert=True)
+                return True
             summary = self._pick_cache().get(
                 (int(owner_id), int(source_index), int(page)), {}
             ).get(int(message_id))
@@ -761,15 +427,48 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
                 await self._safe_answer(event, "这一页已刷新，请重新选择", alert=True)
                 return True
             self._toggle_selection(owner_id, source_index, summary)
-            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._show_pick_callback(
                 event, owner_id, source_index, page, with_grid=False
+            )
+            return True
+        if action.startswith("ui:pk:"):
+            parts = action.split(":")
+            if len(parts) < 5:
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return True
+            try:
+                source_index = int(parts[2])
+                message_id = int(parts[3])
+                page = int(parts[4])
+            except ValueError:
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return True
+            await self._toggle_preview_selection(
+                event, owner_id, source_index, message_id, page
+            )
+            return True
+        if action.startswith("ui:srm:"):
+            parts = action.split(":")
+            try:
+                source_index = int(parts[2])
+                page = int(parts[3])
+                message_id = int(parts[4])
+            except (IndexError, ValueError):
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return True
+            await self._remove_from_selection(
+                event, owner_id, source_index, message_id, page
+            )
+            return True
+        if action.startswith("ui:ps:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            await self._show_submitted_callback(
+                event, owner_id, source_index, max(0, page)
             )
             return True
         if action.startswith("ui:sx:"):
             source_index, page = self._two_ints(action, 2, 3)
             self._pick_selection().pop(int(owner_id), None)
-            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._safe_answer(event, "已清空选择")
             await self._show_pick_callback(
                 event, owner_id, source_index, max(0, page), with_grid=False
@@ -777,12 +476,10 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             return True
         if action.startswith("ui:sz:"):
             source_index, page = self._two_ints(action, 2, 3)
-            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._merge_confirm_card(event, owner_id, source_index, page)
             return True
         if action.startswith("ui:sm:"):
             source_index, page = self._two_ints(action, 2, 3)
-            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._publish_merged(event, owner_id, source_index, page)
             return True
         if action.startswith("ui:spm:"):
@@ -812,7 +509,6 @@ class BotUISourceMixin(BotUISourceMergeMixin, BotUISourceAdsMixin):
             return True
         if action.startswith("ui:sn:"):
             source_index, page = self._two_ints(action, 2, 3)
-            await self._clear_pick_previews(owner_id, int(event.chat_id))
             await self._show_pick_callback(
                 event, owner_id, source_index, max(0, page), with_grid=False
             )
