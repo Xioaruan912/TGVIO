@@ -71,6 +71,7 @@ class BotUISourceMergeMixin:
             "photos": int(summary.photo_count),
             "bytes": int(summary.size_bytes),
             "label": self._summary_line(summary),
+            "fingerprint": str(getattr(summary, "fingerprint", "") or ""),
         }
 
     def _drop_selection_row(
@@ -304,12 +305,16 @@ class BotUISourceMergeMixin:
             return
         await self._safe_answer(event, "已提交，正在合并…")
         selections = list(selection["order"])
+        fingerprints = [
+            str((selection["meta"].get(key) or {}).get("fingerprint") or "")
+            for key in selections
+        ]
         self._pick_selection().pop(int(owner_id), None)
         progress = await self._send_text(chat_id, f"⏳ 正在合并读取 {len(selections)} 组 …")
         progress_id = getattr(progress, "id", None)
         try:
             count, label, failed, accepted, skipped = await coordinator.grab_selection(
-                selections
+                selections, fingerprints=fingerprints
             )
         except Exception:  # noqa: BLE001 - user-facing miss
             if progress_id is not None:

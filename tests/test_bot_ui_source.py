@@ -71,7 +71,10 @@ class FakeCoordinator:
         self.groups: list[tuple[int, int]] = []
         self.selections: list[list[tuple[int, int]]] = []
         self.released: list[tuple[int, str]] = []
+        self.forgotten: list[tuple[int, str]] = []
         self.refreshes: list[int] = []
+        self.grab_fingerprints: list[str] = []
+        self.selection_fingerprints: list[list[str]] = []
         self.more = False
         self.merge_count = 3
         self.merge_failed = 0
@@ -107,6 +110,10 @@ class FakeCoordinator:
         items = [entry for group in self.pages.values() for entry in group]
         return (items, self.more, "@xiaodeFile_bot")
 
+    async def forget_done_fingerprint(self, source_index: int, fingerprint: str) -> bool:
+        self.forgotten.append((int(source_index), str(fingerprint)))
+        return True
+
     async def release_fingerprint(self, source_index: int, fingerprint: str) -> bool:
         self.released.append((int(source_index), str(fingerprint)))
         return True
@@ -117,12 +124,14 @@ class FakeCoordinator:
             return list(self.group_ids)
         return [int(message_id)]
 
-    async def grab_message(self, source_index: int, message_id: int):
+    async def grab_message(self, source_index: int, message_id: int, *, fingerprint: str = ""):
         self.grabbed.append((int(source_index), int(message_id)))
+        self.grab_fingerprints.append(str(fingerprint))
         return (self.count, "@xiaodeFile_bot", self.count, 0)
 
-    async def grab_selection(self, selections):
+    async def grab_selection(self, selections, *, fingerprints=()):
         self.selections.append([(int(src), int(mid)) for src, mid in selections])
+        self.selection_fingerprints.append([str(item) for item in fingerprints])
         return (
             self.merge_count,
             "多个来源",
@@ -712,9 +721,22 @@ class PreviewAccumulationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn((7, second), ui._client.deleted)
         self.assertFalse(self._tracked(ui))
 
+    async def test_merge_publish_forwards_row_fingerprints(self) -> None:
+        service = FakePreviewService(image=self.image)
+        coordinator = FakeCoordinator(pages=self._pages())
+        ui = _UI(coordinator, service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sm:0:0")
+        self.assertEqual(
+            coordinator.selection_fingerprints, [["video|2048|30506"]]
+        )
+
     async def test_grab_success_clears_previews(self) -> None:
         service = FakePreviewService(image=self.image)
-        ui = _UI(FakeCoordinator(pages=self._pages()), service)
+        coordinator = FakeCoordinator(pages=self._pages())
+        ui = _UI(coordinator, service)
         event = _Event()
         await ui._handle_source_callback(event, 7, "ui:pick:0:0")
         tracked = await self._open(ui, event, 30506, 1)
@@ -723,6 +745,7 @@ class PreviewAccumulationTests(unittest.IsolatedAsyncioTestCase):
         await ui._handle_source_callback(event, 7, "ui:sy:0:30506:0")
         self.assertIn((7, tracked), ui._client.deleted)
         self.assertFalse(self._tracked(ui))
+        self.assertEqual(coordinator.grab_fingerprints, ["video|2048|30506"])
 
     async def test_clear_selection_keeps_previews(self) -> None:
         service = FakePreviewService(image=self.image)
@@ -900,6 +923,22 @@ class SubmittedRowTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn(b"ui:sg:0:30506:0", data)
         self.assertNotIn(b"ui:sk:0:0:30506", data)
         self.assertTrue(all(len(item) <= 64 for item in data))
+
+    async def test_submitted_page_release_button_restores_the_content(self) -> None:
+        service = FakePreviewService(image=self.image)
+        coordinator = FakeCoordinator(pages=self._pages())
+        ui = _UI(coordinator, service)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:ps:0:0")
+        _text, rows = event.edits[-1]
+        self.assertIn("♻️ 允许重新抓取 1", [button.text for row in rows for button in row])
+        data = _callbacks(rows)
+        self.assertIn(b"ui:pdr:0:30506:0", data)
+        self.assertTrue(all(len(item) <= 64 for item in data))
+
+        await ui._handle_source_callback(event, 7, "ui:pdr:0:30506:0")
+        self.assertEqual(coordinator.forgotten, [(0, "video|2048|30506")])
+        self.assertTrue(any("已允许重新抓取" in str(a) for a in event.answers))
 
     async def test_submitted_row_refuses_grab_and_selection(self) -> None:
         ui = _UI(FakeCoordinator(pages=self._pages()))

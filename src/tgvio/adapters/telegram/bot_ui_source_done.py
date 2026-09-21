@@ -24,6 +24,15 @@ class BotUISourceDoneMixin:
             self._pick_submitted_rows = state
         return state
 
+    def _pick_done_map(self) -> dict[tuple[int, int], str]:
+        """``(owner, message_id) -> fingerprint`` for the rendered page."""
+
+        state = getattr(self, "_pick_done_fingerprints", None)
+        if state is None:
+            state = {}
+            self._pick_done_fingerprints = state
+        return state
+
     def _row_submitted(
         self,
         owner_id: int,
@@ -93,9 +102,24 @@ class BotUISourceDoneMixin:
             lines.append("这个来源还没有已提交的条目。")
         for position, summary in enumerate(window, start=1):
             lines.append(f"{position}) {self._summary_line(summary)}")
+            self._pick_done_map()[(int(owner_id), int(summary.message_id))] = str(
+                getattr(summary, "fingerprint", "") or ""
+            )
         lines.append("──────────")
-        lines.append("这些内容已经入过队，不会再出现在选片列表里；失败或取消的任务会自动回到列表。")
+        lines.append(
+            "这些内容已经入过队，不会再出现在选片列表里；失败或取消的任务会自动回到列表。\n"
+            "点「♻️ 允许重新抓取」可以放行该条内容（之后同样内容也可以再抓）。"
+        )
         rows: list[list] = []
+        for position, summary in enumerate(window, start=1):
+            rows.append(
+                [
+                    Button.inline(
+                        f"♻️ 允许重新抓取 {position}",
+                        f"ui:pdr:{int(source_index)}:{int(summary.message_id)}:{page}".encode(),
+                    )
+                ]
+            )
         nav: list = []
         if page > 0:
             nav.append(
@@ -132,3 +156,31 @@ class BotUISourceDoneMixin:
                 page,
                 [summary.message_id for summary in window],
             )
+
+    async def _release_done_callback(
+        self,
+        event,
+        owner_id: int,
+        source_index: int,
+        message_id: int,
+        page: int,
+    ) -> None:
+        """Allow one already submitted content fingerprint to be grabbed again."""
+
+        coordinator = self._source_coordinator()
+        if coordinator is None:
+            await self._safe_answer(event, "来源功能不可用", alert=True)
+            return
+        fingerprint = self._pick_done_map().get((int(owner_id), int(message_id)), "")
+        if not fingerprint:
+            await self._safe_answer(event, "这条没有内容指纹，无法放行", alert=True)
+            return
+        released = await coordinator.forget_done_fingerprint(source_index, fingerprint)
+        self._pick_submitted_cache().pop((int(owner_id), int(source_index)), None)
+        await self._safe_answer(
+            event,
+            "已允许重新抓取" if released else "这条内容本来就不在限制里",
+        )
+        await self._show_submitted_callback(
+            event, owner_id, source_index, max(0, page)
+        )

@@ -31,6 +31,8 @@ from tgvio.adapters.telegram.user_source import SourceMediaSummary, UserSourceRe
 _WHITELIST_FLAG = "source_chats"
 _AD_FLAG = "pick_ads"
 _AD_RELEASED_FLAG = "pick_ads_released"
+_DONE_FLAG = "pick_done"
+_DONE_MAX_FINGERPRINTS = 200
 _AD_MAX_FINGERPRINTS = 200
 _AD_CACHE_SECONDS = 60.0
 _SCAN_CACHE_SECONDS = 300.0
@@ -89,6 +91,7 @@ class SourceCoordinator:
         self._ad_cache: dict[int, tuple[float, frozenset[str], frozenset[str]]] = {}
         self._scan_cache: dict[tuple, tuple[float, list, bool]] = {}
         self._submitted_cache: dict[int, tuple[float, frozenset[int]]] = {}
+        self._done_cache: dict[int, tuple[float, frozenset[str]]] = {}
         self._log = logging.getLogger("tgvio.telegram.source")
 
     # ---------------------------------------------------------------- status
@@ -191,6 +194,7 @@ class SourceCoordinator:
                 return (list(cached[1]), cached[2], label)
         learned, released = await self._ad_fingerprints(chat_id)
         submitted = await self._submitted_ids(chat_id)
+        done = await self._done_fingerprints(chat_id)
         summaries, has_more = await self._reader.list_recent_media(
             chat_id,
             limit=page_size,
@@ -199,6 +203,7 @@ class SourceCoordinator:
             learned=learned,
             released=released,
             submitted=submitted,
+            done=done,
         )
         self._scan_cache[key] = (time.monotonic(), list(summaries), bool(has_more))
         if len(self._scan_cache) > _SCAN_CACHE_ENTRIES:
@@ -260,6 +265,59 @@ class SourceCoordinator:
             return None
         chat_id, _label = target
         return await self._reader.fetch_thumbnail(chat_id, int(message_id), target_dir)
+
+    # ------------------------------------------------------ done fingerprints
+    async def _done_fingerprints(self, chat_id: int) -> frozenset[str]:
+        """Content fingerprints already submitted from one chat.
+
+        Source bots re-upload the same file under a new message id, so the
+        message-id check alone would let those show up again.
+        """
+
+        cached = self._done_cache.get(int(chat_id))
+        now = time.monotonic()
+        if cached is not None and now - cached[0] < _AD_CACHE_SECONDS:
+            return cached[1]
+        done = await self._load_fingerprints(_DONE_FLAG, int(chat_id))
+        self._done_cache[int(chat_id)] = (now, done)
+        return done
+
+    async def _remember_done(self, chat_id: int, fingerprints) -> int:
+        values = [str(value).strip() for value in fingerprints if str(value or "").strip()]
+        if not values:
+            return 0
+        current = await self._done_fingerprints(int(chat_id))
+        updated = list(dict.fromkeys((*sorted(current), *values)))[-_DONE_MAX_FINGERPRINTS:]
+        await self._flags.set(
+            self._repository,
+            f"{_DONE_FLAG}_{int(chat_id)}",
+            json.dumps(updated),
+        )
+        self._done_cache.pop(int(chat_id), None)
+        self._log.info("source.done.remembered chat=%s total=%s", int(chat_id), len(updated))
+        return len(updated)
+
+    async def forget_done_fingerprint(self, source_index: int, fingerprint: str) -> bool:
+        """Allow one content fingerprint to be grabbed again."""
+
+        target = self._chat_for(source_index)
+        value = str(fingerprint or "").strip()
+        if target is None or not value:
+            return False
+        chat_id = int(target[0])
+        current = await self._done_fingerprints(chat_id)
+        if value not in current:
+            return False
+        updated = [entry for entry in sorted(current) if entry != value]
+        await self._flags.set(
+            self._repository,
+            f"{_DONE_FLAG}_{chat_id}",
+            json.dumps(updated),
+        )
+        self._done_cache.pop(chat_id, None)
+        self._drop_scan_cache(chat_id)
+        self._log.info("source.done.forgotten chat=%s total=%s", chat_id, len(updated))
+        return True
 
     # --------------------------------------------------------- ad fingerprints
     async def _ad_fingerprints(self, chat_id: int) -> tuple[frozenset[str], frozenset[str]]:
@@ -326,7 +384,13 @@ class SourceCoordinator:
         self._ad_cache.pop(chat_id, None)
         self._drop_scan_cache(chat_id)
 
-    async def grab_message(self, source_index: int, message_id: int) -> tuple[int, str, int, int]:
+    async def grab_message(
+        self,
+        source_index: int,
+        message_id: int,
+        *,
+        fingerprint: str = "",
+    ) -> tuple[int, str, int, int]:
         """Publish one specific message/album selected by the operator."""
 
         target = self._chat_for(source_index)
@@ -338,8 +402,11 @@ class SourceCoordinator:
         if not media:
             return (0, label, 0, 0)
         accepted = await self._dispatch(media, label)
+        accepted_count, skipped = _accepted_counts(accepted, len(media))
+        if accepted_count:
+            await self._remember_done(chat_id, [fingerprint])
         self._forget_scan(chat_id)
-        return (len(media), label, *_accepted_counts(accepted, len(media)))
+        return (len(media), label, accepted_count, skipped)
 
     def _forget_scan(self, chat_id: int) -> None:
         """A submitted row must disappear from the picker immediately."""
@@ -350,6 +417,8 @@ class SourceCoordinator:
     async def grab_selection(
         self,
         selections: list[tuple[int, int]],
+        *,
+        fingerprints=(),
     ) -> tuple[int, str, int, int, int]:
         """Publish several picked rows as ONE job (merged album).
 
@@ -421,9 +490,12 @@ class SourceCoordinator:
             target = self._chat_for(index)
             if target is not None:
                 touched.add(int(target[0]))
+        accepted_count, skipped = _accepted_counts(accepted, len(merged))
+        if accepted_count:
+            for chat_id in touched:
+                await self._remember_done(chat_id, fingerprints)
         for chat_id in touched:
             self._forget_scan(chat_id)
-        accepted_count, skipped = _accepted_counts(accepted, len(merged))
         return (len(merged), label, failed, accepted_count, skipped)
 
     async def _dispatch(self, media: list, label: str = "", *, merge: bool = False):
@@ -514,6 +586,7 @@ class SourceCoordinator:
         self._reader = None
         self._scan_cache = {}
         self._submitted_cache = {}
+        self._done_cache = {}
         if self._client is not None:
             try:
                 await self._client.disconnect()
@@ -531,6 +604,7 @@ class SourceCoordinator:
         self._reader = reader
         self._scan_cache = {}
         self._submitted_cache = {}
+        self._done_cache = {}
         self._awaiting = None
         self._log.info("source.reader.resolved chats=%s", resolved)
         if self._on_reader_ready is not None:

@@ -186,6 +186,7 @@ class UserSourceReader:
         learned: frozenset[str] | None = None,
         released: frozenset[str] | None = None,
         submitted: frozenset[int] | None = None,
+        done: frozenset[str] | None = None,
     ) -> tuple[list[SourceMediaSummary], bool]:
         """Newest-first media groups within ``since``; albums collapse into one entry.
 
@@ -246,7 +247,10 @@ class UserSourceReader:
                 caption_files=len(caption_files.get(normalize_caption(summary.caption), ())) or 1,
                 learned=bool(learned) and summary.fingerprint in learned,
                 released=bool(released) and summary.fingerprint in released,
-                submitted=bool(submitted) and int(summary.message_id) in submitted,
+                submitted=(
+                    (bool(submitted) and int(summary.message_id) in submitted)
+                    or (bool(done) and bool(summary.fingerprint) and summary.fingerprint in done)
+                ),
             )
             for index, summary in enumerate(summaries)
         ]

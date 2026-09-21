@@ -45,6 +45,7 @@ class FakeReader:
         self.groups: list[tuple[int, int]] = []
         self.ad_inputs: list[tuple[object, object]] = []
         self.submitted_inputs: list[object] = []
+        self.done_inputs: list[object] = []
 
     def ordered_chats(self):
         return list(self._chats)
@@ -62,14 +63,22 @@ class FakeReader:
         learned=None,
         released=None,
         submitted=None,
+        done=None,
     ):
         self.listed.append((int(chat_id), int(limit), int(offset), since))
         self.ad_inputs.append((learned, released))
         self.submitted_inputs.append(submitted)
+        self.done_inputs.append(done)
         return (list(self._media), False)
 
     async def capture_at(self, chat_id, message_id):
         self.captured_at.append((int(chat_id), int(message_id)))
+        return list(self._media)
+
+    async def capture_many(self, chat_id, message_ids):
+        self.captured_at.extend(
+            (int(chat_id), int(message_id)) for message_id in message_ids
+        )
         return list(self._media)
 
     async def group_message_ids(self, chat_id, message_id):
@@ -83,10 +92,14 @@ class FakeSubmittedRepository:
     def __init__(self, ids: dict[int, set[int]] | None = None) -> None:
         self.ids = {int(chat): set(values) for chat, values in (ids or {}).items()}
         self.calls: list[int] = []
+        self.flags: dict[str, str] = {}
 
     async def list_intake_source_ids(self, chat_id: int, **_kwargs) -> set[int]:
         self.calls.append(int(chat_id))
         return set(self.ids.get(int(chat_id), set()))
+
+    async def set_runtime_flag(self, key: str, value: str) -> None:
+        self.flags[str(key)] = str(value)
 
 
 class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
@@ -169,6 +182,51 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         await coordinator.list_media(0, page=0, page_size=10)
         self.assertEqual(len(reader.listed), 2)
         self.assertEqual(reader.submitted_inputs[-1], frozenset({11}))
+
+    async def test_done_fingerprints_are_remembered_and_forgotten(self) -> None:
+        coordinator = self._coordinator()
+        reader = FakeReader(media=["a"])
+        coordinator._reader = reader
+        coordinator._client = object()
+        coordinator._user_id = 7
+        coordinator._repository = FakeSubmittedRepository({-1001: {11}})
+
+        async def _hook(owner_id, media, label="", merge=False):
+            return (len(list(media)), 0)
+
+        coordinator._on_source_media = _hook
+        self.assertEqual(await coordinator.grab_message(0, 11, fingerprint="photo|1|2x3|x"),
+                         (1, "@first", 1, 0))
+        await coordinator.list_media(0, page=0, page_size=10)
+        self.assertEqual(reader.done_inputs[-1], frozenset({"photo|1|2x3|x"}))
+
+        self.assertTrue(
+            await coordinator.forget_done_fingerprint(0, "photo|1|2x3|x")
+        )
+        await coordinator.list_media(0, page=0, page_size=10)
+        self.assertEqual(reader.done_inputs[-1], frozenset())
+        self.assertFalse(
+            await coordinator.forget_done_fingerprint(0, "photo|1|2x3|x")
+        )
+
+    async def test_grab_selection_remembers_the_row_fingerprints(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._reader = FakeReader(media=[_item(-1001, 11)])
+        coordinator._client = object()
+        coordinator._user_id = 7
+        coordinator._repository = FakeSubmittedRepository({-1001: {11}})
+
+        async def _hook(owner_id, media, label="", merge=False):
+            return (2, 0)
+
+        coordinator._on_source_media = _hook
+        await coordinator.grab_selection(
+            [(0, 11)], fingerprints=["video|500|720x1280|caption"]
+        )
+        await coordinator.list_media(0, page=0, page_size=10)
+        self.assertEqual(
+            coordinator._reader.done_inputs[-1], frozenset({"video|500|720x1280|caption"})
+        )
 
     async def test_list_media_without_a_reader_is_empty(self) -> None:
         coordinator = self._coordinator()

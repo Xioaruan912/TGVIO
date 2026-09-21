@@ -41,6 +41,7 @@ _ACTIONS = (
     "ui:pc",
     "ui:pk",
     "ui:ps",
+    "ui:pdr",
     "ui:srm",
     "ui:sf",
     "ui:sd",
@@ -292,9 +293,13 @@ class BotUISourceMixin(
             return
         await self._safe_answer(event, "已提交，正在抓取…")
         chat_id = int(event.chat_id)
+        summary = self._pick_cache().get(
+            (int(owner_id), int(source_index), int(page)), {}
+        ).get(int(message_id))
+        fingerprint = str(getattr(summary, "fingerprint", "") or "")
         try:
             count, label, accepted, skipped = await coordinator.grab_message(
-                source_index, message_id
+                source_index, message_id, fingerprint=fingerprint
             )
         except Exception:  # noqa: BLE001 - user-facing miss
             await self._send_text(chat_id, "⚠️ 抓取失败，请稍后重试。")
@@ -457,6 +462,19 @@ class BotUISourceMixin(
                 await self._safe_answer(event, "操作已过期", alert=True)
                 return True
             await self._remove_from_selection(
+                event, owner_id, source_index, message_id, page
+            )
+            return True
+        if action.startswith("ui:pdr:"):
+            parts = action.split(":")
+            try:
+                source_index = int(parts[2])
+                message_id = int(parts[3])
+                page = int(parts[4]) if len(parts) > 4 else 0
+            except (IndexError, ValueError):
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return True
+            await self._release_done_callback(
                 event, owner_id, source_index, message_id, page
             )
             return True

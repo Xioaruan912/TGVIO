@@ -298,6 +298,22 @@ class UserSourceReaderTests(unittest.IsolatedAsyncioTestCase):
         flags = {summary.message_id: summary.already_submitted for summary in page}
         self.assertEqual(flags, {70: True, 69: False})
 
+    async def test_list_recent_media_marks_republished_content_as_submitted(self) -> None:
+        original = _message(80, kind="photo", size=500_000, media_id=5, width=720, height=520)
+        client = FakeUserClient({80: original})
+        reader = UserSourceReader(client)
+        page, _has_more = await reader.list_recent_media(-100555, limit=10)
+        fingerprint = page[0].fingerprint
+
+        # The source re-uploaded the same file: new message id, same content.
+        repost = _message(81, kind="photo", size=500_000, media_id=6, width=720, height=520)
+        reader = UserSourceReader(FakeUserClient({81: repost}))
+        page, _has_more = await reader.list_recent_media(
+            -100555, limit=10, done=frozenset({fingerprint})
+        )
+        self.assertTrue(page[0].already_submitted)
+        self.assertNotEqual(page[0].message_id, 80)
+
     async def test_group_message_ids_expands_one_album(self) -> None:
         target = _message(20, grouped_id=99)
         sibling_a = _message(19, grouped_id=99, kind="photo")
