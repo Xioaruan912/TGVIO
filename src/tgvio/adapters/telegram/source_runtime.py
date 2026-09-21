@@ -403,7 +403,7 @@ class SourceCoordinator:
             return (0, label, 0, 0)
         accepted = await self._dispatch(media, label)
         accepted_count, skipped = _accepted_counts(accepted, len(media))
-        if accepted_count:
+        if accepted_count == len(media) and not skipped:
             await self._remember_done(chat_id, [fingerprint])
         self._forget_scan(chat_id)
         return (len(media), label, accepted_count, skipped)
@@ -429,16 +429,13 @@ class SourceCoordinator:
 
         if self._reader is None or self._user_id is None or not selections:
             return (0, "", 0, 0, 0)
-        grouped: dict[int, list[int]] = {}
-        for source_index, message_id in selections:
-            grouped.setdefault(int(source_index), []).append(int(message_id))
         merged: list = []
         seen: set[tuple[int, int]] = set()
         labels: list[str] = []
         failed = 0
         semaphore = asyncio.Semaphore(_MERGE_READ_CONCURRENCY)
 
-        async def read(source_index: int, message_ids: list[int]):
+        async def read(selection_ordinal: int, source_index: int, message_id: int):
             target = self._chat_for(source_index)
             if target is None:
                 return None
@@ -446,7 +443,7 @@ class SourceCoordinator:
             async with semaphore:
                 try:
                     media = await asyncio.wait_for(
-                        self._reader.capture_many(chat_id, message_ids),
+                        self._reader.capture_many(chat_id, [message_id]),
                         timeout=_MERGE_ROW_TIMEOUT,
                     )
                 except Exception as exc:  # noqa: BLE001 - one bad row must not sink the merge
@@ -456,16 +453,16 @@ class SourceCoordinator:
                         type(exc).__name__,
                     )
                     return None
-            return (label, media)
+            return (selection_ordinal, int(chat_id), label, media)
 
         results = await asyncio.gather(
-            *(read(index, ids) for index, ids in grouped.items())
+            *(read(ordinal, index, message_id) for ordinal, (index, message_id) in enumerate(selections))
         )
-        for result in results:
-            if result is None:
-                failed += 1
-                continue
-            label, media = result
+        failed = sum(result is None for result in results)
+        completed_rows: list[tuple[int, int]] = []
+        for result in sorted((item for item in results if item is not None), key=lambda item: item[0]):
+            _ordinal, chat_id, label, media = result
+            completed_rows.append((_ordinal, chat_id))
             if label and label not in labels:
                 labels.append(label)
             for item in media:
@@ -485,15 +482,14 @@ class SourceCoordinator:
             label,
         )
         accepted = await self._dispatch(merged, label, merge=True)
-        touched: set[int] = set()
-        for index, _message_id in selections:
-            target = self._chat_for(index)
-            if target is not None:
-                touched.add(int(target[0]))
         accepted_count, skipped = _accepted_counts(accepted, len(merged))
-        if accepted_count:
-            for chat_id in touched:
-                await self._remember_done(chat_id, fingerprints)
+        touched = {chat_id for _ordinal, chat_id in completed_rows}
+        # Intake only reports aggregate counts. Record a row fingerprint only
+        # when every loaded item was accepted, otherwise leave it selectable.
+        if accepted_count == len(merged) and not skipped:
+            for ordinal, chat_id in completed_rows:
+                fingerprint = str(fingerprints[ordinal] if ordinal < len(fingerprints) else "").strip()
+                await self._remember_done(chat_id, [fingerprint])
         for chat_id in touched:
             self._forget_scan(chat_id)
         return (len(merged), label, failed, accepted_count, skipped)

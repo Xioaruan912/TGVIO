@@ -217,7 +217,7 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         coordinator._repository = FakeSubmittedRepository({-1001: {11}})
 
         async def _hook(owner_id, media, label="", merge=False):
-            return (2, 0)
+            return (1, 0)
 
         coordinator._on_source_media = _hook
         await coordinator.grab_selection(
@@ -331,6 +331,47 @@ class SourceCoordinatorConfigTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(captured), 1)
         self.assertTrue(captured[0][2])
         self.assertEqual([item.source_message_id for item in captured[0][1]], [10, 11, 20])
+
+    async def test_grab_selection_preserves_interleaved_cross_source_order(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        captured: list[list] = []
+
+        class _Reader(FakeReader):
+            async def capture_many(self, chat_id, message_ids):
+                message_id = int(message_ids[0])
+                return [_item(int(chat_id), message_id)]
+
+        coordinator._reader = _Reader()
+        coordinator._client = object()
+
+        async def _media(_owner_id, media, _label="", merge=False):
+            self.assertTrue(merge)
+            captured.append(list(media))
+            return (len(media), 0)
+
+        coordinator._on_source_media = _media
+        await coordinator.grab_selection([(0, 10), (1, 20), (0, 11)])
+        self.assertEqual(
+            [(item.source_chat_id, item.source_message_id) for item in captured[0]],
+            [(-1001, 10), (-1002, 20), (-1001, 11)],
+        )
+
+    async def test_partial_merge_does_not_hide_unaccepted_fingerprints(self) -> None:
+        coordinator = self._coordinator()
+        coordinator._user_id = 7
+        coordinator._reader = FakeReader(media=[_item(-1001, 11)])
+        coordinator._client = object()
+        coordinator._repository = FakeSubmittedRepository()
+
+        async def _media(_owner_id, _media, _label="", merge=False):
+            self.assertTrue(merge)
+            return (0, 1)
+
+        coordinator._on_source_media = _media
+        await coordinator.grab_selection([(0, 11)], fingerprints=["video|500|720x1280|caption"])
+        await coordinator.list_media(0, page=0, page_size=10)
+        self.assertEqual(coordinator._reader.done_inputs[-1], frozenset())
 
     async def test_grab_selection_skips_a_row_that_cannot_be_read(self) -> None:
         coordinator = self._coordinator()

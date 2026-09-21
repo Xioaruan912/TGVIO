@@ -89,6 +89,8 @@ class JobRepository(Protocol):
         self,
         job: Job,
         events: tuple[tuple[IntakeEventKey, int], ...],
+        *,
+        release_keys: tuple[IntakeEventKey, ...] = (),
     ) -> bool: ...
 
     async def get_open_collection(

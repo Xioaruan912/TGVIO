@@ -186,6 +186,17 @@ class IntakeService:
                         released=len(released),
                     )
                 return IntakeAcceptResult(job=job, created=True)
+            # The transaction refused the hand-off because another caller won,
+            # or because the failed Job acquired a visible publish effect after
+            # our initial lookup. In both cases return the durable owner rather
+            # than repeatedly trying to release the same source key.
+            current = await self._repository.lookup_intake_events(
+                tuple(key for key, _item_index in events)
+            )
+            if current:
+                existing_job = await self._repository.get(next(iter(current.values())))
+                if existing_job is not None:
+                    return IntakeAcceptResult(job=existing_job, created=False)
         raise RuntimeError("intake event contention did not converge")
 
     async def _releasable_keys(

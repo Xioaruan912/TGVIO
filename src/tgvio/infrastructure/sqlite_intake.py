@@ -92,8 +92,8 @@ class SQLiteIntakeRepositoryMixin:
     ) -> bool:
         async with self._write_transaction() as conn:
             if release_keys:
-                # Keys whose previous Job failed or was cancelled are handed to
-                # the new Job so the same content can be grabbed again.
+                # A stale caller must not release a key that was revived or has
+                # already produced a visible publish effect after its lookup.
                 for start in range(0, len(release_keys), 400):
                     chunk = release_keys[start : start + 400]
                     placeholders = ",".join("(?,?)" for _ in chunk)
@@ -104,6 +104,18 @@ class SQLiteIntakeRepositoryMixin:
                         f"""
                         DELETE FROM intake_events
                         WHERE (source_chat_id, source_message_id) IN ({placeholders})
+                          AND EXISTS (
+                              SELECT 1 FROM jobs
+                              WHERE jobs.id = intake_events.job_id
+                                AND jobs.state IN ('failed', 'cancelled')
+                          )
+                          AND NOT EXISTS (
+                              SELECT 1
+                              FROM publish_plans
+                              JOIN publish_effects
+                                ON publish_effects.plan_id = publish_plans.id
+                              WHERE publish_plans.job_id = intake_events.job_id
+                          )
                         """,
                         tuple(params),
                     )

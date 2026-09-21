@@ -22,7 +22,7 @@ from tgvio.observability import log_event
 
 DOWNLOAD_SKIPPED_POLICY_KEY = "download_skipped"
 
-_TELEGRAM_TIMEOUT_TYPES = {"TimeoutError", "TimedoutError", "TimedOutError", "TimedOut"}
+_TELEGRAM_TIMEOUT_TYPES = {"TimedoutError", "TimedOutError", "TimedOut"}
 _TELEGRAM_TIMEOUT_MARKERS = (
     "timeout while fetching data",
     "request was unsuccessful",
@@ -153,7 +153,6 @@ class JobDownloader:
 
         try:
             downloaded = list(job.items)
-            skipped: list[dict[str, Any]] = []
             for position, item in enumerate(job.items):
                 await self._safe_checkpoint(
                     job,
@@ -163,10 +162,12 @@ class JobDownloader:
                     continue
                 self._ensure_disk_capacity(item.size_bytes)
                 try:
-                    downloaded[position] = await self._download_item_with_retries(
-                        job,
-                        item,
-                        target_dir,
+                    downloaded[position] = self._clear_skip_markers(
+                        await self._download_item_with_retries(
+                            job,
+                            item,
+                            target_dir,
+                        )
                     )
                 except (JobCancelRequested, JobHoldRequested):
                     raise
@@ -182,15 +183,8 @@ class JobDownloader:
                             DOWNLOAD_SKIPPED_CODE_KEY: code,
                         },
                     )
-                    skipped.append(
-                        {
-                            "index": int(item.index),
-                            "source_message_id": item.source_message_id,
-                            "error_code": code,
-                        }
-                    )
                     job.items = list(downloaded)
-                    job.policy[DOWNLOAD_SKIPPED_POLICY_KEY] = list(skipped)
+                    self._refresh_skipped_policy(job)
                     await self._repository.save(job)
                     log_event(
                         self._log,
@@ -204,6 +198,7 @@ class JobDownloader:
                     )
                     continue
                 job.items = list(downloaded)
+                self._refresh_skipped_policy(job)
                 await self._repository.save(job)
                 log_event(
                     self._log,
@@ -218,8 +213,9 @@ class JobDownloader:
                     job,
                     f"paused after download item {item.index}",
                 )
-            if skipped:
-                await self._fail_when_nothing_downloaded(job, downloaded, skipped)
+            current_skipped = list(job.policy.get(DOWNLOAD_SKIPPED_POLICY_KEY, ()))
+            if current_skipped:
+                await self._fail_when_nothing_downloaded(job, downloaded, current_skipped)
         except (JobCancelRequested, JobHoldRequested):
             raise
         except DownloadItemsUnavailableError:
@@ -359,6 +355,29 @@ class JobDownloader:
             error_message=message,
         )
         raise DownloadItemsUnavailableError(message)
+
+    @staticmethod
+    def _refresh_skipped_policy(job: Job) -> None:
+        skipped = [
+            {
+                "index": int(item.index),
+                "source_message_id": item.source_message_id,
+                "error_code": str(item.metadata.get(DOWNLOAD_SKIPPED_CODE_KEY) or "download_failed"),
+            }
+            for item in job.items
+            if item_download_skipped(item)
+        ]
+        if skipped:
+            job.policy[DOWNLOAD_SKIPPED_POLICY_KEY] = skipped
+        else:
+            job.policy.pop(DOWNLOAD_SKIPPED_POLICY_KEY, None)
+
+    @staticmethod
+    def _clear_skip_markers(item):
+        metadata = dict(item.metadata)
+        metadata.pop(DOWNLOAD_SKIPPED_KEY, None)
+        metadata.pop(DOWNLOAD_SKIPPED_CODE_KEY, None)
+        return replace(item, metadata=metadata)
 
     async def _safe_checkpoint(self, job: Job, detail: str) -> None:
         if self._control is not None:

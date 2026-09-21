@@ -9,6 +9,13 @@ import unittest
 from tgvio.application.intake import IncomingMedia, IntakeService
 from tgvio.domain.intake import JobDisplayMessage, SpoilerMode
 from tgvio.domain.job import JobState, MediaKind
+from tgvio.domain.publish import (
+    PublishEffect,
+    PublishPlan,
+    PublishStep,
+    PublishStepKind,
+    PublishTarget,
+)
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
 
@@ -118,6 +125,53 @@ class IntakeCollectionTests(unittest.IsolatedAsyncioTestCase):
             (self.intake._event_key(incoming(1)),)  # type: ignore[arg-type]
         )
         self.assertEqual(set(events.values()), {retry.job.id})
+
+    async def test_failed_job_with_publish_effect_stays_deduplicated(self) -> None:
+        first = await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[incoming(1)],
+        )
+        for state, event in (
+            (JobState.DOWNLOADING, "download_started"),
+            (JobState.DOWNLOADED, "download_completed"),
+            (JobState.ANALYZING, "analysis_started"),
+            (JobState.ANALYZED, "analysis_completed"),
+            (JobState.PLANNED, "plan_created"),
+            (JobState.PUBLISHING, "publish_started"),
+        ):
+            await self.repo.transition(first.job.id, state, event_type=event)
+        plan = PublishPlan(
+            job_id=first.job.id,
+            steps=(
+                PublishStep(
+                    index=0,
+                    kind=PublishStepKind.CHANNEL_DOCUMENT,
+                    target=PublishTarget.CHANNEL,
+                    item_indexes=(0,),
+                ),
+            ),
+            summary={},
+        )
+        await self.repo.save_publish_plan(plan)
+        await self.repo.record_publish_effect(
+            PublishEffect(
+                plan_id=plan.id,
+                step_index=0,
+                effect_type="message_sent",
+                external_chat_id="-1001",
+                external_message_id="99",
+            )
+        )
+        await self.repo.transition(first.job.id, JobState.FAILED, event_type="publish_failed")
+
+        replay = await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[incoming(1)],
+        )
+        self.assertFalse(replay.created)
+        self.assertEqual(replay.job.id, first.job.id)
 
     async def test_succeeded_job_content_stays_blocked(self) -> None:
         first = await self.intake.accept_once(

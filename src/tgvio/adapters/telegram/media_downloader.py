@@ -8,7 +8,11 @@ from pathlib import Path
 from telethon import TelegramClient
 
 from tgvio.application.ports import TransferProgressCallback
-from tgvio.domain.job import MediaItem
+from tgvio.domain.job import (
+    DOWNLOAD_SKIPPED_CODE_KEY,
+    DOWNLOAD_SKIPPED_KEY,
+    MediaItem,
+)
 from tgvio.observability import log_event
 
 
@@ -238,6 +242,10 @@ class TelethonMediaDownloader:
     @staticmethod
     def _completed(item: MediaItem, path: Path, size: int, *, reused: bool) -> MediaItem:
         metadata = dict(item.metadata)
+        # A later successful retry must make the item eligible for analysis and
+        # publishing again instead of carrying its old skip decision forward.
+        metadata.pop(DOWNLOAD_SKIPPED_KEY, None)
+        metadata.pop(DOWNLOAD_SKIPPED_CODE_KEY, None)
         metadata.update(
             {
                 "download_complete": True,

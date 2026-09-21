@@ -9,11 +9,13 @@ import unittest
 from tgvio.application.intake import IncomingMedia, IntakeService
 from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.media_analyzer import MediaAnalyzer
-from tgvio.application.media_downloader import DiskSpaceLowError, JobDownloader
+from tgvio.application.media_downloader import DiskSpaceLowError, JobDownloader, classify_download_error
+from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
 from tgvio.application.orchestrator import JobOrchestrator
 from tgvio.application.processor import IngestionProcessor
 from tgvio.domain.job import (
     DOWNLOAD_SKIPPED_CODE_KEY,
+    DOWNLOAD_SKIPPED_KEY,
     JobState,
     MediaItem,
     MediaKind,
@@ -263,6 +265,58 @@ class IntakeAndDownloaderTests(unittest.IsolatedAsyncioTestCase):
         failed = await self.repo.get(job.id)
         assert failed is not None
         self.assertEqual(failed.state, JobState.FAILED)
+
+    async def test_successful_retry_clears_old_skip_metadata_and_policy(self) -> None:
+        intake = IntakeService(self.repo)
+        job = await intake.accept(
+            owner_id=42,
+            destination="@channel",
+            media=[
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:415",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=415,
+                    metadata={
+                        DOWNLOAD_SKIPPED_KEY: True,
+                        DOWNLOAD_SKIPPED_CODE_KEY: "telegram_file_timeout",
+                    },
+                )
+            ],
+        )
+        job.policy["download_skipped"] = [{"index": 0, "error_code": "telegram_file_timeout"}]
+        await self.repo.save(job)
+
+        completed = await JobDownloader(
+            self.repo,
+            FakeDownloader(),
+            self.root / "downloads",
+            reserve_bytes=0,
+            item_attempts=1,
+        ).download(job)
+
+        self.assertFalse(item_download_skipped(completed.items[0]))
+        self.assertNotIn(DOWNLOAD_SKIPPED_CODE_KEY, completed.items[0].metadata)
+        self.assertNotIn("download_skipped", completed.policy)
+
+    def test_only_telegram_specific_timeouts_get_the_long_retry_code(self) -> None:
+        self.assertEqual(classify_download_error(TimeoutError("socket stalled"))[0], "download_failed")
+        self.assertEqual(
+            classify_download_error(TimeoutError("Timeout while fetching data (GetFileRequest)"))[0],
+            "telegram_file_timeout",
+        )
+
+    def test_telegram_downloader_success_clears_old_skip_metadata(self) -> None:
+        item = MediaItem(
+            index=0,
+            kind=MediaKind.VIDEO,
+            source="telegram:1:2",
+            metadata={DOWNLOAD_SKIPPED_KEY: True, DOWNLOAD_SKIPPED_CODE_KEY: "telegram_file_timeout"},
+        )
+        completed = TelethonMediaDownloader._completed(item, Path("/tmp/item.mp4"), 12, reused=False)
+        self.assertFalse(item_download_skipped(completed))
+        self.assertNotIn(DOWNLOAD_SKIPPED_CODE_KEY, completed.metadata)
 
     async def test_every_item_skipped_fails_with_the_telegram_timeout_code(self) -> None:
         intake = IntakeService(self.repo)
