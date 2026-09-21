@@ -88,6 +88,73 @@ class IntakeCollectionTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(await self.repo.list_intake_source_ids(42), {3})
 
+    async def test_failed_job_content_can_be_grabbed_again(self) -> None:
+        first = await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[incoming(1), incoming(3)],
+        )
+        await self.repo.transition(
+            first.job.id, JobState.DOWNLOADING, event_type="download_started"
+        )
+        await self.repo.transition(
+            first.job.id,
+            JobState.FAILED,
+            event_type="download_failed",
+            error_code="telegram_file_timeout",
+            error_message="fixture",
+        )
+
+        retry = await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[incoming(1), incoming(3)],
+        )
+        self.assertTrue(retry.created)
+        self.assertNotEqual(retry.job.id, first.job.id)
+        # The new Job owns the intake keys now; the old Job stays as history.
+        self.assertEqual(await self.repo.list_intake_source_ids(42), {1, 3})
+        events = await self.repo.lookup_intake_events(
+            (self.intake._event_key(incoming(1)),)  # type: ignore[arg-type]
+        )
+        self.assertEqual(set(events.values()), {retry.job.id})
+
+    async def test_succeeded_job_content_stays_blocked(self) -> None:
+        first = await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[incoming(1)],
+        )
+        await self.repo.transition(
+            first.job.id, JobState.DOWNLOADING, event_type="download_started"
+        )
+        await self.repo.transition(
+            first.job.id, JobState.DOWNLOADED, event_type="download_completed"
+        )
+        await self.repo.transition(
+            first.job.id, JobState.ANALYZING, event_type="analysis_started"
+        )
+        await self.repo.transition(
+            first.job.id, JobState.ANALYZED, event_type="analysis_completed"
+        )
+        await self.repo.transition(
+            first.job.id, JobState.PLANNED, event_type="plan_created"
+        )
+        await self.repo.transition(
+            first.job.id, JobState.PUBLISHING, event_type="publish_started"
+        )
+        await self.repo.transition(
+            first.job.id, JobState.SUCCEEDED, event_type="publish_completed"
+        )
+
+        replay = await self.intake.accept_once(
+            owner_id=7,
+            destination="@channel",
+            media=[incoming(1)],
+        )
+        self.assertFalse(replay.created)
+        self.assertEqual(replay.job.id, first.job.id)
+
     async def test_cross_connection_concurrent_replay_still_creates_one_job(self) -> None:
         second_repo = SQLiteJobRepository(self.database)
         await second_repo.open()

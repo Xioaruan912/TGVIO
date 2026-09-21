@@ -5,7 +5,14 @@ from tempfile import TemporaryDirectory
 import unittest
 
 from tgvio.application.result_card import ResultCardService, public_post_link
-from tgvio.domain.job import Job, JobState
+from tgvio.domain.job import (
+    DOWNLOAD_SKIPPED_CODE_KEY,
+    DOWNLOAD_SKIPPED_KEY,
+    Job,
+    JobState,
+    MediaItem,
+    MediaKind,
+)
 from tgvio.domain.operations import RevocationState
 from tgvio.domain.publish import PublishEffect, PublishPlan
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
@@ -130,6 +137,34 @@ class FavoritesAndResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(revoked.telegram_state, "revoked")
         self.assertIsNone(revoked.link_url)
         self.assertEqual(revoked.confirmed_messages, 0)
+
+    async def test_result_card_counts_skipped_items(self) -> None:
+        job = Job(
+            owner_id=7,
+            destination="@mychannel",
+            items=[
+                MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture:1"),
+                MediaItem(
+                    index=1,
+                    kind=MediaKind.VIDEO,
+                    source="fixture:2",
+                    metadata={
+                        DOWNLOAD_SKIPPED_KEY: True,
+                        DOWNLOAD_SKIPPED_CODE_KEY: "telegram_file_timeout",
+                    },
+                ),
+            ],
+            id="j-skip",
+        )
+        await self.repo.create(job)
+        plan = PublishPlan(job_id="j-skip", steps=(), summary={})
+        await self.repo.save_publish_plan(plan)
+        job.state = JobState.SUCCEEDED
+        await self.repo.save(job)
+
+        card = await ResultCardService(self.repo).build(job)
+        self.assertEqual(card.skipped_items, 1)
+        self.assertEqual(card.skipped_reason, "Telegram 取用该文件超时")
 
     async def test_result_card_lists_every_published_reference(self) -> None:
         job = await self._job("j3")

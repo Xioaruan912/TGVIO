@@ -87,8 +87,26 @@ class SQLiteIntakeRepositoryMixin:
         self,
         job: Job,
         events: tuple[tuple[IntakeEventKey, int], ...],
+        *,
+        release_keys: tuple[IntakeEventKey, ...] = (),
     ) -> bool:
         async with self._write_transaction() as conn:
+            if release_keys:
+                # Keys whose previous Job failed or was cancelled are handed to
+                # the new Job so the same content can be grabbed again.
+                for start in range(0, len(release_keys), 400):
+                    chunk = release_keys[start : start + 400]
+                    placeholders = ",".join("(?,?)" for _ in chunk)
+                    params: list[int] = []
+                    for key in chunk:
+                        params.extend((key.source_chat_id, key.source_message_id))
+                    await conn.execute(
+                        f"""
+                        DELETE FROM intake_events
+                        WHERE (source_chat_id, source_message_id) IN ({placeholders})
+                        """,
+                        tuple(params),
+                    )
             if events:
                 for start in range(0, len(events), 400):
                     chunk = events[start : start + 400]

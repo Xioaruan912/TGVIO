@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field, replace
+import logging
 import time
 from typing import Any, Sequence
 
@@ -15,7 +16,8 @@ from tgvio.domain.intake import (
     UserPreference,
 )
 from tgvio.application.content_prefs import content_policy_snapshot
-from tgvio.domain.job import Job, MediaItem, MediaKind
+from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
+from tgvio.observability import log_event
 
 
 @dataclass(frozen=True, slots=True)
@@ -59,6 +61,7 @@ class IntakeService:
     ) -> None:
         self._repository = repository
         self._default_policy = dict(default_policy or {})
+        self._log = logging.getLogger("tgvio.intake")
 
     @property
     def repository(self) -> JobRepository:
@@ -127,23 +130,27 @@ class IntakeService:
             existing = await self._repository.lookup_intake_events(
                 tuple(key for key in keyed if key is not None)
             )
+            releasable = await self._releasable_keys(existing)
+            blocked = {
+                key: job_id for key, job_id in existing.items() if key not in releasable
+            }
             filtered = [
                 item
                 for item in incoming
-                if (key := self._event_key(item)) is None or key not in existing
+                if (key := self._event_key(item)) is None or key not in blocked
             ]
             if not filtered:
                 first_key = next(
                     (
                         self._event_key(item)
                         for item in incoming
-                        if self._event_key(item) in existing
+                        if self._event_key(item) in blocked
                     ),
                     None,
                 )
                 if first_key is None:
                     raise RuntimeError("intake dedupe produced no new or existing event")
-                existing_job = await self._repository.get(existing[first_key])
+                existing_job = await self._repository.get(blocked[first_key])
                 if existing_job is None:
                     raise RuntimeError("intake event points to missing job")
                 return IntakeAcceptResult(job=existing_job, created=False)
@@ -161,9 +168,49 @@ class IntakeService:
                 for index, item in enumerate(filtered)
                 if (key := self._event_key(item)) is not None
             )
-            if await self._repository.create_with_intake_events(job, events):
+            released = tuple(
+                key
+                for key in releasable
+                if key in keyed
+            )
+            if await self._repository.create_with_intake_events(
+                job, events, release_keys=released
+            ):
+                if released:
+                    log_event(
+                        self._log,
+                        logging.INFO,
+                        "intake.events.released",
+                        "Source messages of failed jobs were handed to a new Job",
+                        job_id=job.id,
+                        released=len(released),
+                    )
                 return IntakeAcceptResult(job=job, created=True)
         raise RuntimeError("intake event contention did not converge")
+
+    async def _releasable_keys(
+        self,
+        existing: dict[IntakeEventKey, str],
+    ) -> set[IntakeEventKey]:
+        """Keys whose Job failed or was cancelled, so they may be grabbed again."""
+
+        if not existing:
+            return set()
+        states: dict[str, JobState] = {}
+        releasable: set[IntakeEventKey] = set()
+        for key, job_id in existing.items():
+            state = states.get(job_id)
+            if state is None:
+                job = await self._repository.get(job_id)
+                if job is None:
+                    # A dangling event row must never block the owner forever.
+                    releasable.add(key)
+                    continue
+                state = job.state
+                states[job_id] = state
+            if state in {JobState.FAILED, JobState.CANCELLED}:
+                releasable.add(key)
+        return releasable
 
     async def _apply_content_policy(
         self,

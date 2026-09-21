@@ -308,7 +308,7 @@ class BotUISourceMixin(
             await self._clear_pick_previews(owner_id, chat_id)
             lines = [f"✅ 已抓取 `{accepted}` 个媒体（来源：`{label}`），正在下载与发布。"]
             if skipped:
-                lines.append(f"跳过 `{skipped}` 项：之前已经发布过。")
+                lines.append(f"跳过 `{skipped}` 项：这些内容已经在处理或已经发布过。")
             await self._send_text(chat_id, "\n".join(lines))
         else:
             await self._send_text(

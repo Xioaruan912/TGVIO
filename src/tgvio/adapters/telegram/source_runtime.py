@@ -556,6 +556,9 @@ class SourceCoordinator:
             request_retries=8,
             connection_retries=8,
         )
+        # Keep the real RPC error (e.g. Telegram's GetFile timeout) instead of
+        # Telethon's generic "Request was unsuccessful N time(s)".
+        client._raise_last_call_error = True
         try:
             await client.connect()
             if not await client.is_user_authorized():

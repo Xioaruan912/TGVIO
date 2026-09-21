@@ -63,6 +63,9 @@ class BotUIResultMixin:
             f"🎬 媒体：`{card.media_total}` 个 · `{self._human_bytes(size)}`",
             f"📢 已确认消息：`{card.confirmed_messages}` 条",
         ]
+        if card.skipped_items:
+            reason = card.skipped_reason or "无法从来源下载"
+            lines.append(f"⚠️ 跳过 `{card.skipped_items}` 项：{reason}")
         if card.discussion_message_ids:
             lines.append(
                 f"💬 评论区：`{len(card.discussion_message_ids)}` 条 · "

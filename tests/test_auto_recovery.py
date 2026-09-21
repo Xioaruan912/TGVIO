@@ -196,6 +196,22 @@ class AutoRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cache.calls, 1)
         self.assertEqual([job.id for job in result.retried_jobs], [failed.id])
 
+    async def test_telegram_file_timeout_backs_off_in_minutes_and_stops_after_two(self) -> None:
+        failed = await self._failed_download(code="telegram_file_timeout")
+        service = self._service()
+
+        scheduled = await service.run_once()
+        self.assertEqual(scheduled.scheduled_jobs, 1)
+        waiting = await self.repo.get(failed.id)
+        assert waiting is not None
+        # 900s base delay instead of the 15s used for ordinary failures.
+        self.assertEqual(
+            waiting.policy[JOB_RECOVERY_STATE_KEY]["next_retry_epoch"], 1900
+        )
+        self.assertEqual(
+            waiting.policy[JOB_RECOVERY_STATE_KEY]["max_attempts"], 2
+        )
+
     async def test_old_unstamped_job_is_never_automatically_retried(self) -> None:
         failed = await self._failed_download(stamped=False)
         first = await self._service().run_once()

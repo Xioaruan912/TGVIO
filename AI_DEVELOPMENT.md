@@ -96,6 +96,8 @@ Telegram 消息 / 链接
 - 收到消息确认后再写“已发送凭据”，再更新界面。
 - 不确定是否已发送时标为 `partial/uncertain`，**绝不盲目重发**。
 - 归档失败不影响已完成的 Telegram 发布。
+- **单项容错（r2-43）**：`JobDownloader` 每项先重试 `TGVIO_DOWNLOAD_ITEM_ATTEMPTS`（默认 2）次，仍失败且 `TGVIO_DOWNLOAD_ITEM_TOLERANCE=true` 时把该项标成 `metadata["download_skipped"]=True`（附 `download_skipped_code`）并**继续下一项**；`MediaAnalyzer` 与 `JobOrchestrator.plan()` 都跳过这些项（否则 ffprobe 会因缺 local_path 报错），结果卡显示 `⚠️ 跳过 N 项：…`。全部媒体项都失败时整单以 `telegram_file_timeout`（或 `download_failed`）失败。错误分类见 `classify_download_error()`：Telegram 的 `Timeout while fetching data` 与 Telethon 的 `Request was unsuccessful` 归为 `telegram_file_timeout`；两个 Telethon client 现在都设了 `_raise_last_call_error = True`，所以日志/DB 里能看到真实 RPC 错误类型而不是笼统的 ValueError。
+- **失败任务可重抓（r2-43）**：`IntakeService.accept_once` 会把「已存在但任务已 failed/cancelled」的 `intake_events` 键视为可释放（`_releasable_keys()`），在新建任务的同一事务里 `release_keys` 删除旧键（`create_with_intake_events(..., release_keys=)`）；succeeded/进行中的任务仍然永久占位（"已提交不再抓取"语义不变）。auto-recovery 对 `telegram_file_timeout` 用 15 分钟起的退避（`delay_for_error()`，上限 1 小时）且最多重试 2 次。
 
 任务主状态（`domain/job.py`）：`received → downloading → downloaded → analyzing → analyzed → planned → publishing → succeeded`，另有 `failed`/`cancelled` 与暂停恢复。
 

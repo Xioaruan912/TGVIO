@@ -24,7 +24,13 @@ _JOB_RETRY_LIMITS: dict[str, int | None] = {
     "disk_low": None,
     "media_analysis_failed": 1,
     "publish_failed": 2,
+    "telegram_file_timeout": 2,
 }
+# Telegram answers "Timeout while fetching data" when its storage cannot serve a
+# file; that usually clears up later, so this code backs off in tens of minutes
+# instead of the seconds used for ordinary transient failures.
+_SLOW_RETRY_BASE_SECONDS: dict[str, int] = {"telegram_file_timeout": 900}
+_SLOW_RETRY_CAP_SECONDS = 3600
 _FINAL_RECOVERY_STATUSES = {
     "abandoned",
     "exhausted",
@@ -104,6 +110,15 @@ class AutoRecoveryPolicy:
             int(self.max_delay_seconds),
             int(self.base_delay_seconds) * (2 ** (attempt - 1)),
         )
+
+    def delay_for_error(self, error_code: str | None, attempt: int) -> int:
+        """Backoff for one error code; storage-side timeouts wait much longer."""
+
+        base = _SLOW_RETRY_BASE_SECONDS.get(str(error_code or ""))
+        if base is None:
+            return self.delay_for_attempt(attempt)
+        attempt = max(1, int(attempt))
+        return min(_SLOW_RETRY_CAP_SECONDS, int(base) * (2 ** (attempt - 1)))
 
 
 @dataclass(frozen=True, slots=True)
@@ -329,7 +344,7 @@ class AutoRecoveryService:
 
         if existing.get("failure_id") != failure_id or existing.get("status") != "scheduled":
             attempt = retry_count + 1
-            due = self._now() + policy.delay_for_attempt(attempt)
+            due = self._now() + policy.delay_for_error(job.error_code, attempt)
             await self._set_job_state(
                 job.id,
                 {

@@ -12,7 +12,13 @@ from tgvio.application.media_analyzer import MediaAnalyzer
 from tgvio.application.media_downloader import DiskSpaceLowError, JobDownloader
 from tgvio.application.orchestrator import JobOrchestrator
 from tgvio.application.processor import IngestionProcessor
-from tgvio.domain.job import JobState, MediaItem, MediaKind
+from tgvio.domain.job import (
+    DOWNLOAD_SKIPPED_CODE_KEY,
+    JobState,
+    MediaItem,
+    MediaKind,
+    item_download_skipped,
+)
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
 
@@ -173,6 +179,186 @@ class IntakeAndDownloaderTests(unittest.IsolatedAsyncioTestCase):
         assert failed is not None
         self.assertEqual(failed.state, JobState.FAILED)
         self.assertEqual(failed.error_code, "disk_low")
+
+    async def test_one_bad_item_is_skipped_and_the_rest_completes(self) -> None:
+        intake = IntakeService(self.repo)
+        job = await intake.accept(
+            owner_id=42,
+            destination="@channel",
+            media=[
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:400",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=400,
+                ),
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:401",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=401,
+                ),
+            ],
+        )
+
+        class FlakyDownloader(FakeDownloader):
+            async def download(self, item, target_dir, progress_callback=None):
+                if item.source_message_id == 400:
+                    raise TimeoutError("Timeout while fetching data (caused by GetFileRequest)")
+                return await super().download(item, target_dir, progress_callback)
+
+        downloader = JobDownloader(
+            self.repo,
+            FlakyDownloader(),
+            self.root / "downloads",
+            reserve_bytes=0,
+            item_attempts=2,
+            item_retry_delay_seconds=0,
+        )
+        completed = await downloader.download(job)
+        self.assertEqual(completed.state, JobState.DOWNLOADED)
+        skipped = [item for item in completed.items if item_download_skipped(item)]
+        self.assertEqual([item.index for item in skipped], [0])
+        self.assertEqual(
+            skipped[0].metadata[DOWNLOAD_SKIPPED_CODE_KEY], "telegram_file_timeout"
+        )
+        self.assertEqual(completed.policy["download_skipped"][0]["error_code"], "telegram_file_timeout")
+        self.assertTrue(completed.items[1].local_path)
+        events = await self.repo.list_events(job.id)
+        types = [event.event_type for event in events]
+        self.assertIn("download_completed", types)
+
+    async def test_tolerance_can_be_disabled_for_all_or_nothing(self) -> None:
+        intake = IntakeService(self.repo)
+        job = await intake.accept(
+            owner_id=42,
+            destination="@channel",
+            media=[
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:410",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=410,
+                )
+            ],
+        )
+
+        class AlwaysFails(FakeDownloader):
+            async def download(self, item, target_dir, progress_callback=None):
+                raise TimeoutError("Timeout while fetching data (caused by GetFileRequest)")
+
+        downloader = JobDownloader(
+            self.repo,
+            AlwaysFails(),
+            self.root / "downloads",
+            reserve_bytes=0,
+            item_attempts=1,
+            item_tolerance=False,
+        )
+        with self.assertRaises(TimeoutError):
+            await downloader.download(job)
+        failed = await self.repo.get(job.id)
+        assert failed is not None
+        self.assertEqual(failed.state, JobState.FAILED)
+
+    async def test_every_item_skipped_fails_with_the_telegram_timeout_code(self) -> None:
+        intake = IntakeService(self.repo)
+        job = await intake.accept(
+            owner_id=42,
+            destination="@channel",
+            media=[
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:420",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=420,
+                ),
+                IncomingMedia(
+                    kind=MediaKind.PHOTO,
+                    source="telegram:42:421",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=421,
+                ),
+            ],
+        )
+
+        class AlwaysTimesOut(FakeDownloader):
+            async def download(self, item, target_dir, progress_callback=None):
+                raise TimeoutError("Timeout while fetching data (caused by GetFileRequest)")
+
+        downloader = JobDownloader(
+            self.repo,
+            AlwaysTimesOut(),
+            self.root / "downloads",
+            reserve_bytes=0,
+            item_attempts=1,
+        )
+        with self.assertRaises(Exception):
+            await downloader.download(job)
+        failed = await self.repo.get(job.id)
+        assert failed is not None
+        self.assertEqual(failed.state, JobState.FAILED)
+        self.assertEqual(failed.error_code, "telegram_file_timeout")
+        self.assertIn("无法从 Telegram 取用", failed.error_message or "")
+
+    async def test_skipped_items_are_left_out_of_analysis_and_plan(self) -> None:
+        intake = IntakeService(self.repo)
+        job = await intake.accept(
+            owner_id=42,
+            destination="@channel",
+            media=[
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:430",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=430,
+                ),
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:431",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=431,
+                ),
+            ],
+        )
+
+        class FlakyDownloader(FakeDownloader):
+            async def download(self, item, target_dir, progress_callback=None):
+                if item.source_message_id == 430:
+                    raise TimeoutError("Timeout while fetching data (caused by GetFileRequest)")
+                return await super().download(item, target_dir, progress_callback)
+
+        downloader = JobDownloader(
+            self.repo,
+            FlakyDownloader(),
+            self.root / "downloads",
+            reserve_bytes=0,
+            item_attempts=1,
+        )
+        downloaded = await downloader.download(job)
+
+        inspected: list[int] = []
+
+        class RecordingInspector(FakeInspector):
+            async def inspect(self, item):
+                inspected.append(item.index)
+                return await super().inspect(item)
+
+        analyzed = await MediaAnalyzer(self.repo, RecordingInspector()).analyze(downloaded)
+        self.assertEqual(inspected, [1])
+
+        orchestrator = JobOrchestrator(self.repo)
+        plan = await orchestrator.mark_planned(analyzed)
+        planned = [index for step in plan.steps for index in step.item_indexes]
+        self.assertNotIn(0, planned)
+        self.assertIn(1, planned)
 
     async def test_concurrent_job_creation_is_serialized(self) -> None:
         intake = IntakeService(self.repo)

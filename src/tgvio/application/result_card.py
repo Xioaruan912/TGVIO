@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 from tgvio.application.ports import JobRepository
-from tgvio.domain.job import Job, JobState
+from tgvio.domain.job import DOWNLOAD_SKIPPED_CODE_KEY, Job, JobState, item_download_skipped
 from tgvio.domain.operations import RevocationState
 
 _VISIBLE_EFFECT_TYPES = {
@@ -26,6 +26,8 @@ class ResultCard:
     favorited: bool = False
     channel_message_ids: tuple[str, ...] = ()
     discussion_message_ids: tuple[str, ...] = ()
+    skipped_items: int = 0
+    skipped_reason: str | None = None
 
     @property
     def discussion_range(self) -> str:
@@ -112,6 +114,18 @@ class ResultCardService:
             telegram_state = "pending"
 
         link_url, link_reason = public_post_link(job.destination, channel_ids)
+        skipped = [item for item in job.items if item_download_skipped(item)]
+        skipped_reason = None
+        if skipped:
+            codes = {
+                str(item.metadata.get(DOWNLOAD_SKIPPED_CODE_KEY) or "") for item in skipped
+            }
+            if codes == {"telegram_file_timeout"}:
+                skipped_reason = "Telegram 取用该文件超时"
+            elif codes == {"source_missing"}:
+                skipped_reason = "来源已删除该媒体"
+            else:
+                skipped_reason = "无法从来源下载"
         return ResultCard(
             job_id=job.id,
             state=job.state.value,
@@ -125,4 +139,6 @@ class ResultCardService:
             favorited=bool(favorited),
             channel_message_ids=tuple(channel_ids),
             discussion_message_ids=tuple(discussion_ids),
+            skipped_items=len(skipped),
+            skipped_reason=skipped_reason,
         )

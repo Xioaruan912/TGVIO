@@ -18,6 +18,9 @@ class TelethonGateway:
             request_retries=8,
             connection_retries=8,
         )
+        # Surface the real RPC error instead of Telethon's generic
+        # "Request was unsuccessful N time(s)" so failures stay diagnosable.
+        self._client._raise_last_call_error = True
 
     @property
     def client(self) -> TelegramClient:

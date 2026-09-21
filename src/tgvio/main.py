@@ -279,6 +279,8 @@ async def run(*, check_only: bool = False) -> None:
             settings.download_dir,
             reserve_bytes=settings.disk_reserve_bytes,
             control=control,
+            item_attempts=settings.download_item_attempts,
+            item_tolerance=settings.download_item_tolerance,
         )
         analyzer = MediaAnalyzer(repository, FFprobeMediaInspector(), control)
         orchestrator = JobOrchestrator(

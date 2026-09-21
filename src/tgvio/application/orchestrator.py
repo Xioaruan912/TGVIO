@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 from tgvio.application.ports import JobRepository
 from tgvio.domain.content import render_caption_template, split_template_buttons
-from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
+from tgvio.domain.job import Job, JobState, MediaItem, MediaKind, item_download_skipped
 from tgvio.domain.publish import PublishPlan, PublishStep, PublishStepKind, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
@@ -103,7 +103,11 @@ class JobOrchestrator:
 
         self._active = self._resolve_policy(job)
         steps: list[PublishStep] = []
-        items = sorted(job.items, key=lambda item: item.index)
+        items = [
+            item
+            for item in sorted(job.items, key=lambda item: item.index)
+            if not item_download_skipped(item)
+        ]
         self._render_context = self._build_render_context(job, len(items))
         photos = [item for item in items if item.kind == MediaKind.PHOTO]
         videos = [item for item in items if item.kind == MediaKind.VIDEO]

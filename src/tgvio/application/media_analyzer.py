@@ -4,7 +4,7 @@ import logging
 
 from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.ports import JobRepository, MediaInspector
-from tgvio.domain.job import Job, JobState
+from tgvio.domain.job import Job, JobState, item_download_skipped
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
 
@@ -55,6 +55,10 @@ class MediaAnalyzer:
                     job,
                     f"paused before analysis item {item.index}",
                 )
+                if item_download_skipped(item):
+                    # A skipped item has no local file; it stays out of the plan.
+                    analyzed.append(item)
+                    continue
                 analyzed.append(await self._inspector.inspect(item))
                 await self._safe_checkpoint(
                     job,

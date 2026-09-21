@@ -29,6 +29,16 @@ class MediaKind(StrEnum):
 
 TERMINAL_STATES = {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}
 
+# MediaItem.metadata keys shared by the downloader, analyzer and planner.
+DOWNLOAD_SKIPPED_KEY = "download_skipped"
+DOWNLOAD_SKIPPED_CODE_KEY = "download_skipped_code"
+
+
+def item_download_skipped(item: "MediaItem") -> bool:
+    """Whether one item could not be fetched and was deliberately left out."""
+
+    return bool(item.metadata.get(DOWNLOAD_SKIPPED_KEY))
+
 ALLOWED_TRANSITIONS: dict[JobState, set[JobState]] = {
     JobState.RECEIVED: {
         JobState.DOWNLOADING,

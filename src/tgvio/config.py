@@ -98,6 +98,8 @@ class Settings:
     telegram_upload_global_workers: int
     telegram_part_size_kb: int
     telegram_shard_retries: int
+    download_item_attempts: int
+    download_item_tolerance: bool
     batch_window_ms: int
     batch_max_wait_ms: int
     batch_max_items: int
@@ -193,6 +195,9 @@ class Settings:
         telegram_shard_retries = _int("TGVIO_TELEGRAM_SHARD_RETRIES", 3)
         if not 0 <= telegram_shard_retries <= 10:
             raise ConfigError("TGVIO_TELEGRAM_SHARD_RETRIES out of range")
+        download_item_attempts = _int("TGVIO_DOWNLOAD_ITEM_ATTEMPTS", 2)
+        if not 1 <= download_item_attempts <= 5:
+            raise ConfigError("TGVIO_DOWNLOAD_ITEM_ATTEMPTS must be in range 1..5")
         batch_window_ms = _int("TGVIO_BATCH_WINDOW_MS", 1500)
         if not 0 <= batch_window_ms <= 10_000:
             raise ConfigError("TGVIO_BATCH_WINDOW_MS out of range")
@@ -418,6 +423,8 @@ class Settings:
             telegram_upload_global_workers=telegram_upload_global_workers,
             telegram_part_size_kb=telegram_part_size_kb,
             telegram_shard_retries=telegram_shard_retries,
+            download_item_attempts=download_item_attempts,
+            download_item_tolerance=_bool("TGVIO_DOWNLOAD_ITEM_TOLERANCE", True),
             batch_window_ms=batch_window_ms,
             batch_max_wait_ms=batch_max_wait_ms,
             batch_max_items=batch_max_items,
@@ -497,6 +504,8 @@ class Settings:
             "telegram_upload_global_workers": self.telegram_upload_global_workers,
             "telegram_part_size_kb": self.telegram_part_size_kb,
             "telegram_shard_retries": self.telegram_shard_retries,
+            "download_item_attempts": self.download_item_attempts,
+            "download_item_tolerance": self.download_item_tolerance,
             "batch_window_ms": self.batch_window_ms,
             "batch_max_items": self.batch_max_items,
             "collections_enabled": self.collections_enabled,
