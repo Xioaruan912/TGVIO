@@ -25,6 +25,7 @@ export type Shell = {
   shareBtn: HTMLButtonElement;
   navButtons: HTMLButtonElement[];
   toast: HTMLElement;
+  netSpeed: HTMLElement;
   pauseIndicator: HTMLElement;
   gestureButton: HTMLButtonElement;
   debug: HTMLElement;
@@ -182,12 +183,14 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const brandSmall = element("span", "topbar-brand", "TGVIO");
   const mode = element("span", "topbar-mode");
   mode.append(element("i", "mode-dot"), element("span", undefined, "随心看"));
+  const netSpeed = element("span", "net-speed", "↓ 0 KB/s");
+  netSpeed.hidden = true;
   const settingsBtn = element("button", "topbar-settings");
   settingsBtn.type = "button";
   settingsBtn.setAttribute("aria-label", "设置");
   settingsBtn.appendChild(icon("settings", 22));
   settingsBtn.addEventListener("click", () => handlers.onNav("settings"));
-  topbar.append(brandSmall, mode, settingsBtn);
+  topbar.append(brandSmall, mode, netSpeed, settingsBtn);
 
   const actionRail = element("div", "action-rail");
   const favoriteBtn = actionButton(
@@ -300,6 +303,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
     shareBtn,
     navButtons,
     toast,
+    netSpeed,
     pauseIndicator,
     gestureButton,
     debug,

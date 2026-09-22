@@ -625,6 +625,7 @@ class PlayerHttpServer:
             "width": details["width"],
             "height": details["height"],
             "duration_seconds": duration,
+            "size_bytes": details.get("size_bytes"),
             "stream_url": stream_url,
             "favorite": await self._repository.is_favorite(session_digest, media_id),
             "mime_type": details.get("mime_type"),

@@ -46,6 +46,24 @@
   pointer-events: auto;
 }
 
+.net-speed {
+  margin-left: auto;
+  margin-right: 8px;
+  font-size: 11px;
+  letter-spacing: 0.02em;
+  color: rgba(255, 255, 255, 0.72);
+  white-space: nowrap;
+  font-variant-numeric: tabular-nums;
+}
+
+.net-speed[hidden] {
+  display: none;
+}
+
+.large-topbar .net-speed {
+  margin-right: 6px;
+}
+
 .playback-pressure .mode-dot {
   animation: pulse 1s ease-in-out infinite;
 }

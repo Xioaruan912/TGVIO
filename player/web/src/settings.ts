@@ -4,6 +4,7 @@ export type PlayerPrefs = {
   dragSeek: boolean;
   dragThumbnail: boolean;
   cacheAhead: boolean;
+  netSpeed: boolean;
 };
 
 const KEY = "tgvio.player.prefs";
@@ -14,6 +15,7 @@ const DEFAULTS: PlayerPrefs = {
   dragSeek: true,
   dragThumbnail: true,
   cacheAhead: true,
+  netSpeed: true,
 };
 
 export function loadPrefs(): PlayerPrefs {
@@ -29,6 +31,7 @@ export function loadPrefs(): PlayerPrefs {
       dragSeek: parsed.dragSeek ?? DEFAULTS.dragSeek,
       dragThumbnail: parsed.dragThumbnail ?? DEFAULTS.dragThumbnail,
       cacheAhead: parsed.cacheAhead ?? DEFAULTS.cacheAhead,
+      netSpeed: parsed.netSpeed ?? DEFAULTS.netSpeed,
     };
   } catch {
     return { ...DEFAULTS };

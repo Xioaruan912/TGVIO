@@ -1,6 +1,7 @@
 import { api } from "./api";
 import { attachGestures } from "./gestures";
 import { icon } from "./icons";
+import { NetworkMeter } from "./net";
 import { ThumbnailPreview } from "./preview";
 import { prefs } from "./settings";
 import { element, formatTime } from "./ui";
@@ -42,6 +43,7 @@ export class LargePlayer {
   private readonly favoriteButton: HTMLButtonElement;
   private readonly soundButton: HTMLButtonElement;
   private readonly preview = new ThumbnailPreview();
+  private readonly meter: NetworkMeter;
   private readonly detach: () => void;
   private readonly clip: Clip;
   private readonly onClose: () => void;
@@ -60,7 +62,9 @@ export class LargePlayer {
     back.appendChild(icon("back", 24));
     back.addEventListener("click", () => this.onClose());
     const title = element("span", "large-title", `视频 #${clip.id.slice(0, 8)}`);
-    topbar.append(back, title);
+    const netSpeed = element("span", "net-speed", "↓ 0 KB/s");
+    netSpeed.hidden = true;
+    topbar.append(back, title, netSpeed);
 
     const stage = element("div", "large-stage");
     this.video = document.createElement("video");
@@ -151,11 +155,15 @@ export class LargePlayer {
         void this.video.play().catch(() => undefined);
       },
     });
+    this.meter = new NetworkMeter(netSpeed);
+    this.meter.watch(this.video, clip);
+    if (prefs.netSpeed) this.meter.start();
     void this.video.play().catch(() => undefined);
   }
 
   destroy(): void {
     this.detach();
+    this.meter.stop();
     this.video.pause();
     this.video.removeAttribute("src");
     this.video.load();

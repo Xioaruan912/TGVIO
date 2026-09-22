@@ -417,6 +417,7 @@ class VideoCategoryTests(unittest.IsolatedAsyncioTestCase):
         body = await long_items.json()
         self.assertEqual([item["id"] for item in body["items"]], [self.long_id])
         self.assertEqual(body["items"][0]["category"], "long")
+        self.assertEqual(body["items"][0]["size_bytes"], 5000)
         short_items = await self.client.get(
             "/api/v1/videos?category=short", cookies={"tgvio_player_session": cookie}
         )

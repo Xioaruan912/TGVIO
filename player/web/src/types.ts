@@ -3,6 +3,7 @@ export type MediaDto = {
   width: number | null;
   height: number | null;
   duration_seconds: number | null;
+  size_bytes?: number | null;
   stream_url: string;
   favorite: boolean;
   mime_type?: string | null;
@@ -27,6 +28,7 @@ export type Clip = {
   width: number | null;
   height: number | null;
   duration: number;
+  sizeBytes: number;
   streamUrl: string;
   favorite: boolean;
   mimeType: string | null;

@@ -47,6 +47,7 @@ export function clipFromMedia(media: MediaDto): Clip {
     width: media.width,
     height: media.height,
     duration: Math.max(0, Math.round(media.duration_seconds ?? 0)),
+    sizeBytes: Math.max(0, Math.round(media.size_bytes ?? 0)),
     streamUrl: media.stream_url,
     favorite: media.favorite,
     mimeType: media.mime_type ?? null,

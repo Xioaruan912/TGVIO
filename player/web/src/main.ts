@@ -4,6 +4,7 @@ import { FeedView } from "./feed";
 import { attachGestures } from "./gestures";
 import { LargePlayer } from "./large";
 import { LongVideoPage } from "./long";
+import { NetworkMeter } from "./net";
 import { VideoPool } from "./player";
 import { PreloadCoordinator } from "./preload";
 import { ThumbnailPreview } from "./preview";
@@ -61,6 +62,7 @@ let resizeTimer = 0;
 let stallWarnTimer = 0;
 let stallSkipTimer = 0;
 let feedPreview: ThumbnailPreview | null = null;
+let feedMeter: NetworkMeter | null = null;
 const unplayable = new Set<string>();
 const seenIds = new Set<string>();
 const errorRetries = new Map<string, number>();
@@ -124,6 +126,11 @@ function applyActive(index: number): void {
   setFavoriteButton(shell!, favorites.has(current.id));
   scheduleWarm();
   armStallGuard(current.id);
+  if (feedMeter) {
+    feedMeter.watch(pool.currentVideo(), current);
+    if (prefs.netSpeed) feedMeter.start();
+    else feedMeter.stop();
+  }
   renderDebug();
 }
 
@@ -501,6 +508,21 @@ function openSettings(): void {
       },
     ),
   );
+  body.push(
+    sheetToggle(
+      "显示网速",
+      prefs.netSpeed ? "右上角显示下载速率" : "已关闭",
+      prefs.netSpeed,
+      () => {
+        setPref("netSpeed", !prefs.netSpeed);
+        if (feedMeter) {
+          if (prefs.netSpeed) feedMeter.start();
+          else feedMeter.stop();
+        }
+        openSettings();
+      },
+    ),
+  );
   body.push(sheetSection("账户"));
   body.push(
     sheetRow({
@@ -649,6 +671,7 @@ function renderFeed(): void {
   feedView.setClips(clips);
   feedPreview = new ThumbnailPreview();
   shell.root.appendChild(feedPreview.el);
+  feedMeter = new NetworkMeter(shell.netSpeed);
   attachGestures(shell.feed, feedGestureOptions());
   setSoundButton(shell, muted);
   setActiveNav(shell, "home");
