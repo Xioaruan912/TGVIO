@@ -107,7 +107,6 @@ async def run(settings: PlayerSettings) -> None:
     try:
         await client.open()
         sync = CatalogSyncService(WebDavArchiveCatalogSource(client, remote_root=settings.remote_root), repository)
-        await sync.sync_once()
         server = PlayerHttpServer(
             repository, SessionService(repository, access_secret=settings.access_secret),
             ShuffleDeckService(repository), ReadOnlyWebDavAdapter(client),
