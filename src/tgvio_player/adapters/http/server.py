@@ -126,7 +126,6 @@ class PlayerHttpServer:
         self._startup_range_bytes = startup_range_bytes
         self._static_dir = static_dir.resolve() if static_dir is not None and static_dir.is_dir() else None
         self._faststart = faststart
-        self._prepare_tasks: set[asyncio.Task[object]] = set()
         self._login_failures: dict[str, tuple[int, float, float]] = {}
         self._login_lock = asyncio.Lock()
 
@@ -249,6 +248,8 @@ class PlayerHttpServer:
         for media_id in media_ids:
             details = await self._repository.active_media_details(media_id)
             if details is not None:
+                if self._faststart is not None:
+                    self._faststart.schedule(media_id, details)
                 items.append(await self._media_dto(details, digest))
         return web.json_response({"items": items, "next_cursor": None})
 
@@ -301,7 +302,9 @@ class PlayerHttpServer:
                 raise web.HTTPNotFound(text="media not found")
             overlay = None
             if self._faststart is not None:
-                overlay = await self._faststart.overlay_for(media_id, details)
+                overlay = self._faststart.peek(media_id, details)
+                if overlay is None:
+                    self._faststart.schedule(media_id, details)
             if overlay is not None:
                 return await self._stream_overlay(request, overlay, location, plan)
             if self._is_startup_range(plan.byte_range):
@@ -398,9 +401,7 @@ class PlayerHttpServer:
             return web.json_response({"prepared": False}, status=202)
         media_id = request.match_info["media_id"]
         details = await self._media_details(media_id)
-        task = asyncio.create_task(self._faststart.prepare(media_id, details))
-        self._prepare_tasks.add(task)
-        task.add_done_callback(self._prepare_tasks.discard)
+        self._faststart.schedule(media_id, details)
         return web.json_response({"prepared": True}, status=202)
 
     def _is_startup_range(self, byte_range: ByteRange | None) -> bool:

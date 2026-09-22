@@ -205,6 +205,7 @@ class FaststartService:
         reader: object,
         *,
         memory_bytes: int = 64 * 1024 * 1024,
+        max_concurrent_builds: int = 2,
     ) -> None:
         self._store = store
         self._repository = repository
@@ -214,9 +215,37 @@ class FaststartService:
         self._memory_size = 0
         self._missing: set[str] = set()
         self._locks: dict[str, asyncio.Lock] = {}
+        self._build_slots = asyncio.Semaphore(max(1, max_concurrent_builds))
+        self._scheduled: set[str] = set()
+        self._tasks: set[asyncio.Task[object]] = set()
 
     def has_overlay(self, media_id: str) -> bool:
         return media_id in self._memory or media_id in self._missing or self._store.load(media_id) is not None
+
+    def peek(self, media_id: str, details: dict[str, object]) -> FaststartOverlay | None:
+        """Return a ready overlay only; never reads the remote store."""
+        if not is_mp4(details) or media_id in self._missing:
+            return None
+        return self._cached(media_id)
+
+    def schedule(self, media_id: str, details: dict[str, object]) -> None:
+        """Build an overlay in the background, off the playback critical path."""
+        if not is_mp4(details) or media_id in self._missing or media_id in self._scheduled:
+            return
+        if self._cached(media_id) is not None:
+            return
+        self._scheduled.add(media_id)
+        task = asyncio.create_task(self._build_and_forget(media_id, details))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    async def _build_and_forget(self, media_id: str, details: dict[str, object]) -> None:
+        try:
+            await self.overlay_for(media_id, details)
+        except Exception:
+            _LOG.warning("player.faststart.scheduled_build_failed media=%s", media_id[:12], exc_info=True)
+        finally:
+            self._scheduled.discard(media_id)
 
     def _remember(self, media_id: str, overlay: FaststartOverlay) -> None:
         previous = self._memory.pop(media_id, None)
@@ -274,20 +303,26 @@ class FaststartService:
                 return overlay
             if media_id in self._missing:
                 return None
-            location = await self._repository.active_media_location(media_id)
-            if location is None:
-                return None
-            size = int(details.get("size_bytes") or 0)
-            mime = str(details.get("mime_type") or "video/mp4")
-            try:
-                overlay = await build_overlay(
-                    size,
-                    mime,
-                    lambda start, end: self._read_exact(location, start, end),
-                )
-            except Exception:
-                _LOG.warning("player.faststart.build_failed media=%s", media_id[:12], exc_info=True)
-                overlay = None
+            async with self._build_slots:
+                overlay = self._cached(media_id)
+                if overlay is not None:
+                    return overlay
+                location = await self._repository.active_media_location(media_id)
+                if location is None:
+                    return None
+                size = int(details.get("size_bytes") or 0)
+                mime = str(details.get("mime_type") or "video/mp4")
+                try:
+                    overlay = await build_overlay(
+                        size,
+                        mime,
+                        lambda start, end: self._read_exact(location, start, end),
+                    )
+                except Exception:
+                    _LOG.warning(
+                        "player.faststart.build_failed media=%s", media_id[:12], exc_info=True
+                    )
+                    overlay = None
             if overlay is None:
                 self._missing.add(media_id)
                 return None

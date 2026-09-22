@@ -217,7 +217,7 @@ class FaststartHttpTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.apply_package(package)
         await self.repo.refresh_media_activity()
         self.reader = ReadOnlyWebDavAdapter(FakeBufferClient(self.buffer))
-        faststart = FaststartService(
+        self.faststart = FaststartService(
             FaststartStore(Path(self.tmp.name) / "faststart"), self.repo, self.reader
         )
         self.server = PlayerHttpServer(
@@ -225,7 +225,7 @@ class FaststartHttpTests(unittest.IsolatedAsyncioTestCase):
             SessionService(self.repo, access_secret="s" * 32),
             ShuffleDeckService(self.repo),
             self.reader,
-            faststart=faststart,
+            faststart=self.faststart,
         )
         self.client = TestClient(TestServer(self.server.application()))
         await self.client.start_server()
@@ -242,6 +242,9 @@ class FaststartHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_open_ended_stream_starts_with_ftyp_then_moov(self) -> None:
         cookie = await self._login()
+        details = await self.repo.active_media_details(self.media_id)
+        assert details is not None
+        await self.faststart.overlay_for(self.media_id, details)
         response = await self.client.get(
             f"/api/v1/media/{self.media_id}/stream",
             headers={"Range": "bytes=0-"},
@@ -257,16 +260,18 @@ class FaststartHttpTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prepare_endpoint_builds_the_overlay(self) -> None:
         cookie = await self._login()
+        details = await self.repo.active_media_details(self.media_id)
+        assert details is not None
         response = await self.client.post(
             f"/api/v1/media/{self.media_id}/prepare",
             cookies={"tgvio_player_session": cookie},
         )
         self.assertEqual(response.status, 202)
-        from tgvio_player.application.faststart import is_mp4
-
-        details = await self.repo.active_media_details(self.media_id)
-        assert details is not None
-        self.assertTrue(is_mp4(details))
+        for _ in range(100):
+            if self.faststart.peek(self.media_id, details) is not None:
+                break
+            await asyncio.sleep(0.01)
+        self.assertIsNotNone(self.faststart.peek(self.media_id, details))
 
 
 if __name__ == "__main__":
