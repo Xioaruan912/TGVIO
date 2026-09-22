@@ -1,11 +1,13 @@
 :root {
   color-scheme: dark;
   --bg: #000;
-  --line: rgba(255, 255, 255, 0.12);
-  --text: #f6f7fb;
-  --muted: rgba(226, 232, 245, 0.72);
-  --accent: #6ea8ff;
-  --danger: #ff5d73;
+  --surface: #111114;
+  --line: rgba(255, 255, 255, 0.1);
+  --text: #ffffff;
+  --muted: rgba(255, 255, 255, 0.62);
+  --faint: rgba(255, 255, 255, 0.34);
+  --favorite: #fe2c55;
+  --cyan: #25f4ee;
   --safe-top: env(safe-area-inset-top, 0px);
   --safe-bottom: env(safe-area-inset-bottom, 0px);
 }
@@ -22,8 +24,8 @@ body {
 }
 
 body {
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
-    "PingFang SC", "Microsoft YaHei", sans-serif;
+  font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI",
+    Roboto, system-ui, sans-serif;
   color: var(--text);
   overflow: hidden;
   overscroll-behavior: none;
@@ -45,21 +47,34 @@ button {
   padding: 0;
 }
 
-.logo {
-  width: 40px;
-  height: 40px;
-  flex: none;
-  border-radius: 12px;
-  background: linear-gradient(135deg, #9457ff, #2b84ff 68%, #40dbff);
-  display: grid;
-  place-items: center;
-  box-shadow: 0 0 26px rgba(95, 92, 255, 0.45);
+.icon {
+  display: block;
 }
 
-.logo::after {
-  content: "";
-  border-top: 8px solid transparent;
-  border-bottom: 8px solid transparent;
-  border-left: 12px solid #fff;
-  margin-left: 3px;
+.icon-stack {
+  position: relative;
+  display: grid;
+  place-items: center;
+}
+
+.icon-stack > .icon {
+  grid-area: 1 / 1;
+}
+
+.icon-filled,
+.icon-muted,
+.ind-play,
+.ind-pause {
+  display: none;
+}
+
+.logo {
+  width: 36px;
+  height: 36px;
+  flex: none;
+  display: grid;
+  place-items: center;
+  border-radius: 11px;
+  background: #fff;
+  color: #000;
 }

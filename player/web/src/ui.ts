@@ -1,3 +1,5 @@
+import { icon, type IconName } from "./icons";
+
 export type ShellHandlers = {
   onTogglePlayback: () => void;
   onPlayGesture: () => void;
@@ -31,10 +33,21 @@ export type Shell = {
   sheetBody: HTMLElement;
 };
 
+type NavSpec = { icon: IconName; label: string; action: string };
+
+const MOBILE_NAV: NavSpec[] = [
+  { icon: "home", label: "首页", action: "home" },
+  { icon: "heart", label: "收藏", action: "favorites" },
+  { icon: "shuffle", label: "随机", action: "random" },
+  { icon: "library", label: "片库", action: "library" },
+];
+
+const DESKTOP_NAV: NavSpec[] = [...MOBILE_NAV, { icon: "settings", label: "设置", action: "settings" }];
+
 let toastTimer = 0;
 let indicatorTimer = 0;
 
-function element<K extends keyof HTMLElementTagNameMap>(
+export function element<K extends keyof HTMLElementTagNameMap>(
   tag: K,
   className?: string,
   text?: string,
@@ -45,53 +58,78 @@ function element<K extends keyof HTMLElementTagNameMap>(
   return node;
 }
 
-function actionButton(icon: string, label: string): HTMLButtonElement {
+function iconStack(pairs: [IconName, string][], size: number): HTMLElement {
+  const wrap = element("span", "icon-stack");
+  for (const [name, className] of pairs) {
+    const svg = icon(name, size);
+    svg.classList.add(className);
+    wrap.appendChild(svg);
+  }
+  return wrap;
+}
+
+function actionButton(stack: HTMLElement, label: string, aria: string): HTMLButtonElement {
   const button = element("button", "action-btn");
   button.type = "button";
-  const glyph = element("span", "action-icon", icon);
+  button.setAttribute("aria-label", aria);
   const caption = element("small", "action-label", label);
-  button.append(glyph, caption);
+  button.append(stack, caption);
   return button;
 }
 
-function navButton(icon: string, label: string, action: string, handlers: ShellHandlers): HTMLButtonElement {
+function navButton(spec: NavSpec, handlers: ShellHandlers): HTMLButtonElement {
   const button = element("button", "nav-btn");
   button.type = "button";
-  button.dataset.action = action;
-  const glyph = element("span", "nav-icon", icon);
-  const caption = element("small", "nav-label", label);
-  button.append(glyph, caption);
-  button.addEventListener("click", () => handlers.onNav(action));
+  button.dataset.action = spec.action;
+  button.setAttribute("aria-label", spec.label);
+  const caption = element("small", "nav-label", spec.label);
+  button.append(icon(spec.icon, 24), caption);
+  button.addEventListener("click", () => handlers.onNav(spec.action));
   return button;
+}
+
+function brandMark(): HTMLElement {
+  const logo = element("span", "logo");
+  logo.appendChild(icon("play", 16));
+  return logo;
+}
+
+export function humanizeError(reason: unknown, fallback: string): string {
+  const code = (reason as { code?: string } | null)?.code;
+  if (code === "unauthorized") return "访问口令不正确，请重新输入";
+  if (code === "unavailable") return "暂时无法登录，请稍后重试";
+  return fallback;
 }
 
 export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLElement {
   const shell = element("main", "login-shell");
-  const card = element("section", "login-card");
+  const panel = element("section", "login-panel");
   const brand = element("div", "login-brand");
-  brand.append(element("span", "logo"), element("strong", undefined, "TGVIO Player"));
-  const subtitle = element("p", "login-subtitle", "Private Video Feed");
+  brand.append(brandMark(), element("strong", undefined, "TGVIO"));
+  const title = element("p", "login-title", "私享视频");
+  const subtitle = element("p", "login-subtitle", "你的私人视频空间");
   const form = element("form", "login-form");
   const input = element("input", "login-input");
   input.type = "password";
   input.inputMode = "numeric";
   input.autocomplete = "current-password";
-  input.placeholder = "PIN / Secret";
-  input.setAttribute("aria-label", "Player PIN or access secret");
+  input.placeholder = "输入访问口令";
+  input.setAttribute("aria-label", "访问口令");
   input.required = true;
-  const submit = element("button", "login-submit", "Sign In");
+  const submit = element("button", "login-submit", "进入");
   submit.type = "submit";
   const error = element("p", "login-error", "");
+  error.setAttribute("role", "alert");
   form.append(input, submit, error);
-  card.append(brand, subtitle, form);
-  shell.appendChild(card);
+  panel.append(brand, title, subtitle, form);
+  shell.appendChild(panel);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     error.textContent = "";
     submit.disabled = true;
     void onSubmit(input.value)
       .catch((reason: unknown) => {
-        error.textContent = reason instanceof Error ? reason.message : "Sign in failed";
+        error.textContent = humanizeError(reason, "暂时无法登录，请稍后重试");
       })
       .finally(() => {
         submit.disabled = false;
@@ -102,58 +140,76 @@ export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLEle
 
 export function buildError(message: string, onRetry: () => void): HTMLElement {
   const shell = element("main", "login-shell");
-  const card = element("section", "login-card");
+  const panel = element("section", "login-panel");
   const brand = element("div", "login-brand");
-  brand.append(element("span", "logo"), element("strong", undefined, "TGVIO Player"));
+  brand.append(brandMark(), element("strong", undefined, "TGVIO"));
   const text = element("p", "login-subtitle", message);
   const button = element("button", "login-submit", "重试");
   button.type = "button";
   button.addEventListener("click", onRetry);
-  card.append(brand, text, button);
-  shell.appendChild(card);
+  panel.append(brand, text, button);
+  shell.appendChild(panel);
   return shell;
 }
 
 export function buildShell(handlers: ShellHandlers): Shell {
   const root = element("main", "app-shell");
+
   const desktopNav = element("aside", "desktop-nav");
-  const brand = element("div", "desktop-brand");
-  brand.append(element("span", "logo"), element("strong", undefined, "TGVIO"));
-  desktopNav.appendChild(brand);
+  const desktopBrand = element("div", "desktop-brand");
+  desktopBrand.append(brandMark(), element("strong", undefined, "TGVIO"));
+  desktopNav.appendChild(desktopBrand);
   const navButtons: HTMLButtonElement[] = [];
-  const navSpecs: [string, string, string][] = [
-    ["⌂", "Home", "home"],
-    ["⤨", "Random", "random"],
-    ["♥", "Favorites", "favorites"],
-    ["▣", "Library", "library"],
-    ["⚙", "Settings", "settings"],
-  ];
-  for (const [icon, label, action] of navSpecs) {
-    const button = navButton(icon, label, action, handlers);
+  const desktopLinks = element("nav", "desktop-links");
+  for (const spec of DESKTOP_NAV) {
+    const button = navButton(spec, handlers);
     navButtons.push(button);
-    desktopNav.appendChild(button);
+    desktopLinks.appendChild(button);
   }
+  desktopNav.appendChild(desktopLinks);
 
   const stage = element("section", "stage");
-  const frame = element("div", "phone-frame");
+  const viewport = element("div", "viewport");
   const feed = element("div", "feed");
   feed.id = "feed";
-  feed.setAttribute("aria-label", "Vertical private video feed");
+  feed.setAttribute("aria-label", "竖屏视频流");
 
   const topbar = element("header", "topbar");
-  const modePill = element("div", "mode-pill", "Random");
   const brandSmall = element("span", "topbar-brand", "TGVIO");
-  const settingsBtn = element("button", "topbar-settings", "⚙");
+  const mode = element("span", "topbar-mode");
+  mode.append(element("i", "mode-dot"), element("span", undefined, "随心看"));
+  const settingsBtn = element("button", "topbar-settings");
   settingsBtn.type = "button";
-  settingsBtn.setAttribute("aria-label", "Settings");
+  settingsBtn.setAttribute("aria-label", "设置");
+  settingsBtn.appendChild(icon("settings", 22));
   settingsBtn.addEventListener("click", () => handlers.onNav("settings"));
-  topbar.append(brandSmall, modePill, settingsBtn);
+  topbar.append(brandSmall, mode, settingsBtn);
 
   const actionRail = element("div", "action-rail");
-  const favoriteBtn = actionButton("♡", "Favorite");
-  const soundBtn = actionButton("🔇", "Sound");
-  const shuffleBtn = actionButton("⤨", "Random");
-  const shareBtn = actionButton("↗", "Share");
+  const favoriteBtn = actionButton(
+    iconStack(
+      [
+        ["heart", "icon-outline"],
+        ["heart-filled", "icon-filled"],
+      ],
+      30,
+    ),
+    "收藏",
+    "收藏",
+  );
+  const soundBtn = actionButton(
+    iconStack(
+      [
+        ["sound-on", "icon-unmuted"],
+        ["sound-off", "icon-muted"],
+      ],
+      30,
+    ),
+    "声音",
+    "声音",
+  );
+  const shuffleBtn = actionButton(iconStack([["shuffle", "icon-single"]], 30), "换一个", "换一个");
+  const shareBtn = actionButton(iconStack([["share", "icon-single"]], 30), "分享", "分享");
   actionRail.append(favoriteBtn, soundBtn, shuffleBtn, shareBtn);
   favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
   soundBtn.addEventListener("click", handlers.onToggleSound);
@@ -161,14 +217,17 @@ export function buildShell(handlers: ShellHandlers): Shell {
   shareBtn.addEventListener("click", handlers.onShare);
 
   const pauseIndicator = element("div", "pause-indicator");
-  const gestureButton = element("button", "gesture-play", "▶");
+  pauseIndicator.append(iconStack([["play", "ind-play"], ["pause", "ind-pause"]], 34));
+
+  const gestureButton = element("button", "gesture-play");
   gestureButton.type = "button";
-  gestureButton.setAttribute("aria-label", "Play");
+  gestureButton.setAttribute("aria-label", "播放");
+  gestureButton.appendChild(icon("play", 34));
   gestureButton.addEventListener("click", handlers.onPlayGesture);
 
   const clipInfo = element("div", "clip-info");
-  const title = element("h1", "clip-title", "Archive clip");
-  const meta = element("p", "clip-meta", "Private archive");
+  const title = element("h1", "clip-title", "视频");
+  const meta = element("p", "clip-meta", "");
   const progressRow = element("div", "progress-row");
   const seek = element("input", "seek");
   seek.type = "range";
@@ -176,8 +235,13 @@ export function buildShell(handlers: ShellHandlers): Shell {
   seek.max = "0";
   seek.step = "0.05";
   seek.value = "0";
-  seek.setAttribute("aria-label", "Seek");
+  seek.setAttribute("aria-label", "播放进度");
   seek.addEventListener("input", () => handlers.onSeek(Number(seek.value)));
+  seek.addEventListener("pointerdown", () => seek.classList.add("dragging"));
+  const stopDrag = () => seek.classList.remove("dragging");
+  seek.addEventListener("pointerup", stopDrag);
+  seek.addEventListener("pointercancel", stopDrag);
+  seek.addEventListener("change", stopDrag);
   const timeline = element("div", "timeline");
   const timeCurrent = element("span", undefined, "0:00");
   const timeTotal = element("span", undefined, "0:00");
@@ -191,12 +255,12 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const toast = element("div", "toast");
   toast.setAttribute("role", "status");
 
-  frame.append(feed, topbar, actionRail, pauseIndicator, gestureButton, clipInfo, toast, debug);
-  stage.appendChild(frame);
+  viewport.append(feed, topbar, actionRail, pauseIndicator, gestureButton, clipInfo, toast, debug);
+  stage.appendChild(viewport);
 
   const bottomNav = element("nav", "bottom-nav");
-  for (const [icon, label, action] of navSpecs.slice(0, 4)) {
-    const button = navButton(icon, label, action, handlers);
+  for (const spec of MOBILE_NAV) {
+    const button = navButton(spec, handlers);
     navButtons.push(button);
     bottomNav.appendChild(button);
   }
@@ -204,13 +268,17 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const sheet = element("div", "sheet");
   sheet.hidden = true;
   const sheetCard = element("section", "sheet-card");
+  const handle = element("div", "sheet-handle");
+  handle.setAttribute("aria-hidden", "true");
   const sheetHead = element("header", "sheet-head");
   const sheetTitle = element("h2", "sheet-title", "");
-  const sheetClose = element("button", "sheet-close", "✕");
+  const sheetClose = element("button", "sheet-close");
   sheetClose.type = "button";
+  sheetClose.setAttribute("aria-label", "关闭");
+  sheetClose.appendChild(icon("close", 20));
   sheetHead.append(sheetTitle, sheetClose);
   const sheetBody = element("div", "sheet-body");
-  sheetCard.append(sheetHead, sheetBody);
+  sheetCard.append(handle, sheetHead, sheetBody);
   sheet.appendChild(sheetCard);
 
   root.append(desktopNav, stage, bottomNav, sheet);
@@ -246,27 +314,27 @@ export function toast(shell: Shell, message: string): void {
   shell.toast.textContent = message;
   shell.toast.classList.add("show");
   window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => shell.toast.classList.remove("show"), 1700);
+  toastTimer = window.setTimeout(() => shell.toast.classList.remove("show"), 1900);
 }
 
-export function showIndicator(shell: Shell, symbol: string): void {
-  shell.pauseIndicator.textContent = symbol;
+export function showIndicator(shell: Shell, kind: "play" | "pause"): void {
+  shell.pauseIndicator.classList.toggle("kind-play", kind === "play");
+  shell.pauseIndicator.classList.toggle("kind-pause", kind === "pause");
   shell.pauseIndicator.classList.add("show");
   window.clearTimeout(indicatorTimer);
-  indicatorTimer = window.setTimeout(() => shell.pauseIndicator.classList.remove("show"), 520);
+  indicatorTimer = window.setTimeout(() => shell.pauseIndicator.classList.remove("show"), 560);
 }
 
-export function setFavoriteButton(shell: Shell, active: boolean, count: number): void {
+export function setFavoriteButton(shell: Shell, active: boolean): void {
   shell.favoriteBtn.classList.toggle("selected", active);
-  const icon = shell.favoriteBtn.querySelector(".action-icon");
-  if (icon) icon.textContent = active ? "♥" : "♡";
   const label = shell.favoriteBtn.querySelector(".action-label");
-  if (label) label.textContent = String(count);
+  if (label) label.textContent = active ? "已收藏" : "收藏";
+  shell.favoriteBtn.setAttribute("aria-label", active ? "取消收藏" : "收藏");
 }
 
 export function setSoundButton(shell: Shell, muted: boolean): void {
-  const icon = shell.soundBtn.querySelector(".action-icon");
-  if (icon) icon.textContent = muted ? "🔇" : "🔊";
+  shell.soundBtn.classList.toggle("is-muted", muted);
+  shell.soundBtn.setAttribute("aria-label", muted ? "取消静音" : "静音");
 }
 
 export function setActiveNav(shell: Shell, action: string): void {
@@ -275,9 +343,17 @@ export function setActiveNav(shell: Shell, action: string): void {
   }
 }
 
+export function paintSeek(seek: HTMLInputElement): void {
+  const max = Number(seek.max) || 0;
+  const value = Number(seek.value) || 0;
+  const percent = max > 0 ? Math.min(100, Math.max(0, (value / max) * 100)) : 0;
+  seek.style.setProperty("--p", `${percent}%`);
+}
+
 export function openSheet(shell: Shell, title: string, body: Node[]): void {
   shell.sheetTitle.textContent = title;
   shell.sheetBody.replaceChildren(...body);
+  shell.sheetBody.scrollTop = 0;
   shell.sheet.hidden = false;
 }
 
@@ -285,17 +361,67 @@ export function sheetNote(text: string): HTMLElement {
   return element("p", "sheet-note", text);
 }
 
+export function sheetSection(text: string): HTMLElement {
+  return element("p", "sheet-section", text);
+}
+
+export function sheetEmpty(title: string, sub: string): HTMLElement {
+  const wrap = element("div", "sheet-empty");
+  const heading = element("p", "sheet-empty-title", title);
+  const caption = element("p", "sheet-empty-sub", sub);
+  wrap.append(heading, caption);
+  return wrap;
+}
+
+export type SheetRowOptions = {
+  title: string;
+  sub?: string;
+  note?: string;
+  iconName?: IconName;
+  trailing?: Node;
+  onPick?: () => void;
+};
+
+export function sheetRow(options: SheetRowOptions): HTMLElement {
+  const row = options.onPick ? element("button", "sheet-row") : element("div", "sheet-row");
+  if (row instanceof HTMLButtonElement) row.type = "button";
+  const text = element("span", "sheet-row-text");
+  text.appendChild(element("strong", "sheet-row-title", options.title));
+  if (options.sub) text.appendChild(element("small", "sheet-row-sub", options.sub));
+  if (options.note) text.appendChild(element("small", "sheet-row-note", options.note));
+  if (options.iconName) {
+    const mark = element("span", "sheet-row-icon");
+    mark.appendChild(icon(options.iconName, 20));
+    row.appendChild(mark);
+  }
+  row.appendChild(text);
+  if (options.trailing) row.appendChild(options.trailing);
+  if (options.onPick) row.addEventListener("click", options.onPick);
+  return row;
+}
+
+export function sheetToggle(
+  title: string,
+  sub: string,
+  value: boolean,
+  onChange: () => void,
+): HTMLButtonElement {
+  const row = element("button", "sheet-row sheet-row-toggle");
+  row.type = "button";
+  row.setAttribute("role", "switch");
+  row.setAttribute("aria-checked", value ? "true" : "false");
+  const text = element("span", "sheet-row-text");
+  text.append(element("strong", "sheet-row-title", title), element("small", "sheet-row-sub", sub));
+  const track = element("span", "switch");
+  track.appendChild(element("i", "switch-knob"));
+  row.append(text, track);
+  row.addEventListener("click", onChange);
+  return row;
+}
+
 export function closeSheet(shell: Shell): void {
   shell.sheet.hidden = true;
   shell.sheetBody.replaceChildren();
-}
-
-export function sheetRow(title: string, subtitle: string, onPick: () => void): HTMLButtonElement {
-  const row = element("button", "sheet-row");
-  row.type = "button";
-  row.append(element("strong", "sheet-row-title", title), element("small", "sheet-row-sub", subtitle));
-  row.addEventListener("click", onPick);
-  return row;
 }
 
 export function formatTime(seconds: number): string {

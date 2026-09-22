@@ -2,6 +2,18 @@ import type { Clip, FeedResponse, MediaDto, PreloadLevel } from "./types";
 
 export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
 
+export type ApiErrorCode = "unauthorized" | "unavailable";
+
+export class ApiError extends Error {
+  readonly code: ApiErrorCode;
+
+  constructor(code: ApiErrorCode) {
+    super(code === "unauthorized" ? "unauthorized" : "unavailable");
+    this.name = "ApiError";
+    this.code = code;
+  }
+}
+
 const MOCK_PALETTE = [
   ["#19345e", "#ff9e4a", "NIGHT DRIVE"],
   ["#26275b", "#8d7aff", "BLUE HOUR"],
@@ -42,7 +54,7 @@ export function clipFromMedia(media: MediaDto): Clip {
 
 export function shortId(id: string): string {
   if (MOCK_MODE) {
-    const digits = id.replace(/\D/g, "");
+    const digits = id.slice(0, 8).replace(/\D/g, "");
     return String(Number(digits) || 0).padStart(2, "0");
   }
   return id.slice(0, 8);
@@ -108,7 +120,7 @@ class PlayerApi {
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
     const response = await fetch(path, { ...init, credentials: "same-origin" });
     if (!response.ok) {
-      throw new Error(response.status === 401 ? "Sign in to continue" : "Player API unavailable");
+      throw new ApiError(response.status === 401 ? "unauthorized" : "unavailable");
     }
     return response.json() as Promise<T>;
   }

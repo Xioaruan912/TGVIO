@@ -1,21 +1,27 @@
 import "./style.css";
-import { api, MOCK_MODE, shortId } from "./api";
+import { ApiError, api, MOCK_MODE, shortId } from "./api";
 import { FeedView } from "./feed";
 import { VideoPool } from "./player";
 import { PreloadCoordinator } from "./preload";
+import { icon } from "./icons";
 import type { Clip } from "./types";
 import {
   buildError,
   buildLogin,
   buildShell,
   closeSheet,
+  element,
   formatTime,
   openSheet,
+  paintSeek,
   setActiveNav,
   setFavoriteButton,
   setSoundButton,
+  sheetEmpty,
   sheetNote,
   sheetRow,
+  sheetSection,
+  sheetToggle,
   showIndicator,
   toast,
   type Shell,
@@ -71,6 +77,12 @@ async function ensureFeed(minimum: number): Promise<void> {
   return refill;
 }
 
+function clipMeta(clip: Clip): string {
+  const duration = clip.duration ? formatTime(clip.duration) : "";
+  const dimensions = clip.width && clip.height ? `${clip.width}×${clip.height}` : "";
+  return [duration, dimensions, "私有片库"].filter(Boolean).join(" · ");
+}
+
 function applyActive(index: number): void {
   const current = feedView?.clipAt(index);
   if (!feedView || !pool || !current) return;
@@ -93,7 +105,7 @@ function applyActive(index: number): void {
     { paused, muted },
   );
   updateOverlay(current);
-  setFavoriteButton(shell!, favorites.has(current.id), favorites.size);
+  setFavoriteButton(shell!, favorites.has(current.id));
   preloader.plan(clips, index);
   renderDebug();
 }
@@ -110,15 +122,15 @@ function commitActive(index: number): void {
 
 function updateOverlay(clip: Clip): void {
   if (!shell) return;
-  shell.title.textContent = `Archive clip #${shortId(clip.id)}`;
-  const dimensions = clip.width && clip.height ? `${clip.width}×${clip.height}` : "Archive video";
-  shell.meta.textContent = `${clip.duration ? `${clip.duration}s · ` : ""}${dimensions} · Private archive`;
+  shell.title.textContent = `视频 #${shortId(clip.id)}`;
+  shell.meta.textContent = clipMeta(clip);
   const video = pool?.currentVideo() ?? null;
   const duration = video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : clip.duration;
   shell.seek.max = String(duration || 0);
   shell.seek.value = String(video ? video.currentTime : 0);
   shell.timeCurrent.textContent = formatTime(video ? video.currentTime : 0);
   shell.timeTotal.textContent = formatTime(duration);
+  paintSeek(shell.seek);
 }
 
 function updateProgress(): void {
@@ -128,6 +140,7 @@ function updateProgress(): void {
   if (!userSeeking) shell.seek.value = String(video.currentTime);
   shell.timeCurrent.textContent = formatTime(video.currentTime);
   shell.timeTotal.textContent = formatTime(Number(shell.seek.max));
+  paintSeek(shell.seek);
   renderDebug();
 }
 
@@ -137,7 +150,7 @@ async function toggleFavorite(): Promise<void> {
   const enabled = !favorites.has(clip.id);
   if (enabled) favorites.add(clip.id);
   else favorites.delete(clip.id);
-  setFavoriteButton(shell!, enabled, favorites.size);
+  setFavoriteButton(shell!, enabled);
   if (openSheetKind === "favorites") void openFavorites();
   try {
     await api.setFavorite(clip.id, enabled);
@@ -145,8 +158,8 @@ async function toggleFavorite(): Promise<void> {
   } catch {
     if (enabled) favorites.delete(clip.id);
     else favorites.add(clip.id);
-    setFavoriteButton(shell!, !enabled, favorites.size);
-    toast(shell!, "收藏更新失败");
+    setFavoriteButton(shell!, !enabled);
+    toast(shell!, "操作失败，请稍后重试");
   }
 }
 
@@ -155,6 +168,7 @@ function toggleSound(): void {
   localStorage.setItem(MUTE_KEY, muted ? "true" : "false");
   pool?.setMuted(muted);
   setSoundButton(shell!, muted);
+  if (openSheetKind === "settings") openSettings();
 }
 
 function togglePlayback(): void {
@@ -165,7 +179,7 @@ function togglePlayback(): void {
     if (paused) video.pause();
     else video.play().catch(() => undefined);
   }
-  showIndicator(shell, paused ? "Ⅱ" : "▶");
+  showIndicator(shell, paused ? "pause" : "play");
 }
 
 function playGesture(): void {
@@ -174,7 +188,7 @@ function playGesture(): void {
   paused = false;
   shell.root.classList.remove("needs-gesture");
   pool.resume();
-  showIndicator(shell, "▶");
+  showIndicator(shell, "play");
 }
 
 function goNext(instant = false): void {
@@ -184,7 +198,7 @@ function goNext(instant = false): void {
       feedView?.setClips(clips);
       if (next < clips.length) feedView?.scrollToIndex(next, !instant);
     })
-    .catch(() => toast(shell!, "暂时无法加载更多视频"));
+    .catch(() => toast(shell!, "暂时加载失败"));
 }
 
 function openClip(clip: Clip): void {
@@ -209,46 +223,71 @@ async function openFavorites(): Promise<void> {
   try {
     list = await api.favorites();
   } catch {
-    toast(shell, "暂时无法读取收藏");
+    toast(shell, "暂时加载失败");
   }
   if (!list.length) {
-    body.push(sheetNote("还没有收藏。播放时点右侧 ♥ 收藏。"));
+    body.push(sheetEmpty("还没有收藏的视频", "刷视频时点一下右侧的收藏按钮，就会出现在这里"));
   } else {
     for (const clip of list) {
-      const current = feedView?.indexOf(clip.id) ?? -1;
-      const sub = `${clip.duration ? `${clip.duration}s · ` : ""}${clip.width && clip.height ? `${clip.width}×${clip.height}` : "Archive video"}${current >= 0 ? " · 已载入" : ""}`;
-      body.push(sheetRow(`Archive clip #${shortId(clip.id)}`, sub, () => openClip(clip)));
+      body.push(
+        sheetRow({
+          title: `视频 #${shortId(clip.id)}`,
+          sub: clipMeta(clip),
+          iconName: "play-small",
+          onPick: () => openClip(clip),
+        }),
+      );
     }
   }
   openSheetKind = "favorites";
-  openSheet(shell, "收藏", body);
+  openSheet(shell, list.length ? `我的收藏 · ${list.length}` : "我的收藏", body);
   setActiveNav(shell, "favorites");
 }
 
 function openLibrary(): void {
   if (!shell) return;
-  const body: Node[] = [];
+  const body: Node[] = [sheetNote("本次已加载的视频")];
   if (!clips.length) {
-    body.push(sheetNote("本次会话还没有载入片段。"));
+    body.push(sheetEmpty("片库为空", "本次还没有加载视频"));
   } else {
     clips.forEach((clip, index) => {
-      const sub = `${clip.duration ? `${clip.duration}s · ` : ""}${clip.width && clip.height ? `${clip.width}×${clip.height}` : "Archive video"}${favorites.has(clip.id) ? " · ♥" : ""}`;
-      body.push(sheetRow(`#${index + 1} · ${shortId(clip.id)}`, sub, () => openClip(clip)));
+      const trailing = element("span", "sheet-row-heart");
+      if (favorites.has(clip.id)) trailing.appendChild(icon("heart-filled", 18));
+      body.push(
+        sheetRow({
+          title: `视频 ${String(index + 1).padStart(2, "0")}`,
+          sub: clipMeta(clip),
+          note: `#${shortId(clip.id)}`,
+          trailing,
+          onPick: () => openClip(clip),
+        }),
+      );
     });
   }
   openSheetKind = "library";
-  openSheet(shell, "Library（本次会话）", body);
+  openSheet(shell, "片库", body);
   setActiveNav(shell, "library");
 }
 
 function openSettings(): void {
   if (!shell) return;
   const body: Node[] = [];
-  body.push(sheetRow(muted ? "声音：关闭（点击开启）" : "声音：开启（点击关闭）", "在浏览器本地保存", toggleSound));
-  body.push(sheetRow("退出登录", "清除当前会话 Cookie", () => {
-    void api.logout().finally(() => window.location.reload());
-  }));
-  body.push(sheetRow(`调试信息：${DEBUG ? "已开启" : "关闭"}`, "在地址后加 ?debug=1 可开启", () => toast(shell!, DEBUG ? "Debug 已开启" : "访问 ?debug=1 开启调试")));
+  body.push(sheetSection("播放设置"));
+  body.push(sheetToggle("声音", muted ? "已关闭" : "已开启", !muted, toggleSound));
+  body.push(sheetSection("账户"));
+  body.push(
+    sheetRow({
+      title: "退出当前访问",
+      sub: "退出后需要重新输入访问口令",
+      onPick: () => {
+        void api.logout().finally(() => window.location.reload());
+      },
+    }),
+  );
+  if (DEBUG) {
+    body.push(sheetSection("调试"));
+    body.push(sheetRow({ title: "调试信息", sub: "已在地址后加 ?debug=1 开启" }));
+  }
   openSheetKind = "settings";
   openSheet(shell, "设置", body);
   setActiveNav(shell, "settings");
@@ -280,9 +319,9 @@ function shareCurrent(): void {
   if (!clip) return;
   const shared = navigator.share?.bind(navigator);
   if (shared) {
-    void shared({ title: `Archive clip #${shortId(clip.id)}` }).catch(() => undefined);
+    void shared({ title: `TGVIO 视频 #${shortId(clip.id)}` }).catch(() => undefined);
   } else {
-    toast(shell!, "私有 Feed · 未开启分享");
+    toast(shell!, "当前环境暂不支持分享");
   }
 }
 
@@ -290,7 +329,10 @@ function onSeek(value: number): void {
   const video = pool?.currentVideo();
   if (!video || !Number.isFinite(value)) return;
   video.currentTime = value;
-  if (shell) shell.timeCurrent.textContent = formatTime(value);
+  if (shell) {
+    shell.timeCurrent.textContent = formatTime(value);
+    paintSeek(shell.seek);
+  }
 }
 
 function renderDebug(): void {
@@ -357,6 +399,7 @@ function renderFeed(): void {
     shell?.root.classList.toggle("needs-gesture", blocked);
   };
   pool.onError = (mediaId) => {
+    if (MOCK_MODE) return;
     if (mediaId) unplayable.add(mediaId);
     skipStreak += 1;
     if (skipStreak > 8) {
@@ -403,15 +446,15 @@ async function boot(): Promise<void> {
   try {
     await ensureFeed(MIN_FEED);
     if (!clips.length) {
-      renderError("暂时没有可播放的归档视频。");
+      renderError("暂时没有可播放的视频。");
       return;
     }
     renderFeed();
   } catch (error) {
-    if (error instanceof Error && error.message === "Sign in to continue") {
+    if (error instanceof ApiError && error.code === "unauthorized") {
       renderLogin();
     } else {
-      renderError(error instanceof Error ? error.message : "Player API unavailable");
+      renderError("暂时加载失败，请稍后重试");
     }
   }
 }

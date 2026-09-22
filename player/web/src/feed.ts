@@ -82,10 +82,12 @@ export class FeedView {
     host.className = "video-host";
     const poster = document.createElement("div");
     poster.className = "poster";
+    const spinner = document.createElement("span");
+    spinner.className = "poster-spinner";
     const label = document.createElement("span");
     label.className = "poster-label";
-    label.textContent = "PRIVATE ARCHIVE";
-    poster.appendChild(label);
+    label.textContent = "加载中…";
+    poster.append(spinner, label);
     page.append(host, poster);
     return page;
   }
