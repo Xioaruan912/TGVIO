@@ -39,15 +39,15 @@ class FaststartStore:
             header = json.loads(data[4 : 4 + header_length].decode("utf-8"))
         except (ValueError, UnicodeDecodeError):
             return None
-        moov = data[4 + header_length :]
+        head = data[4 + header_length :]
         if header.get("v") != _VERSION or not isinstance(header.get("prefix_len"), int):
             return None
-        if not isinstance(header.get("size"), int) or header.get("moov_len") != len(moov):
+        if not isinstance(header.get("size"), int) or header.get("head_len") != len(head):
             return None
         mime = header.get("mime")
         return FaststartOverlay(
             prefix_len=int(header["prefix_len"]),
-            moov=moov,
+            head=head,
             size=int(header["size"]),
             mime=str(mime) if isinstance(mime, str) else "video/mp4",
         )
@@ -58,13 +58,13 @@ class FaststartStore:
             {
                 "v": _VERSION,
                 "prefix_len": overlay.prefix_len,
-                "moov_len": overlay.moov_len,
+                "head_len": overlay.front_len,
                 "size": overlay.size,
                 "mime": overlay.mime,
             },
             separators=(",", ":"),
         ).encode("utf-8")
-        payload = struct.pack(">I", len(header)) + header + overlay.moov
+        payload = struct.pack(">I", len(header)) + header + overlay.head
         target = self._path(media_id)
         temporary = target.with_name(f".{target.name}.tmp")
         temporary.write_bytes(payload)

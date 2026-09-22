@@ -370,7 +370,7 @@ class PlayerHttpServer:
             if length <= 0:
                 continue
             if kind == "cache":
-                await self._write_chunks(response, overlay.moov[source_offset : source_offset + length])
+                await self._write_chunks(response, overlay.head[source_offset : source_offset + length])
                 continue
             upstream = await self._reader.open_range(
                 location[0], location[1], ByteRange(source_offset, source_offset + length - 1)

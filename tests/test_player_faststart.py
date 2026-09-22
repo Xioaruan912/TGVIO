@@ -81,7 +81,7 @@ class FaststartOverlayTests(unittest.IsolatedAsyncioTestCase):
         rebuilt = b""
         for kind, source_offset, length in overlay.segments(0, overlay.size - 1):
             if kind == "cache":
-                rebuilt += overlay.moov[source_offset : source_offset + length]
+                rebuilt += overlay.head[source_offset : source_offset + length]
             else:
                 rebuilt += buffer[source_offset : source_offset + length]
         self.assertEqual(rebuilt[:prefix_len], buffer[:prefix_len])
@@ -94,15 +94,16 @@ class FaststartOverlayTests(unittest.IsolatedAsyncioTestCase):
         buffer, _ = make_nonfaststart()
         overlay = await build_overlay(len(buffer), "video/mp4", reader_for(buffer))
         assert overlay is not None
-        # A range fully inside the relocated moov is served from cache.
+        # A range fully inside the relocated front is served from cache.
         start = overlay.prefix_len + 5
         segments = overlay.segments(start, start + 9)
-        self.assertEqual(segments, [("cache", 5, 10)])
+        self.assertEqual(segments, [("cache", start, 10)])
         # A range in the data region maps back to the original offset, fewer moov bytes.
-        data_virtual = overlay.prefix_len + overlay.moov_len + 7
+        data_virtual = overlay.front_len + 7
         segments = overlay.segments(data_virtual, data_virtual + 3)
         self.assertEqual(segments, [("origin", data_virtual - overlay.moov_len, 4)])
         self.assertEqual(overlay.original_offset(data_virtual), data_virtual - overlay.moov_len)
+        self.assertEqual(overlay.original_offset(0), -1)
 
     async def test_co64_variant(self) -> None:
         buffer, offsets = make_nonfaststart(use_co64=True)
@@ -184,13 +185,16 @@ class FaststartStoreTests(unittest.TestCase):
 
         with TemporaryDirectory() as temporary:
             store = FaststartStore(Path(temporary) / "faststart")
-            overlay = FaststartOverlay(prefix_len=32, moov=b"moovdata", size=1000, mime="video/mp4")
+            head = b"P" * 32 + b"moovdata"
+            overlay = FaststartOverlay(prefix_len=32, head=head, size=1000, mime="video/mp4")
             store.save("a" * 64, overlay)
             loaded = store.load("a" * 64)
             self.assertIsNotNone(loaded)
             assert loaded is not None
-            self.assertEqual((loaded.prefix_len, loaded.moov, loaded.size, loaded.mime),
-                             (32, b"moovdata", 1000, "video/mp4"))
+            self.assertEqual(
+                (loaded.prefix_len, loaded.head, loaded.moov, loaded.size, loaded.mime),
+                (32, head, b"moovdata", 1000, "video/mp4"),
+            )
             self.assertIsNone(store.load("b" * 64))
 
 

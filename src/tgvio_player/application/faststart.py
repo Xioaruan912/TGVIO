@@ -21,32 +21,36 @@ ReadRange = Callable[[int, int], Awaitable[bytes]]
 class FaststartOverlay:
     """A virtual faststart view of a progressive MP4 whose ``moov`` is at the end.
 
-    The virtual file contains exactly the original bytes in a different order:
-    ``[prefix][moov][everything after prefix except moov]``. Only the absolute
-    chunk offsets inside ``moov`` change, so no media data is copied.
+    ``head`` is ``prefix bytes + patched moov`` and is served entirely from cache,
+    so a browser request for the start of the file never touches the slow remote
+    store. Only the media data region is streamed from the original file, shifted
+    by ``moov_len``.
     """
 
     prefix_len: int
-    moov: bytes
+    head: bytes
     size: int
     mime: str
 
     @property
     def moov_len(self) -> int:
-        return len(self.moov)
+        return len(self.head) - self.prefix_len
+
+    @property
+    def front_len(self) -> int:
+        return len(self.head)
+
+    @property
+    def moov(self) -> bytes:
+        return self.head[self.prefix_len :]
 
     def segments(self, start: int, end: int) -> list[tuple[str, int, int]]:
         """Split a virtual range into ``("cache"|"origin", source_offset, length)``."""
         segments: list[tuple[str, int, int]] = []
         cursor = start
-        if cursor <= end and cursor < self.prefix_len:
-            length = min(end, self.prefix_len - 1) - cursor + 1
-            segments.append(("origin", cursor, length))
-            cursor += length
-        moov_start = self.prefix_len
-        if cursor <= end and cursor < moov_start + self.moov_len:
-            length = min(end, moov_start + self.moov_len - 1) - cursor + 1
-            segments.append(("cache", cursor - moov_start, length))
+        if cursor <= end and cursor < self.front_len:
+            length = min(end, self.front_len - 1) - cursor + 1
+            segments.append(("cache", cursor, length))
             cursor += length
         if cursor <= end:
             segments.append(("origin", cursor - self.moov_len, end - cursor + 1))
@@ -54,10 +58,8 @@ class FaststartOverlay:
 
     def original_offset(self, virtual_offset: int) -> int:
         """Map a virtual byte offset back to the original remote offset."""
-        if virtual_offset < self.prefix_len:
-            return virtual_offset
-        if virtual_offset < self.prefix_len + self.moov_len:
-            return -1  # lives in the cached moov, not in the remote file
+        if virtual_offset < self.front_len:
+            return -1  # lives in the cached head, not in the remote file
         return virtual_offset - self.moov_len
 
 
@@ -178,6 +180,9 @@ async def build_overlay(size: int, mime: str, read: ReadRange) -> FaststartOverl
     tracks = _patch_chunk_offsets(patched, moov_size, first_mdat, moov_start)
     if tracks is None or tracks == 0:
         return None
+    prefix = await read(0, first_mdat - 1) if first_mdat > 0 else b""
+    if len(prefix) != first_mdat:
+        return None
     _LOG.info(
         "player.faststart.overlay_built size=%s prefix=%s moov=%s tracks=%s",
         size,
@@ -185,7 +190,9 @@ async def build_overlay(size: int, mime: str, read: ReadRange) -> FaststartOverl
         moov_size,
         tracks,
     )
-    return FaststartOverlay(prefix_len=first_mdat, moov=bytes(patched), size=size, mime=mime)
+    return FaststartOverlay(
+        prefix_len=first_mdat, head=prefix + bytes(patched), size=size, mime=mime
+    )
 
 
 class FaststartService:
@@ -214,12 +221,12 @@ class FaststartService:
     def _remember(self, media_id: str, overlay: FaststartOverlay) -> None:
         previous = self._memory.pop(media_id, None)
         if previous is not None:
-            self._memory_size -= len(previous.moov)
+            self._memory_size -= previous.front_len
         self._memory[media_id] = overlay
-        self._memory_size += len(overlay.moov)
+        self._memory_size += overlay.front_len
         while self._memory_size > self._memory_bytes and self._memory:
             _, evicted = self._memory.popitem(last=False)
-            self._memory_size -= len(evicted.moov)
+            self._memory_size -= evicted.front_len
 
     def _cached(self, media_id: str) -> FaststartOverlay | None:
         overlay = self._memory.get(media_id)
