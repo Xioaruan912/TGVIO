@@ -1,6 +1,6 @@
 import type { Clip } from "./types";
 
-const SETTLE_MS = 110;
+const SETTLE_MS = 200;
 
 /**
  * Vertical, scroll-snapped page list. Metadata can run ahead, but each page is
