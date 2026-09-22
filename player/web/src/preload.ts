@@ -1,12 +1,17 @@
 import { api } from "./api";
 import type { Clip, PreloadLevel } from "./types";
 
-const WARM_PLAN: PreloadLevel[] = ["strong", "light", "metadata"];
+const WARM_PLAN: { offset: number; level: PreloadLevel }[] = [
+  { offset: 1, level: "strong" },
+  { offset: 2, level: "strong" },
+  { offset: 3, level: "light" },
+];
 
 /**
- * Bounded media warm-up for N+2..N+4. N+1 is handled by the real next video
- * slot, so it is intentionally not fetched twice here. Current playback always
- * wins: any waiting/stalled signal aborts the low-priority fetches.
+ * Bounded media warm-up for N+1..N+3. N+1 is also the real next video slot
+ * (metadata only); this warms its startup bytes so the first frame after a
+ * swipe is ready. Current playback always wins: any waiting/stalled signal
+ * aborts the low-priority fetches.
  */
 export class PreloadCoordinator {
   private planned = new Map<string, PreloadLevel>();
@@ -19,10 +24,10 @@ export class PreloadCoordinator {
     this.controller?.abort();
     this.planned.clear();
     if (isRapid || this.pressure) return;
-    WARM_PLAN.forEach((level, offset) => {
-      const clip = feed[current + offset + 2];
-      if (clip) this.planned.set(clip.id, level);
-    });
+    for (const entry of WARM_PLAN) {
+      const clip = feed[current + entry.offset];
+      if (clip) this.planned.set(clip.id, entry.level);
+    }
     if (!this.planned.size) return;
     this.controller = new AbortController();
     const signal = this.controller.signal;
