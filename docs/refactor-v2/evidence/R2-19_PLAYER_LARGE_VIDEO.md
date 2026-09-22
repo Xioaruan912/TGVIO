@@ -91,3 +91,24 @@ large-video player. A "显示网速" toggle in 播放设置 (default on) control
 Verified on production: the large player showed a steady ~530 KB/s while
 streaming the 47-minute clip, and the feed showed a 3.0 MB/s spike as a fresh
 clip buffered.
+
+## Follow-up: seamless short-feed switching, tap fix and fullscreen
+
+- **Seamless switching.** The disk range cache no longer pauses read-ahead just
+  because a stream is active (it only pauses when every stream slot is busy),
+  and `/api/v1/feed` / `/api/v1/videos` warm the head of the first three clips
+  (whole file when <= 4 MB). The client warms N+1..N+3 and normal scrolling no
+  longer cancels the warm. Measured on production with ~2.5 s per clip:
+  switching latency median **0.3 s** (previously alternating 0.3 s / 4-5 s).
+- **Single centre control.** A tap while autoplay is blocked now starts
+  playback instead of toggling pause, and the pause indicator is cleared on
+  every clip change, so the white play affordance and the dark pause indicator
+  no longer appear together.
+- **Fullscreen.** A fullscreen button was added to the short-feed action rail and
+  to the large-video controls (`requestFullscreen` with an iOS
+  `webkitEnterFullscreen` fallback). Large-player gestures were moved onto the
+  video stage so the control bar keeps receiving clicks.
+  Verified on production: both enter fullscreen.
+- Regression: load / 12 slow swipes / 25 rapid swipes = 0 / 0 / 0 `429`.
+  Deployment `tgvio-player:r2-19-seamless2` (revision `35f2544`), healthy,
+  Bot unchanged.
