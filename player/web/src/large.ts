@@ -143,7 +143,7 @@ export class LargePlayer {
       paintBuffered(this.buffered, this.video);
     });
 
-    this.detach = attachGestures(this.root, {
+    this.detach = attachGestures(stage, {
       isLongPressEnabled: () => prefs.longPressFastForward,
       isDragSeekEnabled: () => prefs.dragSeek,
       fastForwardSpeed: () => prefs.fastForwardSpeed,
