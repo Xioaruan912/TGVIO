@@ -302,18 +302,17 @@ class FaststartService:
         overlay = self._cached(media_id)
         if overlay is not None:
             return overlay
-        lock = self._locks.setdefault(media_id, asyncio.Lock())
-        async with lock:
-            overlay = self._cached(media_id)
-            if overlay is not None:
-                return overlay
-            if media_id in self._missing:
-                return None
-            # Playback-critical builds bypass the background build budget so a
-            # queue of speculative warm-ups can never delay the active clip.
-            if priority:
+        # Playback-critical builds never wait behind queued background builds:
+        # they take the per-media lock directly, while background builds acquire
+        # a bounded build slot *before* the lock so they cannot hold it while
+        # waiting in the queue.
+        if priority:
+            lock = self._locks.setdefault(media_id, asyncio.Lock())
+            async with lock:
                 return await self._build_locked(media_id, details)
-            async with self._build_slots:
+        async with self._build_slots:
+            lock = self._locks.setdefault(media_id, asyncio.Lock())
+            async with lock:
                 return await self._build_locked(media_id, details)
 
     async def _build_locked(
@@ -322,6 +321,8 @@ class FaststartService:
         overlay = self._cached(media_id)
         if overlay is not None:
             return overlay
+        if media_id in self._missing:
+            return None
         location = await self._repository.active_media_location(media_id)
         if location is None:
             return None
