@@ -274,5 +274,36 @@ class FaststartHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(self.faststart.peek(self.media_id, details))
 
 
+class TransientRetryTests(unittest.IsolatedAsyncioTestCase):
+    async def test_transient_read_failure_is_not_permanently_poisoned(self) -> None:
+        class FakeRepository:
+            async def active_media_location(self, media_id: str):
+                return ("package", "video.mp4", None)
+
+        class FlakyClient:
+            def __init__(self, buffer: bytes) -> None:
+                self.buffer = buffer
+                self.failures = 1
+
+            async def open_range(self, remote_path: str, byte_range: ByteRange | None):
+                if self.failures > 0:
+                    self.failures -= 1
+                    raise RuntimeError("transient upstream error")
+                return await FakeBufferClient(self.buffer).open_range(remote_path, byte_range)
+
+        buffer, _ = make_nonfaststart()
+        with TemporaryDirectory() as temporary:
+            store = FaststartStore(Path(temporary) / "faststart")
+            service = FaststartService(
+                store, FakeRepository(), ReadOnlyWebDavAdapter(FlakyClient(buffer))
+            )
+            details = {"size_bytes": len(buffer), "mime_type": "video/mp4"}
+            self.assertIsNone(await service.overlay_for("f" * 64, details))
+            self.assertFalse(service.has_overlay("f" * 64))
+            overlay = await service.overlay_for("f" * 64, details)
+            self.assertIsNotNone(overlay)
+            self.assertTrue(service.has_overlay("f" * 64))
+
+
 if __name__ == "__main__":
     unittest.main()

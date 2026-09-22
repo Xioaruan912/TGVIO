@@ -17,6 +17,10 @@ _MAX_TOP_LEVEL_BOXES = 32
 ReadRange = Callable[[int, int], Awaitable[bytes]]
 
 
+class FaststartReadError(RuntimeError):
+    """A remote read failed transiently; the overlay may be retried later."""
+
+
 @dataclass(frozen=True, slots=True)
 class FaststartOverlay:
     """A virtual faststart view of a progressive MP4 whose ``moov`` is at the end.
@@ -138,13 +142,13 @@ async def build_overlay(size: int, mime: str, read: ReadRange) -> FaststartOverl
             break
         raw = await read(position, min(position + 15, size - 1))
         if len(raw) < 8:
-            return None
+            raise FaststartReadError("short box header read")
         box_size = int.from_bytes(raw[0:4], "big")
         box_type = raw[4:8]
         header = 8
         if box_size == 1:
             if len(raw) < 16:
-                return None
+                raise FaststartReadError("short 64-bit box header read")
             box_size = int.from_bytes(raw[8:16], "big")
             header = 16
         elif box_size == 0:
@@ -175,14 +179,14 @@ async def build_overlay(size: int, mime: str, read: ReadRange) -> FaststartOverl
 
     moov_bytes = await read(moov_start, size - 1)
     if len(moov_bytes) != moov_size:
-        return None
+        raise FaststartReadError("short moov read")
     patched = bytearray(moov_bytes)
     tracks = _patch_chunk_offsets(patched, moov_size, first_mdat, moov_start)
     if tracks is None or tracks == 0:
         return None
     prefix = await read(0, first_mdat - 1) if first_mdat > 0 else b""
     if len(prefix) != first_mdat:
-        return None
+        raise FaststartReadError("short prefix read")
     _LOG.info(
         "player.faststart.overlay_built size=%s prefix=%s moov=%s tracks=%s",
         size,
@@ -272,7 +276,7 @@ class FaststartService:
         want = end - start + 1
         try:
             if response.status != 206:
-                return b""
+                raise FaststartReadError(f"unexpected upstream status {response.status}")
             chunks: list[bytes] = []
             total = 0
             async for chunk in response.body:
@@ -319,11 +323,14 @@ class FaststartService:
                         lambda start, end: self._read_exact(location, start, end),
                     )
                 except Exception:
+                    # Transient (remote read) failure: do not poison the media,
+                    # a later request can retry the build.
                     _LOG.warning(
                         "player.faststart.build_failed media=%s", media_id[:12], exc_info=True
                     )
-                    overlay = None
+                    return None
             if overlay is None:
+                # Structurally not applicable (already faststart / unsupported).
                 self._missing.add(media_id)
                 return None
             self._store.save(media_id, overlay)
