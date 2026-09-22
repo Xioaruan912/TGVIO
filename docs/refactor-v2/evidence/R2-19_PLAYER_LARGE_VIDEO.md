@@ -80,3 +80,14 @@ Deployment: Player-only. New image `tgvio-player:r2-19-largevideo2` (revision
 - HEVC clips remain undecodable on many Android/Chromium builds.
 - The 8 GB cache is host-disk bounded; it can be tuned or disabled with
   `TGVIO_PLAYER_CACHE_BYTES`.
+
+## Follow-up: network download rate HUD
+
+The video DTO now carries `size_bytes`, and a `NetworkMeter` (web) estimates the
+download rate from how fast the media buffer grows (`buffered` seconds ×
+size/duration), smoothed with an EMA and sampled every 500 ms. The rate is shown
+as `↓ KB/s` / `↓ MB/s` in the top-right of the short-video feed and of the
+large-video player. A "显示网速" toggle in 播放设置 (default on) controls it.
+Verified on production: the large player showed a steady ~530 KB/s while
+streaming the 47-minute clip, and the feed showed a 3.0 MB/s spike as a fresh
+clip buffered.
