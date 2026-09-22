@@ -57,6 +57,7 @@ export class ThumbnailPreview {
   show(clip: Clip, time: number, label: string, clientX?: number): void {
     this.el.hidden = false;
     this.timeLabel.textContent = label;
+    this.video.preload = "auto";
     if (clientX !== undefined) this.position(clientX);
     if (this.clipId !== clip.id) {
       this.clipId = clip.id;
@@ -75,6 +76,9 @@ export class ThumbnailPreview {
 
   hide(): void {
     this.el.hidden = true;
+    // Stop the preview element from buffering in the background once scrubbing ends.
+    this.video.pause();
+    this.video.preload = "none";
   }
 
   destroy(): void {
