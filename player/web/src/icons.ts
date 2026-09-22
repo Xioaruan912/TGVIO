@@ -9,6 +9,7 @@ export type IconName =
   | "heart-filled"
   | "shuffle"
   | "library"
+  | "film"
   | "settings"
   | "sound-on"
   | "sound-off"
@@ -55,6 +56,17 @@ const SPECS: Record<IconName, IconSpec> = {
       "M13.75 4.75H20v6.25h-6.25z",
       "M4 13.75h6.25V20H4z",
       "M13.75 13.75H20V20h-6.25z",
+    ],
+  },
+  film: {
+    paths: [
+      "M4 5.4h16v13.2H4z",
+      "M8.6 5.4v13.2",
+      "M15.4 5.4v13.2",
+      "M4 9.6h4.6",
+      "M4 14.4h4.6",
+      "M15.4 9.6H20",
+      "M15.4 14.4H20",
     ],
   },
   settings: {

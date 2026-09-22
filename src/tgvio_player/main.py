@@ -15,7 +15,9 @@ from tgvio_player.application.auth import SessionService
 from tgvio_player.application.catalog import CatalogSyncService
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
+from tgvio_player.application.range_cache import MediaRangeCache
 from tgvio_player.infrastructure.faststart_store import FaststartStore
+from tgvio_player.infrastructure.range_store import RangeStore
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 from tgvio_player.infrastructure.webdav_aiohttp import (
     AioHttpReadOnlyWebDavClient,
@@ -42,6 +44,9 @@ class PlayerSettings:
     max_streams: int
     max_streams_per_client: int
     faststart_backfill: bool
+    large_video_seconds: int
+    cache_bytes: int
+    cache_chunk_mb: int
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -72,6 +77,9 @@ class PlayerSettings:
             cls._integer(get("MAX_STREAMS") or "4", "MAX_STREAMS", 1, 64),
             cls._integer(get("MAX_STREAMS_PER_CLIENT") or "2", "MAX_STREAMS_PER_CLIENT", 1, 16),
             cls._flag(get("FASTSTART_BACKFILL") or "true", "FASTSTART_BACKFILL"),
+            cls._integer(get("LARGE_VIDEO_SECONDS") or "300", "LARGE_VIDEO_SECONDS", 30, 86400),
+            cls._integer(get("CACHE_BYTES") or str(8 * 1024**3), "CACHE_BYTES", 64 * 1024**2, 512 * 1024**3),
+            cls._integer(get("CACHE_CHUNK_MB") or "1", "CACHE_CHUNK_MB", 1, 32),
         )
 
     @staticmethod
@@ -127,12 +135,32 @@ async def run(settings: PlayerSettings) -> None:
         faststart = FaststartService(
             FaststartStore(settings.data_dir / "faststart"), repository, reader
         )
-        server = PlayerHttpServer(
-            repository, SessionService(repository, access_secret=settings.access_secret),
-            ShuffleDeckService(repository), reader,
-            max_streams=settings.max_streams, max_streams_per_client=settings.max_streams_per_client,
-            static_dir=Path("/app/player-web"), faststart=faststart,
+        server_ref: list[object | None] = [None]
+        range_cache = MediaRangeCache(
+            RangeStore(
+                settings.data_dir / "cache",
+                chunk_bytes=settings.cache_chunk_mb * 1024 * 1024,
+                max_bytes=settings.cache_bytes,
+            ),
+            reader,
+            should_pause=lambda: server_ref[0].active_playback_streams > 0
+            if server_ref[0] is not None
+            else False,
         )
+        range_cache.open()
+        server = PlayerHttpServer(
+            repository,
+            SessionService(repository, access_secret=settings.access_secret),
+            ShuffleDeckService(repository, max_duration_seconds=settings.large_video_seconds),
+            reader,
+            max_streams=settings.max_streams,
+            max_streams_per_client=settings.max_streams_per_client,
+            static_dir=Path("/app/player-web"),
+            faststart=faststart,
+            range_cache=range_cache,
+            large_video_seconds=settings.large_video_seconds,
+        )
+        server_ref[0] = server
         runner = server.runner()
         await runner.setup()
         site = web.TCPSite(runner, settings.host, settings.port)
@@ -151,6 +179,7 @@ async def run(settings: PlayerSettings) -> None:
         for task in tasks:
             task.cancel()
         await asyncio.gather(*tasks, return_exceptions=True)
+        await range_cache.shutdown()
         await runner.cleanup()
     finally:
         await client.close()

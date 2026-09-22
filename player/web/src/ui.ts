@@ -37,6 +37,7 @@ type NavSpec = { icon: IconName; label: string; action: string };
 
 const MOBILE_NAV: NavSpec[] = [
   { icon: "home", label: "首页", action: "home" },
+  { icon: "film", label: "长视频", action: "long" },
   { icon: "heart", label: "收藏", action: "favorites" },
   { icon: "shuffle", label: "随机", action: "random" },
   { icon: "library", label: "片库", action: "library" },

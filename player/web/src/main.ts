@@ -1,8 +1,13 @@
 import "./style.css";
 import { ApiError, api, MOCK_MODE, shortId } from "./api";
 import { FeedView } from "./feed";
+import { attachGestures } from "./gestures";
+import { LargePlayer } from "./large";
+import { LongVideoPage } from "./long";
 import { VideoPool } from "./player";
 import { PreloadCoordinator } from "./preload";
+import { ThumbnailPreview } from "./preview";
+import { prefs, setPref } from "./settings";
 import { icon } from "./icons";
 import type { Clip } from "./types";
 import {
@@ -55,6 +60,7 @@ let warmTimer = 0;
 let resizeTimer = 0;
 let stallWarnTimer = 0;
 let stallSkipTimer = 0;
+let feedPreview: ThumbnailPreview | null = null;
 const unplayable = new Set<string>();
 const seenIds = new Set<string>();
 const errorRetries = new Map<string, number>();
@@ -70,7 +76,7 @@ async function ensureFeed(minimum: number): Promise<void> {
   }
   const task = (async () => {
     while (clips.length < minimum && clips.length < MAX_FEED) {
-      const batch = await api.feed(FEED_BATCH);
+      const batch = await api.feed(FEED_BATCH, prefs.cacheAhead);
       if (!batch.length) break;
       for (const clip of batch) {
         if (seenIds.has(clip.id)) continue;
@@ -304,6 +310,68 @@ async function handleMediaError(clip: Clip): Promise<void> {
   goNext(true);
 }
 
+function feedGestureOptions() {
+  return {
+    isLongPressEnabled: () => prefs.longPressFastForward,
+    isDragSeekEnabled: () => prefs.dragSeek,
+    fastForwardSpeed: () => prefs.fastForwardSpeed,
+    currentTime: () => pool?.currentVideo()?.currentTime ?? 0,
+    duration: () => pool?.currentVideo()?.duration ?? 0,
+    onTap: () => togglePlayback(),
+    onFastForward: (speed: number | null) => {
+      const video = pool?.currentVideo();
+      if (video) video.playbackRate = speed ?? 1;
+    },
+    onScrubStart: () => {
+      paused = true;
+      pool?.currentVideo()?.pause();
+    },
+    onScrubMove: (time: number, clientX: number) => {
+      const clip = feedView?.clipAt(activeIndex);
+      const video = pool?.currentVideo();
+      if (!clip || !video || !shell) return;
+      video.currentTime = time;
+      shell.seek.value = String(time);
+      shell.timeCurrent.textContent = formatTime(time);
+      paintSeek(shell.seek);
+      if (prefs.dragThumbnail) feedPreview?.show(clip, time, formatTime(time), clientX);
+    },
+    onScrubEnd: (time: number | null) => {
+      feedPreview?.hide();
+      const video = pool?.currentVideo();
+      if (!video) return;
+      if (time !== null) video.currentTime = time;
+      paused = false;
+      void video.play().catch(() => undefined);
+    },
+  };
+}
+
+function openLongVideos(): void {
+  if (!shell) return;
+  let page: LongVideoPage | null = null;
+  let player: LargePlayer | null = null;
+  const closePlayer = (): void => {
+    player?.destroy();
+    player = null;
+  };
+  page = new LongVideoPage(
+    (clip: Clip) => {
+      closePlayer();
+      player = new LargePlayer(clip, closePlayer);
+      document.body.appendChild(player.root);
+    },
+    () => {
+      closePlayer();
+      page?.destroy();
+      page = null;
+      setActiveNav(shell!, "home");
+    },
+  );
+  document.body.appendChild(page.root);
+  setActiveNav(shell, "long");
+}
+
 function openClip(clip: Clip): void {
   if (!feedView) return;
   let index = feedView.indexOf(clip.id);
@@ -379,6 +447,60 @@ function openSettings(): void {
   const body: Node[] = [];
   body.push(sheetSection("播放设置"));
   body.push(sheetToggle("声音", muted ? "已关闭" : "已开启", !muted, toggleSound));
+  body.push(
+    sheetToggle(
+      "长按快进",
+      prefs.longPressFastForward ? "按住画面快进" : "已关闭",
+      prefs.longPressFastForward,
+      () => {
+        setPref("longPressFastForward", !prefs.longPressFastForward);
+        openSettings();
+      },
+    ),
+  );
+  body.push(
+    sheetRow({
+      title: "快进倍速",
+      sub: `${prefs.fastForwardSpeed} 倍`,
+      onPick: () => {
+        setPref("fastForwardSpeed", prefs.fastForwardSpeed === 2 ? 3 : 2);
+        openSettings();
+      },
+    }),
+  );
+  body.push(
+    sheetToggle(
+      "拖动调节进度",
+      prefs.dragSeek ? "左右拖动画面即可快进/快退" : "已关闭",
+      prefs.dragSeek,
+      () => {
+        setPref("dragSeek", !prefs.dragSeek);
+        openSettings();
+      },
+    ),
+  );
+  body.push(
+    sheetToggle(
+      "拖动显示缩略图",
+      prefs.dragThumbnail ? "显示到达点画面" : "已关闭",
+      prefs.dragThumbnail,
+      () => {
+        setPref("dragThumbnail", !prefs.dragThumbnail);
+        openSettings();
+      },
+    ),
+  );
+  body.push(
+    sheetToggle(
+      "边播放边缓存",
+      prefs.cacheAhead ? "大视频预取，拖动秒开" : "已关闭",
+      prefs.cacheAhead,
+      () => {
+        setPref("cacheAhead", !prefs.cacheAhead);
+        openSettings();
+      },
+    ),
+  );
   body.push(sheetSection("账户"));
   body.push(
     sheetRow({
@@ -410,6 +532,10 @@ function onNav(action: string): void {
     openSheetKind = null;
     setActiveNav(shell, "random");
     goNext();
+  } else if (action === "long") {
+    closeSheet(shell);
+    openSheetKind = null;
+    openLongVideos();
   } else if (action === "favorites") {
     void openFavorites();
   } else if (action === "library") {
@@ -520,8 +646,9 @@ function renderFeed(): void {
     void index;
   };
   feedView.onSettle = commitActive;
-  feedView.onTap = togglePlayback;
   feedView.setClips(clips);
+  feedPreview = new ThumbnailPreview();
+  attachGestures(shell.feed, feedGestureOptions());
   setSoundButton(shell, muted);
   setActiveNav(shell, "home");
   shell.debug.hidden = !DEBUG;

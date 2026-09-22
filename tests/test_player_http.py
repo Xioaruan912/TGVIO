@@ -360,5 +360,195 @@ class ClientIdentityTests(unittest.TestCase):
         self.assertEqual(resolve_client(FakeRequest(None, {})), "unknown")
 
 
+class VideoCategoryTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = PlayerCatalogRepositorySQLite(Path(self.tmp.name) / "player.sqlite3")
+        await self.repo.open()
+        self.short_id = "1" * 64
+        self.long_id = "2" * 64
+        package = CatalogPackage(
+            "package",
+            "TGVIO/2026-09-22/1",
+            "b" * 64,
+            '"manifest"',
+            '"complete"',
+            (
+                CatalogMedia(self.short_id, "video", 1000, "video/mp4", 1080, 1920, 12.0, codec="h264"),
+                CatalogMedia(self.long_id, "video", 5000, "video/mp4", 1080, 1920, 900.0, codec="h264"),
+            ),
+            (
+                CatalogLocation(self.short_id, "package", "short.mp4", '"etag"'),
+                CatalogLocation(self.long_id, "package", "long.mp4", '"etag"'),
+            ),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+
+        class DummyReader:
+            async def open_range(self, remote_path, byte_range):
+                raise AssertionError("streaming is not expected in this test")
+
+        server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo, max_duration_seconds=300),
+            DummyReader(),
+            large_video_seconds=300,
+        )
+        self.client = TestClient(TestServer(server.application()))
+        await self.client.start_server()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _login(self) -> str:
+        response = await self.client.post("/api/v1/auth/login", json={"secret": "s" * 32})
+        self.assertEqual(response.status, 200)
+        return response.cookies["tgvio_player_session"].value
+
+    async def test_long_and_short_categories(self) -> None:
+        cookie = await self._login()
+        long_items = await self.client.get(
+            "/api/v1/videos?category=long", cookies={"tgvio_player_session": cookie}
+        )
+        body = await long_items.json()
+        self.assertEqual([item["id"] for item in body["items"]], [self.long_id])
+        self.assertEqual(body["items"][0]["category"], "long")
+        short_items = await self.client.get(
+            "/api/v1/videos?category=short", cookies={"tgvio_player_session": cookie}
+        )
+        body = await short_items.json()
+        self.assertEqual([item["id"] for item in body["items"]], [self.short_id])
+        self.assertEqual(body["items"][0]["category"], "short")
+
+    async def test_cache_query_adds_prefetch_to_stream_url(self) -> None:
+        cookie = await self._login()
+        response = await self.client.get(
+            "/api/v1/videos?category=long&cache=1", cookies={"tgvio_player_session": cookie}
+        )
+        item = (await response.json())["items"][0]
+        self.assertTrue(item["stream_url"].endswith("?cache=1"))
+
+    async def test_short_feed_excludes_large_videos(self) -> None:
+        cookie = await self._login()
+        response = await self.client.get(
+            "/api/v1/feed?limit=20", cookies={"tgvio_player_session": cookie}
+        )
+        ids = [item["id"] for item in (await response.json())["items"]]
+        self.assertEqual(ids, [self.short_id])
+
+    async def test_invalid_category_is_rejected(self) -> None:
+        cookie = await self._login()
+        response = await self.client.get(
+            "/api/v1/videos?category=medium", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(response.status, 400)
+
+
+class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = PlayerCatalogRepositorySQLite(Path(self.tmp.name) / "player.sqlite3")
+        await self.repo.open()
+        self.buffer = bytes((index * 7) % 251 for index in range(200_000))
+        self.media_id = "9" * 64
+        package = CatalogPackage(
+            "package",
+            "TGVIO/2026-09-22/1",
+            "b" * 64,
+            '"manifest"',
+            '"complete"',
+            (CatalogMedia(self.media_id, "video", len(self.buffer), "video/mp4", 1080, 1920, 20.0),),
+            (CatalogLocation(self.media_id, "package", "video.mp4", '"etag"'),),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+
+        class BufferReader:
+            def __init__(self, buffer: bytes) -> None:
+                self.buffer = buffer
+                self.calls: list[tuple[int, int]] = []
+
+            async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+                self.calls.append((byte_range.start, byte_range.end))
+                payload = self.buffer[byte_range.start : byte_range.end + 1]
+
+                class Body:
+                    def __init__(self, data: bytes) -> None:
+                        self.data = data
+                        self.done = False
+
+                    def __aiter__(self):
+                        return self
+
+                    async def __anext__(self) -> bytes:
+                        if self.done:
+                            raise StopAsyncIteration
+                        self.done = True
+                        return self.data
+
+                    async def aclose(self) -> None:
+                        return None
+
+                class Response:
+                    status = 206
+                    content_length = len(payload)
+                    body = Body(payload)
+
+                return Response()
+
+        from tgvio_player.application.range_cache import MediaRangeCache
+        from tgvio_player.infrastructure.range_store import RangeStore
+
+        self.reader = BufferReader(self.buffer)
+        cache = MediaRangeCache(
+            RangeStore(
+                Path(self.tmp.name) / "cache", chunk_bytes=64 * 1024, max_bytes=8 * 64 * 1024
+            ),
+            self.reader,
+        )
+        cache.open()
+        self.cache = cache
+        self.server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            self.reader,
+            range_cache=cache,
+        )
+        self.client = TestClient(TestServer(self.server.application()))
+        await self.client.start_server()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.cache.shutdown()
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _login(self) -> str:
+        response = await self.client.post("/api/v1/auth/login", json={"secret": "s" * 32})
+        self.assertEqual(response.status, 200)
+        return response.cookies["tgvio_player_session"].value
+
+    async def test_first_range_fetches_chunks_and_second_reuses_cache(self) -> None:
+        cookie = await self._login()
+        stream = f"/api/v1/media/{self.media_id}/stream"
+        first = await self.client.get(
+            stream, headers={"Range": "bytes=131072-196607"}, cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(first.status, 206)
+        self.assertEqual(await first.read(), self.buffer[131072:196608])
+        self.assertEqual(self.reader.calls, [(131072, 196607)])
+        second = await self.client.get(
+            stream, headers={"Range": "bytes=140000-150000"}, cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(await second.read(), self.buffer[140000:150001])
+        # Chunk 2 is cached, so no further upstream read happens.
+        self.assertEqual(self.reader.calls, [(131072, 196607)])
+
+
 if __name__ == "__main__":
     unittest.main()

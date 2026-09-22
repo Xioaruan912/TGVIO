@@ -14,10 +14,12 @@ class ShuffleDeckService:
         *,
         rng: random.Random | None = None,
         recent_exclusion: int = 20,
+        max_duration_seconds: float | None = None,
     ) -> None:
         self._repository = repository
         self._rng = rng or random.Random()
         self._recent_exclusion = max(0, recent_exclusion)
+        self._max_duration_seconds = max_duration_seconds
 
     async def next_items(self, session_digest: str, *, limit: int) -> list[str]:
         if limit < 1:
@@ -28,7 +30,12 @@ class ShuffleDeckService:
     async def _ensure_deck(self, session_digest: str) -> None:
         if await self._repository.has_unconsumed_feed_items(session_digest):
             return
-        eligible = await self._repository.list_active_video_ids(limit=100_000)
+        if self._max_duration_seconds is not None:
+            eligible = await self._repository.list_video_ids(
+                max_seconds=self._max_duration_seconds, limit=100_000
+            )
+        else:
+            eligible = await self._repository.list_active_video_ids(limit=100_000)
         if not eligible:
             return
         cycle = await self._repository.next_feed_cycle(session_digest)

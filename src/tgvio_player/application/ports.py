@@ -30,6 +30,16 @@ class PlayerCatalogRepository(Protocol):
 
     async def list_active_video_ids(self, *, limit: int = 1000) -> list[str]: ...
 
+    async def list_video_ids(
+        self,
+        *,
+        min_seconds: float | None = None,
+        max_seconds: float | None = None,
+        order: str = "media_id",
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> list[str]: ...
+
 
 class CatalogSyncServicePort(Protocol):
     async def sync_once(self) -> CatalogSyncResult: ...

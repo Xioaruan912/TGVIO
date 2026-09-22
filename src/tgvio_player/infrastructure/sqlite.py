@@ -199,6 +199,35 @@ class PlayerCatalogRepositorySQLite:
         ).fetchall()
         return [str(row["media_id"]) for row in rows]
 
+    async def list_video_ids(
+        self,
+        *,
+        min_seconds: float | None = None,
+        max_seconds: float | None = None,
+        order: str = "media_id",
+        limit: int = 1000,
+        offset: int = 0,
+    ) -> list[str]:
+        clauses = ["active=1", "kind='video'"]
+        params: list[object] = []
+        if min_seconds is not None:
+            clauses.append("duration_seconds > ?")
+            params.append(float(min_seconds))
+        if max_seconds is not None:
+            clauses.append("duration_seconds <= ?")
+            params.append(float(max_seconds))
+        order_sql = {
+            "duration_desc": "duration_seconds DESC, media_id",
+            "duration_asc": "duration_seconds ASC, media_id",
+        }.get(order, "media_id")
+        params.extend([max(1, int(limit)), max(0, int(offset))])
+        rows = self._require().execute(
+            f"SELECT media_id FROM media WHERE {' AND '.join(clauses)} "
+            f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
+            tuple(params),
+        ).fetchall()
+        return [str(row["media_id"]) for row in rows]
+
     async def active_locations(self, media_id: str) -> list[tuple[str, str]]:
         rows = self._require().execute(
             """
@@ -242,7 +271,8 @@ class PlayerCatalogRepositorySQLite:
     async def active_media_details(self, media_id: str) -> dict[str, object] | None:
         row = self._require().execute(
             """
-            SELECT media_id, kind, mime_type, size_bytes, width, height, duration_seconds
+            SELECT media_id, kind, mime_type, size_bytes, width, height,
+                   duration_seconds, container, codec
             FROM media WHERE media_id=? AND active=1
             """,
             (media_id,),

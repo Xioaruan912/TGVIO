@@ -79,6 +79,12 @@ def resolve_client(request: web.Request) -> str:
     return peer
 
 
+def _prefetch_requested(request: web.Request) -> bool:
+    cache = (request.query.get("cache") or "").strip().lower()
+    prefetch = (request.query.get("prefetch") or "").strip().lower()
+    return cache in {"1", "true", "yes"} or prefetch in {"1", "true", "yes"}
+
+
 class PlayerHttpServer:
     """Small authenticated HTTP boundary around Player-only services.
 
@@ -101,6 +107,8 @@ class PlayerHttpServer:
         startup_range_bytes: int = _DEFAULT_STARTUP_RANGE_BYTES,
         static_dir: Path | None = None,
         faststart: object | None = None,
+        range_cache: object | None = None,
+        large_video_seconds: float = 300.0,
     ) -> None:
         if min(
             max_streams, max_streams_per_client, max_header_size, stream_chunk_size, startup_range_bytes
@@ -127,6 +135,8 @@ class PlayerHttpServer:
         self._startup_range_bytes = startup_range_bytes
         self._static_dir = static_dir.resolve() if static_dir is not None and static_dir.is_dir() else None
         self._faststart = faststart
+        self._range_cache = range_cache
+        self._large_video_seconds = max(1.0, float(large_video_seconds))
         self._login_failures: dict[str, tuple[int, float, float]] = {}
         self._login_lock = asyncio.Lock()
 
@@ -143,6 +153,7 @@ class PlayerHttpServer:
         app.router.add_post("/api/v1/auth/login", self._login)
         app.router.add_post("/api/v1/auth/logout", self._logout)
         app.router.add_get("/api/v1/feed", self._feed)
+        app.router.add_get("/api/v1/videos", self._videos)
         app.router.add_get("/api/v1/favorites", self._favorites)
         app.router.add_get("/api/v1/media/{media_id}", self._media)
         app.router.add_get("/api/v1/media/{media_id}/stream", self._stream)
@@ -244,6 +255,7 @@ class PlayerHttpServer:
             raise web.HTTPBadRequest(text="invalid limit") from None
         if not 1 <= limit <= _MAX_FEED_LIMIT:
             raise web.HTTPBadRequest(text="invalid limit")
+        prefetch = _prefetch_requested(request)
         media_ids = await self._deck.next_items(digest, limit=limit)
         items = []
         for index, media_id in enumerate(media_ids):
@@ -251,22 +263,63 @@ class PlayerHttpServer:
             if details is not None:
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
-                items.append(await self._media_dto(details, digest))
+                items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "next_cursor": None})
+
+    async def _videos(self, request: web.Request) -> web.Response:
+        digest = await self._authenticate(request)
+        category = request.query.get("category", "short")
+        if category not in {"short", "long"}:
+            raise web.HTTPBadRequest(text="invalid category")
+        try:
+            limit = int(request.query.get("limit", "20"))
+            offset = int(request.query.get("offset", "0"))
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid paging") from None
+        if not 1 <= limit <= _MAX_FEED_LIMIT or offset < 0:
+            raise web.HTTPBadRequest(text="invalid paging")
+        if category == "long":
+            media_ids = await self._repository.list_video_ids(
+                min_seconds=self._large_video_seconds,
+                order="duration_desc",
+                limit=limit + 1,
+                offset=offset,
+            )
+        else:
+            media_ids = await self._repository.list_video_ids(
+                max_seconds=self._large_video_seconds,
+                order="media_id",
+                limit=limit + 1,
+                offset=offset,
+            )
+        has_more = len(media_ids) > limit
+        media_ids = media_ids[:limit]
+        prefetch = _prefetch_requested(request)
+        items = []
+        for index, media_id in enumerate(media_ids):
+            details = await self._repository.active_media_details(media_id)
+            if details is not None:
+                if self._faststart is not None and index < 3:
+                    self._faststart.schedule(media_id, details)
+                items.append(await self._media_dto(details, digest, prefetch=prefetch))
+        return web.json_response({"items": items, "has_more": has_more, "category": category})
 
     async def _media(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
         details = await self._media_details(request.match_info["media_id"])
-        return web.json_response(await self._media_dto(details, digest))
+        return web.json_response(
+            await self._media_dto(details, digest, prefetch=_prefetch_requested(request))
+        )
 
     async def _favorites(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
+        prefetch = _prefetch_requested(request)
         media_ids = await self._deck.list_favorites(digest, limit=200)
         items = []
         for media_id in media_ids:
             details = await self._repository.active_media_details(media_id)
             if details is not None:
-                items.append(await self._media_dto(details, digest))
+                items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "next_cursor": None})
 
     async def _favorite(self, request: web.Request) -> web.Response:
@@ -314,59 +367,104 @@ class PlayerHttpServer:
         preload = request.headers.get(_PRELOAD_HEADER) == "1"
         if not await self._acquire_stream(client, preload=preload):
             raise web.HTTPTooManyRequests(text="stream capacity reached")
-        upstream: WebDavRangeResponse | None = None
         try:
             location = await self._repository.active_media_location(media_id)
             if location is None:
                 raise web.HTTPNotFound(text="media not found")
+            prefetch = _prefetch_requested(request) and not preload
             if overlay is not None:
-                return await self._stream_overlay(request, overlay, location, plan)
+                return await self._stream_overlay(request, media_id, overlay, location, plan, prefetch)
             if self._is_startup_range(plan.byte_range):
                 return await self._cached_startup_response(request, media_id, location, plan.byte_range, details)
-            upstream = await self._reader.open_range(location[0], location[1], plan.byte_range)
-            if upstream.status not in {200, 206}:
-                raise web.HTTPBadGateway(text="media upstream unavailable")
-            if plan.byte_range is not None and upstream.status != 206:
-                raise web.HTTPBadGateway(text="media upstream ignored range")
-            headers = {
-                "Accept-Ranges": "bytes",
-                "Content-Length": str(upstream.content_length if upstream.content_length is not None else plan.content_length),
-            }
-            content_type = upstream.content_type
-            if not content_type or content_type == "application/octet-stream":
-                mime_type = details.get("mime_type")
-                if isinstance(mime_type, str) and mime_type.startswith("video/"):
-                    content_type = mime_type
-            if content_type:
-                headers["Content-Type"] = content_type
-            if upstream.content_range:
-                headers["Content-Range"] = upstream.content_range
-            elif plan.content_range:
-                headers["Content-Range"] = plan.content_range
-            if upstream.etag:
-                headers["ETag"] = upstream.etag
-            response = web.StreamResponse(status=upstream.status, headers=headers)
-            await response.prepare(request)
-            async for chunk in upstream.body:
-                if chunk:
-                    await response.write(chunk[: self._stream_chunk_size])
-                    remainder = chunk[self._stream_chunk_size :]
-                    while remainder:
-                        await response.write(remainder[: self._stream_chunk_size])
-                        remainder = remainder[self._stream_chunk_size :]
-            await response.write_eof()
-            return response
+            return await self._stream_plain(request, media_id, location, details, plan, prefetch)
         finally:
-            if upstream is not None:
-                await self._close_body(upstream.body)
             await self._release_stream(client, preload=preload)
+
+    async def _stream_plain(
+        self,
+        request: web.Request,
+        media_id: str,
+        location: tuple[str, str, str | None],
+        details: dict[str, object],
+        plan: StreamRequest,
+        prefetch: bool,
+    ) -> web.StreamResponse:
+        size = int(details["size_bytes"])
+        if plan.byte_range is None:
+            start, end, status = 0, size - 1, 200
+        else:
+            start, end, status = plan.byte_range.start, plan.byte_range.end, 206
+        mime = details.get("mime_type")
+        content_type = (
+            str(mime)
+            if isinstance(mime, str) and mime and mime != "application/octet-stream"
+            else "video/mp4"
+        )
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(end - start + 1),
+            "Content-Type": content_type,
+        }
+        if status == 206:
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        data = await self._open_data(
+            media_id, location, size, ByteRange(start, end), prefetch
+        )
+        response = web.StreamResponse(status=status, headers=headers)
+        await response.prepare(request)
+        if data is not None:
+            async for chunk in data:
+                if chunk:
+                    await self._write_chunks(response, chunk)
+        await response.write_eof()
+        return response
+
+    async def _open_data(
+        self,
+        media_id: str,
+        location: tuple[str, str, str | None],
+        size: int,
+        byte_range: ByteRange,
+        prefetch: bool,
+    ):
+        """Open a validated data stream, fetching the first chunk up front.
+
+        Validating before the response is prepared lets a bad upstream become a
+        clean 502 instead of a truncated 200/206 body.
+        """
+        if self._range_cache is not None:
+            try:
+                await self._range_cache.prime(
+                    media_id, location[0], location[1], size, byte_range
+                )
+            except Exception as exc:
+                raise web.HTTPBadGateway(text="media upstream unavailable") from exc
+            return self._range_cache.stream(
+                media_id, location[0], location[1], size, byte_range, prefetch=prefetch
+            )
+        upstream = await self._reader.open_range(location[0], location[1], byte_range)
+        if upstream.status not in {200, 206}:
+            await self._close_body(upstream.body)
+            raise web.HTTPBadGateway(text="media upstream unavailable")
+
+        async def upstream_stream():
+            try:
+                async for chunk in upstream.body:
+                    if chunk:
+                        yield chunk
+            finally:
+                await self._close_body(upstream.body)
+
+        return upstream_stream()
 
     async def _stream_overlay(
         self,
         request: web.Request,
+        media_id: str,
         overlay: Any,
         location: tuple[str, str, str | None],
         plan: StreamRequest,
+        prefetch: bool,
     ) -> web.StreamResponse:
         """Serve a virtual faststart view: cached ``moov`` first, then remote data."""
         size = int(overlay.size)
@@ -381,25 +479,29 @@ class PlayerHttpServer:
         }
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        segments = overlay.segments(start, end)
+        data = None
+        for kind, source_offset, length in segments:
+            if kind != "cache" and length > 0:
+                data = await self._open_data(
+                    media_id,
+                    location,
+                    size,
+                    ByteRange(source_offset, source_offset + length - 1),
+                    prefetch,
+                )
+                break
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
-        for kind, source_offset, length in overlay.segments(start, end):
+        for kind, source_offset, length in segments:
             if length <= 0:
                 continue
             if kind == "cache":
                 await self._write_chunks(response, overlay.head[source_offset : source_offset + length])
-                continue
-            upstream = await self._reader.open_range(
-                location[0], location[1], ByteRange(source_offset, source_offset + length - 1)
-            )
-            try:
-                if upstream.status not in {200, 206}:
-                    raise web.HTTPBadGateway(text="media upstream unavailable")
-                async for chunk in upstream.body:
-                    if chunk:
-                        await self._write_chunks(response, chunk)
-            finally:
-                await self._close_body(upstream.body)
+        if data is not None:
+            async for chunk in data:
+                if chunk:
+                    await self._write_chunks(response, chunk)
         await response.write_eof()
         return response
 
@@ -505,15 +607,29 @@ class PlayerHttpServer:
             raise web.HTTPNotFound(text="media not found")
         return details
 
-    async def _media_dto(self, details: dict[str, object], session_digest: str) -> dict[str, object]:
+    async def _media_dto(
+        self,
+        details: dict[str, object],
+        session_digest: str,
+        *,
+        prefetch: bool = False,
+    ) -> dict[str, object]:
         media_id = str(details["media_id"])
+        duration = details.get("duration_seconds")
+        is_long = isinstance(duration, (int, float)) and float(duration) > self._large_video_seconds
+        stream_url = f"/api/v1/media/{media_id}/stream"
+        if prefetch:
+            stream_url += "?cache=1"
         return {
             "id": media_id,
             "width": details["width"],
             "height": details["height"],
-            "duration_seconds": details["duration_seconds"],
-            "stream_url": f"/api/v1/media/{media_id}/stream",
+            "duration_seconds": duration,
+            "stream_url": stream_url,
             "favorite": await self._repository.is_favorite(session_digest, media_id),
+            "mime_type": details.get("mime_type"),
+            "codec": details.get("codec"),
+            "category": "long" if is_long else "short",
         }
 
     @staticmethod

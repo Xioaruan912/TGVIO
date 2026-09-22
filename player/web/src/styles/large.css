@@ -1,0 +1,261 @@
+/* Gesture scrub preview bubble */
+.scrub-bubble {
+  position: fixed;
+  bottom: calc(150px + var(--safe-bottom));
+  left: 50%;
+  transform: translateX(-50%);
+  z-index: 60;
+  display: grid;
+  gap: 4px;
+  justify-items: center;
+  padding: 6px 6px 4px;
+  border-radius: 12px;
+  background: rgba(0, 0, 0, 0.78);
+  pointer-events: none;
+}
+
+.scrub-bubble[hidden] {
+  display: none;
+}
+
+.scrub-frame {
+  width: 168px;
+  height: 94px;
+  border-radius: 8px;
+  overflow: hidden;
+  background: #000;
+}
+
+.scrub-canvas {
+  display: block;
+  width: 168px;
+  height: 94px;
+}
+
+.scrub-time {
+  font-size: 12px;
+  color: #fff;
+  letter-spacing: 0.04em;
+}
+
+.scrub-video {
+  position: fixed;
+  left: -10000px;
+  top: 0;
+  width: 2px;
+  height: 2px;
+  opacity: 0;
+  pointer-events: none;
+}
+
+#feed {
+  touch-action: pan-y;
+}
+
+/* Large-video library page */
+.long-page {
+  position: fixed;
+  inset: 0;
+  z-index: 45;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+}
+
+.long-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(var(--safe-top) + 10px) 12px 10px;
+  border-bottom: 1px solid var(--line);
+}
+
+.long-back {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+}
+
+.long-title {
+  font-size: 17px;
+  font-weight: 600;
+}
+
+.long-list {
+  flex: 1 1 auto;
+  overflow-y: auto;
+  -webkit-overflow-scrolling: touch;
+  padding: 10px 12px calc(24px + var(--safe-bottom));
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.long-row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 14px;
+  background: rgba(255, 255, 255, 0.05);
+  text-align: left;
+  color: #fff;
+}
+
+.long-row:active {
+  background: rgba(255, 255, 255, 0.1);
+}
+
+.long-thumb {
+  display: grid;
+  place-items: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 10px;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.85);
+  flex: none;
+}
+
+.long-row-text {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.long-row-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.long-row-sub {
+  font-size: 12px;
+  color: var(--muted);
+}
+
+.long-empty {
+  margin: 40px 0;
+  text-align: center;
+  color: var(--muted);
+  font-size: 13px;
+}
+
+/* Dedicated large-video player */
+.large-player {
+  position: fixed;
+  inset: 0;
+  z-index: 55;
+  display: flex;
+  flex-direction: column;
+  background: #000;
+  touch-action: pan-y;
+}
+
+.large-topbar {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: calc(var(--safe-top) + 10px) 12px 10px;
+  position: relative;
+  z-index: 2;
+}
+
+.large-back {
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+}
+
+.large-title {
+  font-size: 15px;
+  color: rgba(255, 255, 255, 0.85);
+}
+
+.large-stage {
+  flex: 1 1 auto;
+  min-height: 0;
+  display: grid;
+  place-items: center;
+  overflow: hidden;
+}
+
+.large-video {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+  background: #000;
+}
+
+.large-controls {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 10px 14px calc(14px + var(--safe-bottom));
+}
+
+.large-btn {
+  width: 44px;
+  height: 44px;
+  display: grid;
+  place-items: center;
+  color: #fff;
+  flex: none;
+}
+
+.large-btn.selected {
+  color: var(--favorite);
+}
+
+.large-timeline {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: grid;
+  grid-template-columns: 1fr auto;
+  grid-template-areas: "bar bar" "current total";
+  align-items: center;
+  gap: 4px 8px;
+  font-size: 12px;
+  color: rgba(255, 255, 255, 0.75);
+}
+
+.large-timeline > :first-child {
+  grid-area: bar;
+}
+
+.large-timeline > :nth-child(2) {
+  grid-area: current;
+}
+
+.large-timeline > :nth-child(3) {
+  grid-area: total;
+  justify-self: end;
+}
+
+.large-progress {
+  position: relative;
+  height: 18px;
+  display: grid;
+  align-items: center;
+  --p: 0%;
+}
+
+.large-buffered {
+  position: absolute;
+  left: 0;
+  top: 50%;
+  height: 2px;
+  width: 0;
+  transform: translateY(-50%);
+  border-radius: 2px;
+  background: rgba(255, 255, 255, 0.38);
+}
+
+.large-seek {
+  position: relative;
+  z-index: 1;
+}

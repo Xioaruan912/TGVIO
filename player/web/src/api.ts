@@ -1,4 +1,4 @@
-import type { Clip, FeedResponse, MediaDto, PreloadLevel } from "./types";
+import type { Clip, FeedResponse, MediaDto, PreloadLevel, VideoListResponse } from "./types";
 
 export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
 
@@ -49,6 +49,9 @@ export function clipFromMedia(media: MediaDto): Clip {
     duration: Math.max(0, Math.round(media.duration_seconds ?? 0)),
     streamUrl: media.stream_url,
     favorite: media.favorite,
+    mimeType: media.mime_type ?? null,
+    codec: media.codec ?? null,
+    category: media.category ?? "short",
   };
 }
 
@@ -63,7 +66,7 @@ export function shortId(id: string): string {
 class PlayerApi {
   private mockOffset = 0;
 
-  async feed(limit: number): Promise<Clip[]> {
+  async feed(limit: number, cache = false): Promise<Clip[]> {
     if (MOCK_MODE) {
       const items = Array.from(
         { length: limit },
@@ -72,8 +75,23 @@ class PlayerApi {
       this.mockOffset = (this.mockOffset + limit) % mockMedia.length;
       return items.map(clipFromMedia);
     }
-    const payload = await this.request<FeedResponse>(`/api/v1/feed?limit=${limit}`);
+    const suffix = cache ? "&cache=1" : "";
+    const payload = await this.request<FeedResponse>(`/api/v1/feed?limit=${limit}${suffix}`);
     return payload.items.map(clipFromMedia);
+  }
+
+  async videos(
+    category: "short" | "long",
+    limit: number,
+    offset: number,
+    cache = false,
+  ): Promise<{ items: Clip[]; hasMore: boolean }> {
+    if (MOCK_MODE) return { items: [], hasMore: false };
+    const suffix = cache ? "&cache=1" : "";
+    const payload = await this.request<VideoListResponse>(
+      `/api/v1/videos?category=${category}&limit=${limit}&offset=${offset}${suffix}`,
+    );
+    return { items: payload.items.map(clipFromMedia), hasMore: payload.has_more };
   }
 
   async favorites(): Promise<Clip[]> {

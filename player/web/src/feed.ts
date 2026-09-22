@@ -21,7 +21,6 @@ export class FeedView {
   constructor(el: HTMLElement) {
     this.el = el;
     this.el.addEventListener("scroll", () => this.handleScroll(), { passive: true });
-    this.el.addEventListener("click", () => this.onTap?.());
   }
 
   get length(): number {
