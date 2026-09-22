@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import AsyncIterator
+import ipaddress
 import json
 from pathlib import Path
 from typing import Any
@@ -28,12 +29,53 @@ _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
 _LOGIN_LOCKOUT_SECONDS = 15 * 60
 _SECURITY_HEADERS = {
-    "Cache-Control": "no-store",
     "Content-Security-Policy": "default-src 'self'; connect-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
+_PRELOAD_HEADER = "X-TGVIO-Preload"
+_TRUSTED_PROXY_NETWORKS = (
+    ipaddress.ip_network("127.0.0.0/8"),
+    ipaddress.ip_network("::1/128"),
+    ipaddress.ip_network("10.0.0.0/8"),
+    ipaddress.ip_network("172.16.0.0/12"),
+    ipaddress.ip_network("192.168.0.0/16"),
+)
+
+
+def _is_trusted_proxy(host: str) -> bool:
+    candidate = (host or "").strip()
+    if not candidate:
+        return False
+    try:
+        address = ipaddress.ip_address(candidate)
+    except ValueError:
+        return candidate in {"localhost"}
+    return any(address in network for network in _TRUSTED_PROXY_NETWORKS)
+
+
+def resolve_client(request: web.Request) -> str:
+    """Return the real client identity behind the local reverse proxy.
+
+    The Player binds loopback only and is always reached through nginx, so
+    ``request.remote`` is the proxy address for every visitor. When (and only
+    when) the immediate peer is a trusted private/loopback address we take the
+    proxy-appended address: ``X-Real-IP`` if present, otherwise the right-most
+    ``X-Forwarded-For`` hop (the one nginx itself added, which a browser cannot
+    forge). Direct peers keep their own address.
+    """
+    peer = request.remote or "unknown"
+    if not _is_trusted_proxy(peer):
+        return peer
+    real_ip = (request.headers.get("X-Real-IP") or "").strip()
+    if real_ip:
+        return real_ip
+    forwarded = request.headers.get("X-Forwarded-For", "")
+    hops = [hop.strip() for hop in forwarded.split(",") if hop.strip()]
+    if hops:
+        return hops[-1]
+    return peer
 
 
 class PlayerHttpServer:
@@ -70,6 +112,10 @@ class PlayerHttpServer:
         self._max_streams_per_client = max_streams_per_client
         self._stream_clients: Counter[str] = Counter()
         self._stream_lock = asyncio.Lock()
+        # Speculative preloads must never consume the playback budget. They use
+        # a small bounded share of the global slots and are dropped first.
+        self._max_preload = max(1, max_streams // 4)
+        self._preload_active = 0
         self._max_header_size = max_header_size
         self._stream_chunk_size = stream_chunk_size
         self._startup_cache = startup_cache or StartupRangeCache(
@@ -124,8 +170,15 @@ class PlayerHttpServer:
         return await handler(request)
 
     async def _security_headers(self, request: web.Request, response: web.StreamResponse) -> None:
-        del request
         response.headers.update(_SECURITY_HEADERS)
+        path = request.path
+        if path.startswith("/assets/"):
+            # Vite emits content-hashed filenames, so these are immutable.
+            response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
+        elif path == "/healthz" or path.startswith("/api/"):
+            response.headers["Cache-Control"] = "no-store"
+        else:
+            response.headers["Cache-Control"] = "no-cache"
 
     async def _healthz(self, request: web.Request) -> web.Response:
         del request
@@ -144,7 +197,7 @@ class PlayerHttpServer:
         return web.FileResponse(index)
 
     async def _login(self, request: web.Request) -> web.Response:
-        client = request.remote or "unknown"
+        client = resolve_client(request)
         if not await self._login_allowed(client):
             raise web.HTTPTooManyRequests(
                 text="too many failed login attempts",
@@ -228,8 +281,9 @@ class PlayerHttpServer:
             plan = prepare_stream_request(request.headers.get("Range"), size_bytes=int(details["size_bytes"]))
         except RangeNotSatisfiable:
             return web.Response(status=416, headers={"Content-Range": f"bytes */{details['size_bytes']}"})
-        client = request.remote or "unknown"
-        if not await self._acquire_stream(client):
+        client = resolve_client(request)
+        preload = request.headers.get(_PRELOAD_HEADER) == "1"
+        if not await self._acquire_stream(client, preload=preload):
             raise web.HTTPTooManyRequests(text="stream capacity reached")
         upstream: WebDavRangeResponse | None = None
         try:
@@ -247,8 +301,13 @@ class PlayerHttpServer:
                 "Accept-Ranges": "bytes",
                 "Content-Length": str(upstream.content_length if upstream.content_length is not None else plan.content_length),
             }
-            if upstream.content_type:
-                headers["Content-Type"] = upstream.content_type
+            content_type = upstream.content_type
+            if not content_type or content_type == "application/octet-stream":
+                mime_type = details.get("mime_type")
+                if isinstance(mime_type, str) and mime_type.startswith("video/"):
+                    content_type = mime_type
+            if content_type:
+                headers["Content-Type"] = content_type
             if upstream.content_range:
                 headers["Content-Range"] = upstream.content_range
             elif plan.content_range:
@@ -269,7 +328,7 @@ class PlayerHttpServer:
         finally:
             if upstream is not None:
                 await self._close_body(upstream.body)
-            await self._release_stream(client)
+            await self._release_stream(client, preload=preload)
 
     def _is_startup_range(self, byte_range: ByteRange | None) -> bool:
         return (
@@ -403,16 +462,29 @@ class PlayerHttpServer:
         if parsed.netloc.lower() not in allowed:
             raise web.HTTPForbidden(text="cross-origin request rejected")
 
-    async def _acquire_stream(self, client: str) -> bool:
+    async def _acquire_stream(self, client: str, *, preload: bool = False) -> bool:
         async with self._stream_lock:
+            if preload:
+                # Speculative warm-ups never count against playback and are the
+                # first thing dropped when global capacity is tight.
+                if self._preload_active >= self._max_preload or self._stream_slots.locked():
+                    return False
+                await self._stream_slots.acquire()
+                self._preload_active += 1
+                return True
             if self._stream_clients[client] >= self._max_streams_per_client or self._stream_slots.locked():
                 return False
             await self._stream_slots.acquire()
             self._stream_clients[client] += 1
             return True
 
-    async def _release_stream(self, client: str) -> None:
+    async def _release_stream(self, client: str, *, preload: bool = False) -> None:
         async with self._stream_lock:
+            if preload:
+                if self._preload_active > 0:
+                    self._preload_active -= 1
+                    self._stream_slots.release()
+                return
             if self._stream_clients[client] > 0:
                 self._stream_clients[client] -= 1
                 self._stream_slots.release()

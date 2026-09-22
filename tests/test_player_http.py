@@ -8,6 +8,7 @@ import unittest
 from aiohttp.test_utils import TestClient, TestServer
 
 from tgvio_player.adapters.http import PlayerHttpServer
+from tgvio_player.adapters.http.server import resolve_client
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.playback import StartupRangeCache
@@ -77,7 +78,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             SessionService(self.repo, access_secret="s" * 32),
             ShuffleDeckService(self.repo),
             ReadOnlyWebDavAdapter(self.read_client),
-            max_streams=1,
+            max_streams=2,
             max_streams_per_client=1,
             startup_cache=StartupRangeCache(max_entries=2, max_bytes=8),
             startup_range_bytes=4,
@@ -267,6 +268,96 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         blocked = await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})
         self.assertEqual(blocked.status, 429)
         self.assertIn("Retry-After", blocked.headers)
+
+
+    async def test_preload_requests_do_not_consume_playback_budget(self) -> None:
+        cookie = await self._login()
+        stream = f"/api/v1/media/{self.media_id}/stream"
+        hold = asyncio.Event()
+        self.read_client.body = ClosableBody([b"hold"], wait=hold)
+        first = asyncio.create_task(self.client.get(
+            stream, headers={"Range": "bytes=2-3"}, cookies={"tgvio_player_session": cookie}
+        ))
+        await asyncio.sleep(0)
+        blocked = await self.client.get(
+            stream, headers={"Range": "bytes=2-3"}, cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(blocked.status, 429)
+
+        preload_hold = asyncio.Event()
+        self.read_client.body = ClosableBody([b"warm"], wait=preload_hold)
+        preload = asyncio.create_task(self.client.get(
+            stream,
+            headers={"Range": "bytes=2-3", "X-TGVIO-Preload": "1"},
+            cookies={"tgvio_player_session": cookie},
+        ))
+        await asyncio.sleep(0)
+        second_preload = await self.client.get(
+            stream,
+            headers={"Range": "bytes=2-3", "X-TGVIO-Preload": "1"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(second_preload.status, 429)
+
+        preload_hold.set()
+        preload_response = await preload
+        self.assertEqual(preload_response.status, 206)
+        preload_response.close()
+        hold.set()
+        first_response = await first
+        first_response.close()
+
+    async def test_cache_headers_separate_api_and_assets(self) -> None:
+        web_dir = Path(self.tmp.name) / "web"
+        (web_dir / "assets").mkdir(parents=True)
+        (web_dir / "index.html").write_text("<!doctype html><html></html>", encoding="utf-8")
+        (web_dir / "assets" / "app.js").write_text("console.log(1)", encoding="utf-8")
+        server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            ReadOnlyWebDavAdapter(self.read_client),
+            static_dir=web_dir,
+        )
+        client = TestClient(TestServer(server.application()))
+        await client.start_server()
+        try:
+            health = await client.get("/healthz")
+            self.assertEqual(health.headers["Cache-Control"], "no-store")
+            root = await client.get("/")
+            self.assertEqual(root.headers["Cache-Control"], "no-cache")
+            asset = await client.get("/assets/app.js")
+            self.assertEqual(
+                asset.headers["Cache-Control"], "public, max-age=31536000, immutable"
+            )
+            feed = await client.get("/api/v1/feed")
+            self.assertEqual(feed.status, 401)
+            self.assertEqual(feed.headers["Cache-Control"], "no-store")
+        finally:
+            await client.close()
+
+
+class ClientIdentityTests(unittest.TestCase):
+    def test_resolve_client_behind_trusted_proxy(self) -> None:
+        class FakeRequest:
+            def __init__(self, remote: str | None, headers: dict[str, str]) -> None:
+                self.remote = remote
+                self.headers = headers
+
+        self.assertEqual(
+            resolve_client(FakeRequest("203.0.113.9", {"X-Forwarded-For": "1.2.3.4"})),
+            "203.0.113.9",
+        )
+        self.assertEqual(
+            resolve_client(FakeRequest("172.20.0.1", {"X-Forwarded-For": "1.2.3.4, 198.51.100.7"})),
+            "198.51.100.7",
+        )
+        self.assertEqual(
+            resolve_client(FakeRequest("127.0.0.1", {"X-Real-IP": "198.51.100.9"})),
+            "198.51.100.9",
+        )
+        self.assertEqual(resolve_client(FakeRequest("172.20.0.1", {})), "172.20.0.1")
+        self.assertEqual(resolve_client(FakeRequest(None, {})), "unknown")
 
 
 if __name__ == "__main__":

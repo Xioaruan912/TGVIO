@@ -63,7 +63,7 @@
 .action-rail {
   position: absolute;
   right: 10px;
-  bottom: 148px;
+  bottom: calc(56px + var(--safe-bottom) + 96px);
   z-index: 14;
   display: flex;
   flex-direction: column;
@@ -161,7 +161,7 @@
   z-index: 12;
   left: 0;
   right: 0;
-  bottom: 16px;
+  bottom: calc(56px + var(--safe-bottom) + 8px);
   padding: 16px 84px 0 16px;
   pointer-events: none;
   background: linear-gradient(to top, rgba(0, 0, 0, 0.68), transparent);
@@ -301,5 +301,14 @@
 @media (min-width: 900px) {
   .topbar-settings {
     display: none;
+  }
+
+  /* No bottom navigation on desktop: restore the original overlay spacing. */
+  .clip-info {
+    bottom: 16px;
+  }
+
+  .action-rail {
+    bottom: 148px;
   }
 }

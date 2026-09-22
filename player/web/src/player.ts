@@ -20,6 +20,9 @@ const SLOT_COUNT = 3;
 export class VideoPool {
   private readonly videos: HTMLVideoElement[] = [];
   private readonly assigned: string[] = [];
+  private readonly clips = new Map<HTMLVideoElement, Clip>();
+  private readonly loadAbort = new Map<HTMLVideoElement, AbortController>();
+  private loadToken = 0;
   private current: HTMLVideoElement | null = null;
 
   onPressure: ((pressured: boolean) => void) | null = null;
@@ -38,7 +41,6 @@ export class VideoPool {
       video.setAttribute("muted", "");
       video.setAttribute("preload", "none");
       video.addEventListener("loadstart", () => this.clearReady(video));
-      video.addEventListener("loadeddata", () => this.scheduleReady(video));
       video.addEventListener("playing", () => {
         this.scheduleReady(video);
         if (video === this.current) this.onPressure?.(false);
@@ -60,9 +62,6 @@ export class VideoPool {
           video.currentTime = 0;
           void video.play().catch(() => undefined);
         }
-      });
-      video.addEventListener("error", () => {
-        if (video === this.current) this.onError?.(video.dataset.mediaId ?? "");
       });
       this.videos.push(video);
       this.assigned.push("");
@@ -156,10 +155,48 @@ export class VideoPool {
       });
   }
 
+  retryCurrent(): boolean {
+    const video = this.current;
+    if (!video) return false;
+    const clip = this.clips.get(video);
+    if (!clip) return false;
+    this.load(video, clip, "auto");
+    this.tryPlay(video);
+    return true;
+  }
+
+  currentClip(): Clip | null {
+    return this.current ? this.clips.get(this.current) ?? null : null;
+  }
+
   private load(video: HTMLVideoElement, clip: Clip, preload: HTMLMediaElement["preload"]): void {
     const index = this.videos.indexOf(video);
     if (index >= 0) this.assigned[index] = clip.id;
+    this.clips.set(video, clip);
+    // Cancel listeners from the previous assignment so a late loadeddata/error
+    // from the old source can never mark the new page ready or report an error
+    // for the clip that is now bound to this element.
+    this.loadAbort.get(video)?.abort();
+    const controller = new AbortController();
+    this.loadAbort.set(video, controller);
+    const token = String(++this.loadToken);
+    video.dataset.loadToken = token;
     video.dataset.mediaId = clip.id;
+    video.addEventListener(
+      "loadeddata",
+      () => {
+        if (video.dataset.loadToken === token) this.scheduleReady(video);
+      },
+      { once: true, signal: controller.signal },
+    );
+    video.addEventListener(
+      "error",
+      () => {
+        if (video.dataset.loadToken !== token) return;
+        if (video === this.current) this.onError?.(clip.id);
+      },
+      { once: true, signal: controller.signal },
+    );
     video.preload = preload;
     video.src = clip.streamUrl;
     video.load();
@@ -168,10 +205,14 @@ export class VideoPool {
   private release(video: HTMLVideoElement): void {
     const index = this.videos.indexOf(video);
     if (index >= 0) this.assigned[index] = "";
+    this.loadAbort.get(video)?.abort();
+    this.loadAbort.delete(video);
+    this.clips.delete(video);
     video.pause();
     video.removeAttribute("src");
     video.load();
     delete video.dataset.mediaId;
+    delete video.dataset.loadToken;
     video.classList.remove("is-current");
   }
 

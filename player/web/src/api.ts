@@ -110,11 +110,31 @@ class PlayerApi {
     const bytes = level === "strong" ? 512 * 1024 : 128 * 1024;
     const response = await fetch(clip.streamUrl, {
       credentials: "same-origin",
-      headers: { Range: `bytes=0-${bytes - 1}` },
+      headers: { Range: `bytes=0-${bytes - 1}`, "X-TGVIO-Preload": "1" },
       signal,
     });
     if (!response.ok && response.status !== 206) throw new Error("Startup range unavailable");
     await response.body?.cancel();
+  }
+
+  /**
+   * Cheap reachability probe used to classify a media error. A small preload
+   * range that never competes with playback tells us whether the stream is
+   * temporarily unavailable (429/5xx/network) or genuinely undecodable.
+   */
+  async probe(clip: Clip): Promise<number> {
+    if (MOCK_MODE) return 200;
+    try {
+      const response = await fetch(clip.streamUrl, {
+        credentials: "same-origin",
+        headers: { Range: "bytes=0-1023", "X-TGVIO-Preload": "1" },
+        cache: "no-store",
+      });
+      await response.body?.cancel();
+      return response.status;
+    } catch {
+      return 0;
+    }
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {

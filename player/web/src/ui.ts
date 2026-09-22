@@ -111,8 +111,11 @@ export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLEle
   const form = element("form", "login-form");
   const input = element("input", "login-input");
   input.type = "password";
-  input.inputMode = "numeric";
+  input.inputMode = "text";
   input.autocomplete = "current-password";
+  input.autocapitalize = "off";
+  input.setAttribute("autocorrect", "off");
+  input.spellcheck = false;
   input.placeholder = "输入访问口令";
   input.setAttribute("aria-label", "访问口令");
   input.required = true;

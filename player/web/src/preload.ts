@@ -2,16 +2,15 @@ import { api } from "./api";
 import type { Clip, PreloadLevel } from "./types";
 
 const WARM_PLAN: { offset: number; level: PreloadLevel }[] = [
-  { offset: 1, level: "strong" },
-  { offset: 2, level: "strong" },
-  { offset: 3, level: "light" },
+  { offset: 1, level: "light" },
 ];
 
 /**
- * Bounded media warm-up for N+1..N+3. N+1 is also the real next video slot
- * (metadata only); this warms its startup bytes so the first frame after a
- * swipe is ready. Current playback always wins: any waiting/stalled signal
- * aborts the low-priority fetches.
+ * Bounded media warm-up for N+1 only. The archive upstream is slow, so warming
+ * more than the immediate next clip steals bandwidth from the active stream
+ * without helping the first frame. Current playback always wins: any
+ * waiting/stalled signal aborts the low-priority fetch, and the warm request is
+ * tagged so the server never counts it against the playback budget.
  */
 export class PreloadCoordinator {
   private planned = new Map<string, PreloadLevel>();

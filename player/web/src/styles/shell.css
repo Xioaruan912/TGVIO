@@ -16,7 +16,9 @@
   display: flex;
   align-items: stretch;
   justify-content: stretch;
-  padding-bottom: calc(56px + var(--safe-bottom));
+  /* The video fills the full dynamic viewport; the bottom navigation is a
+     fixed overlay on top of it (TikTok/Reels style), not a reserved strip. */
+  padding-bottom: 0;
 }
 
 .viewport {

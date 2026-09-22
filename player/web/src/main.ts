@@ -51,30 +51,38 @@ let openSheetKind: string | null = null;
 let userSeeking = false;
 let debugAt = 0;
 let skipStreak = 0;
+let warmTimer = 0;
+let resizeTimer = 0;
 const unplayable = new Set<string>();
+const seenIds = new Set<string>();
+const errorRetries = new Map<string, number>();
 
 async function ensureFeed(minimum: number): Promise<void> {
-  if (refill) return refill;
+  // A shared in-flight refill may only satisfy an older, smaller minimum, so
+  // wait for it and then top up again if this caller still needs more.
+  while (refill) {
+    await refill.catch(() => undefined);
+  }
   if (clips.length >= minimum || clips.length >= MAX_FEED) {
     return;
   }
-  refill = (async () => {
-    try {
-      while (clips.length < minimum && clips.length < MAX_FEED) {
-        const batch = await api.feed(FEED_BATCH);
-        if (!batch.length) break;
-        for (const clip of batch) {
-          clips.push(clip);
-          if (clip.favorite) favorites.add(clip.id);
-        }
+  const task = (async () => {
+    while (clips.length < minimum && clips.length < MAX_FEED) {
+      const batch = await api.feed(FEED_BATCH);
+      if (!batch.length) break;
+      for (const clip of batch) {
+        if (seenIds.has(clip.id)) continue;
+        seenIds.add(clip.id);
+        clips.push(clip);
+        if (clip.favorite) favorites.add(clip.id);
       }
-    } catch (error) {
-      refill = null;
-      throw error;
     }
-    refill = null;
   })();
-  return refill;
+  refill = task;
+  void task.finally(() => {
+    if (refill === task) refill = null;
+  });
+  return task;
 }
 
 function clipMeta(clip: Clip): string {
@@ -106,8 +114,22 @@ function applyActive(index: number): void {
   );
   updateOverlay(current);
   setFavoriteButton(shell!, favorites.has(current.id));
-  preloader.plan(clips, index);
+  scheduleWarm();
   renderDebug();
+}
+
+/**
+ * Warm N+1 only after the active video is actually playing, never while it is
+ * still buffering. Rapid swipes clear the pending timer instead of firing
+ * speculative requests that would compete with the active stream.
+ */
+function scheduleWarm(): void {
+  window.clearTimeout(warmTimer);
+  warmTimer = window.setTimeout(() => {
+    const video = pool?.currentVideo();
+    if (!video || video.paused || video.readyState < 2) return;
+    preloader.plan(clips, activeIndex);
+  }, 900);
 }
 
 function commitActive(index: number): void {
@@ -201,14 +223,47 @@ function goNext(instant = false): void {
     .catch(() => toast(shell!, "暂时加载失败"));
 }
 
+/**
+ * A `<video>` error alone cannot tell a transient capacity/network failure from
+ * an undecodable file. Probe the stream (cheaply, as a preload) first:
+ *   network / 429 / 5xx -> retry the current source a couple of times
+ *   reachable but still errors -> genuinely undecodable, skip it
+ * Transient failures never permanently blacklist a clip.
+ */
+async function handleMediaError(clip: Clip): Promise<void> {
+  preloader.setPressure(true);
+  const attempts = errorRetries.get(clip.id) ?? 0;
+  const status = await api.probe(clip);
+  if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
+  const transient = status === 0 || status === 429 || status >= 500;
+  if (transient && attempts < 2) {
+    errorRetries.set(clip.id, attempts + 1);
+    toast(shell!, "网络波动，正在重试");
+    window.setTimeout(() => {
+      if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
+      pool?.retryCurrent();
+    }, 700 * (attempts + 1));
+    return;
+  }
+  unplayable.add(clip.id);
+  skipStreak += 1;
+  if (skipStreak > 8) {
+    toast(shell!, "连续多条视频无法播放");
+    return;
+  }
+  goNext(true);
+}
+
 function openClip(clip: Clip): void {
   if (!feedView) return;
   let index = feedView.indexOf(clip.id);
-  if (index < 0) {
+  if (index < 0 && !seenIds.has(clip.id)) {
+    seenIds.add(clip.id);
     clips.push(clip);
     feedView.setClips(clips);
     index = clips.length - 1;
   }
+  if (index < 0) return;
   closeSheet(shell!);
   openSheetKind = null;
   setActiveNav(shell!, "home");
@@ -390,27 +445,27 @@ function renderFeed(): void {
   pool.onPressure = (pressured) => {
     preloader.setPressure(pressured);
     shell?.root.classList.toggle("playback-pressure", pressured);
-    if (!pressured) preloader.plan(clips, activeIndex);
+    if (!pressured) scheduleWarm();
   };
   pool.onTimeUpdate = updateProgress;
   pool.onAutoplayBlocked = (blocked) => {
     autoplayBlocked = blocked;
-    if (!blocked) skipStreak = 0;
+    if (!blocked) {
+      skipStreak = 0;
+      scheduleWarm();
+    }
     shell?.root.classList.toggle("needs-gesture", blocked);
   };
   pool.onError = (mediaId) => {
     if (MOCK_MODE) return;
-    if (mediaId) unplayable.add(mediaId);
-    skipStreak += 1;
-    if (skipStreak > 8) {
-      toast(shell!, "连续多条视频无法播放");
-      return;
-    }
-    goNext(true);
+    const clip = feedView?.clipAt(activeIndex) ?? null;
+    if (!clip || clip.id !== mediaId) return;
+    void handleMediaError(clip);
   };
   feedView.onCandidate = (index) => {
-    preloader.plan(clips, index, true);
+    window.clearTimeout(warmTimer);
     renderDebug();
+    void index;
   };
   feedView.onSettle = commitActive;
   feedView.onTap = togglePlayback;
@@ -424,6 +479,12 @@ function renderFeed(): void {
   window.addEventListener("orientationchange", () => {
     window.setTimeout(() => feedView?.scrollToIndex(activeIndex, false), 220);
   });
+  const onViewportResize = () => {
+    window.clearTimeout(resizeTimer);
+    resizeTimer = window.setTimeout(() => feedView?.scrollToIndex(activeIndex, false), 250);
+  };
+  window.addEventListener("resize", onViewportResize);
+  window.visualViewport?.addEventListener("resize", onViewportResize);
   document.addEventListener("visibilitychange", () => {
     const video = pool?.currentVideo();
     if (!video) return;
