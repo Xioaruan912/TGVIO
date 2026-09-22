@@ -246,10 +246,10 @@ class PlayerHttpServer:
             raise web.HTTPBadRequest(text="invalid limit")
         media_ids = await self._deck.next_items(digest, limit=limit)
         items = []
-        for media_id in media_ids:
+        for index, media_id in enumerate(media_ids):
             details = await self._repository.active_media_details(media_id)
             if details is not None:
-                if self._faststart is not None:
+                if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
                 items.append(await self._media_dto(details, digest))
         return web.json_response({"items": items, "next_cursor": None})
@@ -301,7 +301,7 @@ class PlayerHttpServer:
             if overlay is None:
                 try:
                     overlay = await asyncio.wait_for(
-                        self._faststart.overlay_for(media_id, details),
+                        self._faststart.overlay_for(media_id, details, priority=True),
                         timeout=_FASTSTART_WAIT_SECONDS,
                     )
                 except (asyncio.TimeoutError, asyncio.CancelledError):

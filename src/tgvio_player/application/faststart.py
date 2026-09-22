@@ -294,6 +294,8 @@ class FaststartService:
         self,
         media_id: str,
         details: dict[str, object],
+        *,
+        priority: bool = False,
     ) -> FaststartOverlay | None:
         if not is_mp4(details) or media_id in self._missing:
             return None
@@ -307,35 +309,42 @@ class FaststartService:
                 return overlay
             if media_id in self._missing:
                 return None
+            # Playback-critical builds bypass the background build budget so a
+            # queue of speculative warm-ups can never delay the active clip.
+            if priority:
+                return await self._build_locked(media_id, details)
             async with self._build_slots:
-                overlay = self._cached(media_id)
-                if overlay is not None:
-                    return overlay
-                location = await self._repository.active_media_location(media_id)
-                if location is None:
-                    return None
-                size = int(details.get("size_bytes") or 0)
-                mime = str(details.get("mime_type") or "video/mp4")
-                try:
-                    overlay = await build_overlay(
-                        size,
-                        mime,
-                        lambda start, end: self._read_exact(location, start, end),
-                    )
-                except Exception:
-                    # Transient (remote read) failure: do not poison the media,
-                    # a later request can retry the build.
-                    _LOG.warning(
-                        "player.faststart.build_failed media=%s", media_id[:12], exc_info=True
-                    )
-                    return None
-            if overlay is None:
-                # Structurally not applicable (already faststart / unsupported).
-                self._missing.add(media_id)
-                return None
-            self._store.save(media_id, overlay)
-            self._remember(media_id, overlay)
+                return await self._build_locked(media_id, details)
+
+    async def _build_locked(
+        self, media_id: str, details: dict[str, object]
+    ) -> FaststartOverlay | None:
+        overlay = self._cached(media_id)
+        if overlay is not None:
             return overlay
+        location = await self._repository.active_media_location(media_id)
+        if location is None:
+            return None
+        size = int(details.get("size_bytes") or 0)
+        mime = str(details.get("mime_type") or "video/mp4")
+        try:
+            overlay = await build_overlay(
+                size,
+                mime,
+                lambda start, end: self._read_exact(location, start, end),
+            )
+        except Exception:
+            # Transient (remote read) failure: do not poison the media,
+            # a later request can retry the build.
+            _LOG.warning("player.faststart.build_failed media=%s", media_id[:12], exc_info=True)
+            return None
+        if overlay is None:
+            # Structurally not applicable (already faststart / unsupported).
+            self._missing.add(media_id)
+            return None
+        self._store.save(media_id, overlay)
+        self._remember(media_id, overlay)
+        return overlay
 
     async def prepare(self, media_id: str, details: dict[str, object]) -> bool:
         return await self.overlay_for(media_id, details) is not None
