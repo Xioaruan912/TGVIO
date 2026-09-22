@@ -12,7 +12,7 @@ _MP4_MIME = frozenset(
     {"video/mp4", "video/quicktime", "video/x-m4v", "audio/mp4", "audio/x-m4a"}
 )
 _CONTAINER_BOXES = frozenset({b"moov", b"trak", b"mdia", b"minf", b"stbl", b"mvex"})
-_MAX_TOP_LEVEL_BOXES = 32
+_HEAD_WINDOW_BYTES = 64 * 1024
 
 ReadRange = Callable[[int, int], Awaitable[bytes]]
 
@@ -131,60 +131,80 @@ def _patch_chunk_offsets(
 
 
 async def build_overlay(size: int, mime: str, read: ReadRange) -> FaststartOverlay | None:
-    """Build a virtual faststart overlay, or ``None`` when it is unnecessary/unsafe."""
+    """Build a virtual faststart overlay, or ``None`` when it is unnecessary/unsafe.
+
+    Uses at most two remote range reads: one fixed-size head window (which also
+    carries the prefix) and, only when ``moov`` is not inside that window, one
+    read of the trailing ``moov``. Remote round-trips are expensive on the
+    archive backend, so the number of reads is deliberately minimal.
+    """
     if size <= 0 or mime.lower() not in _MP4_MIME:
         return None
+    window = min(_HEAD_WINDOW_BYTES, size)
+    head = await read(0, window - 1)
+    if len(head) < 8:
+        raise FaststartReadError("short head read")
+
     boxes: list[tuple[int, bytes, int, int]] = []
     position = 0
-    moov_box: tuple[int, bytes, int, int] | None = None
-    for _ in range(_MAX_TOP_LEVEL_BOXES):
-        if position + 8 > size:
-            break
-        raw = await read(position, min(position + 15, size - 1))
-        if len(raw) < 8:
-            raise FaststartReadError("short box header read")
-        box_size = int.from_bytes(raw[0:4], "big")
-        box_type = raw[4:8]
+    while position + 8 <= len(head):
+        box_size = int.from_bytes(head[position : position + 4], "big")
+        box_type = head[position + 4 : position + 8]
         header = 8
         if box_size == 1:
-            if len(raw) < 16:
-                raise FaststartReadError("short 64-bit box header read")
-            box_size = int.from_bytes(raw[8:16], "big")
+            if position + 16 > len(head):
+                break
+            box_size = int.from_bytes(head[position + 8 : position + 16], "big")
             header = 16
         elif box_size == 0:
             box_size = size - position
         if box_size < header or position + box_size > size:
             return None
         boxes.append((position, box_type, box_size, header))
-        if box_type == b"moov":
-            moov_box = boxes[-1]
-            break
+        if position + box_size > len(head):
+            break  # the rest of this box (mdat) is outside the window
         position += box_size
         if position >= size:
             break
 
-    if moov_box is None:
-        return None
     mdats = [box for box in boxes if box[1] == b"mdat"]
     if not mdats:
         return None
-    moov_start, _, moov_size, _ = moov_box
     first_mdat = min(box[0] for box in mdats)
-    if moov_start < first_mdat:
-        return None  # already faststart
-    if moov_start + moov_size != size:
-        return None  # unsupported trailing boxes after moov
-    if moov_size < 16 or moov_size > size:
-        return None
 
-    moov_bytes = await read(moov_start, size - 1)
+    moov_box = next((box for box in boxes if box[1] == b"moov"), None)
+    if moov_box is not None:
+        moov_start, _, moov_size, _ = moov_box
+        moov_bytes = head[moov_start : moov_start + moov_size]
+    else:
+        tail_start = boxes[-1][0] + boxes[-1][2]
+        if tail_start + 8 > size:
+            return None
+        tail = await read(tail_start, size - 1)
+        if len(tail) < 8:
+            raise FaststartReadError("short tail read")
+        if tail[4:8] != b"moov":
+            return None
+        moov_size = int.from_bytes(tail[0:4], "big")
+        if moov_size == 1:
+            if len(tail) < 16:
+                raise FaststartReadError("short 64-bit moov header")
+            moov_size = int.from_bytes(tail[8:16], "big")
+        if moov_size < 16 or tail_start + moov_size != size:
+            return None
+        moov_start = tail_start
+        moov_bytes = tail[:moov_size]
+
+    if moov_start < first_mdat or moov_start + moov_size != size:
+        return None  # already faststart, or unsupported trailing layout
     if len(moov_bytes) != moov_size:
         raise FaststartReadError("short moov read")
+
     patched = bytearray(moov_bytes)
     tracks = _patch_chunk_offsets(patched, moov_size, first_mdat, moov_start)
     if tracks is None or tracks == 0:
         return None
-    prefix = await read(0, first_mdat - 1) if first_mdat > 0 else b""
+    prefix = head[:first_mdat]
     if len(prefix) != first_mdat:
         raise FaststartReadError("short prefix read")
     _LOG.info(

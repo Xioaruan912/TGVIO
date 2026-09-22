@@ -28,7 +28,7 @@ _DEFAULT_STARTUP_RANGE_BYTES = 2 * 1024 * 1024
 _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
 _LOGIN_LOCKOUT_SECONDS = 15 * 60
-_FASTSTART_WAIT_SECONDS = 2.0
+_FASTSTART_WAIT_SECONDS = 3.0
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; connect-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     "Referrer-Policy": "no-referrer",
