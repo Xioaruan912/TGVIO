@@ -648,6 +648,7 @@ function renderFeed(): void {
   feedView.onSettle = commitActive;
   feedView.setClips(clips);
   feedPreview = new ThumbnailPreview();
+  shell.root.appendChild(feedPreview.el);
   attachGestures(shell.feed, feedGestureOptions());
   setSoundButton(shell, muted);
   setActiveNav(shell, "home");
