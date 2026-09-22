@@ -1,0 +1,44 @@
+# Deliberately separate from docker-compose.yml. Never combine this file with
+# the Bot compose file: Player release actions must target only tgvio-player.
+services:
+  tgvio-player:
+    image: ${TGVIO_PLAYER_IMAGE:?set a Player-only image reference}
+    container_name: tgvio-player
+    restart: unless-stopped
+    profiles: ["player"]
+    environment:
+      TGVIO_PLAYER_ENABLED: ${TGVIO_PLAYER_ENABLED:?set true only for an approved Player deployment}
+      TGVIO_PLAYER_DATA_DIR: /var/lib/tgvio-player
+      TGVIO_PLAYER_ACCESS_SECRET: ${TGVIO_PLAYER_ACCESS_SECRET:?set a Player-only access secret}
+      TGVIO_PLAYER_WEBDAV_URL: ${TGVIO_PLAYER_WEBDAV_URL:?set a read-only WebDAV URL}
+      TGVIO_PLAYER_WEBDAV_USER: ${TGVIO_PLAYER_WEBDAV_USER:?set a read-only WebDAV user}
+      TGVIO_PLAYER_WEBDAV_PASSWORD: ${TGVIO_PLAYER_WEBDAV_PASSWORD:?set a read-only WebDAV password}
+      TGVIO_PLAYER_REMOTE_ROOT: ${TGVIO_PLAYER_REMOTE_ROOT:?set the Archive root}
+      TGVIO_PLAYER_CATALOG_POLL_SECONDS: ${TGVIO_PLAYER_CATALOG_POLL_SECONDS:-60}
+      TGVIO_PLAYER_MAX_STREAMS: ${TGVIO_PLAYER_MAX_STREAMS:-4}
+      TGVIO_PLAYER_MAX_STREAMS_PER_CLIENT: ${TGVIO_PLAYER_MAX_STREAMS_PER_CLIENT:-2}
+    ports:
+      # Docker publishes this only on the host loopback interface. The future
+      # HTTP server may bind its container port normally without public reachability.
+      - "127.0.0.1:${TGVIO_PLAYER_PORT:-8790}:8790"
+    volumes:
+      - type: bind
+        source: ${TGVIO_PLAYER_HOST_DATA_DIR:?set a Player-owned host data directory}
+        target: /var/lib/tgvio-player
+    read_only: true
+    tmpfs:
+      - /tmp:rw,noexec,nosuid,size=64m
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    healthcheck:
+      test:
+        - CMD
+        - python
+        - -c
+        - "from urllib.request import urlopen; urlopen('http://127.0.0.1:8790/healthz', timeout=2).close()"
+      interval: 30s
+      timeout: 5s
+      start_period: 20s
+      retries: 3

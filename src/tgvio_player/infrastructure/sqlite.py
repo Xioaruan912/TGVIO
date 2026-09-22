@@ -4,6 +4,7 @@ import asyncio
 from contextlib import asynccontextmanager
 from pathlib import Path
 import sqlite3
+import time
 from typing import AsyncIterator
 
 from tgvio_player.domain.catalog import CatalogPackage
@@ -213,3 +214,183 @@ class PlayerCatalogRepositorySQLite:
             (str(row["remote_path"]), str(row["remote_relpath"]))
             for row in rows
         ]
+
+    async def active_media_location(
+        self, media_id: str
+    ) -> tuple[str, str, str | None] | None:
+        """Return one catalog-owned active location, never a caller-supplied path."""
+        row = self._require().execute(
+            """
+            SELECT cp.remote_path, ml.remote_relpath, ml.remote_etag
+            FROM media_locations ml
+            JOIN catalog_packages cp ON cp.package_id=ml.package_id
+            JOIN media ON media.media_id=ml.media_id
+            WHERE ml.media_id=? AND ml.active=1 AND cp.active=1 AND media.active=1
+            ORDER BY cp.package_id, ml.remote_relpath
+            LIMIT 1
+            """,
+            (media_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return (
+            str(row["remote_path"]),
+            str(row["remote_relpath"]),
+            str(row["remote_etag"]) if row["remote_etag"] is not None else None,
+        )
+
+    async def active_media_details(self, media_id: str) -> dict[str, object] | None:
+        row = self._require().execute(
+            """
+            SELECT media_id, kind, mime_type, size_bytes, width, height, duration_seconds
+            FROM media WHERE media_id=? AND active=1
+            """,
+            (media_id,),
+        ).fetchone()
+        return None if row is None else dict(row)
+
+    async def create_player_session(self, token_digest: str, *, expires_at: int) -> None:
+        now = int(time.time())
+        async with self._write_transaction() as conn:
+            conn.execute("DELETE FROM player_sessions WHERE expires_at<=?", (now,))
+            conn.execute(
+                "INSERT INTO player_sessions(token_digest, created_at, expires_at) VALUES(?,?,?)",
+                (token_digest, now, expires_at),
+            )
+            conn.execute(
+                "INSERT INTO feed_sessions(token_digest, last_active_at) VALUES(?,?)",
+                (token_digest, now),
+            )
+
+    async def has_player_session(self, token_digest: str, *, now: int) -> bool:
+        row = self._require().execute(
+            "SELECT 1 FROM player_sessions WHERE token_digest=? AND expires_at>?",
+            (token_digest, now),
+        ).fetchone()
+        return row is not None
+
+    async def delete_player_session(self, token_digest: str) -> None:
+        async with self._write_transaction() as conn:
+            conn.execute("DELETE FROM player_sessions WHERE token_digest=?", (token_digest,))
+
+    async def has_unconsumed_feed_items(self, token_digest: str) -> bool:
+        row = self._require().execute(
+            """
+            SELECT 1 FROM feed_session_items
+            WHERE token_digest=? AND consumed_at IS NULL LIMIT 1
+            """,
+            (token_digest,),
+        ).fetchone()
+        return row is not None
+
+    async def next_feed_cycle(self, token_digest: str) -> int:
+        row = self._require().execute(
+            "SELECT current_cycle FROM feed_sessions WHERE token_digest=?", (token_digest,)
+        ).fetchone()
+        if row is None:
+            raise RuntimeError("unknown player session")
+        return int(row["current_cycle"]) + 1
+
+    async def recent_feed_media(self, token_digest: str, *, limit: int) -> list[str]:
+        if limit < 1:
+            return []
+        rows = self._require().execute(
+            """
+            SELECT media_id FROM feed_recent_media
+            WHERE token_digest=? ORDER BY id DESC LIMIT ?
+            """,
+            (token_digest, limit),
+        ).fetchall()
+        return [str(row["media_id"]) for row in rows]
+
+    async def write_feed_cycle(
+        self, token_digest: str, *, cycle: int, media_ids: list[str]
+    ) -> None:
+        now = int(time.time())
+        async with self._write_transaction() as conn:
+            exists = conn.execute(
+                "SELECT 1 FROM player_sessions WHERE token_digest=?", (token_digest,)
+            ).fetchone()
+            if exists is None:
+                raise RuntimeError("unknown player session")
+            conn.execute(
+                "UPDATE feed_sessions SET current_cycle=?, last_active_at=? WHERE token_digest=?",
+                (cycle, now, token_digest),
+            )
+            conn.executemany(
+                """
+                INSERT INTO feed_session_items(token_digest, cycle, ordinal, media_id)
+                VALUES(?,?,?,?)
+                """,
+                [(token_digest, cycle, ordinal, media_id) for ordinal, media_id in enumerate(media_ids)],
+            )
+
+    async def consume_feed_items(self, token_digest: str, *, limit: int) -> list[str]:
+        if limit < 1:
+            return []
+        now = int(time.time())
+        async with self._write_transaction() as conn:
+            # Recheck current catalog activity at consumption time: a package can
+            # disappear after a cycle was created.
+            rows = conn.execute(
+                """
+                SELECT item.cycle, item.ordinal, item.media_id
+                FROM feed_session_items item
+                JOIN media ON media.media_id=item.media_id
+                WHERE item.token_digest=? AND item.consumed_at IS NULL AND media.active=1
+                ORDER BY item.cycle, item.ordinal LIMIT ?
+                """,
+                (token_digest, limit),
+            ).fetchall()
+            result = [str(row["media_id"]) for row in rows]
+            for row in rows:
+                conn.execute(
+                    """
+                    UPDATE feed_session_items SET consumed_at=?
+                    WHERE token_digest=? AND cycle=? AND ordinal=? AND consumed_at IS NULL
+                    """,
+                    (now, token_digest, row["cycle"], row["ordinal"]),
+                )
+                conn.execute(
+                    "INSERT INTO feed_recent_media(token_digest, media_id, consumed_at) VALUES(?,?,?)",
+                    (token_digest, row["media_id"], now),
+                )
+            # Inactive deck entries are terminally skipped so a later cycle can
+            # start once all remaining active entries have been consumed.
+            conn.execute(
+                """
+                UPDATE feed_session_items SET consumed_at=?
+                WHERE token_digest=? AND consumed_at IS NULL
+                  AND media_id IN (SELECT media_id FROM media WHERE active=0)
+                """,
+                (now, token_digest),
+            )
+            conn.execute(
+                "UPDATE feed_sessions SET last_active_at=? WHERE token_digest=?",
+                (now, token_digest),
+            )
+            return result
+
+    async def set_favorite(self, token_digest: str, media_id: str, *, enabled: bool) -> None:
+        now = int(time.time())
+        async with self._write_transaction() as conn:
+            if enabled:
+                conn.execute(
+                    """
+                    INSERT INTO favorites(token_digest, media_id, created_at) VALUES(?,?,?)
+                    ON CONFLICT(token_digest, media_id) DO NOTHING
+                    """,
+                    (token_digest, media_id, now),
+                )
+            else:
+                conn.execute(
+                    "DELETE FROM favorites WHERE token_digest=? AND media_id=?",
+                    (token_digest, media_id),
+                )
+
+    async def is_favorite(self, token_digest: str, media_id: str) -> bool:
+        row = self._require().execute(
+            "SELECT 1 FROM favorites WHERE token_digest=? AND media_id=?",
+            (token_digest, media_id),
+        ).fetchone()
+        return row is not None

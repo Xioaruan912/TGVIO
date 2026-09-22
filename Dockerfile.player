@@ -1,0 +1,46 @@
+# syntax=docker/dockerfile:1.7
+#
+# Player is intentionally built separately from the Telegram Bot image. It
+# contains no Bot package, Telegram dependency, session, or runtime volume.
+ARG PYTHON_IMAGE=python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
+ARG NODE_IMAGE=node:20-bookworm-slim
+
+FROM ${NODE_IMAGE} AS player-web-build
+WORKDIR /web
+COPY player/web/package.json player/web/package-lock.json ./
+RUN npm ci
+COPY player/web/index.html player/web/tsconfig.json player/web/vite.config.ts ./
+COPY player/web/src ./src
+RUN npm run build
+
+FROM ${PYTHON_IMAGE} AS player-runtime
+WORKDIR /app
+
+COPY requirements.player.lock ./requirements.player.lock
+RUN python -m pip install \
+      --disable-pip-version-check \
+      --no-cache-dir \
+      --no-build-isolation \
+      --no-deps \
+      --require-hashes \
+      --target /opt/tgvio-player/site-packages \
+      -r requirements.player.lock \
+    && find /opt/tgvio-player/site-packages -type d -name __pycache__ -prune -exec rm -rf '{}' +
+
+ARG PLAYER_COMMIT=unknown
+ARG PLAYER_RELEASE_ID=unreleased
+ENV PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1 \
+    PYTHONPATH=/app/src:/opt/tgvio-player/site-packages \
+    TGVIO_PLAYER_DATA_DIR=/var/lib/tgvio-player
+LABEL org.opencontainers.image.title="tgvio-player" \
+      org.opencontainers.image.revision=${PLAYER_COMMIT} \
+      org.opencontainers.image.version=${PLAYER_RELEASE_ID}
+
+RUN groupadd --gid 65532 tgvio-player \
+    && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin tgvio-player
+COPY src/tgvio_player ./src/tgvio_player
+COPY --from=player-web-build --chown=65532:65532 /web/dist ./player-web
+USER 65532:65532
+
+CMD ["python", "-m", "tgvio_player.main"]

@@ -4,6 +4,8 @@ __pycache__/
 *.py[cod]
 .pytest_cache/
 .mypy_cache/
+player/web/node_modules/
+player/web/dist/
 .ruff_cache/
 .coverage
 htmlcov/
