@@ -25,6 +25,25 @@
   letter-spacing: 0.06em;
 }
 
+.topbar-settings {
+  position: absolute;
+  right: 8px;
+  top: calc(var(--safe-top) + 6px);
+  width: 36px;
+  height: 36px;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.82);
+  font-size: 18px;
+  pointer-events: auto;
+}
+
+@media (min-width: 820px) {
+  .topbar-settings {
+    display: none;
+  }
+}
+
 .playback-pressure .mode-pill::after {
   content: " ···";
   color: var(--accent);

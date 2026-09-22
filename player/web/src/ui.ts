@@ -143,7 +143,11 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const topbar = element("header", "topbar");
   const modePill = element("div", "mode-pill", "Random");
   const brandSmall = element("span", "topbar-brand", "TGVIO");
-  topbar.append(brandSmall, modePill);
+  const settingsBtn = element("button", "topbar-settings", "⚙");
+  settingsBtn.type = "button";
+  settingsBtn.setAttribute("aria-label", "Settings");
+  settingsBtn.addEventListener("click", () => handlers.onNav("settings"));
+  topbar.append(brandSmall, modePill, settingsBtn);
 
   const actionRail = element("div", "action-rail");
   const favoriteBtn = actionButton("♡", "Favorite");
