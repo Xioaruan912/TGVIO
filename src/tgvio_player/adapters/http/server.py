@@ -28,6 +28,7 @@ _DEFAULT_STARTUP_RANGE_BYTES = 2 * 1024 * 1024
 _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
 _LOGIN_LOCKOUT_SECONDS = 15 * 60
+_FASTSTART_WAIT_SECONDS = 2.0
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; connect-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     "Referrer-Policy": "no-referrer",
@@ -291,6 +292,24 @@ class PlayerHttpServer:
             plan = prepare_stream_request(request.headers.get("Range"), size_bytes=int(details["size_bytes"]))
         except RangeNotSatisfiable:
             return web.Response(status=416, headers={"Content-Range": f"bytes */{details['size_bytes']}"})
+        # Try to build the faststart overlay before taking a stream slot, so the
+        # build never holds playback capacity. If it is not ready within a short
+        # budget we fall back to the original file and build in the background.
+        overlay = None
+        if self._faststart is not None:
+            overlay = self._faststart.peek(media_id, details)
+            if overlay is None:
+                try:
+                    overlay = await asyncio.wait_for(
+                        self._faststart.overlay_for(media_id, details),
+                        timeout=_FASTSTART_WAIT_SECONDS,
+                    )
+                except (asyncio.TimeoutError, asyncio.CancelledError):
+                    overlay = None
+                except Exception:
+                    overlay = None
+                if overlay is None:
+                    self._faststart.schedule(media_id, details)
         client = resolve_client(request)
         preload = request.headers.get(_PRELOAD_HEADER) == "1"
         if not await self._acquire_stream(client, preload=preload):
@@ -300,11 +319,6 @@ class PlayerHttpServer:
             location = await self._repository.active_media_location(media_id)
             if location is None:
                 raise web.HTTPNotFound(text="media not found")
-            overlay = None
-            if self._faststart is not None:
-                overlay = self._faststart.peek(media_id, details)
-                if overlay is None:
-                    self._faststart.schedule(media_id, details)
             if overlay is not None:
                 return await self._stream_overlay(request, overlay, location, plan)
             if self._is_startup_range(plan.byte_range):
