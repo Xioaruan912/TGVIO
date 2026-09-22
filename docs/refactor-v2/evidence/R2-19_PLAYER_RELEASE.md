@@ -43,3 +43,12 @@ The initial release waited for a full WebDAV catalog synchronization before open
 ## Residual follow-up
 
 The Player is restricted to the read-only HTTPS WebDAV route, but its current credential originated from the existing Archive configuration. Create a dedicated OpenList read-only account and replace only `/root/tgvio-player/player.env` in a maintenance window.
+
+## Owner PIN Update
+
+- Player update commit: `710ad08`.
+- The Player accepts either a 32+ character access secret or an exact 9-digit owner PIN. The deployment uses an owner-provided PIN; its value is not recorded here.
+- Failed login attempts are limited to five attempts per client within ten minutes, followed by a fifteen-minute temporary lockout.
+- The Player-only image `tgvio-player:r2-19-pin-710ad08` was built from an isolated release source and deployed without changing the Bot container.
+- Verification after cutover: Player `running/healthy`, Bot still `running` with the same container ID, health `200`, unauthenticated feed `401`, PIN login `200`, authenticated feed `200`, and public root `200`.
+- The web login prompt now explicitly accepts a `9-digit Player PIN or Player access secret`.
