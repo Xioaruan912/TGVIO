@@ -44,6 +44,8 @@ let autoplayBlocked = false;
 let openSheetKind: string | null = null;
 let userSeeking = false;
 let debugAt = 0;
+let skipStreak = 0;
+const unplayable = new Set<string>();
 
 async function ensureFeed(minimum: number): Promise<void> {
   if (refill) return refill;
@@ -72,6 +74,13 @@ async function ensureFeed(minimum: number): Promise<void> {
 function applyActive(index: number): void {
   const current = feedView?.clipAt(index);
   if (!feedView || !pool || !current) return;
+  if (unplayable.has(current.id)) {
+    skipStreak += 1;
+    if (skipStreak <= 8) {
+      goNext(true);
+      return;
+    }
+  }
   paused = false;
   const previous = index > 0 ? feedView.clipAt(index - 1) : null;
   const next = index + 1 < clips.length ? feedView.clipAt(index + 1) : null;
@@ -168,12 +177,12 @@ function playGesture(): void {
   showIndicator(shell, "▶");
 }
 
-function goNext(): void {
+function goNext(instant = false): void {
   const next = activeIndex + 1;
   void ensureFeed(next + FEED_AHEAD)
     .then(() => {
       feedView?.setClips(clips);
-      if (next < clips.length) feedView?.scrollToIndex(next, true);
+      if (next < clips.length) feedView?.scrollToIndex(next, !instant);
     })
     .catch(() => toast(shell!, "暂时无法加载更多视频"));
 }
@@ -344,7 +353,17 @@ function renderFeed(): void {
   pool.onTimeUpdate = updateProgress;
   pool.onAutoplayBlocked = (blocked) => {
     autoplayBlocked = blocked;
+    if (!blocked) skipStreak = 0;
     shell?.root.classList.toggle("needs-gesture", blocked);
+  };
+  pool.onError = (mediaId) => {
+    if (mediaId) unplayable.add(mediaId);
+    skipStreak += 1;
+    if (skipStreak > 8) {
+      toast(shell!, "连续多条视频无法播放");
+      return;
+    }
+    goNext(true);
   };
   feedView.onCandidate = (index) => {
     preloader.plan(clips, index, true);

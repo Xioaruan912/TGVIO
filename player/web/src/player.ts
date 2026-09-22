@@ -25,6 +25,7 @@ export class VideoPool {
   onPressure: ((pressured: boolean) => void) | null = null;
   onTimeUpdate: ((video: HTMLVideoElement) => void) | null = null;
   onAutoplayBlocked: ((blocked: boolean) => void) | null = null;
+  onError: ((mediaId: string) => void) | null = null;
 
   constructor() {
     for (let i = 0; i < SLOT_COUNT; i += 1) {
@@ -60,6 +61,9 @@ export class VideoPool {
           void video.play().catch(() => undefined);
         }
       });
+      video.addEventListener("error", () => {
+        if (video === this.current) this.onError?.(video.dataset.mediaId ?? "");
+      });
       this.videos.push(video);
       this.assigned.push("");
     }
@@ -82,12 +86,12 @@ export class VideoPool {
     for (const target of targets) {
       if (target.clip) wantedIds.add(target.clip.id);
     }
+    this.current = null;
     for (const video of this.videos) {
       const index = this.videos.indexOf(video);
       const id = this.assigned[index];
       if (id && !wantedIds.has(id)) this.release(video);
     }
-    this.current = null;
     for (const target of targets) {
       const clip = target.clip;
       const page = target.page;
