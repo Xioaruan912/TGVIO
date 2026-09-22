@@ -113,6 +113,18 @@ class MediaRangeCacheTests(unittest.IsolatedAsyncioTestCase):
         await cache.shutdown()
 
 
+    async def test_prefetch_head_warms_the_start(self) -> None:
+        buffer = bytes(range(64))
+        cache = MediaRangeCache(FakeStore(), FakeReader(buffer), prefetch_chunks=2, prefetch_sleep=0)
+        cache.prefetch_head("k", "pkg", "clip.mp4", len(buffer), 999)
+        for _ in range(50):
+            if ("k", 0) in cache._store.data:
+                break
+            await asyncio.sleep(0.01)
+        self.assertIn(("k", 0), cache._store.data)
+        await cache.shutdown()
+
+
 class RangeStoreTests(unittest.TestCase):
     def test_write_read_and_lru_eviction(self) -> None:
         with TemporaryDirectory() as temporary:

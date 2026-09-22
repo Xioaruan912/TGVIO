@@ -14,6 +14,7 @@ export type ShellHandlers = {
 export type Shell = {
   root: HTMLElement;
   feed: HTMLElement;
+  viewport: HTMLElement;
   title: HTMLElement;
   meta: HTMLElement;
   seek: HTMLInputElement;
@@ -23,6 +24,7 @@ export type Shell = {
   soundBtn: HTMLButtonElement;
   shuffleBtn: HTMLButtonElement;
   shareBtn: HTMLButtonElement;
+  fullscreenBtn: HTMLButtonElement;
   navButtons: HTMLButtonElement[];
   toast: HTMLElement;
   netSpeed: HTMLElement;
@@ -217,7 +219,8 @@ export function buildShell(handlers: ShellHandlers): Shell {
   );
   const shuffleBtn = actionButton(iconStack([["shuffle", "icon-single"]], 30), "换一个", "换一个");
   const shareBtn = actionButton(iconStack([["share", "icon-single"]], 30), "分享", "分享");
-  actionRail.append(favoriteBtn, soundBtn, shuffleBtn, shareBtn);
+  const fullscreenBtn = actionButton(iconStack([["fullscreen", "icon-fs"]], 30), "全屏", "全屏");
+  actionRail.append(favoriteBtn, soundBtn, shuffleBtn, shareBtn, fullscreenBtn);
   favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
   soundBtn.addEventListener("click", handlers.onToggleSound);
   shuffleBtn.addEventListener("click", handlers.onShuffle);
@@ -292,6 +295,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const shell: Shell = {
     root,
     feed,
+    viewport,
     title,
     meta,
     seek,
@@ -301,6 +305,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
     soundBtn,
     shuffleBtn,
     shareBtn,
+    fullscreenBtn,
     navButtons,
     toast,
     netSpeed,
@@ -331,6 +336,11 @@ export function showIndicator(shell: Shell, kind: "play" | "pause"): void {
   shell.pauseIndicator.classList.add("show");
   window.clearTimeout(indicatorTimer);
   indicatorTimer = window.setTimeout(() => shell.pauseIndicator.classList.remove("show"), 560);
+}
+
+export function hideIndicator(shell: Shell): void {
+  window.clearTimeout(indicatorTimer);
+  shell.pauseIndicator.classList.remove("show");
 }
 
 export function setFavoriteButton(shell: Shell, active: boolean): void {

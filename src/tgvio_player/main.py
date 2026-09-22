@@ -143,7 +143,7 @@ async def run(settings: PlayerSettings) -> None:
                 max_bytes=settings.cache_bytes,
             ),
             reader,
-            should_pause=lambda: server_ref[0].active_playback_streams > 0
+            should_pause=lambda: server_ref[0].playback_saturated
             if server_ref[0] is not None
             else False,
         )

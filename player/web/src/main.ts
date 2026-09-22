@@ -1,6 +1,7 @@
 import "./style.css";
 import { ApiError, api, MOCK_MODE, shortId } from "./api";
 import { FeedView } from "./feed";
+import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
 import { LargePlayer } from "./large";
 import { LongVideoPage } from "./long";
@@ -21,6 +22,7 @@ import {
   openSheet,
   paintSeek,
   setActiveNav,
+  hideIndicator,
   setFavoriteButton,
   setSoundButton,
   sheetEmpty,
@@ -124,6 +126,7 @@ function applyActive(index: number): void {
   );
   updateOverlay(current);
   setFavoriteButton(shell!, favorites.has(current.id));
+  hideIndicator(shell!);
   scheduleWarm();
   armStallGuard(current.id);
   if (feedMeter) {
@@ -324,7 +327,10 @@ function feedGestureOptions() {
     fastForwardSpeed: () => prefs.fastForwardSpeed,
     currentTime: () => pool?.currentVideo()?.currentTime ?? 0,
     duration: () => pool?.currentVideo()?.duration ?? 0,
-    onTap: () => togglePlayback(),
+    onTap: () => {
+      if (autoplayBlocked) playGesture();
+      else togglePlayback();
+    },
     onFastForward: (speed: number | null) => {
       const video = pool?.currentVideo();
       if (video) video.playbackRate = speed ?? 1;
@@ -663,7 +669,6 @@ function renderFeed(): void {
     void handleMediaError(clip);
   };
   feedView.onCandidate = (index) => {
-    window.clearTimeout(warmTimer);
     renderDebug();
     void index;
   };
@@ -672,6 +677,11 @@ function renderFeed(): void {
   feedPreview = new ThumbnailPreview();
   shell.root.appendChild(feedPreview.el);
   feedMeter = new NetworkMeter(shell.netSpeed);
+  attachFullscreen(
+    shell.fullscreenBtn,
+    () => shell?.viewport ?? null,
+    () => pool?.currentVideo() ?? null,
+  );
   attachGestures(shell.feed, feedGestureOptions());
   setSoundButton(shell, muted);
   setActiveNav(shell, "home");

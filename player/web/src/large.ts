@@ -1,4 +1,5 @@
 import { api } from "./api";
+import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
 import { icon } from "./icons";
 import { NetworkMeter } from "./net";
@@ -42,9 +43,11 @@ export class LargePlayer {
   private readonly playButton: HTMLButtonElement;
   private readonly favoriteButton: HTMLButtonElement;
   private readonly soundButton: HTMLButtonElement;
+  private readonly fullscreenButton: HTMLButtonElement;
   private readonly preview = new ThumbnailPreview();
   private readonly meter: NetworkMeter;
   private readonly detach: () => void;
+  private readonly detachFullscreen: () => void;
   private readonly clip: Clip;
   private readonly onClose: () => void;
   private muted = localStorage.getItem(MUTE_KEY) !== "false";
@@ -118,7 +121,17 @@ export class LargePlayer {
     this.soundButton.appendChild(icon(this.muted ? "sound-off" : "sound-on", 24));
     this.soundButton.addEventListener("click", () => this.toggleSound());
 
-    controls.append(this.playButton, timeline, this.favoriteButton, this.soundButton);
+    this.fullscreenButton = element("button", "large-btn");
+    this.fullscreenButton.type = "button";
+    this.fullscreenButton.setAttribute("aria-label", "全屏");
+
+    controls.append(
+      this.playButton,
+      timeline,
+      this.favoriteButton,
+      this.soundButton,
+      this.fullscreenButton,
+    );
     this.root.append(topbar, stage, controls, this.preview.el);
 
     this.video.addEventListener("timeupdate", () => this.updateProgress());
@@ -157,12 +170,18 @@ export class LargePlayer {
     });
     this.meter = new NetworkMeter(netSpeed);
     this.meter.watch(this.video, clip);
+    this.detachFullscreen = attachFullscreen(
+      this.fullscreenButton,
+      () => this.root,
+      () => this.video,
+    );
     if (prefs.netSpeed) this.meter.start();
     void this.video.play().catch(() => undefined);
   }
 
   destroy(): void {
     this.detach();
+    this.detachFullscreen();
     this.meter.stop();
     this.video.pause();
     this.video.removeAttribute("src");

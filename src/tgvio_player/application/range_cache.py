@@ -28,7 +28,7 @@ class MediaRangeCache:
         store: object,
         reader: object,
         *,
-        prefetch_chunks: int = 8,
+        prefetch_chunks: int = 4,
         should_pause: Callable[[], bool] | None = None,
         prefetch_sleep: float = 0.05,
     ) -> None:
@@ -127,15 +127,47 @@ class MediaRangeCache:
         if start_index * self._chunk_bytes >= size or key in self._prefetching:
             return
         self._prefetching.add(key)
-        task = asyncio.create_task(self._prefetch(key, package, relpath, size, start_index))
+        task = asyncio.create_task(
+            self._prefetch(key, package, relpath, size, start_index, self._prefetch_chunks)
+        )
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+
+    def prefetch_head(
+        self,
+        key: str,
+        package: str,
+        relpath: str,
+        size: int,
+        length: int,
+        *,
+        whole_below: int = 0,
+    ) -> None:
+        """Warm the start of an upcoming clip so a swipe plays without a stall.
+
+        Clips no larger than ``whole_below`` are cached in full; otherwise only
+        the first ``length`` bytes are fetched.
+        """
+        if size <= 0 or key in self._prefetching:
+            return
+        target = size if whole_below and size <= whole_below else min(length, size)
+        count = max(1, min(self._prefetch_chunks, (target + self._chunk_bytes - 1) // self._chunk_bytes))
+        self._prefetching.add(key)
+        task = asyncio.create_task(self._prefetch(key, package, relpath, size, 0, count))
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
     async def _prefetch(
-        self, key: str, package: str, relpath: str, size: int, start_index: int
+        self,
+        key: str,
+        package: str,
+        relpath: str,
+        size: int,
+        start_index: int,
+        count: int,
     ) -> None:
         try:
-            for step in range(self._prefetch_chunks):
+            for step in range(count):
                 index = start_index + step
                 if index * self._chunk_bytes >= size:
                     return

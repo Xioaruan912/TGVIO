@@ -29,6 +29,8 @@ _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
 _LOGIN_LOCKOUT_SECONDS = 15 * 60
 _FASTSTART_WAIT_SECONDS = 6.0
+_HEAD_PREFETCH_BYTES = 4 * 1024 * 1024
+_WHOLE_CLIP_PREFETCH_BYTES = 4 * 1024 * 1024
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; connect-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     "Referrer-Policy": "no-referrer",
@@ -144,6 +146,29 @@ class PlayerHttpServer:
     def active_playback_streams(self) -> int:
         """Global playback stream count, used to pause low-priority work."""
         return sum(self._stream_clients.values())
+
+    @property
+    def playback_saturated(self) -> bool:
+        """True when no stream slot is free, so speculative work should pause."""
+        return self._stream_slots.locked()
+
+    async def _schedule_head_prefetch(self, media_id: str, details: dict[str, object]) -> None:
+        if self._range_cache is None:
+            return
+        location = await self._repository.active_media_location(media_id)
+        if location is None:
+            return
+        size = int(details.get("size_bytes") or 0)
+        if size <= 0:
+            return
+        self._range_cache.prefetch_head(
+            media_id,
+            location[0],
+            location[1],
+            size,
+            _HEAD_PREFETCH_BYTES,
+            whole_below=_WHOLE_CLIP_PREFETCH_BYTES,
+        )
 
     def application(self) -> web.Application:
         app = web.Application(client_max_size=_MAX_JSON_BYTES)
@@ -263,6 +288,8 @@ class PlayerHttpServer:
             if details is not None:
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
+                if index < 3:
+                    await self._schedule_head_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "next_cursor": None})
 
@@ -301,6 +328,8 @@ class PlayerHttpServer:
             if details is not None:
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
+                if index < 3:
+                    await self._schedule_head_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "has_more": has_more, "category": category})
 

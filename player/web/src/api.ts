@@ -139,7 +139,7 @@ class PlayerApi {
   /** Warm only the startup bytes. The server owns the byte-bounded cache. */
   async warm(clip: Clip, level: PreloadLevel, signal: AbortSignal): Promise<void> {
     if (MOCK_MODE || level === "metadata") return;
-    const bytes = level === "strong" ? 512 * 1024 : 128 * 1024;
+    const bytes = level === "strong" ? 1024 * 1024 : 256 * 1024;
     const response = await fetch(clip.streamUrl, {
       credentials: "same-origin",
       headers: { Range: `bytes=0-${bytes - 1}`, "X-TGVIO-Preload": "1" },
