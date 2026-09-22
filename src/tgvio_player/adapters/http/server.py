@@ -23,6 +23,9 @@ _MAX_FEED_LIMIT = 20
 _DEFAULT_STARTUP_CACHE_ENTRIES = 32
 _DEFAULT_STARTUP_CACHE_BYTES = 64 * 1024 * 1024
 _DEFAULT_STARTUP_RANGE_BYTES = 2 * 1024 * 1024
+_LOGIN_FAILURE_LIMIT = 5
+_LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
+_LOGIN_LOCKOUT_SECONDS = 15 * 60
 _SECURITY_HEADERS = {
     "Cache-Control": "no-store",
     "Content-Security-Policy": "default-src 'self'; connect-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
@@ -74,6 +77,8 @@ class PlayerHttpServer:
         )
         self._startup_range_bytes = startup_range_bytes
         self._static_dir = static_dir.resolve() if static_dir is not None and static_dir.is_dir() else None
+        self._login_failures: dict[str, tuple[int, float, float]] = {}
+        self._login_lock = asyncio.Lock()
 
     def application(self) -> web.Application:
         app = web.Application(client_max_size=_MAX_JSON_BYTES)
@@ -137,11 +142,19 @@ class PlayerHttpServer:
         return web.FileResponse(index)
 
     async def _login(self, request: web.Request) -> web.Response:
+        client = request.remote or "unknown"
+        if not await self._login_allowed(client):
+            raise web.HTTPTooManyRequests(
+                text="too many failed login attempts",
+                headers={"Retry-After": str(_LOGIN_LOCKOUT_SECONDS)},
+            )
         payload = await self._json_object(request)
         secret = payload.get("secret")
         cookie = await self._sessions.login(secret if isinstance(secret, str) else None)
         if cookie is None:
+            await self._record_login_failure(client)
             raise web.HTTPUnauthorized(text="invalid credentials")
+        await self._clear_login_failures(client)
         response = web.json_response({"authenticated": True})
         response.headers.add("Set-Cookie", cookie.set_cookie_value())
         return response
@@ -377,6 +390,36 @@ class PlayerHttpServer:
                 self._stream_slots.release()
             if not self._stream_clients[client]:
                 self._stream_clients.pop(client, None)
+
+    async def _login_allowed(self, client: str) -> bool:
+        now = asyncio.get_running_loop().time()
+        async with self._login_lock:
+            state = self._login_failures.get(client)
+            if state is None:
+                return True
+            _, window_started, locked_until = state
+            if locked_until > now:
+                return False
+            if now - window_started >= _LOGIN_FAILURE_WINDOW_SECONDS:
+                self._login_failures.pop(client, None)
+            return True
+
+    async def _record_login_failure(self, client: str) -> None:
+        now = asyncio.get_running_loop().time()
+        async with self._login_lock:
+            failures, window_started, locked_until = self._login_failures.get(client, (0, now, 0.0))
+            if now - window_started >= _LOGIN_FAILURE_WINDOW_SECONDS:
+                failures, window_started = 0, now
+            failures += 1
+            if failures >= _LOGIN_FAILURE_LIMIT:
+                locked_until = now + _LOGIN_LOCKOUT_SECONDS
+                failures = 0
+                window_started = now
+            self._login_failures[client] = (failures, window_started, locked_until)
+
+    async def _clear_login_failures(self, client: str) -> None:
+        async with self._login_lock:
+            self._login_failures.pop(client, None)
 
     @staticmethod
     async def _close_body(body: AsyncIterator[bytes]) -> None:

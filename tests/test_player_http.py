@@ -206,6 +206,20 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             f"/api/v1/media/{self.media_id}", cookies={"tgvio_player_session": cookie}
         )).status, 401)
 
+    async def test_failed_logins_are_rate_limited_and_success_clears_failures(self) -> None:
+        for _ in range(4):
+            response = await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})
+            self.assertEqual(response.status, 401)
+        self.assertEqual((await self.client.post(
+            "/api/v1/auth/login", json={"secret": "s" * 32}
+        )).status, 200)
+        for _ in range(5):
+            response = await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})
+            self.assertEqual(response.status, 401)
+        blocked = await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})
+        self.assertEqual(blocked.status, 429)
+        self.assertIn("Retry-After", blocked.headers)
+
 
 if __name__ == "__main__":
     unittest.main()

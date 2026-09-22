@@ -35,6 +35,14 @@ class PlayerRuntimeSettingsTests(unittest.TestCase):
             PlayerSettings.from_env(player_env(TGVIO_PLAYER_ENABLED="false"))
         with self.assertRaises(ValueError):
             PlayerSettings.from_env(player_env(TGVIO_PLAYER_ACCESS_SECRET="short"))
+        self.assertEqual(
+            PlayerSettings.from_env(
+                player_env(TGVIO_PLAYER_ACCESS_SECRET="214253551")
+            ).access_secret,
+            "214253551",
+        )
+        with self.assertRaises(ValueError):
+            PlayerSettings.from_env(player_env(TGVIO_PLAYER_ACCESS_SECRET="12345678"))
         with self.assertRaises(ValueError):
             PlayerSettings.from_env(player_env(TGVIO_PLAYER_HOST="localhost"))
         with self.assertRaises(ValueError):

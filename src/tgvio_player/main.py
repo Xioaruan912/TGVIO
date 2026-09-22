@@ -51,8 +51,11 @@ class PlayerSettings:
         if missing:
             raise ValueError("missing required Player settings: " + ", ".join(missing))
         secret = get("ACCESS_SECRET")
-        if len(secret) < 32:
-            raise ValueError("TGVIO_PLAYER_ACCESS_SECRET must be at least 32 characters")
+        is_numeric_pin = secret.isascii() and secret.isdecimal() and len(secret) == 9
+        if len(secret) < 32 and not is_numeric_pin:
+            raise ValueError(
+                "TGVIO_PLAYER_ACCESS_SECRET must be at least 32 characters or a 9-digit PIN"
+            )
         host = get("HOST") or "0.0.0.0"
         try:
             ipaddress.ip_address(host)
