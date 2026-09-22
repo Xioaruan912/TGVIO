@@ -160,6 +160,39 @@ Telegram 消息 / 链接
 
 ---
 
+## 6.3 R2-19 Player Companion（二次开发强制边界）
+
+R2-19 是基于 WebDAV Archive 的私有短视频 Web 播放服务，完整设计见 [`docs/refactor-v2/R2-19_PLAYER_DESIGN.md`](docs/refactor-v2/R2-19_PLAYER_DESIGN.md)。它不是 Dashboard 扩展，也不是 R2-18 Mini App。
+
+开发 Player 时必须遵守：
+
+- **进程隔离**：Bot 与 Player 必须独立进程/容器。视频流量、WebDAV 慢响应、前端更新都不能要求重启 Bot。
+- **数据隔离**：Player 不直接读取/写入 `data/state.sqlite3`；使用自己的 `player.sqlite3`。跨服务媒体合同是 WebDAV Archive 的 `manifest.json + _COMPLETE.json`。
+- **Catalog 而非重扫**：只同步 committed package 的小型元数据；禁止为建库重新下载整视频或常规重新 ffprobe。
+- **只读 WebDAV**：Player 使用 read-only adapter；浏览器永远不能传 remote path。服务端由 `media_id` 查找安全 location。
+- **真正流式**：HTTP Range 必须边读边写并尊重 backpressure；不得 `response.read()` 整文件入内存。浏览器断开后关闭上游 WebDAV response。
+- **秘密隔离**：WebDAV 凭据只在服务端环境变量；Player 不拥有 `BOT_TOKEN`、Telethon session/API 凭据，不挂载 Bot `session/`、`downloads/` 或主数据卷写权限。
+- **Web 安全**：生产 HTTPS；session 用 HttpOnly/Secure/SameSite Cookie；禁止 query token；接口只返回最小播放 DTO，不返回 remote path、Telegram id 或本地路径。
+- **Feed 资源预算**：前端最多 previous/current/next 3 个真实 `<video>`；current 才播放，next 只预加载 metadata；随机播放一个 cycle 内不能重复。
+- **部署隔离**：未来 Compose 必须支持 Player-only deploy/restart/rollback。除非 owner 明确授权 R2-19D，不得开放公网 listener 或修改生产反向代理。
+- **测试优先**：Catalog、Range 200/206/416、client disconnect、auth、shuffle cycle、并发上限都使用 fake WebDAV/fake HTTP 做 network-disabled 自动测试，再做 iOS Safari / Android Chromium 真机 smoke。
+
+建议实施顺序：`R2-19A Catalog -> R2-19B Range/Auth -> R2-19C Feed UI -> R2-19D Deploy -> R2-19E Optional`。当前 R2-19A 已开始实现；在完成全仓门禁与后续部署验收前，R2-19 整体仍不得标为 DELIVERED。
+
+### 播放体验合同（R2-19B/C 必须遵守）
+
+- metadata Feed 可以一次提前约 20 条，但真实 `<video>` 最多 3 个；禁止靠挂很多 `preload=auto` 播放器换取速度。
+- `PreloadCoordinator` 只预热未来 N+1～N+4，且 current stream 绝对优先；一旦 `waiting/stalled/buffer low`，暂停后台 preload。
+- Startup Range Cache 必须按字节有界、LRU、ETag/version 感知，只缓存启动区段，不默认缓存完整视频。
+- 快速连续 swipe 时只播放最终 snap 的 current，跳过项的 preload 要取消。
+- 默认 Random 使用持久 Shuffle Deck；同 cycle 不重复，并保留 recent exclusion 防止跨 cycle 紧邻重复。不得按收藏/观看时长给默认随机加权。
+- 收藏属于 V1，并使用 Player 自有数据库；收藏状态不改变默认 Random 分布。
+- next 的首个 decoded frame ready 前不要暴露黑/白空帧；支持时用 `requestVideoFrameCallback()` 驱动可见切换。
+
+
+
+---
+
 ## 7. 如何自测
 
 ```bash

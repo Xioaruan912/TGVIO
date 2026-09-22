@@ -234,50 +234,79 @@ MAX_SOURCE_FILE_LINES = 1000
 
 
 def check_architecture(root: Path) -> dict[str, object]:
-    source = root.resolve() / "src" / "tgvio"
-    if not source.is_dir():
-        raise GuardError(f"missing package root: {source}")
+    root = root.resolve()
+    package_roots = {
+        "tgvio": root / "src" / "tgvio",
+        "tgvio_player": root / "src" / "tgvio_player",
+    }
+    if not package_roots["tgvio"].is_dir():
+        raise GuardError(f"missing package root: {package_roots['tgvio']}")
+
     problems: list[str] = []
     checked = 0
-    for path in sorted(source.rglob("*.py")):
-        relative = path.relative_to(root.resolve()).as_posix()
-        module_parts = path.relative_to(source).parts
-        layer = module_parts[0] if len(module_parts) > 1 else "root"
-        source_text = path.read_text(encoding="utf-8")
-        line_count = source_text.count("\n") + 1
-        if line_count > MAX_SOURCE_FILE_LINES:
-            problems.append(
-                f"{relative}: {line_count} lines exceeds the "
-                f"{MAX_SOURCE_FILE_LINES}-line source budget"
-            )
-        tree = ast.parse(source_text, filename=relative)
-        imports: list[str] = []
-        for node in ast.walk(tree):
-            if isinstance(node, ast.Import):
-                imports.extend(alias.name for alias in node.names)
-            elif isinstance(node, ast.ImportFrom) and node.module:
-                imports.append(node.module)
-        for imported in imports:
-            if not imported.startswith("tgvio."):
-                continue
-            imported_layer = imported.split(".", 2)[1]
-            if imported == "tgvio.main" and path.name != "main.py":
-                problems.append(f"{relative}: imports composition root")
-            if layer == "domain" and imported_layer != "domain":
-                problems.append(f"{relative}: domain imports {imported}")
-            elif layer == "application" and imported_layer not in {
-                "application",
-                "domain",
-                "observability",
-            }:
-                problems.append(f"{relative}: application imports {imported}")
-            elif layer == "infrastructure" and imported_layer not in {
-                "infrastructure",
-                "domain",
-                "observability",
-            }:
-                problems.append(f"{relative}: infrastructure imports {imported}")
-        checked += 1
+    for package_name, source in package_roots.items():
+        if not source.is_dir():
+            continue
+        for path in sorted(source.rglob("*.py")):
+            relative = path.relative_to(root).as_posix()
+            module_parts = path.relative_to(source).parts
+            layer = module_parts[0] if len(module_parts) > 1 else "root"
+            source_text = path.read_text(encoding="utf-8")
+            line_count = source_text.count("\n") + 1
+            if line_count > MAX_SOURCE_FILE_LINES:
+                problems.append(
+                    f"{relative}: {line_count} lines exceeds the "
+                    f"{MAX_SOURCE_FILE_LINES}-line source budget"
+                )
+            tree = ast.parse(source_text, filename=relative)
+            imports: list[str] = []
+            for node in ast.walk(tree):
+                if isinstance(node, ast.Import):
+                    imports.extend(alias.name for alias in node.names)
+                elif isinstance(node, ast.ImportFrom) and node.module:
+                    imports.append(node.module)
+
+            for imported in imports:
+                if package_name == "tgvio" and imported.startswith("tgvio_player"):
+                    problems.append(
+                        f"{relative}: Bot package must not depend on Player package {imported}"
+                    )
+                    continue
+                if package_name == "tgvio_player" and imported.startswith("tgvio."):
+                    problems.append(
+                        f"{relative}: Player package must not depend on Bot package {imported}"
+                    )
+                    continue
+
+                prefix = package_name + "."
+                if not imported.startswith(prefix):
+                    continue
+                imported_layer = imported.split(".", 2)[1]
+                if imported == f"{package_name}.main" and path.name != "main.py":
+                    problems.append(f"{relative}: imports composition root")
+                if layer == "domain" and imported_layer != "domain":
+                    problems.append(f"{relative}: domain imports {imported}")
+                elif layer == "application" and imported_layer not in {
+                    "application",
+                    "domain",
+                    "observability",
+                }:
+                    problems.append(f"{relative}: application imports {imported}")
+                elif layer == "infrastructure":
+                    allowed = {"infrastructure", "domain", "observability"}
+                    if package_name == "tgvio_player":
+                        allowed.add("application")
+                    if imported_layer not in allowed:
+                        problems.append(f"{relative}: infrastructure imports {imported}")
+                elif package_name == "tgvio_player" and layer == "testing":
+                    if imported_layer not in {
+                        "testing",
+                        "application",
+                        "domain",
+                        "infrastructure",
+                    }:
+                        problems.append(f"{relative}: testing imports {imported}")
+            checked += 1
     if problems:
         raise GuardError("architecture boundary rejected:\n" + "\n".join(problems))
     return {
