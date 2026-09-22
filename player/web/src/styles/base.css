@@ -1,0 +1,65 @@
+:root {
+  color-scheme: dark;
+  --bg: #000;
+  --line: rgba(255, 255, 255, 0.12);
+  --text: #f6f7fb;
+  --muted: rgba(226, 232, 245, 0.72);
+  --accent: #6ea8ff;
+  --danger: #ff5d73;
+  --safe-top: env(safe-area-inset-top, 0px);
+  --safe-bottom: env(safe-area-inset-bottom, 0px);
+}
+
+* {
+  box-sizing: border-box;
+}
+
+html,
+body {
+  margin: 0;
+  height: 100%;
+  background: #000;
+}
+
+body {
+  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", Arial,
+    "PingFang SC", "Microsoft YaHei", sans-serif;
+  color: var(--text);
+  overflow: hidden;
+  overscroll-behavior: none;
+  -webkit-font-smoothing: antialiased;
+  text-rendering: optimizeLegibility;
+  -webkit-tap-highlight-color: transparent;
+}
+
+#app {
+  height: 100%;
+}
+
+button {
+  font: inherit;
+  color: inherit;
+  cursor: pointer;
+  background: none;
+  border: 0;
+  padding: 0;
+}
+
+.logo {
+  width: 40px;
+  height: 40px;
+  flex: none;
+  border-radius: 12px;
+  background: linear-gradient(135deg, #9457ff, #2b84ff 68%, #40dbff);
+  display: grid;
+  place-items: center;
+  box-shadow: 0 0 26px rgba(95, 92, 255, 0.45);
+}
+
+.logo::after {
+  content: "";
+  border-top: 8px solid transparent;
+  border-bottom: 8px solid transparent;
+  border-left: 12px solid #fff;
+  margin-left: 3px;
+}

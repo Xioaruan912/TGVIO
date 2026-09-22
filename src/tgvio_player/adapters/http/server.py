@@ -6,6 +6,7 @@ from collections.abc import AsyncIterator
 import json
 from pathlib import Path
 from typing import Any
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
@@ -88,6 +89,7 @@ class PlayerHttpServer:
         app.router.add_post("/api/v1/auth/login", self._login)
         app.router.add_post("/api/v1/auth/logout", self._logout)
         app.router.add_get("/api/v1/feed", self._feed)
+        app.router.add_get("/api/v1/favorites", self._favorites)
         app.router.add_get("/api/v1/media/{media_id}", self._media)
         app.router.add_get("/api/v1/media/{media_id}/stream", self._stream)
         app.router.add_put("/api/v1/media/{media_id}/favorite", self._favorite)
@@ -192,6 +194,16 @@ class PlayerHttpServer:
         digest = await self._authenticate(request)
         details = await self._media_details(request.match_info["media_id"])
         return web.json_response(await self._media_dto(details, digest))
+
+    async def _favorites(self, request: web.Request) -> web.Response:
+        digest = await self._authenticate(request)
+        media_ids = await self._deck.list_favorites(digest, limit=200)
+        items = []
+        for media_id in media_ids:
+            details = await self._repository.active_media_details(media_id)
+            if details is not None:
+                items.append(await self._media_dto(details, digest))
+        return web.json_response({"items": items, "next_cursor": None})
 
     async def _favorite(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
@@ -372,7 +384,23 @@ class PlayerHttpServer:
     @staticmethod
     def _require_same_origin(request: web.Request) -> None:
         origin = request.headers.get("Origin")
-        if origin and origin != f"{request.scheme}://{request.host}":
+        if not origin:
+            return
+        # TLS usually terminates at the reverse proxy, so ``request.scheme`` can
+        # be plain http even when the browser sent an https Origin. Compare the
+        # origin host against Host / X-Forwarded-Host instead of an exact
+        # scheme+host string; a cross-site attacker cannot forge those headers
+        # from a browser.
+        if origin == "null":
+            raise web.HTTPForbidden(text="cross-origin request rejected")
+        parsed = urlsplit(origin)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc:
+            raise web.HTTPForbidden(text="cross-origin request rejected")
+        allowed = {request.host.lower()}
+        forwarded_host = request.headers.get("X-Forwarded-Host")
+        if forwarded_host:
+            allowed.add(forwarded_host.split(",", 1)[0].strip().lower())
+        if parsed.netloc.lower() not in allowed:
             raise web.HTTPForbidden(text="cross-origin request rejected")
 
     async def _acquire_stream(self, client: str) -> bool:

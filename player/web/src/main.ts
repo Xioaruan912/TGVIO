@@ -1,309 +1,400 @@
 import "./style.css";
+import { api, MOCK_MODE, shortId } from "./api";
+import { FeedView } from "./feed";
+import { VideoPool } from "./player";
+import { PreloadCoordinator } from "./preload";
+import type { Clip } from "./types";
+import {
+  buildError,
+  buildLogin,
+  buildShell,
+  closeSheet,
+  formatTime,
+  openSheet,
+  setActiveNav,
+  setFavoriteButton,
+  setSoundButton,
+  sheetNote,
+  sheetRow,
+  showIndicator,
+  toast,
+  type Shell,
+  type ShellHandlers,
+} from "./ui";
 
-type Clip = {
-  id: string;
-  duration: number;
-  dimensions: string;
-  streamUrl: string;
-  tint: string;
-  accent: string;
-  label: string;
-  favorite: boolean;
-};
+const FEED_BATCH = 20;
+const MIN_FEED = 20;
+const FEED_AHEAD = 8;
+const MAX_FEED = 300;
+const DEBUG = MOCK_MODE || new URLSearchParams(window.location.search).has("debug");
+const MUTE_KEY = "tgvio.player.muted";
 
-type MediaDto = {
-  id: string;
-  width: number | null;
-  height: number | null;
-  duration_seconds: number | null;
-  stream_url: string;
-  favorite: boolean;
-};
-
-type FeedResponse = { items: MediaDto[]; next_cursor: null };
-type PreloadLevel = "strong" | "light" | "metadata";
-
-const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
-const FEED_LOOKAHEAD = 20;
-const FEED_REFILL_AT = 8;
-const $ = <T extends Element>(selector: string) => document.querySelector<T>(selector);
-
-const mockMedia: MediaDto[] = [
-  ["a1", 1080, 1920, 12, "#19345e", "#ff9e4a", "NIGHT DRIVE"],
-  ["a2", 1080, 1920, 9, "#26275b", "#8d7aff", "BLUE HOUR"],
-  ["a3", 2160, 3840, 16, "#542d43", "#ffb369", "LOW TIDE"],
-  ["a4", 1080, 1920, 11, "#1f4a53", "#65d9cf", "FORM / LIGHT"],
-  ["a5", 1080, 1920, 14, "#3e245d", "#d58dff", "LAST LINE"],
-  ["a6", 1080, 1920, 8, "#25476d", "#70b9ff", "OPEN AIR"],
-  ["a7", 1080, 1920, 13, "#693337", "#ffb958", "SLOW GLOW"],
-  ["a8", 1080, 1920, 10, "#242944", "#74a0ff", "CHANNEL 09"],
-  ["a9", 1080, 1920, 15, "#274c5a", "#65e2b8", "GOING EAST"],
-  ["b1", 1080, 1920, 12, "#3d2258", "#ff78bc", "INSERT COIN"],
-  ["b2", 1080, 1920, 11, "#273969", "#92a9ff", "PARALLEL"],
-  ["b3", 1080, 1920, 10, "#5a3a24", "#ffd36c", "SIGNAL"],
-].map(([id, width, height, duration_seconds, tint, accent, label]) => ({
-  id: String(id),
-  width: Number(width),
-  height: Number(height),
-  duration_seconds: Number(duration_seconds),
-    stream_url: `mock://${id}|${tint}|${accent}|${label}`,
-    favorite: false,
-}));
-
-function clipFromMedia(media: MediaDto): Clip {
-  const [mockId, tint = "#263c5e", accent = "#8cc5ff", label] = media.stream_url.replace("mock://", "").split("|");
-  const id = media.id;
-  return {
-    id,
-    duration: Math.max(0, Math.round(media.duration_seconds || 0)),
-    dimensions: media.width && media.height ? `${media.width} x ${media.height}` : "Archive video",
-    streamUrl: media.stream_url,
-    tint: MOCK_MODE && mockId === id ? tint : "#263c5e",
-    accent: MOCK_MODE && mockId === id ? accent : "#8cc5ff",
-    label: MOCK_MODE && mockId === id ? label || "PRIVATE ARCHIVE" : "PRIVATE ARCHIVE",
-    favorite: media.favorite,
-  };
-}
-
-class PlayerApi {
-  private mockOffset = 0;
-
-  async feed(limit: number): Promise<Clip[]> {
-    if (MOCK_MODE) {
-      const items = Array.from({ length: limit }, (_, index) => mockMedia[(this.mockOffset + index) % mockMedia.length]);
-      this.mockOffset = (this.mockOffset + limit) % mockMedia.length;
-      return items.map(clipFromMedia);
-    }
-    const payload = await this.request<FeedResponse>(`/api/v1/feed?limit=${limit}`);
-    // Resolve each opaque ID through the metadata route. The browser never sees locations or credentials.
-    return Promise.all(payload.items.map((item) => this.metadata(item.id)));
-  }
-
-  async metadata(mediaId: string): Promise<Clip> {
-    if (MOCK_MODE) {
-      const media = mockMedia.find((item) => item.id === mediaId);
-      if (!media) throw new Error("Mock media not found");
-      return clipFromMedia(media);
-    }
-    return clipFromMedia(await this.request<MediaDto>(`/api/v1/media/${encodeURIComponent(mediaId)}`));
-  }
-
-  async setFavorite(mediaId: string, enabled: boolean): Promise<void> {
-    if (MOCK_MODE) return;
-    await this.request(`/api/v1/media/${encodeURIComponent(mediaId)}/favorite`, {
-      method: enabled ? "PUT" : "DELETE",
-      headers: { "Content-Type": "application/json" },
-    });
-  }
-
-  async login(secret: string): Promise<void> {
-    await this.request("/api/v1/auth/login", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ secret }),
-    });
-  }
-
-  async warm(clip: Clip, level: PreloadLevel, signal: AbortSignal): Promise<void> {
-    if (MOCK_MODE || level === "metadata") return;
-    const bytes = level === "strong" ? 512 * 1024 : 128 * 1024;
-    const response = await fetch(clip.streamUrl, {
-      credentials: "same-origin",
-      headers: { Range: `bytes=0-${bytes - 1}` },
-      signal,
-    });
-    if (!response.ok && response.status !== 206) throw new Error("Startup range unavailable");
-    await response.body?.cancel();
-  }
-
-  private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, { ...init, credentials: "same-origin" });
-    if (!response.ok) throw new Error(response.status === 401 ? "Sign in to continue" : "Player API unavailable");
-    return response.json() as Promise<T>;
-  }
-}
-
-class PreloadCoordinator {
-  private planned = new Map<string, PreloadLevel>();
-  private controller: AbortController | null = null;
-  private pressure = false;
-  private generation = 0;
-
-  plan(feed: Clip[], current: number, isRapid = false) {
-    this.generation += 1;
-    this.controller?.abort();
-    this.planned.clear();
-    if (isRapid || this.pressure) return;
-    (["strong", "strong", "light", "metadata"] as PreloadLevel[]).forEach((level, offset) => {
-      const clip = feed[current + offset + 1];
-      if (clip) this.planned.set(clip.id, level);
-    });
-    this.controller = new AbortController();
-    const signal = this.controller.signal;
-    // One bounded, low-priority warm-up at a time keeps current playback dominant.
-    void (async () => {
-      for (const [id, level] of this.planned) {
-        const clip = feed.find((item) => item.id === id);
-        if (!clip || signal.aborted || this.pressure) return;
-        try { await api.warm(clip, level, signal); } catch { if (!signal.aborted) return; }
-      }
-    })();
-  }
-
-  setCurrentPressure(active: boolean) {
-    this.pressure = active;
-    if (active) {
-      this.controller?.abort();
-      this.planned.clear();
-    }
-  }
-
-  diagnostics() {
-    return {
-      generation: this.generation,
-      pressure: this.pressure,
-      entries: [...this.planned.entries()].map(([id, level]) => `${id.slice(0, 8)}:${level}`),
-    };
-  }
-}
-
-const api = new PlayerApi();
-const preloader = new PreloadCoordinator();
-const feed: Clip[] = [];
+const clips: Clip[] = [];
 const favorites = new Set<string>();
+const preloader = new PreloadCoordinator();
+
+let shell: Shell | null = null;
+let feedView: FeedView | null = null;
+let pool: VideoPool | null = null;
 let activeIndex = 0;
-let candidateIndex = 0;
-let settledTimer = 0;
 let paused = false;
-let toastTimer = 0;
-let loading = true;
-let loadError = "";
+let muted = localStorage.getItem(MUTE_KEY) !== "false";
 let refill: Promise<void> | null = null;
+let autoplayBlocked = false;
+let openSheetKind: string | null = null;
+let userSeeking = false;
+let debugAt = 0;
 
-function time(seconds: number) { return `0:${String(seconds).padStart(2, "0")}`; }
-function shortId(id: string) { return id.slice(0, 8); }
-function toast(message: string) {
-  const element = $("#toast")!;
-  element.textContent = message;
-  element.classList.add("show");
-  window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => element.classList.remove("show"), 1600);
-}
-function clipAt(index: number) { return feed[Math.min(Math.max(0, index), Math.max(0, feed.length - 1))]; }
-function poster(clip: Clip) {
-  return `<div class="poster" style="--tint:${clip.tint};--accent:${clip.accent}"><span>${clip.label}</span><i></i><b></b><em></em></div>`;
-}
-
-async function ensureFeed(minimum: number) {
-  if (feed.length >= minimum || refill) return refill;
+async function ensureFeed(minimum: number): Promise<void> {
+  if (refill) return refill;
+  if (clips.length >= minimum || clips.length >= MAX_FEED) {
+    return;
+  }
   refill = (async () => {
     try {
-      const items = await api.feed(FEED_LOOKAHEAD);
-      feed.push(...items);
-      items.filter((item) => item.favorite).forEach((item) => favorites.add(item.id));
-      loadError = items.length ? "" : "No archived videos are available yet";
+      while (clips.length < minimum && clips.length < MAX_FEED) {
+        const batch = await api.feed(FEED_BATCH);
+        if (!batch.length) break;
+        for (const clip of batch) {
+          clips.push(clip);
+          if (clip.favorite) favorites.add(clip.id);
+        }
+      }
     } catch (error) {
-      loadError = error instanceof Error ? error.message : "Player API unavailable";
-    } finally {
-      loading = false;
       refill = null;
+      throw error;
     }
+    refill = null;
   })();
   return refill;
 }
 
-function render() {
-  if (loading || !feed.length) {
-    const signIn = !MOCK_MODE && loadError === "Sign in to continue";
-    document.querySelector<HTMLDivElement>("#app")!.innerHTML = `<main class="app-shell"><div id="toast" class="toast" role="status"></div><section class="stage"><div class="phone-frame"><div class="safe-head"><div class="mobile-brand"><span class="logo"></span><div><strong>TGVIO Player</strong><small>Private archive feed</small></div></div></div><div class="clip-info"><h1>${loadError || "Loading your archive"}</h1><p>${signIn ? "Enter your 9-digit Player PIN or Player access secret." : loadError ? "Check the private Player service and try again." : "Preparing a private random feed..."}</p>${signIn ? '<form id="login"><input id="secret" type="password" inputmode="numeric" autocomplete="current-password" aria-label="Player PIN or access secret" required><button>Sign in</button></form>' : loadError ? '<button id="retry">Retry</button>' : ""}</div></div></section></main>`;
-    $("#retry")?.addEventListener("click", () => { loading = true; loadError = ""; void ensureFeed(1).then(render); });
-    $("#login")?.addEventListener("submit", (event) => {
-      event.preventDefault();
-      const secret = $("#secret") as HTMLInputElement;
-      void api.login(secret.value).then(() => { loading = true; loadError = ""; return ensureFeed(1); }).then(render).catch(() => toast("Sign in failed"));
-    });
-    return;
-  }
-  const current = clipAt(activeIndex)!;
-  const previous = clipAt(activeIndex - 1) || current;
-  const next = clipAt(activeIndex + 1) || current;
-  const slotClips = [previous, current, next];
-  const preload = preloader.diagnostics();
-  const currentFav = favorites.has(current.id);
-  const source = MOCK_MODE ? "Mock catalog" : "Authenticated catalog";
+function applyActive(index: number): void {
+  const current = feedView?.clipAt(index);
+  if (!feedView || !pool || !current) return;
+  paused = false;
+  const previous = index > 0 ? feedView.clipAt(index - 1) : null;
+  const next = index + 1 < clips.length ? feedView.clipAt(index + 1) : null;
+  pool.sync(
+    [
+      { page: feedView.pageAt(index - 1), clip: previous, current: false },
+      { page: feedView.pageAt(index), clip: current, current: true },
+      { page: feedView.pageAt(index + 1), clip: next, current: false },
+    ],
+    { paused, muted },
+  );
+  updateOverlay(current);
+  setFavoriteButton(shell!, favorites.has(current.id), favorites.size);
+  preloader.plan(clips, index);
+  renderDebug();
+}
 
-  document.querySelector<HTMLDivElement>("#app")!.innerHTML = `
-    <div class="app-shell">
-      <header class="topbar"><div class="brand"><span class="logo"></span><div><strong>TGVIO Player</strong><small>Private Archive Short Video Feed</small></div></div><div class="search">⌕ <span>Search in your archive...</span></div><div class="connection"><b>● Connected</b><small>${source}</small></div><div class="avatar">U</div></header>
-      <aside class="sidebar"><nav><button class="active">⌂ <span>Home</span></button><button>▦ <span>Library</span></button><button>⚙ <span>Settings</span></button></nav><p><i></i>Random Videos<br/>A More Interesting Day.<br/><br/>🔒 Private Use Only</p></aside>
-      <aside class="status-panel">
-        <section class="status-card"><span>⤨</span><div><b>Shuffle Deck</b><small>Persistent server-side cycle</small></div><em>∞</em></section>
-        <section class="status-card"><span>⊖</span><div><b>Recent Exclusion</b><small>Cycle boundary protected</small></div><em>20</em></section>
-        <section class="status-card"><span>♥</span><div><b>Favorites</b><small>Does not affect random odds</small></div><em>${favorites.size}</em></section>
-        <section class="status-card archive"><span>☁</span><div><b>Archive Sync</b><small>${source} · no paths exposed</small><p>● Feed ready <time>now</time></p></div><em class="ok">●</em></section>
-        <section class="engine-card"><div class="status-card"><span>ϟ</span><div><b>Playback Engine</b><small>3 real video slots · active decoder 1</small></div><em class="ok">Stable</em></div><p><i></i> Current ${shortId(current.id)} ready</p><p><i></i> Preload ${preload.entries[0] || "paused"}</p><p><i></i> Preload ${preload.entries[1] || "paused"}</p></section>
-      </aside>
-      <main class="stage"><div class="phone-frame">
-        <div class="feed" id="feed" aria-label="Vertical private video feed">${slotClips.map((clip, slot) => `<article class="feed-card ${slot === 1 ? "is-current" : ""}" data-slot="${slot}" data-index="${activeIndex + slot - 1}"><video class="media-slot" muted playsinline preload="${slot === 1 ? "auto" : "metadata"}" src="${clip.streamUrl}" data-media-id="${clip.id}" aria-label="Archive video ${slot + 1}"></video>${poster(clip)}</article>`).join("")}</div>
-        <div class="safe-head"><div class="mobile-brand"><span class="logo"></span><div><strong>TGVIO Player</strong><small>Private archive feed</small></div></div><div class="mobile-connect"><b>● Connected</b><br/>${source}</div><button class="ghost">⚙</button><div class="mode-row"><button>⤨ Random Mode</button><button>ϟ Fast Start</button></div></div>
-        <div class="scribble">Your Archive.<br/>New Surprises<br/>Every Time.</div><div class="action-rail"><button class="round like">♡<small>Private</small></button><button class="round favorite ${currentFav ? "selected" : ""}" id="favorite">${currentFav ? "♥" : "♡"}<small>${favorites.size}</small></button><button class="round selected" id="shuffle">⤨<small>Random</small></button><button class="round" id="share">↗<small>Share</small></button></div>
-        <button class="tap-layer" id="tap" aria-label="Play or pause"></button><div class="pause-indicator ${paused ? "show" : ""}">${paused ? "Ⅱ" : "▶"}</div><div class="clip-info"><h1>Archive clip ${shortId(current.id)}</h1><p>${current.duration ? `${current.duration}s · ` : ""}${current.dimensions}</p><div class="progress"><i></i></div><div class="timeline"><span>${time(3)} / ${time(current.duration)}</span><span>🔊 ⛶</span></div></div><div class="engine-float"><p><i></i>3-slot playback engine</p><p><i></i>${preload.pressure ? "Current pressure: preloads paused" : "N+1 to N+4 bounded preload"}</p></div>
-      </div><section class="up-next"><div><b>☷ &nbsp; Up Next</b><small>Persistent random queue</small></div>${[1, 2, 3, 4, 5].map((offset) => { const clip = clipAt(activeIndex + offset) || current; return `<button style="--tint:${clip.tint};--accent:${clip.accent}" title="Archive clip ${shortId(clip.id)}"></button>`; }).join("")}<em>+${Math.max(0, feed.length - activeIndex - 6)}</em></section></main>
-      <aside class="mood"><p>Your Archive.<br/>New Surprises Every Time.</p><p>Random Moments.<br/>Brighter Days.</p><small>Same Archive.<br/>Different Tomorrow.</small></aside><nav class="bottom-nav"><button class="active">⌂<small>Home</small></button><button id="nav-shuffle">⤨<small>Random</small></button><button>♡<small>Favorites</small></button><button>▣<small>Library</small></button></nav><output class="diagnostic">${MOCK_MODE ? "MOCK" : "API"} · active ${activeIndex} · candidate ${candidateIndex} · DOM videos 3 · decoder ${paused ? 0 : 1} · preload ${preload.pressure ? "paused" : preload.entries.length}</output><div id="toast" class="toast" role="status"></div>
-    </div>`;
-  const feedElement = $("#feed") as HTMLDivElement;
-  feedElement.scrollTop = feedElement.clientHeight;
-  setupFeed(feedElement);
-  $("#favorite")!.addEventListener("click", () => void setFavorite(current.id, !favorites.has(current.id)));
-  $("#shuffle")!.addEventListener("click", refreshFeed);
-  $("#nav-shuffle")!.addEventListener("click", refreshFeed);
-  $("#share")!.addEventListener("click", () => toast("Private share is not enabled"));
-  $("#tap")!.addEventListener("click", togglePlayback);
-  document.querySelectorAll<HTMLVideoElement>(".media-slot").forEach((video, slot) => {
-    video.addEventListener("waiting", () => { if (slot === 1) { preloader.setCurrentPressure(true); render(); } });
-    video.addEventListener("stalled", () => { if (slot === 1) { preloader.setCurrentPressure(true); render(); } });
-    video.addEventListener("canplay", () => { if (slot === 1) preloader.setCurrentPressure(false); });
-    if (slot === 1 && !paused) void video.play().catch(() => undefined); else video.pause();
+function commitActive(index: number): void {
+  if (!feedView) return;
+  if (index < 0 || index >= clips.length) return;
+  activeIndex = index;
+  void ensureFeed(index + FEED_AHEAD)
+    .then(() => feedView?.setClips(clips))
+    .catch(() => undefined);
+  applyActive(index);
+}
+
+function updateOverlay(clip: Clip): void {
+  if (!shell) return;
+  shell.title.textContent = `Archive clip #${shortId(clip.id)}`;
+  const dimensions = clip.width && clip.height ? `${clip.width}×${clip.height}` : "Archive video";
+  shell.meta.textContent = `${clip.duration ? `${clip.duration}s · ` : ""}${dimensions} · Private archive`;
+  const video = pool?.currentVideo() ?? null;
+  const duration = video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : clip.duration;
+  shell.seek.max = String(duration || 0);
+  shell.seek.value = String(video ? video.currentTime : 0);
+  shell.timeCurrent.textContent = formatTime(video ? video.currentTime : 0);
+  shell.timeTotal.textContent = formatTime(duration);
+}
+
+function updateProgress(): void {
+  const video = pool?.currentVideo();
+  if (!video || !shell) return;
+  if (Number.isFinite(video.duration) && video.duration > 0) shell.seek.max = String(video.duration);
+  if (!userSeeking) shell.seek.value = String(video.currentTime);
+  shell.timeCurrent.textContent = formatTime(video.currentTime);
+  shell.timeTotal.textContent = formatTime(Number(shell.seek.max));
+  renderDebug();
+}
+
+async function toggleFavorite(): Promise<void> {
+  const clip = feedView?.clipAt(activeIndex);
+  if (!clip) return;
+  const enabled = !favorites.has(clip.id);
+  if (enabled) favorites.add(clip.id);
+  else favorites.delete(clip.id);
+  setFavoriteButton(shell!, enabled, favorites.size);
+  if (openSheetKind === "favorites") void openFavorites();
+  try {
+    await api.setFavorite(clip.id, enabled);
+    toast(shell!, enabled ? "已收藏" : "已取消收藏");
+  } catch {
+    if (enabled) favorites.delete(clip.id);
+    else favorites.add(clip.id);
+    setFavoriteButton(shell!, !enabled, favorites.size);
+    toast(shell!, "收藏更新失败");
+  }
+}
+
+function toggleSound(): void {
+  muted = !muted;
+  localStorage.setItem(MUTE_KEY, muted ? "true" : "false");
+  pool?.setMuted(muted);
+  setSoundButton(shell!, muted);
+}
+
+function togglePlayback(): void {
+  if (!pool || !shell) return;
+  paused = !paused;
+  const video = pool.currentVideo();
+  if (video) {
+    if (paused) video.pause();
+    else video.play().catch(() => undefined);
+  }
+  showIndicator(shell, paused ? "Ⅱ" : "▶");
+}
+
+function playGesture(): void {
+  if (!pool || !shell) return;
+  autoplayBlocked = false;
+  paused = false;
+  shell.root.classList.remove("needs-gesture");
+  pool.resume();
+  showIndicator(shell, "▶");
+}
+
+function goNext(): void {
+  const next = activeIndex + 1;
+  void ensureFeed(next + FEED_AHEAD)
+    .then(() => {
+      feedView?.setClips(clips);
+      if (next < clips.length) feedView?.scrollToIndex(next, true);
+    })
+    .catch(() => toast(shell!, "暂时无法加载更多视频"));
+}
+
+function openClip(clip: Clip): void {
+  if (!feedView) return;
+  let index = feedView.indexOf(clip.id);
+  if (index < 0) {
+    clips.push(clip);
+    feedView.setClips(clips);
+    index = clips.length - 1;
+  }
+  closeSheet(shell!);
+  openSheetKind = null;
+  setActiveNav(shell!, "home");
+  feedView.scrollToIndex(index, false);
+  commitActive(index);
+}
+
+async function openFavorites(): Promise<void> {
+  if (!shell) return;
+  const body: Node[] = [];
+  let list: Clip[] = [];
+  try {
+    list = await api.favorites();
+  } catch {
+    toast(shell, "暂时无法读取收藏");
+  }
+  if (!list.length) {
+    body.push(sheetNote("还没有收藏。播放时点右侧 ♥ 收藏。"));
+  } else {
+    for (const clip of list) {
+      const current = feedView?.indexOf(clip.id) ?? -1;
+      const sub = `${clip.duration ? `${clip.duration}s · ` : ""}${clip.width && clip.height ? `${clip.width}×${clip.height}` : "Archive video"}${current >= 0 ? " · 已载入" : ""}`;
+      body.push(sheetRow(`Archive clip #${shortId(clip.id)}`, sub, () => openClip(clip)));
+    }
+  }
+  openSheetKind = "favorites";
+  openSheet(shell, "收藏", body);
+  setActiveNav(shell, "favorites");
+}
+
+function openLibrary(): void {
+  if (!shell) return;
+  const body: Node[] = [];
+  if (!clips.length) {
+    body.push(sheetNote("本次会话还没有载入片段。"));
+  } else {
+    clips.forEach((clip, index) => {
+      const sub = `${clip.duration ? `${clip.duration}s · ` : ""}${clip.width && clip.height ? `${clip.width}×${clip.height}` : "Archive video"}${favorites.has(clip.id) ? " · ♥" : ""}`;
+      body.push(sheetRow(`#${index + 1} · ${shortId(clip.id)}`, sub, () => openClip(clip)));
+    });
+  }
+  openSheetKind = "library";
+  openSheet(shell, "Library（本次会话）", body);
+  setActiveNav(shell, "library");
+}
+
+function openSettings(): void {
+  if (!shell) return;
+  const body: Node[] = [];
+  body.push(sheetRow(muted ? "声音：关闭（点击开启）" : "声音：开启（点击关闭）", "在浏览器本地保存", toggleSound));
+  body.push(sheetRow("退出登录", "清除当前会话 Cookie", () => {
+    void api.logout().finally(() => window.location.reload());
+  }));
+  body.push(sheetRow(`调试信息：${DEBUG ? "已开启" : "关闭"}`, "在地址后加 ?debug=1 可开启", () => toast(shell!, DEBUG ? "Debug 已开启" : "访问 ?debug=1 开启调试")));
+  openSheetKind = "settings";
+  openSheet(shell, "设置", body);
+  setActiveNav(shell, "settings");
+}
+
+function onNav(action: string): void {
+  if (!shell) return;
+  if (action === "home") {
+    closeSheet(shell);
+    openSheetKind = null;
+    setActiveNav(shell, "home");
+    feedView?.scrollToIndex(0, true);
+  } else if (action === "random") {
+    closeSheet(shell);
+    openSheetKind = null;
+    setActiveNav(shell, "random");
+    goNext();
+  } else if (action === "favorites") {
+    void openFavorites();
+  } else if (action === "library") {
+    openLibrary();
+  } else if (action === "settings") {
+    openSettings();
+  }
+}
+
+function shareCurrent(): void {
+  const clip = feedView?.clipAt(activeIndex);
+  if (!clip) return;
+  const shared = navigator.share?.bind(navigator);
+  if (shared) {
+    void shared({ title: `Archive clip #${shortId(clip.id)}` }).catch(() => undefined);
+  } else {
+    toast(shell!, "私有 Feed · 未开启分享");
+  }
+}
+
+function onSeek(value: number): void {
+  const video = pool?.currentVideo();
+  if (!video || !Number.isFinite(value)) return;
+  video.currentTime = value;
+  if (shell) shell.timeCurrent.textContent = formatTime(value);
+}
+
+function renderDebug(): void {
+  if (!DEBUG || !shell) return;
+  const now = performance.now();
+  if (now - debugAt < 250) return;
+  debugAt = now;
+  const poolInfo = pool?.diagnostics();
+  const preload = preloader.diagnostics();
+  shell.debug.hidden = false;
+  shell.debug.textContent = `idx ${activeIndex} · videos ${poolInfo?.elements ?? 0} · playing ${poolInfo?.playing ?? 0} · ${poolInfo?.currentId ?? "-"} ready ${poolInfo?.ready ?? "-"} · preload ${preload.entries.join(",") || "-"} · pressure ${poolInfo ? preload.pressure : false}`;
+}
+
+function renderLogin(): void {
+  const app = document.getElementById("app");
+  if (!app) return;
+  app.replaceChildren(
+    buildLogin(async (secret) => {
+      await api.login(secret);
+      clips.length = 0;
+      favorites.clear();
+      await ensureFeed(MIN_FEED);
+      renderFeed();
+    }),
+  );
+}
+
+function renderError(message: string): void {
+  const app = document.getElementById("app");
+  if (!app) return;
+  app.replaceChildren(
+    buildError(message, () => {
+      window.location.reload();
+    }),
+  );
+}
+
+function renderFeed(): void {
+  const app = document.getElementById("app");
+  if (!app) return;
+  const handlers: ShellHandlers = {
+    onTogglePlayback: togglePlayback,
+    onPlayGesture: playGesture,
+    onToggleFavorite: () => void toggleFavorite(),
+    onToggleSound: toggleSound,
+    onShuffle: goNext,
+    onShare: shareCurrent,
+    onSeek,
+    onNav,
+  };
+  shell = buildShell(handlers);
+  app.replaceChildren(shell.root);
+  feedView = new FeedView(shell.feed);
+  pool = new VideoPool();
+  pool.onPressure = (pressured) => {
+    preloader.setPressure(pressured);
+    shell?.root.classList.toggle("playback-pressure", pressured);
+    if (!pressured) preloader.plan(clips, activeIndex);
+  };
+  pool.onTimeUpdate = updateProgress;
+  pool.onAutoplayBlocked = (blocked) => {
+    autoplayBlocked = blocked;
+    shell?.root.classList.toggle("needs-gesture", blocked);
+  };
+  feedView.onCandidate = (index) => {
+    preloader.plan(clips, index, true);
+    renderDebug();
+  };
+  feedView.onSettle = commitActive;
+  feedView.onTap = togglePlayback;
+  feedView.setClips(clips);
+  setSoundButton(shell, muted);
+  setActiveNav(shell, "home");
+  shell.debug.hidden = !DEBUG;
+  if (autoplayBlocked) shell.root.classList.add("needs-gesture");
+  applyActive(0);
+
+  window.addEventListener("orientationchange", () => {
+    window.setTimeout(() => feedView?.scrollToIndex(activeIndex, false), 220);
+  });
+  document.addEventListener("visibilitychange", () => {
+    const video = pool?.currentVideo();
+    if (!video) return;
+    if (document.hidden) video.pause();
+    else if (!paused) void video.play().catch(() => undefined);
+  });
+  const seek = shell.seek;
+  seek.addEventListener("pointerdown", () => {
+    userSeeking = true;
+  });
+  seek.addEventListener("pointerup", () => {
+    userSeeking = false;
+  });
+  seek.addEventListener("change", () => {
+    userSeeking = false;
   });
 }
 
-function setupFeed(element: HTMLDivElement) {
-  element.addEventListener("scroll", () => {
-    const page = Math.round(element.scrollTop / Math.max(1, element.clientHeight));
-    candidateIndex = Math.max(0, activeIndex + page - 1);
-    preloader.plan(feed, candidateIndex, true);
-    window.clearTimeout(settledTimer);
-    settledTimer = window.setTimeout(() => {
-      if (candidateIndex !== activeIndex) {
-        activeIndex = candidateIndex;
-        preloader.setCurrentPressure(false);
-        void ensureFeed(activeIndex + FEED_REFILL_AT).then(() => { preloader.plan(feed, activeIndex); render(); });
-      }
-    }, 140);
-  }, { passive: true });
-}
-
-async function setFavorite(id: string, enabled: boolean) {
+async function boot(): Promise<void> {
   try {
-    await api.setFavorite(id, enabled);
-    if (enabled) favorites.add(id); else favorites.delete(id);
-    toast(enabled ? "Saved to Favorites" : "Removed from Favorites");
-    render();
+    await ensureFeed(MIN_FEED);
+    if (!clips.length) {
+      renderError("暂时没有可播放的归档视频。");
+      return;
+    }
+    renderFeed();
   } catch (error) {
-    toast(error instanceof Error ? error.message : "Could not update favorite");
+    if (error instanceof Error && error.message === "Sign in to continue") {
+      renderLogin();
+    } else {
+      renderError(error instanceof Error ? error.message : "Player API unavailable");
+    }
   }
 }
 
-function refreshFeed() {
-  toast("The server shuffle deck advances as you browse");
-}
-
-function togglePlayback() {
-  paused = !paused;
-  const video = document.querySelectorAll<HTMLVideoElement>(".media-slot")[1];
-  if (paused) video?.pause(); else void video?.play().catch(() => undefined);
-  render();
-}
-
-void ensureFeed(FEED_LOOKAHEAD).then(() => { preloader.plan(feed, 0); render(); });
-render();
+void boot();

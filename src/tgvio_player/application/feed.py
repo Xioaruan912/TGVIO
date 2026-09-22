@@ -47,3 +47,6 @@ class ShuffleDeckService:
 
     async def unfavorite(self, session_digest: str, media_id: str) -> None:
         await self._repository.set_favorite(session_digest, media_id, enabled=False)
+
+    async def list_favorites(self, session_digest: str, *, limit: int = 200) -> list[str]:
+        return await self._repository.list_favorite_ids(session_digest, limit=limit)

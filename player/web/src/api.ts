@@ -1,0 +1,117 @@
+import type { Clip, FeedResponse, MediaDto, PreloadLevel } from "./types";
+
+export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
+
+const MOCK_PALETTE = [
+  ["#19345e", "#ff9e4a", "NIGHT DRIVE"],
+  ["#26275b", "#8d7aff", "BLUE HOUR"],
+  ["#542d43", "#ffb369", "LOW TIDE"],
+  ["#1f4a53", "#65d9cf", "FORM / LIGHT"],
+  ["#3e245d", "#d58dff", "LAST LINE"],
+  ["#25476d", "#70b9ff", "OPEN AIR"],
+  ["#693337", "#ffb958", "SLOW GLOW"],
+  ["#242944", "#74a0ff", "CHANNEL 09"],
+  ["#274c5a", "#65e2b8", "GOING EAST"],
+  ["#3d2258", "#ff78bc", "INSERT COIN"],
+  ["#273969", "#92a9ff", "PARALLEL"],
+  ["#5a3a24", "#ffd36c", "SIGNAL"],
+];
+
+const mockMedia: MediaDto[] = Array.from({ length: 24 }, (_, index) => {
+  const [tint, accent, label] = MOCK_PALETTE[index % MOCK_PALETTE.length];
+  return {
+    id: `mock${String(index).padStart(4, "0")}`.padEnd(64, "0"),
+    width: 1080,
+    height: 1920,
+    duration_seconds: 8 + (index % 9),
+    stream_url: `mock://${tint}|${accent}|${label}`,
+    favorite: false,
+  };
+});
+
+export function clipFromMedia(media: MediaDto): Clip {
+  return {
+    id: media.id,
+    width: media.width,
+    height: media.height,
+    duration: Math.max(0, Math.round(media.duration_seconds ?? 0)),
+    streamUrl: media.stream_url,
+    favorite: media.favorite,
+  };
+}
+
+export function shortId(id: string): string {
+  if (MOCK_MODE) {
+    const digits = id.replace(/\D/g, "");
+    return String(Number(digits) || 0).padStart(2, "0");
+  }
+  return id.slice(0, 8);
+}
+
+class PlayerApi {
+  private mockOffset = 0;
+
+  async feed(limit: number): Promise<Clip[]> {
+    if (MOCK_MODE) {
+      const items = Array.from(
+        { length: limit },
+        (_, index) => mockMedia[(this.mockOffset + index) % mockMedia.length],
+      );
+      this.mockOffset = (this.mockOffset + limit) % mockMedia.length;
+      return items.map(clipFromMedia);
+    }
+    const payload = await this.request<FeedResponse>(`/api/v1/feed?limit=${limit}`);
+    return payload.items.map(clipFromMedia);
+  }
+
+  async favorites(): Promise<Clip[]> {
+    if (MOCK_MODE) return [];
+    const payload = await this.request<FeedResponse>("/api/v1/favorites");
+    return payload.items.map(clipFromMedia);
+  }
+
+  async setFavorite(mediaId: string, enabled: boolean): Promise<void> {
+    if (MOCK_MODE) return;
+    await this.request(`/api/v1/media/${encodeURIComponent(mediaId)}/favorite`, {
+      method: enabled ? "PUT" : "DELETE",
+      headers: { "Content-Type": "application/json" },
+    });
+  }
+
+  async login(secret: string): Promise<void> {
+    if (MOCK_MODE) return;
+    await this.request("/api/v1/auth/login", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ secret }),
+    });
+  }
+
+  async logout(): Promise<void> {
+    if (MOCK_MODE) return;
+    await this.request("/api/v1/auth/logout", { method: "POST" });
+  }
+
+  /** Warm only the startup bytes. The server owns the byte-bounded cache. */
+  async warm(clip: Clip, level: PreloadLevel, signal: AbortSignal): Promise<void> {
+    if (MOCK_MODE || level === "metadata") return;
+    const bytes = level === "strong" ? 512 * 1024 : 128 * 1024;
+    const response = await fetch(clip.streamUrl, {
+      credentials: "same-origin",
+      headers: { Range: `bytes=0-${bytes - 1}` },
+      signal,
+    });
+    if (!response.ok && response.status !== 206) throw new Error("Startup range unavailable");
+    await response.body?.cancel();
+  }
+
+  private async request<T>(path: string, init?: RequestInit): Promise<T> {
+    const response = await fetch(path, { ...init, credentials: "same-origin" });
+    if (!response.ok) {
+      throw new Error(response.status === 401 ? "Sign in to continue" : "Player API unavailable");
+    }
+    return response.json() as Promise<T>;
+  }
+}
+
+export const api = new PlayerApi();

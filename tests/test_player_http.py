@@ -206,6 +206,54 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             f"/api/v1/media/{self.media_id}", cookies={"tgvio_player_session": cookie}
         )).status, 401)
 
+    async def test_proxy_forwarded_origin_is_accepted_behind_tls_termination(self) -> None:
+        cookie = await self._login()
+        headers = {
+            "Origin": "https://csdn.im",
+            "X-Forwarded-Host": "csdn.im",
+            "X-Forwarded-Proto": "https",
+        }
+        ok = await self.client.put(
+            f"/api/v1/media/{self.media_id}/favorite",
+            headers=headers,
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(ok.status, 200)
+        # The mutation is idempotent and the favorites listing stays path-free.
+        again = await self.client.put(
+            f"/api/v1/media/{self.media_id}/favorite",
+            headers=headers,
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(again.status, 200)
+        listed = await self.client.get(
+            "/api/v1/favorites", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(listed.status, 200)
+        body = await listed.json()
+        self.assertEqual([item["id"] for item in body["items"]], [self.media_id])
+        self.assertNotIn("remote", str(body))
+        removed = await self.client.delete(
+            f"/api/v1/media/{self.media_id}/favorite",
+            headers=headers,
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(removed.status, 200)
+        empty = await self.client.get(
+            "/api/v1/favorites", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual((await empty.json())["items"], [])
+        # A hostile Origin is still rejected even if a forwarded host is present.
+        hostile = await self.client.put(
+            f"/api/v1/media/{self.media_id}/favorite",
+            headers={"Origin": "https://attacker.invalid", "X-Forwarded-Host": "csdn.im"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(hostile.status, 403)
+        self.assertEqual(
+            (await self.client.get("/api/v1/favorites")).status, 401
+        )
+
     async def test_failed_logins_are_rate_limited_and_success_clears_failures(self) -> None:
         for _ in range(4):
             response = await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})

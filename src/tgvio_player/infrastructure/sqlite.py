@@ -394,3 +394,17 @@ class PlayerCatalogRepositorySQLite:
             (token_digest, media_id),
         ).fetchone()
         return row is not None
+
+    async def list_favorite_ids(self, token_digest: str, *, limit: int = 200) -> list[str]:
+        rows = self._require().execute(
+            """
+            SELECT favorites.media_id
+            FROM favorites
+            JOIN media ON media.media_id=favorites.media_id
+            WHERE favorites.token_digest=? AND media.active=1 AND media.kind='video'
+            ORDER BY favorites.created_at DESC, favorites.media_id
+            LIMIT ?
+            """,
+            (token_digest, max(1, int(limit))),
+        ).fetchall()
+        return [str(row["media_id"]) for row in rows]

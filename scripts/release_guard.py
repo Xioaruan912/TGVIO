@@ -23,7 +23,7 @@ SOURCE_MANIFEST_ALGORITHM = (
     "xargs -0 sha256sum | sha256sum | cut -d' ' -f1"
 )
 
-_SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache"}
+_SKIP_DIRS = {".git", ".venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache", "node_modules"}
 _RUNTIME_ROOTS = {"data", "downloads", "session", "logs"}
 _PRIVATE_KEY_NAMES = {
     "id_dsa",
