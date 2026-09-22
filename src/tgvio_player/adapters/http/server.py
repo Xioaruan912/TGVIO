@@ -14,7 +14,7 @@ from aiohttp import web
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.playback import StartupCacheKey, StartupRangeCache
-from tgvio_player.application.streaming import prepare_stream_request
+from tgvio_player.application.streaming import StreamRequest, prepare_stream_request
 from tgvio_player.domain.auth import token_digest
 from tgvio_player.domain.ranges import ByteRange, RangeNotSatisfiable
 from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDavRangeResponse
@@ -99,6 +99,7 @@ class PlayerHttpServer:
         startup_cache: StartupRangeCache | None = None,
         startup_range_bytes: int = _DEFAULT_STARTUP_RANGE_BYTES,
         static_dir: Path | None = None,
+        faststart: object | None = None,
     ) -> None:
         if min(
             max_streams, max_streams_per_client, max_header_size, stream_chunk_size, startup_range_bytes
@@ -124,8 +125,15 @@ class PlayerHttpServer:
         )
         self._startup_range_bytes = startup_range_bytes
         self._static_dir = static_dir.resolve() if static_dir is not None and static_dir.is_dir() else None
+        self._faststart = faststart
+        self._prepare_tasks: set[asyncio.Task[object]] = set()
         self._login_failures: dict[str, tuple[int, float, float]] = {}
         self._login_lock = asyncio.Lock()
+
+    @property
+    def active_playback_streams(self) -> int:
+        """Global playback stream count, used to pause low-priority work."""
+        return sum(self._stream_clients.values())
 
     def application(self) -> web.Application:
         app = web.Application(client_max_size=_MAX_JSON_BYTES)
@@ -138,6 +146,7 @@ class PlayerHttpServer:
         app.router.add_get("/api/v1/favorites", self._favorites)
         app.router.add_get("/api/v1/media/{media_id}", self._media)
         app.router.add_get("/api/v1/media/{media_id}/stream", self._stream)
+        app.router.add_post("/api/v1/media/{media_id}/prepare", self._prepare)
         app.router.add_put("/api/v1/media/{media_id}/favorite", self._favorite)
         app.router.add_delete("/api/v1/media/{media_id}/favorite", self._unfavorite)
         if self._static_dir is not None:
@@ -290,6 +299,11 @@ class PlayerHttpServer:
             location = await self._repository.active_media_location(media_id)
             if location is None:
                 raise web.HTTPNotFound(text="media not found")
+            overlay = None
+            if self._faststart is not None:
+                overlay = await self._faststart.overlay_for(media_id, details)
+            if overlay is not None:
+                return await self._stream_overlay(request, overlay, location, plan)
             if self._is_startup_range(plan.byte_range):
                 return await self._cached_startup_response(request, media_id, location, plan.byte_range, details)
             upstream = await self._reader.open_range(location[0], location[1], plan.byte_range)
@@ -329,6 +343,65 @@ class PlayerHttpServer:
             if upstream is not None:
                 await self._close_body(upstream.body)
             await self._release_stream(client, preload=preload)
+
+    async def _stream_overlay(
+        self,
+        request: web.Request,
+        overlay: Any,
+        location: tuple[str, str, str | None],
+        plan: StreamRequest,
+    ) -> web.StreamResponse:
+        """Serve a virtual faststart view: cached ``moov`` first, then remote data."""
+        size = int(overlay.size)
+        if plan.byte_range is None:
+            start, end, status = 0, size - 1, 200
+        else:
+            start, end, status = plan.byte_range.start, plan.byte_range.end, 206
+        headers = {
+            "Accept-Ranges": "bytes",
+            "Content-Length": str(end - start + 1),
+            "Content-Type": str(overlay.mime),
+        }
+        if status == 206:
+            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+        response = web.StreamResponse(status=status, headers=headers)
+        await response.prepare(request)
+        for kind, source_offset, length in overlay.segments(start, end):
+            if length <= 0:
+                continue
+            if kind == "cache":
+                await self._write_chunks(response, overlay.moov[source_offset : source_offset + length])
+                continue
+            upstream = await self._reader.open_range(
+                location[0], location[1], ByteRange(source_offset, source_offset + length - 1)
+            )
+            try:
+                if upstream.status not in {200, 206}:
+                    raise web.HTTPBadGateway(text="media upstream unavailable")
+                async for chunk in upstream.body:
+                    if chunk:
+                        await self._write_chunks(response, chunk)
+            finally:
+                await self._close_body(upstream.body)
+        await response.write_eof()
+        return response
+
+    async def _write_chunks(self, response: web.StreamResponse, data: bytes) -> None:
+        size = self._stream_chunk_size
+        for offset in range(0, len(data), size):
+            await response.write(data[offset : offset + size])
+
+    async def _prepare(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        self._require_same_origin(request)
+        if self._faststart is None:
+            return web.json_response({"prepared": False}, status=202)
+        media_id = request.match_info["media_id"]
+        details = await self._media_details(media_id)
+        task = asyncio.create_task(self._faststart.prepare(media_id, details))
+        self._prepare_tasks.add(task)
+        task.add_done_callback(self._prepare_tasks.discard)
+        return web.json_response({"prepared": True}, status=202)
 
     def _is_startup_range(self, byte_range: ByteRange | None) -> bool:
         return (

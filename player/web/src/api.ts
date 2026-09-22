@@ -90,6 +90,19 @@ class PlayerApi {
     });
   }
 
+  /** Best-effort pre-build of the server-side faststart overlay for a clip. */
+  async prepare(mediaId: string): Promise<void> {
+    if (MOCK_MODE) return;
+    try {
+      await fetch(`/api/v1/media/${encodeURIComponent(mediaId)}/prepare`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+    } catch {
+      /* best effort */
+    }
+  }
+
   async login(secret: string): Promise<void> {
     if (MOCK_MODE) return;
     await this.request("/api/v1/auth/login", {

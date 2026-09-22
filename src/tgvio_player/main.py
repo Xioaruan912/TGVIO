@@ -13,7 +13,9 @@ from aiohttp import web
 from tgvio_player.adapters.http import PlayerHttpServer
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.catalog import CatalogSyncService
+from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
+from tgvio_player.infrastructure.faststart_store import FaststartStore
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 from tgvio_player.infrastructure.webdav_aiohttp import (
     AioHttpReadOnlyWebDavClient,
@@ -39,6 +41,7 @@ class PlayerSettings:
     catalog_poll_seconds: int
     max_streams: int
     max_streams_per_client: int
+    faststart_backfill: bool
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -68,7 +71,17 @@ class PlayerSettings:
             cls._integer(get("CATALOG_POLL_SECONDS") or "60", "CATALOG_POLL_SECONDS", 5, 86400),
             cls._integer(get("MAX_STREAMS") or "4", "MAX_STREAMS", 1, 64),
             cls._integer(get("MAX_STREAMS_PER_CLIENT") or "2", "MAX_STREAMS_PER_CLIENT", 1, 16),
+            cls._flag(get("FASTSTART_BACKFILL") or "true", "FASTSTART_BACKFILL"),
         )
+
+    @staticmethod
+    def _flag(value: str, name: str) -> bool:
+        normalized = value.strip().lower()
+        if normalized in {"1", "true", "yes", "on"}:
+            return True
+        if normalized in {"0", "false", "no", "off"}:
+            return False
+        raise ValueError(f"TGVIO_PLAYER_{name} must be a boolean")
 
     @staticmethod
     def _integer(value: str, name: str, minimum: int, maximum: int) -> int:
@@ -109,22 +122,35 @@ async def run(settings: PlayerSettings) -> None:
     await repository.open()
     try:
         await client.open()
+        reader = ReadOnlyWebDavAdapter(client)
         sync = CatalogSyncService(WebDavArchiveCatalogSource(client, remote_root=settings.remote_root), repository)
+        faststart = FaststartService(
+            FaststartStore(settings.data_dir / "faststart"), repository, reader
+        )
         server = PlayerHttpServer(
             repository, SessionService(repository, access_secret=settings.access_secret),
-            ShuffleDeckService(repository), ReadOnlyWebDavAdapter(client),
+            ShuffleDeckService(repository), reader,
             max_streams=settings.max_streams, max_streams_per_client=settings.max_streams_per_client,
-            static_dir=Path("/app/player-web"),
+            static_dir=Path("/app/player-web"), faststart=faststart,
         )
         runner = server.runner()
         await runner.setup()
         site = web.TCPSite(runner, settings.host, settings.port)
         await site.start()
-        poll = asyncio.create_task(_catalog_poll(sync, settings.catalog_poll_seconds, stop))
+        tasks: list[asyncio.Task[object]] = [
+            asyncio.create_task(_catalog_poll(sync, settings.catalog_poll_seconds, stop))
+        ]
+        if settings.faststart_backfill:
+            backfill = FaststartBackfill(
+                faststart, repository, should_pause=lambda: server.active_playback_streams > 0
+            )
+            tasks.append(asyncio.create_task(backfill.run(stop)))
+            _LOG.info("TGVIO Player faststart backfill enabled")
         _LOG.info("TGVIO Player listening on configured Player host and port")
         await stop.wait()
-        poll.cancel()
-        await asyncio.gather(poll, return_exceptions=True)
+        for task in tasks:
+            task.cancel()
+        await asyncio.gather(*tasks, return_exceptions=True)
         await runner.cleanup()
     finally:
         await client.close()

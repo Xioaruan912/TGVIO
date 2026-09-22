@@ -100,11 +100,11 @@ export class VideoPool {
         video = this.videos.find((_, index) => !this.assigned[index]) ?? null;
         if (!video) continue;
         page.classList.remove("frame-ready");
-        this.load(video, clip, target.current ? "auto" : "metadata");
+        this.load(video, clip, target.current ? "auto" : "none");
       }
       if (video.dataset.mediaId !== clip.id) {
         page.classList.remove("frame-ready");
-        this.load(video, clip, target.current ? "auto" : "metadata");
+        this.load(video, clip, target.current ? "auto" : "none");
       }
       const host = page.querySelector<HTMLElement>(".video-host");
       if (host && video.parentElement !== host) {

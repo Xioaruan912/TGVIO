@@ -53,6 +53,8 @@ let debugAt = 0;
 let skipStreak = 0;
 let warmTimer = 0;
 let resizeTimer = 0;
+let stallWarnTimer = 0;
+let stallSkipTimer = 0;
 const unplayable = new Set<string>();
 const seenIds = new Set<string>();
 const errorRetries = new Map<string, number>();
@@ -115,7 +117,54 @@ function applyActive(index: number): void {
   updateOverlay(current);
   setFavoriteButton(shell!, favorites.has(current.id));
   scheduleWarm();
+  armStallGuard(current.id);
   renderDebug();
+}
+
+/**
+ * Ask the server to pre-build the faststart overlay for the next few clips so a
+ * swipe does not have to wait for the archive's trailing ``moov``.
+ */
+function prepareAhead(index: number): void {
+  for (let offset = 1; offset <= 3; offset += 1) {
+    const clip = feedView?.clipAt(index + offset);
+    if (clip) void api.prepare(clip.id);
+  }
+}
+
+/**
+ * Long clip whose metadata sits at the end of the file: if the browser cannot
+ * produce a frame in time, surface progress and eventually skip instead of
+ * showing an endless black screen.
+ */
+function armStallGuard(clipId: string): void {
+  window.clearTimeout(stallWarnTimer);
+  window.clearTimeout(stallSkipTimer);
+  stallWarnTimer = window.setTimeout(() => {
+    const video = pool?.currentVideo();
+    if (feedView?.clipAt(activeIndex)?.id !== clipId) return;
+    if (video && video.readyState >= 2) return;
+    toast(shell!, "视频加载较慢，正在等待…");
+  }, 12000);
+  stallSkipTimer = window.setTimeout(() => {
+    const video = pool?.currentVideo();
+    if (feedView?.clipAt(activeIndex)?.id !== clipId) return;
+    if (video && video.readyState >= 2) return;
+    if (paused) return;
+    unplayable.add(clipId);
+    skipStreak += 1;
+    if (skipStreak > 8) {
+      toast(shell!, "连续多条视频加载失败");
+      return;
+    }
+    toast(shell!, "该视频暂时无法播放，已跳过");
+    goNext(true);
+  }, 30000);
+}
+
+function clearStallGuard(): void {
+  window.clearTimeout(stallWarnTimer);
+  window.clearTimeout(stallSkipTimer);
 }
 
 /**
@@ -129,6 +178,7 @@ function scheduleWarm(): void {
     const video = pool?.currentVideo();
     if (!video || video.paused || video.readyState < 2) return;
     preloader.plan(clips, activeIndex);
+    prepareAhead(activeIndex);
   }, 900);
 }
 
@@ -452,6 +502,7 @@ function renderFeed(): void {
     autoplayBlocked = blocked;
     if (!blocked) {
       skipStreak = 0;
+      clearStallGuard();
       scheduleWarm();
     }
     shell?.root.classList.toggle("needs-gesture", blocked);
@@ -460,6 +511,7 @@ function renderFeed(): void {
     if (MOCK_MODE) return;
     const clip = feedView?.clipAt(activeIndex) ?? null;
     if (!clip || clip.id !== mediaId) return;
+    clearStallGuard();
     void handleMediaError(clip);
   };
   feedView.onCandidate = (index) => {
