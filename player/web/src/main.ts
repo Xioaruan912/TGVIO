@@ -1,9 +1,11 @@
 import "./style.css";
 import { ApiError, api, MOCK_MODE, shortId } from "./api";
 import { FeedView } from "./feed";
+import { ContextFeed } from "./context-feed";
 import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
 import { LargePlayer } from "./large";
+import { VideoLibraryPage } from "./library";
 import { LongVideoPage } from "./long";
 import { NetworkMeter } from "./net";
 import { VideoPool } from "./player";
@@ -11,21 +13,22 @@ import { PreloadCoordinator } from "./preload";
 import { ThumbnailPreview } from "./preview";
 import { prefs, setPref } from "./settings";
 import { icon } from "./icons";
-import type { Clip } from "./types";
+import type { ArchiveGroup, Clip } from "./types";
 import {
   buildError,
   buildLogin,
   buildShell,
   closeSheet,
+  confirmAudioEnable,
   element,
   formatTime,
   openSheet,
   paintSeek,
   setActiveNav,
+  setControlsVisible,
   hideIndicator,
   setFavoriteButton,
   setSoundButton,
-  sheetEmpty,
   sheetNote,
   sheetRow,
   sheetSection,
@@ -49,25 +52,46 @@ const preloader = new PreloadCoordinator();
 
 let shell: Shell | null = null;
 let feedView: FeedView | null = null;
+let contextFeed: ContextFeed | null = null;
+let savedHomeIndex = 0;
 let pool: VideoPool | null = null;
+let libraryPage: VideoLibraryPage | null = null;
 let activeIndex = 0;
 let paused = false;
-let muted = localStorage.getItem(MUTE_KEY) !== "false";
+let privacyUnlocked = false;
+let largePlayer: LargePlayer | null = null;
+let privacyCover: HTMLElement | null = null;
+const progressSaveTimers = new Map<string, number>();
+const progressSaveValues = new Map<string, number>();
+const progressSaveChains = new Map<string, Promise<void>>();
+const progressCompleted = new Set<string>();
+let muted = true;
 let refill: Promise<void> | null = null;
+let randomRefill: Promise<void> | null = null;
+const randomCandidates: Clip[] = [];
+let randomSwitching = false;
+let lastActiveClipId = "";
+let lastActiveIndex = -1;
 let autoplayBlocked = false;
 let openSheetKind: string | null = null;
 let userSeeking = false;
+let longVideosOpen = false;
 let debugAt = 0;
 let skipStreak = 0;
 let warmTimer = 0;
 let resizeTimer = 0;
 let stallWarnTimer = 0;
 let stallSkipTimer = 0;
+let controlsHideTimer = 0;
 let feedPreview: ThumbnailPreview | null = null;
 let feedMeter: NetworkMeter | null = null;
 const unplayable = new Set<string>();
 const seenIds = new Set<string>();
 const errorRetries = new Map<string, number>();
+
+function activeClips(): Clip[] {
+  return contextFeed?.clips ?? clips;
+}
 
 async function ensureFeed(minimum: number): Promise<void> {
   // A shared in-flight refill may only satisfy an older, smaller minimum, so
@@ -106,6 +130,14 @@ function clipMeta(clip: Clip): string {
 function applyActive(index: number): void {
   const current = feedView?.clipAt(index);
   if (!feedView || !pool || !current) return;
+  if (lastActiveClipId !== current.id || lastActiveIndex !== index) {
+    muted = true;
+    localStorage.setItem(MUTE_KEY, "true");
+    pool.setMuted(true);
+    if (shell) setSoundButton(shell, true);
+    lastActiveClipId = current.id;
+    lastActiveIndex = index;
+  }
   if (unplayable.has(current.id)) {
     skipStreak += 1;
     if (skipStreak <= 8) {
@@ -113,9 +145,13 @@ function applyActive(index: number): void {
       return;
     }
   }
-  paused = false;
+  paused = !privacyUnlocked;
   const previous = index > 0 ? feedView.clipAt(index - 1) : null;
-  const next = index + 1 < clips.length ? feedView.clipAt(index + 1) : null;
+  const currentClips = activeClips();
+  const next = index + 1 < currentClips.length ? feedView.clipAt(index + 1) : null;
+  feedView.pageAt(index - 1)?.classList.remove("is-active");
+  feedView.pageAt(index)?.classList.add("is-active");
+  feedView.pageAt(index + 1)?.classList.remove("is-active");
   pool.sync(
     [
       { page: feedView.pageAt(index - 1), clip: previous, current: false },
@@ -124,8 +160,15 @@ function applyActive(index: number): void {
     ],
     { paused, muted },
   );
+  const currentReady = (pool.currentVideo()?.readyState ?? 0) >= 2;
+  const currentPage = feedView.pageAt(index);
+  currentPage?.classList.toggle("is-loading", !currentReady);
+  currentPage?.classList.toggle("media-ready", currentReady);
+  shell?.root.classList.toggle("privacy-ready", currentReady);
   updateOverlay(current);
+  showControlsForActivity();
   setFavoriteButton(shell!, favorites.has(current.id));
+  shell!.groupBtn.hidden = contextFeed !== null || current.groups.length === 0;
   hideIndicator(shell!);
   scheduleWarm();
   armStallGuard(current.id);
@@ -137,12 +180,37 @@ function applyActive(index: number): void {
   renderDebug();
 }
 
+function controlsAreBlocked(): boolean {
+  const video = pool?.currentVideo();
+  return paused || userSeeking || !video || video.paused || video.readyState < 2 || openSheetKind !== null;
+}
+
+function clearControlsHide(): void {
+  window.clearTimeout(controlsHideTimer);
+  controlsHideTimer = 0;
+}
+
+function scheduleControlsHide(): void {
+  clearControlsHide();
+  if (!shell || controlsAreBlocked() || shell.root.contains(document.activeElement)) return;
+  controlsHideTimer = window.setTimeout(() => {
+    if (!shell || controlsAreBlocked() || shell.root.contains(document.activeElement)) return;
+    setControlsVisible(shell, false);
+  }, 2200);
+}
+
+function showControlsForActivity(): void {
+  clearControlsHide();
+  if (shell) setControlsVisible(shell, true);
+  scheduleControlsHide();
+}
+
 /**
  * Ask the server to pre-build the faststart overlay for the next few clips so a
  * swipe does not have to wait for the archive's trailing ``moov``.
  */
 function prepareAhead(index: number): void {
-  for (let offset = 1; offset <= 3; offset += 1) {
+  for (let offset = 1; offset <= 5; offset += 1) {
     const clip = feedView?.clipAt(index + offset);
     if (clip) void api.prepare(clip.id);
   }
@@ -184,27 +252,28 @@ function clearStallGuard(): void {
 }
 
 /**
- * Warm N+1 only after the active video is actually playing, never while it is
- * still buffering. Rapid swipes clear the pending timer instead of firing
- * speculative requests that would compete with the active stream.
+ * Warm N+1 as soon as the current video has usable data. This also runs behind
+ * the initial privacy lock, so the first upward swipe does not start cold.
  */
 function scheduleWarm(): void {
   window.clearTimeout(warmTimer);
+  if (longVideosOpen) return;
   warmTimer = window.setTimeout(() => {
+    if (longVideosOpen) return;
     const video = pool?.currentVideo();
-    if (!video || video.paused || video.readyState < 2) return;
-    preloader.plan(clips, activeIndex);
+    if (!video || video.readyState < 2 || (privacyUnlocked && video.paused)) return;
+    preloader.plan(activeClips(), activeIndex);
     prepareAhead(activeIndex);
-  }, 900);
+  }, 120);
 }
 
 function commitActive(index: number): void {
   if (!feedView) return;
-  if (index < 0 || index >= clips.length) return;
+  const currentClips = activeClips();
+  if (index < 0 || index >= currentClips.length) return;
   activeIndex = index;
-  void ensureFeed(index + FEED_AHEAD)
-    .then(() => feedView?.setClips(clips))
-    .catch(() => undefined);
+  if (contextFeed) void ensureContextPage(index + FEED_AHEAD);
+  else void ensureFeed(index + FEED_AHEAD).then(() => feedView?.setClips(clips)).catch(() => undefined);
   applyActive(index);
 }
 
@@ -238,55 +307,218 @@ async function toggleFavorite(): Promise<void> {
   const enabled = !favorites.has(clip.id);
   if (enabled) favorites.add(clip.id);
   else favorites.delete(clip.id);
+  clip.favorite = enabled;
   setFavoriteButton(shell!, enabled);
-  if (openSheetKind === "favorites") void openFavorites();
   try {
     await api.setFavorite(clip.id, enabled);
     toast(shell!, enabled ? "已收藏" : "已取消收藏");
   } catch {
     if (enabled) favorites.delete(clip.id);
     else favorites.add(clip.id);
+    clip.favorite = !enabled;
     setFavoriteButton(shell!, !enabled);
     toast(shell!, "操作失败，请稍后重试");
   }
 }
 
 function toggleSound(): void {
-  muted = !muted;
-  localStorage.setItem(MUTE_KEY, muted ? "true" : "false");
-  pool?.setMuted(muted);
-  setSoundButton(shell!, muted);
-  if (openSheetKind === "settings") openSettings();
+  if (!muted) {
+    muted = true;
+    localStorage.setItem(MUTE_KEY, "true");
+    pool?.setMuted(true);
+    if (shell) setSoundButton(shell, true);
+    if (openSheetKind === "settings") openSettings();
+    return;
+  }
+  const host = shell?.root;
+  if (!host) return;
+  void confirmAudioEnable(host).then((confirmed) => {
+    if (!confirmed || !pool) return;
+    muted = false;
+    localStorage.setItem(MUTE_KEY, "false");
+    pool.setMuted(false);
+    if (shell) setSoundButton(shell, false);
+    if (openSheetKind === "settings") openSettings();
+  });
 }
 
 function togglePlayback(): void {
-  if (!pool || !shell) return;
+  if (!pool || !shell || !privacyUnlocked) return;
   paused = !paused;
   const video = pool.currentVideo();
   if (video) {
     if (paused) video.pause();
-    else video.play().catch(() => undefined);
+    else {
+      const requestedClipId = feedView?.clipAt(activeIndex)?.id;
+      void video.play().catch(() => {
+        if (pool?.currentVideo() !== video || feedView?.clipAt(activeIndex)?.id !== requestedClipId) return;
+        paused = true;
+        autoplayBlocked = true;
+        shell?.root.classList.add("needs-gesture");
+        showControlsForActivity();
+        showIndicator(shell!, "pause");
+      });
+    }
   }
+  if (paused) showControlsForActivity();
+  else scheduleControlsHide();
   showIndicator(shell, paused ? "pause" : "play");
 }
 
 function playGesture(): void {
   if (!pool || !shell) return;
+  privacyUnlocked = true;
   autoplayBlocked = false;
   paused = false;
-  shell.root.classList.remove("needs-gesture");
+  shell.root.classList.remove("needs-gesture", "privacy-locked");
   pool.resume();
   showIndicator(shell, "play");
 }
 
+function onDocumentVisibilityChange(): void {
+  if (document.hidden) {
+    lockPrivacyForBackground();
+    return;
+  }
+  // The full-page black cover protects the app switcher snapshot only. On
+  // return, keep media locked but allow the user to navigate the app; only a
+  // player-specific play control can reveal and resume a video.
+  privacyCover?.classList.remove("visible");
+}
+
+function lockPrivacyForBackground(): void {
+  privacyUnlocked = false;
+  paused = true;
+  libraryPage?.lockPrivacy();
+  const video = largePlayer?.currentVideo() ?? pool?.currentVideo() ?? null;
+  if (largePlayer) largePlayer.lockPrivacy();
+  else shell?.root.classList.add("privacy-locked");
+  video?.pause();
+  privacyCover?.classList.add("visible");
+}
+
+function lockPrivacyScreen(): void {
+  privacyUnlocked = false;
+  paused = true;
+  libraryPage?.lockPrivacy();
+  const video = largePlayer?.currentVideo() ?? pool?.currentVideo() ?? null;
+  if (largePlayer) largePlayer.lockPrivacy();
+  else {
+    shell?.root.classList.add("privacy-locked");
+    video?.pause();
+  }
+}
+
+function saveLongVideoProgress(mediaId: string, position: number, duration: number, force: boolean): void {
+  if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) return;
+  if (position >= duration - 30) {
+    if (progressCompleted.has(mediaId)) return;
+    progressCompleted.add(mediaId);
+    const timer = progressSaveTimers.get(mediaId);
+    if (timer) window.clearTimeout(timer);
+    progressSaveTimers.delete(mediaId);
+    progressSaveValues.delete(mediaId);
+    enqueueProgressWrite(mediaId, () => api.clearLongVideoProgress(mediaId));
+    return;
+  }
+  progressCompleted.delete(mediaId);
+  progressSaveValues.set(mediaId, position);
+  if (force) {
+    const timer = progressSaveTimers.get(mediaId);
+    if (timer) window.clearTimeout(timer);
+    progressSaveTimers.delete(mediaId);
+    const latest = progressSaveValues.get(mediaId);
+    if (latest !== undefined) enqueueProgressWrite(mediaId, () => api.saveLongVideoProgress(mediaId, latest));
+    return;
+  }
+  if (progressSaveTimers.has(mediaId)) return;
+  const nextTimer = window.setTimeout(() => {
+    progressSaveTimers.delete(mediaId);
+    const latest = progressSaveValues.get(mediaId);
+    if (latest !== undefined) enqueueProgressWrite(mediaId, () => api.saveLongVideoProgress(mediaId, latest));
+  }, 8000);
+  progressSaveTimers.set(mediaId, nextTimer);
+}
+
+function enqueueProgressWrite(mediaId: string, write: () => Promise<void>): void {
+  const previous = progressSaveChains.get(mediaId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(write).catch(() => undefined);
+  progressSaveChains.set(mediaId, next);
+  void next.finally(() => {
+    if (progressSaveChains.get(mediaId) === next) progressSaveChains.delete(mediaId);
+  });
+}
+
 function goNext(instant = false): void {
   const next = activeIndex + 1;
-  void ensureFeed(next + FEED_AHEAD)
-    .then(() => {
-      feedView?.setClips(clips);
-      if (next < clips.length) feedView?.scrollToIndex(next, !instant);
-    })
-    .catch(() => toast(shell!, "暂时加载失败"));
+  const load = contextFeed ? ensureContextPage(next + FEED_AHEAD) : ensureFeed(next + FEED_AHEAD);
+  void load.then(() => {
+    if (!contextFeed) feedView?.setClips(clips);
+    if (next < activeClips().length) feedView?.scrollToIndex(next, !instant);
+  }).catch(() => toast(shell!, "暂时加载失败"));
+}
+
+async function ensureRandomCandidates(): Promise<void> {
+  if (MOCK_MODE || randomCandidates.length >= 5) return;
+  if (randomRefill) {
+    await randomRefill;
+    if (randomCandidates.length >= 5) return;
+  }
+  const exclude = new Set<string>();
+  for (let index = activeIndex; index <= activeIndex + 5; index += 1) {
+    const clip = feedView?.clipAt(index);
+    if (clip) exclude.add(clip.id);
+  }
+  for (const clip of randomCandidates) exclude.add(clip.id);
+  const request = api.randomShorts(5 - randomCandidates.length, [...exclude]).then((items) => {
+    const shorts = items.filter((clip) => clip.category === "short");
+    randomCandidates.push(...shorts);
+    // Warm candidates in the background; speculative bytes must not block the
+    // user's request to switch to an already-selected random short.
+    void preloader.warmRandomCandidates(shorts);
+  });
+  randomRefill = request;
+  try {
+    await request;
+  } finally {
+    if (randomRefill === request) randomRefill = null;
+  }
+}
+
+async function goRandom(): Promise<void> {
+  if (!feedView || !shell || contextFeed || randomSwitching) return;
+  randomSwitching = true;
+  shell.shuffleBtn.disabled = true;
+  shell.shuffleBtn.setAttribute("aria-busy", "true");
+  const label = shell.shuffleBtn.querySelector<HTMLElement>(".action-label");
+  if (label) label.textContent = "准备中";
+  try {
+    await ensureRandomCandidates();
+    if (!randomCandidates.length) {
+      toast(shell, "没有可抽取的短视频");
+      return;
+    }
+    const index = Math.floor(Math.random() * randomCandidates.length);
+    const clip = randomCandidates.splice(index, 1)[0];
+    if (!clip || clip.category !== "short" || !feedView.replaceClipAt(activeIndex, clip)) {
+      toast(shell, "随机视频暂时不可用");
+      return;
+    }
+    if (favorites.has(clip.id)) clip.favorite = true;
+    lastActiveClipId = "";
+    applyActive(activeIndex);
+    void ensureRandomCandidates();
+  } catch {
+    toast(shell, "随机抽取失败，请稍后重试");
+  } finally {
+    randomSwitching = false;
+    if (shell) {
+      shell.shuffleBtn.disabled = false;
+      shell.shuffleBtn.removeAttribute("aria-busy");
+      const currentLabel = shell.shuffleBtn.querySelector<HTMLElement>(".action-label");
+      if (currentLabel) currentLabel.textContent = "换一个";
+    }
+  }
 }
 
 /**
@@ -336,10 +568,15 @@ function feedGestureOptions() {
       if (video) video.playbackRate = speed ?? 1;
     },
     onScrubStart: () => {
+      if (!privacyUnlocked) return;
+      const video = pool?.currentVideo();
+      const wasPlaying = Boolean(video && !video.paused);
       paused = true;
-      pool?.currentVideo()?.pause();
+      video?.pause();
+      return wasPlaying;
     },
     onScrubMove: (time: number, clientX: number) => {
+      if (!privacyUnlocked) return;
       const clip = feedView?.clipAt(activeIndex);
       const video = pool?.currentVideo();
       if (!clip || !video || !shell) return;
@@ -349,36 +586,61 @@ function feedGestureOptions() {
       paintSeek(shell.seek);
       if (prefs.dragThumbnail) feedPreview?.show(clip, time, formatTime(time), clientX);
     },
-    onScrubEnd: (time: number | null) => {
+    onScrubEnd: (time: number | null, resumePlayback: boolean) => {
       feedPreview?.hide();
+      if (!privacyUnlocked) return;
       const video = pool?.currentVideo();
       if (!video) return;
       if (time !== null) video.currentTime = time;
-      paused = false;
-      void video.play().catch(() => undefined);
+      paused = !resumePlayback;
+      if (resumePlayback) void video.play().catch(() => undefined);
+      else video.pause();
     },
   };
 }
 
 function openLongVideos(): void {
   if (!shell) return;
+  longVideosOpen = true;
+  window.clearTimeout(warmTimer);
+  preloader.setPressure(true);
   let page: LongVideoPage | null = null;
-  let player: LargePlayer | null = null;
   const closePlayer = (): void => {
-    player?.destroy();
-    player = null;
+    largePlayer?.destroy();
+    largePlayer = null;
+    privacyUnlocked = false;
+    paused = true;
+    shell?.root.classList.add("privacy-locked");
+    pool?.currentVideo()?.pause();
   };
   page = new LongVideoPage(
-    (clip: Clip) => {
+    (clip: Clip, startAt = 0) => {
       closePlayer();
-      player = new LargePlayer(clip, closePlayer);
-      document.body.appendChild(player.root);
+      largePlayer = new LargePlayer(clip, () => {
+        closePlayer();
+        const progressWrite = progressSaveChains.get(clip.id) ?? Promise.resolve();
+        void progressWrite.then(() => page?.refreshProgress());
+      }, {
+        privacyLocked: !privacyUnlocked,
+        startAt,
+        onUnlock: () => {
+          privacyUnlocked = true;
+          shell?.root.classList.remove("privacy-locked");
+        },
+        onPrivacyLock: lockPrivacyScreen,
+        onProgress: (position, duration, force) =>
+          saveLongVideoProgress(clip.id, position, duration, force),
+      });
+      document.body.appendChild(largePlayer.root);
     },
     () => {
       closePlayer();
       page?.destroy();
       page = null;
+      longVideosOpen = false;
+      preloader.setPressure(false);
       setActiveNav(shell!, "home");
+      scheduleWarm();
     },
   );
   document.body.appendChild(page.root);
@@ -402,56 +664,132 @@ function openClip(clip: Clip): void {
   commitActive(index);
 }
 
-async function openFavorites(): Promise<void> {
-  if (!shell) return;
-  const body: Node[] = [];
-  let list: Clip[] = [];
-  try {
-    list = await api.favorites();
-  } catch {
-    toast(shell, "暂时加载失败");
-  }
-  if (!list.length) {
-    body.push(sheetEmpty("还没有收藏的视频", "刷视频时点一下右侧的收藏按钮，就会出现在这里"));
-  } else {
-    for (const clip of list) {
-      body.push(
-        sheetRow({
-          title: `视频 #${shortId(clip.id)}`,
-          sub: clipMeta(clip),
-          iconName: "play-small",
-          onPick: () => openClip(clip),
-        }),
-      );
+async function ensureContextPage(minimum: number): Promise<void> {
+  const current = contextFeed;
+  if (!current || !feedView) return;
+  while (contextFeed === current && current.hasMore && current.clips.length < minimum) {
+    const loaded = await current.loadMore();
+    if (contextFeed !== current) return;
+    feedView.removeTerminalPage();
+    feedView.setClips(current.clips);
+    if (!loaded) {
+      const message = current.clips.length ? "加载失败，点击重试" : "暂时加载失败，点击重试";
+      feedView.appendTerminalPage(message, "feed-terminal feed-retry", () => {
+        feedView?.removeTerminalPage();
+        void ensureContextPage(Math.max(FEED_AHEAD, current.clips.length + 1));
+      });
+      if (!current.clips.length) {
+        if (shell) toast(shell, "加载失败，请点击重试");
+      }
+      return;
     }
   }
-  openSheetKind = "favorites";
-  openSheet(shell, list.length ? `我的收藏 · ${list.length}` : "我的收藏", body);
-  setActiveNav(shell, "favorites");
+  if (contextFeed !== current || current.hasMore) return;
+  if (!current.clips.length) {
+    feedView.appendTerminalPage("这里还没有视频，点击返回", "feed-terminal", leaveContext);
+    return;
+  }
+  const label = current.mode === "group" ? "这组视频已看完，已返回短视频" : "收藏已刷完";
+  feedView.appendTerminalPage(label);
+}
+
+async function enterContext(mode: "group" | "favorites", group?: ArchiveGroup): Promise<void> {
+  if (!shell || !feedView || !pool) return;
+  if (!contextFeed) savedHomeIndex = activeIndex;
+  contextFeed?.dispose();
+  const context = new ContextFeed(
+    mode,
+    async (cursor, signal) => {
+      if (mode === "group" && group) {
+        const page = await api.groupVideos(group.id, FEED_BATCH, cursor, signal);
+        return page;
+      }
+      return api.favoritePage(FEED_BATCH, cursor, signal);
+    },
+    group?.id ?? null,
+  );
+  contextFeed = context;
+  lockPrivacyScreen();
+  muted = true;
+  localStorage.setItem(MUTE_KEY, "true");
+  pool.setMuted(true);
+  pool.sync([], { paused: true, muted: true });
+  closeSheet(shell);
+  openSheetKind = null;
+  setActiveNav(shell, mode === "favorites" ? "favorites" : "home");
+  shell.contextBackBtn.hidden = false;
+  shell.contextBackBtn.textContent = mode === "favorites" ? "返回短视频" : `返回 ${group?.label ?? "短视频"}`;
+  shell.groupBtn.hidden = true;
+  shell.shuffleBtn.hidden = true;
+  const loaded = await context.loadFirstPage();
+  if (contextFeed !== context) return;
+  feedView.replaceClips(context.clips);
+  activeIndex = 0;
+  lastActiveClipId = "";
+  if (!loaded) {
+    await ensureContextPage(1);
+    return;
+  }
+  if (context.clips.length) commitActive(0);
+  await ensureContextPage(Math.min(FEED_AHEAD, Math.max(1, context.clips.length)));
+  feedView.scrollToIndex(0, false);
+}
+
+function leaveContext(): void {
+  if (!contextFeed || !feedView || !pool) return;
+  contextFeed.dispose();
+  contextFeed = null;
+  pool.sync([], { paused: true, muted: true });
+  feedView.replaceClips(clips);
+  activeIndex = Math.min(savedHomeIndex, Math.max(0, clips.length - 1));
+  feedView.scrollToIndex(activeIndex, false);
+  shell!.contextBackBtn.hidden = true;
+  shell!.shuffleBtn.hidden = false;
+  setActiveNav(shell!, "home");
+  lastActiveClipId = "";
+  if (clips.length) applyActive(activeIndex);
+  toast(shell!, "已返回短视频");
+}
+
+function openGroupChooser(): void {
+  const clip = feedView?.clipAt(activeIndex);
+  const groups = clip?.groups ?? [];
+  if (!shell || !groups.length) return;
+  if (groups.length === 1) {
+    void enterContext("group", groups[0]);
+    return;
+  }
+  openSheetKind = "group-chooser";
+  openSheet(shell, "选择归属日期", groups.map((group) => sheetRow({
+    title: group.label,
+    sub: "刷看此日期归档的视频",
+    iconName: "play-small",
+    onPick: () => void enterContext("group", group),
+  })));
 }
 
 function openLibrary(): void {
   if (!shell) return;
-  const body: Node[] = [sheetNote("本次已加载的视频")];
-  if (!clips.length) {
-    body.push(sheetEmpty("片库为空", "本次还没有加载视频"));
-  } else {
-    clips.forEach((clip, index) => {
-      const trailing = element("span", "sheet-row-heart");
-      if (favorites.has(clip.id)) trailing.appendChild(icon("heart-filled", 18));
-      body.push(
-        sheetRow({
-          title: `视频 ${String(index + 1).padStart(2, "0")}`,
-          sub: clipMeta(clip),
-          note: `#${shortId(clip.id)}`,
-          trailing,
-          onPick: () => openClip(clip),
-        }),
-      );
-    });
-  }
-  openSheetKind = "library";
-  openSheet(shell, "片库", body);
+  lockPrivacyScreen();
+  closeSheet(shell);
+  let page: VideoLibraryPage | null = null;
+  page = new VideoLibraryPage(
+    (clip) => {
+      page?.destroy();
+      if (libraryPage === page) libraryPage = null;
+      page = null;
+      setActiveNav(shell!, "home");
+      openClip(clip);
+    },
+    () => {
+      page?.destroy();
+      if (libraryPage === page) libraryPage = null;
+      page = null;
+      setActiveNav(shell!, "home");
+    },
+  );
+  libraryPage = page;
+  document.body.appendChild(page.root);
   setActiveNav(shell, "library");
 }
 
@@ -529,6 +867,15 @@ function openSettings(): void {
       },
     ),
   );
+  body.push(sheetSection("iPhone 主屏幕播放器"));
+  body.push(
+    sheetNote(
+      window.matchMedia("(display-mode: standalone)").matches ||
+        (navigator as Navigator & { standalone?: boolean }).standalone === true
+        ? "已在独立播放器模式中运行。Safari 与主屏幕应用使用同一服务端续播进度。"
+        : "在 iPhone Safari 打开此站点，点“分享”→“添加到主屏幕”；如果出现“以 Web App 打开”，请保持开启。添加后从主屏幕图标打开，即可进入独立播放器。若打开时要求验证，再输入访问口令；长视频续播进度会在 Safari 和主屏幕播放器间共享。",
+    ),
+  );
   body.push(sheetSection("账户"));
   body.push(
     sheetRow({
@@ -550,7 +897,13 @@ function openSettings(): void {
 
 function onNav(action: string): void {
   if (!shell) return;
+  if (contextFeed && !["home", "favorites"].includes(action)) leaveContext();
+  if (action !== "home" && action !== "random") lockPrivacyScreen();
   if (action === "home") {
+    if (contextFeed) {
+      leaveContext();
+      return;
+    }
     closeSheet(shell);
     openSheetKind = null;
     setActiveNav(shell, "home");
@@ -559,28 +912,17 @@ function onNav(action: string): void {
     closeSheet(shell);
     openSheetKind = null;
     setActiveNav(shell, "random");
-    goNext();
+    void goRandom();
   } else if (action === "long") {
     closeSheet(shell);
     openSheetKind = null;
     openLongVideos();
   } else if (action === "favorites") {
-    void openFavorites();
+    void enterContext("favorites");
   } else if (action === "library") {
     openLibrary();
   } else if (action === "settings") {
     openSettings();
-  }
-}
-
-function shareCurrent(): void {
-  const clip = feedView?.clipAt(activeIndex);
-  if (!clip) return;
-  const shared = navigator.share?.bind(navigator);
-  if (shared) {
-    void shared({ title: `TGVIO 视频 #${shortId(clip.id)}` }).catch(() => undefined);
-  } else {
-    toast(shell!, "当前环境暂不支持分享");
   }
 }
 
@@ -637,19 +979,45 @@ function renderFeed(): void {
     onPlayGesture: playGesture,
     onToggleFavorite: () => void toggleFavorite(),
     onToggleSound: toggleSound,
-    onShuffle: goNext,
-    onShare: shareCurrent,
+    onShuffle: () => void goRandom(),
+    onPrivacyLock: lockPrivacyScreen,
+    onOpenGroup: openGroupChooser,
+    onBackFromContext: leaveContext,
     onSeek,
     onNav,
   };
   shell = buildShell(handlers);
+  if (!privacyUnlocked) shell.root.classList.add("privacy-locked");
   app.replaceChildren(shell.root);
+  privacyCover = element("div", "background-privacy-cover", "画面已遮住");
+  privacyCover.setAttribute("aria-hidden", "true");
+  document.body.appendChild(privacyCover);
   feedView = new FeedView(shell.feed);
   pool = new VideoPool();
   pool.onPressure = (pressured) => {
-    preloader.setPressure(pressured);
+    preloader.setPressure(pressured || longVideosOpen);
     shell?.root.classList.toggle("playback-pressure", pressured);
-    if (!pressured) scheduleWarm();
+    feedView?.pageAt(activeIndex)?.classList.toggle("is-loading", pressured);
+    shell?.root.classList.toggle(
+      "privacy-ready",
+      !pressured && (pool?.currentVideo()?.readyState ?? 0) >= 2,
+    );
+    if (!pressured && !longVideosOpen) scheduleWarm();
+  };
+  pool.onLoading = (mediaId) => {
+    if (feedView?.clipAt(activeIndex)?.id !== mediaId) return;
+    shell?.root.classList.remove("privacy-ready");
+    feedView.pageAt(activeIndex)?.classList.add("is-loading");
+    feedView.pageAt(activeIndex)?.classList.remove("media-ready");
+    showControlsForActivity();
+  };
+  pool.onReady = (mediaId) => {
+    if (feedView?.clipAt(activeIndex)?.id !== mediaId) return;
+    feedView.pageAt(activeIndex)?.classList.remove("is-loading");
+    feedView.pageAt(activeIndex)?.classList.add("media-ready");
+    shell?.root.classList.add("privacy-ready");
+    scheduleWarm();
+    scheduleControlsHide();
   };
   pool.onTimeUpdate = updateProgress;
   pool.onAutoplayBlocked = (blocked) => {
@@ -665,6 +1033,8 @@ function renderFeed(): void {
     if (MOCK_MODE) return;
     const clip = feedView?.clipAt(activeIndex) ?? null;
     if (!clip || clip.id !== mediaId) return;
+    feedView?.pageAt(activeIndex)?.classList.remove("is-loading");
+    shell?.root.classList.add("privacy-ready");
     clearStallGuard();
     void handleMediaError(clip);
   };
@@ -672,7 +1042,17 @@ function renderFeed(): void {
     renderDebug();
     void index;
   };
-  feedView.onSettle = commitActive;
+  feedView.onSettle = (index) => {
+    const current = contextFeed;
+    if (current && index === feedView?.terminalIndex) {
+      if (current.mode === "group" && !current.hasMore && !current.error) {
+        leaveContext();
+        toast(shell!, "这组视频已看完，已返回短视频");
+      }
+      return;
+    }
+    commitActive(index);
+  };
   feedView.setClips(clips);
   feedPreview = new ThumbnailPreview();
   shell.root.appendChild(feedPreview.el);
@@ -683,11 +1063,25 @@ function renderFeed(): void {
     () => pool?.currentVideo() ?? null,
   );
   attachGestures(shell.feed, feedGestureOptions());
+  shell.root.classList.add("controls-visible");
+  shell.viewport.addEventListener("pointerdown", showControlsForActivity, { passive: true });
+  shell.viewport.addEventListener("touchstart", showControlsForActivity, { passive: true });
+  shell.root.addEventListener("focusin", showControlsForActivity);
+  shell.root.addEventListener("focusout", scheduleControlsHide);
+  shell.root.addEventListener("playersheetclose", () => {
+    openSheetKind = null;
+    scheduleControlsHide();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
+    showControlsForActivity();
+  });
   setSoundButton(shell, muted);
   setActiveNav(shell, "home");
   shell.debug.hidden = !DEBUG;
   if (autoplayBlocked) shell.root.classList.add("needs-gesture");
   applyActive(0);
+  void ensureRandomCandidates();
 
   window.addEventListener("orientationchange", () => {
     window.setTimeout(() => feedView?.scrollToIndex(activeIndex, false), 220);
@@ -698,11 +1092,10 @@ function renderFeed(): void {
   };
   window.addEventListener("resize", onViewportResize);
   window.visualViewport?.addEventListener("resize", onViewportResize);
-  document.addEventListener("visibilitychange", () => {
-    const video = pool?.currentVideo();
-    if (!video) return;
-    if (document.hidden) video.pause();
-    else if (!paused) void video.play().catch(() => undefined);
+  document.addEventListener("visibilitychange", onDocumentVisibilityChange);
+  window.addEventListener("pagehide", lockPrivacyForBackground);
+  window.addEventListener("pageshow", () => {
+    if (!document.hidden) privacyCover?.classList.remove("visible");
   });
   const seek = shell.seek;
   seek.addEventListener("pointerdown", () => {

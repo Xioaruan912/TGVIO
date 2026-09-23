@@ -42,7 +42,7 @@
   height: calc(56px + var(--safe-bottom));
   padding-bottom: var(--safe-bottom);
   display: grid;
-  grid-template-columns: repeat(5, 1fr);
+  grid-template-columns: repeat(4, 1fr);
   background: linear-gradient(to top, rgba(0, 0, 0, 0.94), rgba(0, 0, 0, 0.6) 72%, transparent);
 }
 
@@ -215,10 +215,9 @@
 
   .viewport {
     flex: 0 0 auto;
-    width: min(100%, calc(94dvh * 9 / 16), 560px);
-    height: auto;
-    aspect-ratio: 9 / 16;
-    border-radius: 14px;
+    width: min(100%, 62dvh, 620px);
+    height: min(100dvh, 1000px);
+    border-radius: 16px;
     outline: 1px solid rgba(255, 255, 255, 0.07);
   }
 }

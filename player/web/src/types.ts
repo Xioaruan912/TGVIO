@@ -9,7 +9,18 @@ export type MediaDto = {
   mime_type?: string | null;
   codec?: string | null;
   category?: "short" | "long";
+  groups?: ArchiveGroup[];
 };
+
+export type ArchiveGroup = { id: string; label: string };
+
+export type PagedMediaResponse = {
+  items: MediaDto[];
+  has_more: boolean;
+  next_cursor: string | null;
+};
+
+export type GroupVideosResponse = PagedMediaResponse & { group: ArchiveGroup };
 
 export type FeedResponse = {
   items: MediaDto[];
@@ -20,7 +31,23 @@ export type FeedResponse = {
 export type VideoListResponse = {
   items: MediaDto[];
   has_more: boolean;
-  category: "short" | "long";
+  category: "short" | "long" | "all";
+  total: number | null;
+};
+
+export type RandomVideoListResponse = {
+  items: MediaDto[];
+  category: "short";
+};
+
+export type LongVideoProgressDto = {
+  id: string;
+  position_seconds: number;
+};
+
+export type LongVideoProgressResponse = {
+  items: LongVideoProgressDto[];
+  recent_items?: Array<MediaDto & { position_seconds: number }>;
 };
 
 export type Clip = {
@@ -34,6 +61,7 @@ export type Clip = {
   mimeType: string | null;
   codec: string | null;
   category: "short" | "long";
+  groups: ArchiveGroup[];
 };
 
-export type PreloadLevel = "strong" | "light" | "metadata";
+export type PreloadLevel = "strong" | "light" | "random" | "metadata";

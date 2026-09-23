@@ -3,12 +3,15 @@ import type { Clip, PreloadLevel } from "./types";
 
 const WARM_PLAN: { offset: number; level: PreloadLevel }[] = [
   { offset: 1, level: "strong" },
+  { offset: -1, level: "strong" },
   { offset: 2, level: "light" },
   { offset: 3, level: "light" },
+  { offset: 4, level: "light" },
+  { offset: 5, level: "light" },
 ];
 
 /**
- * Warm the next few clips so a swipe starts on locally cached bytes. The warm
+ * Warm both adjacent clips so either swipe starts on locally cached bytes. The warm
  * request is tagged so it never competes with the active stream for a playback
  * slot, and it is aborted whenever playback is under pressure. Current playback
  * always wins.
@@ -16,6 +19,7 @@ const WARM_PLAN: { offset: number; level: PreloadLevel }[] = [
 export class PreloadCoordinator {
   private planned = new Map<string, PreloadLevel>();
   private controller: AbortController | null = null;
+  private randomController: AbortController | null = null;
   private pressure = false;
   private generation = 0;
 
@@ -47,11 +51,30 @@ export class PreloadCoordinator {
     })();
   }
 
+  warmRandomCandidates(candidates: Clip[]): Promise<void> {
+    this.randomController?.abort();
+    if (this.pressure || candidates.length === 0) return Promise.resolve();
+    const controller = new AbortController();
+    this.randomController = controller;
+    return (async () => {
+      for (const clip of candidates) {
+        if (controller.signal.aborted || this.pressure) return;
+        try {
+          await api.warm(clip, "random", controller.signal);
+        } catch {
+          if (!controller.signal.aborted) return;
+        }
+      }
+    })();
+  }
+
   setPressure(active: boolean): void {
     this.pressure = active;
     if (active) {
       this.controller?.abort();
       this.controller = null;
+      this.randomController?.abort();
+      this.randomController = null;
       this.planned.clear();
     }
   }

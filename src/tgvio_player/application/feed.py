@@ -27,6 +27,17 @@ class ShuffleDeckService:
         await self._ensure_deck(session_digest)
         return await self._repository.consume_feed_items(session_digest, limit=limit)
 
+    async def random_short_ids(self, *, limit: int, exclude: set[str] | None = None) -> list[str]:
+        if limit < 1:
+            return []
+        short_limit = self._max_duration_seconds or 300.0
+        eligible = await self._repository.list_video_ids(
+            max_seconds=short_limit,
+            limit=100_000,
+        )
+        candidates = [media_id for media_id in eligible if media_id not in (exclude or set())]
+        return self._rng.sample(candidates, min(limit, len(candidates)))
+
     async def _ensure_deck(self, session_digest: str) -> None:
         if await self._repository.has_unconsumed_feed_items(session_digest):
             return
@@ -57,3 +68,14 @@ class ShuffleDeckService:
 
     async def list_favorites(self, session_digest: str, *, limit: int = 200) -> list[str]:
         return await self._repository.list_favorite_ids(session_digest, limit=limit)
+
+    async def favorite_page(
+        self,
+        session_digest: str,
+        *,
+        limit: int,
+        cursor: tuple[int, str] | None,
+    ) -> list[tuple[str, int]]:
+        return await self._repository.list_favorite_page(
+            session_digest, limit=limit, before=cursor
+        )

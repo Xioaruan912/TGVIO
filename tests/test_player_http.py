@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -13,6 +14,7 @@ from tgvio_player.application.auth import SessionService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.playback import StartupRangeCache
 from tgvio_player.domain.catalog import CatalogLocation, CatalogMedia, CatalogPackage
+from tgvio_player.domain.auth import token_digest
 from tgvio_player.domain.ranges import ByteRange
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDavRangeResponse
@@ -255,6 +257,55 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             (await self.client.get("/api/v1/favorites")).status, 401
         )
 
+    async def test_favorites_are_cursor_paged_with_stable_ties(self) -> None:
+        cookie = await self._login()
+        media_ids = [self.media_id, "c" * 64, "b" * 64]
+        package = CatalogPackage(
+            "favorite-page-package", "TGVIO/2026-09-22/2", "d" * 64,
+            '"manifest-2"', '"complete-2"',
+            tuple(CatalogMedia(media_id, "video", 4, "video/mp4", 1080, 1920, 2.0) for media_id in media_ids[1:]),
+            tuple(CatalogLocation(media_id, "favorite-page-package", f"{media_id}.mp4") for media_id in media_ids[1:]),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+        for media_id in media_ids:
+            response = await self.client.put(
+                f"/api/v1/media/{media_id}/favorite", cookies={"tgvio_player_session": cookie}
+            )
+            self.assertEqual(response.status, 200)
+        # Use a shared timestamp to exercise the media ID tie-breaker.
+        self.repo._require().execute(
+            "UPDATE favorites SET created_at=123 WHERE token_digest=?", (token_digest(cookie),)
+        )
+        first = await self.client.get(
+            "/api/v1/favorites?limit=1", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(first.status, 200)
+        first_body = await first.json()
+        self.assertTrue(first_body["has_more"])
+        self.assertIsNotNone(first_body["next_cursor"])
+        ids = [first_body["items"][0]["id"]]
+        second = await self.client.get(
+            "/api/v1/favorites?limit=1&cursor=" + first_body["next_cursor"],
+            cookies={"tgvio_player_session": cookie},
+        )
+        second_body = await second.json()
+        ids.extend(item["id"] for item in second_body["items"])
+        third = await self.client.get(
+            "/api/v1/favorites?limit=1&cursor=" + second_body["next_cursor"],
+            cookies={"tgvio_player_session": cookie},
+        )
+        third_body = await third.json()
+        ids.extend(item["id"] for item in third_body["items"])
+        self.assertFalse(third_body["has_more"])
+        self.assertEqual(ids, sorted(media_ids))
+        self.assertNotIn("remote_path", str(first_body))
+        self.assertEqual(
+            (await self.client.get("/api/v1/favorites?cursor=bad", cookies={"tgvio_player_session": cookie})).status,
+            400,
+        )
+        self.assertEqual((await self.client.get("/api/v1/favorites?limit=1")).status, 401)
+
     async def test_failed_logins_are_rate_limited_and_success_clears_failures(self) -> None:
         for _ in range(4):
             response = await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})
@@ -333,6 +384,36 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             feed = await client.get("/api/v1/feed")
             self.assertEqual(feed.status, 401)
             self.assertEqual(feed.headers["Cache-Control"], "no-store")
+        finally:
+            await client.close()
+
+    async def test_public_pwa_assets_are_served_from_an_allowlist(self) -> None:
+        static_dir = Path(self.tmp.name) / "pwa"
+        static_dir.mkdir()
+        names = (
+            "site.webmanifest",
+            "apple-touch-icon.png",
+            "player-icon-192.png",
+            "player-icon-512.png",
+            "player-icon.svg",
+        )
+        for name in names:
+            (static_dir / name).write_bytes(name.encode())
+        server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            ReadOnlyWebDavAdapter(self.read_client),
+            static_dir=static_dir,
+        )
+        client = TestClient(TestServer(server.application()))
+        await client.start_server()
+        try:
+            for name in names:
+                response = await client.get(f"/{name}")
+                self.assertEqual(response.status, 200, name)
+                self.assertEqual(await response.read(), name.encode())
+            self.assertEqual((await client.get("/not-a-public-file.txt")).status, 404)
         finally:
             await client.close()
 
@@ -441,6 +522,134 @@ class VideoCategoryTests(unittest.IsolatedAsyncioTestCase):
         ids = [item["id"] for item in (await response.json())["items"]]
         self.assertEqual(ids, [self.short_id])
 
+    @staticmethod
+    def _group_id(name: str) -> str:
+        return base64.urlsafe_b64encode(name.encode()).decode().rstrip("=")
+
+    async def test_media_and_group_pages_follow_archive_date_groups(self) -> None:
+        sibling_id = "3" * 64
+        sibling_package = CatalogPackage(
+            "sibling-package",
+            "TGVIO/2026-09-22/2",
+            "c" * 64,
+            '"manifest-2"',
+            '"complete-2"',
+            (
+                CatalogMedia(self.short_id, "video", 1000, "video/mp4", 1080, 1920, 12.0),
+                CatalogMedia(sibling_id, "video", 2000, "video/mp4", 1080, 1920, 20.0),
+            ),
+            (
+                CatalogLocation(self.short_id, "sibling-package", "duplicate.mp4", '"etag-2"'),
+                CatalogLocation(sibling_id, "sibling-package", "sibling.mp4", '"etag-2"'),
+            ),
+        )
+        another_date_package = CatalogPackage(
+            "another-date-package",
+            "TGVIO/2026-09-23/1",
+            "d" * 64,
+            '"manifest-3"',
+            '"complete-3"',
+            (CatalogMedia(self.short_id, "video", 1000, "video/mp4", 1080, 1920, 12.0),),
+            (CatalogLocation(self.short_id, "another-date-package", "same-video.mp4", '"etag-3"'),),
+        )
+        await self.repo.apply_package(sibling_package)
+        await self.repo.apply_package(another_date_package)
+        await self.repo.refresh_media_activity()
+        cookie = await self._login()
+
+        details = await self.client.get(
+            f"/api/v1/media/{self.short_id}", cookies={"tgvio_player_session": cookie}
+        )
+        details_body = await details.json()
+        self.assertEqual(
+            {group["label"] for group in details_body["groups"]},
+            {"2026-09-22", "2026-09-23"},
+        )
+        self.assertNotIn("remote_path", str(details_body))
+
+        group_id = self._group_id("2026-09-22")
+        first_page = await self.client.get(
+            f"/api/v1/groups/{group_id}/videos?limit=2",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(first_page.status, 200)
+        first_body = await first_page.json()
+        self.assertEqual(first_body["group"], {"id": group_id, "label": "2026-09-22"})
+        first_ids = [item["id"] for item in first_body["items"]]
+        self.assertEqual(len(first_ids), 2)
+        self.assertEqual(len(set(first_ids)), 2)
+        self.assertTrue(first_body["has_more"])
+        self.assertNotIn("remote_path", str(first_body))
+
+        second_page = await self.client.get(
+            f"/api/v1/groups/{group_id}/videos?limit=2&cursor={first_body['next_cursor']}",
+            cookies={"tgvio_player_session": cookie},
+        )
+        second_body = await second_page.json()
+        all_ids = first_ids + [item["id"] for item in second_body["items"]]
+        self.assertEqual(set(all_ids), {self.short_id, self.long_id, sibling_id})
+        self.assertEqual(len(all_ids), len(set(all_ids)))
+        self.assertFalse(second_body["has_more"])
+        self.assertEqual(
+            {item["category"] for item in first_body["items"] + second_body["items"]},
+            {"short", "long"},
+        )
+
+        another_date_id = self._group_id("2026-09-23")
+        another_date = await self.client.get(
+            f"/api/v1/groups/{another_date_id}/videos?limit=20",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual([item["id"] for item in (await another_date.json())["items"]], [self.short_id])
+
+    async def test_group_feed_authentication_and_validation(self) -> None:
+        group_id = self._group_id("2026-09-22")
+        unauthenticated = await self.client.get(f"/api/v1/groups/{group_id}/videos")
+        self.assertEqual(unauthenticated.status, 401)
+        cookie = await self._login()
+        unknown = await self.client.get(
+            f"/api/v1/groups/{self._group_id('2026-09-24')}/videos",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(unknown.status, 404)
+        malformed = await self.client.get(
+            "/api/v1/groups/!!!/videos", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(malformed.status, 400)
+        bad_cursor = await self.client.get(
+            f"/api/v1/groups/{group_id}/videos?cursor=not-a-media-id",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(bad_cursor.status, 400)
+
+    async def test_long_video_progress_is_shared_between_authenticated_sessions(self) -> None:
+        first_cookie = await self._login()
+        second_cookie = await self._login()
+        saved = await self.client.put(
+            f"/api/v1/media/{self.long_id}/progress",
+            json={"position_seconds": 412.5},
+            cookies={"tgvio_player_session": first_cookie},
+        )
+        self.assertEqual(saved.status, 200)
+        listed = await self.client.get(
+            "/api/v1/long-progress",
+            cookies={"tgvio_player_session": second_cookie},
+        )
+        self.assertEqual(listed.status, 200)
+        self.assertEqual(
+            (await listed.json())["items"],
+            [{"id": self.long_id, "position_seconds": 412.5}],
+        )
+
+    async def test_short_video_cannot_be_added_to_long_resume_progress(self) -> None:
+        cookie = await self._login()
+        response = await self.client.put(
+            f"/api/v1/media/{self.short_id}/progress",
+            json={"position_seconds": 4},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(response.status, 404)
+
     async def test_invalid_category_is_rejected(self) -> None:
         cookie = await self._login()
         response = await self.client.get(
@@ -542,6 +751,10 @@ class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first.status, 206)
         self.assertEqual(await first.read(), self.buffer[131072:196608])
+        for _ in range(20):
+            if self.cache.has_chunk(str(self.media_id), 2):
+                break
+            await asyncio.sleep(0)
         self.assertEqual(self.reader.calls, [(0, 199999)])
         second = await self.client.get(
             stream, headers={"Range": "bytes=140000-150000"}, cookies={"tgvio_player_session": cookie}
@@ -549,6 +762,22 @@ class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await second.read(), self.buffer[140000:150001])
         # Chunk 2 is cached, so no further upstream read happens.
         self.assertEqual(self.reader.calls, [(0, 199999)])
+
+    async def test_cache_stats_are_authenticated_and_report_stream_counters(self) -> None:
+        denied = await self.client.get("/api/v1/cache-stats")
+        self.assertEqual(denied.status, 401)
+
+        cookie = await self._login()
+        allowed = await self.client.get(
+            "/api/v1/cache-stats", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(allowed.status, 200)
+        stats = await allowed.json()
+        self.assertIn("bytes", stats)
+        self.assertIn("disk_cache_bytes_served", stats)
+        self.assertIn("inflight_bytes_served", stats)
+        self.assertIn("upstream_bytes", stats)
+        self.assertIn("prime_wait_ms_avg", stats)
 
 
 if __name__ == "__main__":

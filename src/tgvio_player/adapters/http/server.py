@@ -3,9 +3,12 @@ from __future__ import annotations
 import asyncio
 from collections import Counter
 from collections.abc import AsyncIterator
+import base64
 import ipaddress
 import json
+import math
 from pathlib import Path
+import re
 from typing import Any
 from urllib.parse import urlsplit
 
@@ -22,6 +25,9 @@ from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDa
 
 _MAX_JSON_BYTES = 4096
 _MAX_FEED_LIMIT = 20
+_MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_FAVORITE_CURSOR_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
+_MAX_RANDOM_CANDIDATES = 5
 _DEFAULT_STARTUP_CACHE_ENTRIES = 32
 _DEFAULT_STARTUP_CACHE_BYTES = 64 * 1024 * 1024
 _DEFAULT_STARTUP_RANGE_BYTES = 2 * 1024 * 1024
@@ -178,18 +184,37 @@ class PlayerHttpServer:
         app.router.add_post("/api/v1/auth/login", self._login)
         app.router.add_post("/api/v1/auth/logout", self._logout)
         app.router.add_get("/api/v1/feed", self._feed)
+        app.router.add_get("/api/v1/random", self._random)
         app.router.add_get("/api/v1/videos", self._videos)
+        app.router.add_get("/api/v1/groups/{group_id}/videos", self._group_videos)
         app.router.add_get("/api/v1/favorites", self._favorites)
+        app.router.add_get("/api/v1/long-progress", self._long_video_progress)
+        app.router.add_get("/api/v1/cache-stats", self._cache_stats)
         app.router.add_get("/api/v1/media/{media_id}", self._media)
         app.router.add_get("/api/v1/media/{media_id}/stream", self._stream)
         app.router.add_post("/api/v1/media/{media_id}/prepare", self._prepare)
         app.router.add_put("/api/v1/media/{media_id}/favorite", self._favorite)
         app.router.add_delete("/api/v1/media/{media_id}/favorite", self._unfavorite)
+        app.router.add_put("/api/v1/media/{media_id}/progress", self._save_long_video_progress)
+        app.router.add_delete("/api/v1/media/{media_id}/progress", self._delete_long_video_progress)
         if self._static_dir is not None:
             app.router.add_get("/", self._frontend_index)
             assets = self._static_dir / "assets"
             if assets.is_dir():
                 app.router.add_static("/assets", assets, show_index=False, follow_symlinks=False)
+            for public_asset in (
+                "site.webmanifest",
+                "apple-touch-icon.png",
+                "player-icon-192.png",
+                "player-icon-512.png",
+                "player-icon.svg",
+            ):
+                async def serve_public_asset(
+                    request: web.Request, name: str = public_asset
+                ) -> web.FileResponse:
+                    return await self._frontend_public_asset(request, name)
+
+                app.router.add_get(f"/{public_asset}", serve_public_asset)
         return app
 
     def runner(self) -> web.AppRunner:
@@ -233,6 +258,11 @@ class PlayerHttpServer:
             raise web.HTTPServiceUnavailable(text="unavailable") from None
         return web.json_response({"status": "ok", "active_videos": active})
 
+    async def _cache_stats(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        stats = self._range_cache.stats() if self._range_cache is not None else {}
+        return web.json_response({"available": self._range_cache is not None, **stats})
+
     async def _frontend_index(self, request: web.Request) -> web.FileResponse:
         del request
         assert self._static_dir is not None
@@ -240,6 +270,14 @@ class PlayerHttpServer:
         if not index.is_file():
             raise web.HTTPNotFound(text="frontend unavailable")
         return web.FileResponse(index)
+
+    async def _frontend_public_asset(self, request: web.Request, name: str) -> web.FileResponse:
+        del request
+        assert self._static_dir is not None
+        asset = self._static_dir / name
+        if not asset.is_file():
+            raise web.HTTPNotFound(text="frontend asset unavailable")
+        return web.FileResponse(asset)
 
     async def _login(self, request: web.Request) -> web.Response:
         client = resolve_client(request)
@@ -292,11 +330,40 @@ class PlayerHttpServer:
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "next_cursor": None})
 
+    async def _random(self, request: web.Request) -> web.Response:
+        digest = await self._authenticate(request)
+        try:
+            limit = int(request.query.get("limit", str(_MAX_RANDOM_CANDIDATES)))
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid random limit") from None
+        if not 1 <= limit <= _MAX_RANDOM_CANDIDATES:
+            raise web.HTTPBadRequest(text="invalid random limit")
+        raw_excludes = request.query.getall("exclude", [])
+        if len(raw_excludes) > 12 or any(
+            len(media_id) != 64
+            or any(char not in "0123456789abcdef" for char in media_id)
+            for media_id in raw_excludes
+        ):
+            raise web.HTTPBadRequest(text="invalid random exclusions")
+        media_ids = await self._deck.random_short_ids(limit=limit, exclude=set(raw_excludes))
+        items = []
+        for media_id in media_ids:
+            details = await self._repository.active_media_details(media_id)
+            if details is None:
+                continue
+            if self._faststart is not None:
+                self._faststart.schedule(media_id, details)
+            items.append(await self._media_dto(details, digest, prefetch=True))
+        return web.json_response({"items": items, "category": "short"})
+
     async def _videos(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
         category = request.query.get("category", "short")
-        if category not in {"short", "long"}:
+        if category not in {"short", "long", "all"}:
             raise web.HTTPBadRequest(text="invalid category")
+        search = request.query.get("search", "").strip().lower()
+        if len(search) > 64 or any(char not in "0123456789abcdef" for char in search):
+            raise web.HTTPBadRequest(text="invalid search")
         try:
             limit = int(request.query.get("limit", "20"))
             offset = int(request.query.get("offset", "0"))
@@ -304,12 +371,20 @@ class PlayerHttpServer:
             raise web.HTTPBadRequest(text="invalid paging") from None
         if not 1 <= limit <= _MAX_FEED_LIMIT or offset < 0:
             raise web.HTTPBadRequest(text="invalid paging")
-        if category == "long":
+        if category == "all":
+            media_ids = await self._repository.list_video_ids(
+                order="media_id",
+                limit=limit + 1,
+                offset=offset,
+                **({"media_id_prefix": search} if search else {}),
+            )
+        elif category == "long":
             media_ids = await self._repository.list_video_ids(
                 min_seconds=self._large_video_seconds,
                 order="duration_desc",
                 limit=limit + 1,
                 offset=offset,
+                **({"media_id_prefix": search} if search else {}),
             )
         else:
             media_ids = await self._repository.list_video_ids(
@@ -317,7 +392,57 @@ class PlayerHttpServer:
                 order="media_id",
                 limit=limit + 1,
                 offset=offset,
+                **({"media_id_prefix": search} if search else {}),
             )
+        has_more = len(media_ids) > limit
+        media_ids = media_ids[:limit]
+        prefetch = _prefetch_requested(request)
+        items = []
+        for index, media_id in enumerate(media_ids):
+            details = await self._repository.active_media_details(media_id)
+            if details is not None:
+                if category != "all":
+                    if self._faststart is not None and index < 3:
+                        self._faststart.schedule(media_id, details)
+                    await self._schedule_head_prefetch(media_id, details)
+                items.append(await self._media_dto(details, digest, prefetch=prefetch))
+        count_method = getattr(self._repository, "count_video_ids", None)
+        if callable(count_method):
+            count_options: dict[str, object] = {"media_id_prefix": search} if search else {}
+            if category == "long":
+                count_options["min_seconds"] = self._large_video_seconds
+            elif category == "short":
+                count_options["max_seconds"] = self._large_video_seconds
+            total = await count_method(**count_options)
+        elif category == "all" and not search:
+            total = await self._repository.count_active_videos()
+        else:
+            total = None
+        return web.json_response(
+            {"items": items, "has_more": has_more, "category": category, "total": total}
+        )
+
+    async def _group_videos(self, request: web.Request) -> web.Response:
+        digest = await self._authenticate(request)
+        group_id = request.match_info["group_id"]
+        try:
+            label = await self._repository.resolve_archive_group(group_id)
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid group") from None
+        if label is None:
+            raise web.HTTPNotFound(text="group not found")
+        try:
+            limit = int(request.query.get("limit", "20"))
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid paging") from None
+        if not 1 <= limit <= _MAX_FEED_LIMIT:
+            raise web.HTTPBadRequest(text="invalid paging")
+        cursor = request.query.get("cursor") or None
+        if cursor is not None and not _MEDIA_ID_RE.fullmatch(cursor):
+            raise web.HTTPBadRequest(text="invalid paging")
+        media_ids = await self._repository.list_group_video_ids(
+            group_id, after_id=cursor, limit=limit + 1
+        )
         has_more = len(media_ids) > limit
         media_ids = media_ids[:limit]
         prefetch = _prefetch_requested(request)
@@ -329,7 +454,15 @@ class PlayerHttpServer:
                     self._faststart.schedule(media_id, details)
                 await self._schedule_head_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
-        return web.json_response({"items": items, "has_more": has_more, "category": category})
+        next_cursor = media_ids[-1] if has_more and media_ids else None
+        return web.json_response(
+            {
+                "items": items,
+                "has_more": has_more,
+                "next_cursor": next_cursor,
+                "group": {"id": group_id, "label": label},
+            }
+        )
 
     async def _media(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
@@ -340,14 +473,59 @@ class PlayerHttpServer:
 
     async def _favorites(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
+        try:
+            limit = int(request.query.get("limit", str(_MAX_FEED_LIMIT)))
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid paging") from None
+        if not 1 <= limit <= _MAX_FEED_LIMIT:
+            raise web.HTTPBadRequest(text="invalid paging")
+        raw_cursor = request.query.get("cursor")
+        cursor = self._decode_favorite_cursor(raw_cursor) if raw_cursor is not None else None
+        if raw_cursor is not None and cursor is None:
+            raise web.HTTPBadRequest(text="invalid paging")
         prefetch = _prefetch_requested(request)
-        media_ids = await self._deck.list_favorites(digest, limit=200)
+        rows = await self._deck.favorite_page(digest, limit=limit + 1, cursor=cursor)
+        has_more = len(rows) > limit
+        rows = rows[:limit]
         items = []
-        for media_id in media_ids:
+        for media_id, _created_at in rows:
             details = await self._repository.active_media_details(media_id)
             if details is not None:
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
-        return web.json_response({"items": items, "next_cursor": None})
+        next_cursor = self._encode_favorite_cursor(rows[-1]) if has_more and rows else None
+        return web.json_response(
+            {"items": items, "has_more": has_more, "next_cursor": next_cursor}
+        )
+
+    @staticmethod
+    def _encode_favorite_cursor(row: tuple[str, int]) -> str:
+        media_id, created_at = row
+        payload = json.dumps([created_at, media_id], separators=(",", ":")).encode("ascii")
+        return base64.urlsafe_b64encode(payload).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _decode_favorite_cursor(value: str) -> tuple[int, str] | None:
+        if not _FAVORITE_CURSOR_RE.fullmatch(value):
+            return None
+        try:
+            raw = base64.b64decode(
+                value + "=" * (-len(value) % 4), altchars=b"-_", validate=True
+            )
+            parsed = json.loads(raw)
+        except (ValueError, json.JSONDecodeError):
+            return None
+        if (
+            not isinstance(parsed, list)
+            or len(parsed) != 2
+            or isinstance(parsed[0], bool)
+            or not isinstance(parsed[0], int)
+            or parsed[0] < 0
+            or not isinstance(parsed[1], str)
+            or not _MEDIA_ID_RE.fullmatch(parsed[1])
+            or PlayerHttpServer._encode_favorite_cursor((parsed[1], parsed[0])) != value
+        ):
+            return None
+        return parsed[0], parsed[1]
 
     async def _favorite(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
@@ -363,6 +541,82 @@ class PlayerHttpServer:
         media_id = request.match_info["media_id"]
         await self._deck.unfavorite(digest, media_id)
         return web.json_response({"id": media_id, "favorite": False})
+
+    async def _long_video_progress(self, request: web.Request) -> web.Response:
+        session_digest = await self._authenticate(request)
+        items = await self._repository.list_long_video_progress()
+        recent_items: list[dict[str, object]] = []
+        for media_id, position in items[:5]:
+            try:
+                details = await self._media_details(media_id)
+            except web.HTTPNotFound:
+                continue
+            duration = details.get("duration_seconds")
+            if (
+                not isinstance(duration, (int, float))
+                or position <= 10
+                or position >= float(duration) - 30
+            ):
+                continue
+            media = await self._media_dto(details, session_digest)
+            recent_items.append({**media, "position_seconds": position})
+            if len(recent_items) == 5:
+                break
+        return web.json_response(
+            {
+                "items": [
+                    {"id": media_id, "position_seconds": position}
+                    for media_id, position in items
+                ],
+                "recent_items": recent_items,
+            }
+        )
+
+    async def _save_long_video_progress(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        self._require_same_origin(request)
+        details = await self._media_details(request.match_info["media_id"])
+        duration = details.get("duration_seconds")
+        if (
+            not isinstance(duration, (int, float))
+            or not math.isfinite(float(duration))
+            or float(duration) <= self._large_video_seconds
+        ):
+            raise web.HTTPNotFound(text="long video not found")
+        payload = await self._json_object(request)
+        position = payload.get("position_seconds")
+        if (
+            isinstance(position, bool)
+            or not isinstance(position, (int, float))
+            or not math.isfinite(float(position))
+            or float(position) < 0
+        ):
+            raise web.HTTPBadRequest(text="invalid playback position")
+        position_seconds = min(float(duration), float(position))
+        # A nearly completed video should reopen at the beginning, not at its
+        # last few seconds. Keep no stale resume marker after completion.
+        if position_seconds >= float(duration) - min(30.0, float(duration) * 0.05):
+            await self._repository.delete_long_video_progress(str(details["media_id"]))
+            return web.json_response({"id": details["media_id"], "completed": True})
+        await self._repository.save_long_video_progress(
+            str(details["media_id"]), position_seconds
+        )
+        return web.json_response(
+            {"id": details["media_id"], "position_seconds": position_seconds}
+        )
+
+    async def _delete_long_video_progress(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        self._require_same_origin(request)
+        details = await self._media_details(request.match_info["media_id"])
+        duration = details.get("duration_seconds")
+        if (
+            not isinstance(duration, (int, float))
+            or float(duration) <= self._large_video_seconds
+        ):
+            raise web.HTTPNotFound(text="long video not found")
+        await self._repository.delete_long_video_progress(str(details["media_id"]))
+        return web.json_response({"id": details["media_id"], "deleted": True})
 
     async def _stream(self, request: web.Request) -> web.StreamResponse:
         await self._authenticate(request)
@@ -647,6 +901,10 @@ class PlayerHttpServer:
         stream_url = f"/api/v1/media/{media_id}/stream"
         if prefetch:
             stream_url += "?cache=1"
+        groups = [
+            {"id": group_id, "label": label}
+            for group_id, label in await self._repository.list_media_groups(media_id)
+        ]
         return {
             "id": media_id,
             "width": details["width"],
@@ -658,6 +916,7 @@ class PlayerHttpServer:
             "mime_type": details.get("mime_type"),
             "codec": details.get("codec"),
             "category": "long" if is_long else "short",
+            "groups": groups,
         }
 
     @staticmethod

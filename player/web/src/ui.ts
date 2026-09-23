@@ -6,7 +6,9 @@ export type ShellHandlers = {
   onToggleFavorite: () => void;
   onToggleSound: () => void;
   onShuffle: () => void;
-  onShare: () => void;
+  onPrivacyLock: () => void;
+  onOpenGroup: () => void;
+  onBackFromContext: () => void;
   onSeek: (value: number) => void;
   onNav: (action: string) => void;
 };
@@ -23,7 +25,9 @@ export type Shell = {
   favoriteBtn: HTMLButtonElement;
   soundBtn: HTMLButtonElement;
   shuffleBtn: HTMLButtonElement;
-  shareBtn: HTMLButtonElement;
+  privacyLockBtn: HTMLButtonElement;
+  groupBtn: HTMLButtonElement;
+  contextBackBtn: HTMLButtonElement;
   fullscreenBtn: HTMLButtonElement;
   navButtons: HTMLButtonElement[];
   toast: HTMLElement;
@@ -42,7 +46,6 @@ const MOBILE_NAV: NavSpec[] = [
   { icon: "home", label: "首页", action: "home" },
   { icon: "film", label: "长视频", action: "long" },
   { icon: "heart", label: "收藏", action: "favorites" },
-  { icon: "shuffle", label: "随机", action: "random" },
   { icon: "library", label: "片库", action: "library" },
 ];
 
@@ -183,6 +186,10 @@ export function buildShell(handlers: ShellHandlers): Shell {
 
   const topbar = element("header", "topbar");
   const brandSmall = element("span", "topbar-brand", "TGVIO");
+  const contextBackBtn = element("button", "context-back", "返回");
+  contextBackBtn.type = "button";
+  contextBackBtn.hidden = true;
+  contextBackBtn.addEventListener("click", handlers.onBackFromContext);
   const netSpeed = element("span", "net-speed", "↓ 0 KB/s");
   netSpeed.hidden = true;
   const fullscreenBtn = element("button", "topbar-fullscreen");
@@ -194,7 +201,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
   settingsBtn.setAttribute("aria-label", "设置");
   settingsBtn.appendChild(icon("settings", 22));
   settingsBtn.addEventListener("click", () => handlers.onNav("settings"));
-  topbar.append(brandSmall, netSpeed, fullscreenBtn, settingsBtn);
+  topbar.append(contextBackBtn, brandSmall, netSpeed, fullscreenBtn, settingsBtn);
 
   const actionRail = element("div", "action-rail");
   const favoriteBtn = actionButton(
@@ -219,20 +226,31 @@ export function buildShell(handlers: ShellHandlers): Shell {
     "声音",
     "声音",
   );
-  const shuffleBtn = actionButton(iconStack([["shuffle", "icon-single"]], 30), "换一个", "换一个");
-  const shareBtn = actionButton(iconStack([["share", "icon-single"]], 30), "分享", "分享");
-  actionRail.append(favoriteBtn, soundBtn, shuffleBtn, shareBtn);
+  const shuffleBtn = actionButton(
+    iconStack([["shuffle", "icon-single"]], 30),
+    "换一个",
+    "随机切换短视频",
+  );
+  const privacyLockBtn = actionButton(
+    iconStack([["lock", "icon-single"]], 30),
+    "隐私遮罩",
+    "立即遮住并暂停",
+  );
+  const groupBtn = actionButton(iconStack([["library", "icon-single"]], 30), "同组视频", "查看同组视频");
+  groupBtn.hidden = true;
+  groupBtn.addEventListener("click", handlers.onOpenGroup);
+  actionRail.append(favoriteBtn, groupBtn, soundBtn, shuffleBtn, privacyLockBtn);
   favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
   soundBtn.addEventListener("click", handlers.onToggleSound);
   shuffleBtn.addEventListener("click", handlers.onShuffle);
-  shareBtn.addEventListener("click", handlers.onShare);
+  privacyLockBtn.addEventListener("click", handlers.onPrivacyLock);
 
   const pauseIndicator = element("div", "pause-indicator");
   pauseIndicator.append(iconStack([["play", "ind-play"], ["pause", "ind-pause"]], 34));
 
   const gestureButton = element("button", "gesture-play");
   gestureButton.type = "button";
-  gestureButton.setAttribute("aria-label", "播放");
+  gestureButton.setAttribute("aria-label", "播放并显示视频");
   gestureButton.appendChild(icon("play", 34));
   gestureButton.addEventListener("click", handlers.onPlayGesture);
 
@@ -305,7 +323,9 @@ export function buildShell(handlers: ShellHandlers): Shell {
     favoriteBtn,
     soundBtn,
     shuffleBtn,
-    shareBtn,
+    privacyLockBtn,
+    groupBtn,
+    contextBackBtn,
     fullscreenBtn,
     navButtons,
     toast,
@@ -331,12 +351,55 @@ export function toast(shell: Shell, message: string): void {
   toastTimer = window.setTimeout(() => shell.toast.classList.remove("show"), 1900);
 }
 
+export function confirmAudioEnable(host: HTMLElement): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = element("div", "audio-warning");
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "audio-warning-title");
+    const panel = element("section", "audio-warning-panel");
+    const title = element("h2", undefined, "开启声音前请留意");
+    title.id = "audio-warning-title";
+    const message = element(
+      "p",
+      undefined,
+      "视频可能包含成人内容或不适合旁人听到的声音。确认周围环境适合后，才会为当前视频开启声音。",
+    );
+    const actions = element("div", "audio-warning-actions");
+    const keepMuted = element("button", "audio-warning-cancel", "继续静音");
+    const enable = element("button", "audio-warning-confirm", "我知道，开启本条声音");
+    keepMuted.type = "button";
+    enable.type = "button";
+    let settled = false;
+    const finish = (accepted: boolean) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(accepted);
+    };
+    keepMuted.addEventListener("click", () => finish(false));
+    enable.addEventListener("click", () => finish(true));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    actions.append(keepMuted, enable);
+    panel.append(title, message, actions);
+    overlay.appendChild(panel);
+    host.appendChild(overlay);
+    keepMuted.focus();
+  });
+}
+
 export function showIndicator(shell: Shell, kind: "play" | "pause"): void {
   shell.pauseIndicator.classList.toggle("kind-play", kind === "play");
   shell.pauseIndicator.classList.toggle("kind-pause", kind === "pause");
   shell.pauseIndicator.classList.add("show");
   window.clearTimeout(indicatorTimer);
   indicatorTimer = window.setTimeout(() => shell.pauseIndicator.classList.remove("show"), 560);
+}
+
+export function setControlsVisible(shell: Shell, visible: boolean): void {
+  shell.root.classList.toggle("controls-visible", visible);
 }
 
 export function hideIndicator(shell: Shell): void {
@@ -441,6 +504,7 @@ export function sheetToggle(
 export function closeSheet(shell: Shell): void {
   shell.sheet.hidden = true;
   shell.sheetBody.replaceChildren();
+  shell.root.dispatchEvent(new Event("playersheetclose"));
 }
 
 export function formatTime(seconds: number): string {

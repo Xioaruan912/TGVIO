@@ -70,6 +70,121 @@ async def collect(agen) -> bytes:
 
 
 class MediaRangeCacheTests(unittest.IsolatedAsyncioTestCase):
+    async def test_first_bytes_are_streamed_before_a_full_cache_chunk_arrives(self) -> None:
+        payload = bytes(range(64))
+        first_piece_sent = asyncio.Event()
+        release_remainder = asyncio.Event()
+
+        class Reader:
+            async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+                class Body:
+                    def __init__(self) -> None:
+                        self.parts = [payload[:3], payload[3:byte_range.length]]
+
+                    def __aiter__(self):
+                        return self
+
+                    async def __anext__(self) -> bytes:
+                        if not self.parts:
+                            raise StopAsyncIteration
+                        part = self.parts.pop(0)
+                        if not self.parts:
+                            first_piece_sent.set()
+                            await release_remainder.wait()
+                        return part
+
+                    async def aclose(self) -> None:
+                        return None
+
+                class Response:
+                    status = 206
+                    content_length = byte_range.length
+                    body = Body()
+
+                return Response()
+
+        cache = MediaRangeCache(FakeStore(), Reader(), window_bytes=64, max_attempts=1)
+        iterator = cache.stream("k", "pkg", "clip.mp4", len(payload), ByteRange(0, 7)).__aiter__()
+        first = asyncio.create_task(iterator.__anext__())
+        try:
+            await first_piece_sent.wait()
+            await asyncio.sleep(0)
+            self.assertTrue(first.done(), "browser should receive available bytes before the 8-byte cache chunk completes")
+            self.assertEqual(await first, payload[:3])
+        finally:
+            release_remainder.set()
+            await cache.shutdown()
+
+    async def test_prime_waits_for_a_small_prefix_not_the_entire_cache_chunk(self) -> None:
+        chunk_bytes = 256 * 1024
+        prefix_bytes = 64 * 1024
+        payload = bytes(index % 251 for index in range(chunk_bytes * 2))
+        first_piece_sent = asyncio.Event()
+        release_remainder = asyncio.Event()
+
+        class Reader:
+            async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+                class Body:
+                    def __init__(self) -> None:
+                        self.parts = [payload[:prefix_bytes], payload[prefix_bytes:byte_range.length]]
+                        self.first = True
+
+                    def __aiter__(self):
+                        return self
+
+                    async def __anext__(self) -> bytes:
+                        if not self.parts:
+                            raise StopAsyncIteration
+                        part = self.parts.pop(0)
+                        if self.first:
+                            self.first = False
+                            first_piece_sent.set()
+                            return part
+                        await release_remainder.wait()
+                        return part
+
+                    async def aclose(self) -> None:
+                        return None
+
+                class Response:
+                    status = 206
+                    content_length = byte_range.length
+                    body = Body()
+
+                return Response()
+
+        store = FakeStore()
+        store.chunk_bytes = chunk_bytes
+        cache = MediaRangeCache(store, Reader(), window_bytes=len(payload), max_attempts=1)
+        prime = asyncio.create_task(
+            cache.prime("k", "pkg", "clip.mp4", len(payload), ByteRange(0, len(payload) - 1))
+        )
+        try:
+            await first_piece_sent.wait()
+            await asyncio.sleep(0)
+            self.assertTrue(prime.done(), "a 64 KiB prefix is enough to start the HTTP response")
+            await prime
+        finally:
+            release_remainder.set()
+            await cache.shutdown()
+
+    async def test_truncated_upstream_window_fails_instead_of_waiting_forever(self) -> None:
+        class Reader:
+            async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+                return _Response(206, b"short")
+
+        cache = MediaRangeCache(
+            FakeStore(), Reader(), max_attempts=1, backoff_seconds=0.01
+        )
+        try:
+            with self.assertRaises(Exception):
+                await asyncio.wait_for(
+                    collect(cache.stream("k", "pkg", "clip.mp4", 64, ByteRange(0, 7))),
+                    timeout=0.2,
+                )
+        finally:
+            await cache.shutdown()
+
     async def test_stream_reads_through_the_cache(self) -> None:
         buffer = bytes(range(100))
         reader = FakeReader(buffer)
@@ -188,6 +303,33 @@ class ThrottleTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(Exception):
             await collect(cache.stream("k", "pkg", "clip.mp4", 64, ByteRange(0, 7)))
         await cache.shutdown()
+
+    async def test_failed_window_can_be_retried_by_a_later_playback_request(self) -> None:
+        payload = bytes(range(64))
+
+        class Reader:
+            failed = True
+
+            async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+                if self.failed:
+                    return _Response(403)
+                return _Response(206, payload[byte_range.start : byte_range.end + 1])
+
+        reader = Reader()
+        cache = MediaRangeCache(
+            FakeStore(), reader, max_attempts=1, backoff_seconds=0.01
+        )
+        try:
+            with self.assertRaises(Exception):
+                await collect(cache.stream("k", "pkg", "clip.mp4", 64, ByteRange(0, 7)))
+            reader.failed = False
+            retried = await asyncio.wait_for(
+                collect(cache.stream("k", "pkg", "clip.mp4", 64, ByteRange(0, 7))),
+                timeout=0.2,
+            )
+            self.assertEqual(retried, payload[:8])
+        finally:
+            await cache.shutdown()
 
 
 class RangeStoreTests(unittest.TestCase):

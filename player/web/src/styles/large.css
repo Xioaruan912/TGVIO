@@ -83,6 +83,55 @@
   font-weight: 600;
 }
 
+.library-toolbar {
+  display: grid;
+  gap: 10px;
+  padding: 12px 12px 8px;
+  background: #000;
+}
+
+.library-search {
+  width: 100%;
+  height: 42px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  outline: none;
+  background: #111114;
+  color: #fff;
+  font: inherit;
+  font-size: 14px;
+}
+
+.library-search::placeholder {
+  color: var(--faint);
+}
+
+.library-search:focus {
+  border-color: rgba(37, 244, 238, 0.65);
+}
+
+.library-filters {
+  display: flex;
+  gap: 8px;
+}
+
+.library-filter {
+  min-height: 34px;
+  padding: 0 14px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  background: rgba(255, 255, 255, 0.05);
+  color: var(--muted);
+  font-size: 13px;
+}
+
+.library-filter.active {
+  border-color: rgba(37, 244, 238, 0.45);
+  background: rgba(37, 244, 238, 0.12);
+  color: #fff;
+}
+
 .long-list {
   flex: 1 1 auto;
   overflow-y: auto;
@@ -91,6 +140,28 @@
   display: grid;
   gap: 8px;
   align-content: start;
+}
+
+.long-resume-section {
+  display: grid;
+  gap: 8px;
+  margin-bottom: 8px;
+  padding: 12px;
+  border: 1px solid rgba(37, 244, 238, 0.2);
+  border-radius: 16px;
+  background: linear-gradient(145deg, rgba(37, 244, 238, 0.08), rgba(255, 255, 255, 0.025));
+}
+
+.long-resume-heading {
+  margin: 0 2px 2px;
+  color: #fff;
+  font-size: 15px;
+  font-weight: 650;
+}
+
+.long-resume-items {
+  display: grid;
+  gap: 7px;
 }
 
 .long-row {
@@ -105,8 +176,26 @@
   color: #fff;
 }
 
+.long-resume-row {
+  border: 1px solid rgba(37, 244, 238, 0.12);
+  background: rgba(0, 0, 0, 0.26);
+}
+
 .long-row:active {
   background: rgba(255, 255, 255, 0.1);
+}
+
+.long-row-open {
+  display: flex;
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 48px;
+  align-items: center;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
 }
 
 .long-thumb {
@@ -118,6 +207,68 @@
   background: rgba(255, 255, 255, 0.08);
   color: rgba(255, 255, 255, 0.85);
   flex: none;
+}
+
+.long-preview {
+  position: relative;
+  flex: 0 0 58px;
+  width: 58px;
+  height: 48px;
+  padding: 0;
+  overflow: hidden;
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  cursor: pointer;
+}
+
+.library-preview-video {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  opacity: 0;
+  filter: blur(9px);
+  transform: scale(1.1);
+  transition: filter 180ms ease, opacity 180ms ease;
+}
+
+.long-preview.preview-loading .library-preview-video,
+.long-preview.preview-revealed .library-preview-video {
+  opacity: 0.92;
+}
+
+.long-preview.preview-revealed .library-preview-video {
+  filter: blur(0);
+}
+
+.library-preview-placeholder {
+  position: relative;
+  z-index: 1;
+  color: rgba(255, 255, 255, 0.76);
+  pointer-events: none;
+}
+
+.long-preview.preview-loading .library-preview-placeholder,
+.long-preview.preview-revealed .library-preview-placeholder {
+  opacity: 0;
+}
+
+.library-preview-hint {
+  position: absolute;
+  z-index: 2;
+  right: 3px;
+  bottom: 3px;
+  padding: 1px 4px;
+  border-radius: 4px;
+  background: rgba(0, 0, 0, 0.72);
+  color: #fff;
+  font-size: 9px;
+  line-height: 1.4;
+  pointer-events: none;
+}
+
+.long-preview.preview-loading .library-preview-hint {
+  opacity: 0.65;
 }
 
 .long-row-text {
@@ -136,11 +287,30 @@
   color: var(--muted);
 }
 
+.long-row-resume {
+  color: var(--cyan);
+}
+
 .long-empty {
   margin: 40px 0;
   text-align: center;
   color: var(--muted);
   font-size: 13px;
+}
+
+.long-retry {
+  justify-self: center;
+  min-height: 40px;
+  padding: 0 18px;
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  color: #fff;
+  background: #17171a;
+}
+
+.long-row-kind {
+  color: var(--muted);
+  font-size: 11px;
 }
 
 /* Dedicated large-video player */
@@ -171,17 +341,101 @@
   color: #fff;
 }
 
+.large-privacy-lock {
+  flex: 0 0 40px;
+  width: 40px;
+  height: 40px;
+  display: grid;
+  place-items: center;
+  border: 0;
+  border-radius: 50%;
+  background: rgba(255, 255, 255, 0.08);
+  color: rgba(255, 255, 255, 0.9);
+}
+
 .large-title {
   font-size: 15px;
   color: rgba(255, 255, 255, 0.85);
 }
 
 .large-stage {
+  position: relative;
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
   display: grid;
   place-items: center;
   overflow: hidden;
+}
+
+.large-player.privacy-locked .large-stage::after {
+  content: "";
+  position: absolute;
+  z-index: 1;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+  pointer-events: none;
+}
+
+.large-player.privacy-locked .large-video {
+  filter: blur(24px);
+  transform: scale(1.06);
+}
+
+.large-privacy-play {
+  position: absolute;
+  left: 50%;
+  top: 50%;
+  z-index: 2;
+  transform: translate(-50%, -50%);
+  display: none;
+  grid-auto-flow: row;
+  justify-items: center;
+  gap: 16px;
+  padding: 18px;
+  color: #fff;
+  background: rgba(12, 15, 17, 0.88);
+  border: 1px solid rgba(75, 220, 204, 0.55);
+  border-radius: 18px;
+  box-shadow: 0 0 34px rgba(48, 210, 192, 0.2);
+  font-size: 13px;
+  white-space: nowrap;
+}
+
+.large-player.privacy-locked .large-privacy-play {
+  display: grid;
+}
+
+.large-player.privacy-locked.is-loading .large-privacy-play,
+.large-player.privacy-locked .large-retry {
+  display: none;
+}
+
+.large-player.privacy-locked .large-controls {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.large-stage .media-loading {
+  z-index: 2;
+}
+
+.large-retry {
+  position: absolute;
+  z-index: 3;
+  left: 50%;
+  top: calc(50% + 48px);
+  padding: 9px 16px;
+  border: 1px solid rgba(255, 255, 255, 0.35);
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.56);
+  color: #fff;
+  font-size: 13px;
+  transform: translateX(-50%);
+}
+
+.large-retry[hidden] {
+  display: none;
 }
 
 .large-video {
@@ -196,6 +450,18 @@
   align-items: center;
   gap: 12px;
   padding: 10px 14px calc(14px + var(--safe-bottom));
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.large-topbar {
+  transition: opacity 180ms ease, transform 180ms ease;
+}
+
+.large-player:not(.controls-visible) .large-topbar,
+.large-player:not(.controls-visible) .large-controls {
+  opacity: 0;
+  transform: translateY(6px);
+  pointer-events: none;
 }
 
 .large-btn {

@@ -23,9 +23,44 @@
   background: #000;
 }
 
+.video-page.random-transition .media-slot {
+  animation: random-refresh-in 0.42s cubic-bezier(0.18, 0.72, 0.22, 1) both;
+}
+
+@keyframes random-refresh-in {
+  from {
+    opacity: 0.45;
+    transform: translateY(18px) scale(0.985);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .video-page.random-transition .media-slot {
+    animation: none;
+  }
+}
+
 .video-host {
   position: absolute;
   inset: 0;
+}
+
+.app-shell.privacy-locked .video-host {
+  filter: blur(24px);
+  transform: scale(1.06);
+}
+
+.app-shell.privacy-locked .viewport::after {
+  content: "";
+  position: absolute;
+  z-index: 14;
+  inset: 0;
+  background: rgba(0, 0, 0, 0.42);
+  pointer-events: none;
 }
 
 .media-slot {
@@ -74,4 +109,77 @@
 
 .video-page.frame-ready .poster {
   opacity: 0;
+}
+
+/* loadeddata is enough to draw the privacy-blurred first frame. Do not leave
+   the generic poster spinner over a ready but intentionally paused video. */
+.video-page.media-ready .poster {
+  opacity: 0;
+  visibility: hidden;
+}
+
+/* Feed pages outside the active/adjacent video pool are placeholders, not
+   downloads in progress. Keep their loading indicators out of the swipe UI. */
+.video-page:not(.is-active) .poster-spinner,
+.video-page:not(.is-active) .poster-label,
+.video-page:not(.is-active) .media-loading {
+  visibility: hidden;
+}
+
+.video-page.is-loading .poster-spinner,
+.video-page.is-loading .poster-label {
+  visibility: hidden;
+}
+
+.media-loading {
+  position: absolute;
+  z-index: 2;
+  left: 50%;
+  top: 50%;
+  display: grid;
+  justify-items: center;
+  gap: 10px;
+  color: rgba(255, 255, 255, 0.72);
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  opacity: 0;
+  pointer-events: none;
+  transform: translate(-50%, -46%);
+  transition: opacity 200ms ease, transform 200ms ease;
+}
+
+.media-loading-ring {
+  display: block;
+  width: 38px;
+  height: 38px;
+  border: 1px solid rgba(255, 255, 255, 0.16);
+  border-top-color: rgba(255, 255, 255, 0.92);
+  border-right-color: rgba(37, 244, 238, 0.7);
+  border-radius: 50%;
+  box-shadow: 0 0 22px rgba(37, 244, 238, 0.12);
+  animation: media-ring-turn 1s linear infinite;
+}
+
+.video-page.is-loading .media-loading,
+.large-player.is-loading .media-loading {
+  opacity: 1;
+  transform: translate(-50%, -50%);
+}
+
+/* Keep the poster's first-load spinner, but never stack it over the
+   privacy play button once the active media has produced a frame. */
+.video-page.media-ready .media-loading {
+  opacity: 0;
+  visibility: hidden;
+}
+
+@keyframes media-ring-turn {
+  to { transform: rotate(360deg); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .media-loading-ring,
+  .poster-spinner { animation: none; }
+  .media-loading,
+  .video-page .poster { transition: none; }
 }

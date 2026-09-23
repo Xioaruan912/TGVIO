@@ -12,6 +12,8 @@ export class FeedView {
   private readonly indexByMedia = new Map<string, number>();
   private clips: Clip[] = [];
   private candidate = 0;
+  private programmaticTarget: number | null = null;
+  private terminalPage: HTMLElement | null = null;
 
   onCandidate: ((index: number) => void) | null = null;
   onSettle: ((index: number) => void) | null = null;
@@ -21,6 +23,18 @@ export class FeedView {
   constructor(el: HTMLElement) {
     this.el = el;
     this.el.addEventListener("scroll", () => this.handleScroll(), { passive: true });
+    this.el.addEventListener("scrollend", () => this.finishScroll(), { passive: true });
+    this.el.addEventListener("pointerdown", () => {
+      this.programmaticTarget = null;
+    }, { passive: true });
+    this.el.addEventListener("wheel", () => {
+      this.programmaticTarget = null;
+    }, { passive: true });
+    this.el.addEventListener("keydown", (event) => {
+      if (["ArrowUp", "ArrowDown", "PageUp", "PageDown", "Home", "End", " "].includes(event.key)) {
+        this.programmaticTarget = null;
+      }
+    });
   }
 
   get length(): number {
@@ -52,9 +66,72 @@ export class FeedView {
     this.clips = clips;
   }
 
+  replaceClips(clips: Clip[]): void {
+    window.clearTimeout(this.settleTimer);
+    this.settleTimer = 0;
+    this.pages.length = 0;
+    this.indexByMedia.clear();
+    this.clips = [];
+    this.candidate = 0;
+    this.programmaticTarget = null;
+    this.terminalPage = null;
+    this.el.replaceChildren();
+    this.el.scrollTop = 0;
+    this.setClips(clips);
+    this.candidate = 0;
+    this.onCandidate?.(0);
+  }
+
+  appendTerminalPage(label: string, className = "feed-terminal", onActivate?: () => void): HTMLElement {
+    if (this.terminalPage) return this.terminalPage;
+    const page = document.createElement("article");
+    page.className = `video-page ${className}`;
+    page.dataset.terminal = "true";
+    const text = document.createElement("p");
+    text.textContent = label;
+    page.append(text);
+    if (onActivate) {
+      page.tabIndex = 0;
+      page.setAttribute("role", "button");
+      page.addEventListener("click", onActivate);
+      page.addEventListener("keydown", (event) => {
+        if (event.key === "Enter" || event.key === " ") onActivate();
+      });
+    }
+    this.terminalPage = page;
+    this.el.appendChild(page);
+    return page;
+  }
+
+  removeTerminalPage(): void {
+    this.terminalPage?.remove();
+    this.terminalPage = null;
+    if (this.candidate >= this.pages.length) this.candidate = Math.max(0, this.pages.length - 1);
+  }
+
+  get terminalIndex(): number | null {
+    return this.terminalPage ? this.pages.length : null;
+  }
+
+  replaceClipAt(index: number, clip: Clip): boolean {
+    const page = this.pageAt(index);
+    if (!page || index < 0 || index >= this.clips.length) return false;
+    const previous = this.clips[index];
+    if (previous && this.indexByMedia.get(previous.id) === index) this.indexByMedia.delete(previous.id);
+    this.clips[index] = clip;
+    page.dataset.mediaId = clip.id;
+    page.classList.remove("frame-ready", "media-ready", "is-loading");
+    page.classList.add("random-transition");
+    window.setTimeout(() => page.classList.remove("random-transition"), 500);
+    if (!this.indexByMedia.has(clip.id)) this.indexByMedia.set(clip.id, index);
+    return true;
+  }
+
   scrollToIndex(index: number, smooth = false): void {
+    this.programmaticTarget = smooth ? index : null;
     const top = index * this.el.clientHeight;
     this.el.scrollTo({ top, behavior: smooth ? "smooth" : "auto" });
+    if (!smooth) this.candidate = index;
   }
 
   pageHeight(): number {
@@ -69,7 +146,15 @@ export class FeedView {
       this.onCandidate?.(candidate);
     }
     window.clearTimeout(this.settleTimer);
-    this.settleTimer = window.setTimeout(() => this.onSettle?.(this.candidate), SETTLE_MS);
+    this.settleTimer = window.setTimeout(() => this.finishScroll(), SETTLE_MS);
+  }
+
+  private finishScroll(): void {
+    window.clearTimeout(this.settleTimer);
+    this.settleTimer = 0;
+    if (this.programmaticTarget !== null && this.candidate !== this.programmaticTarget) return;
+    this.programmaticTarget = null;
+    this.onSettle?.(this.candidate);
   }
 
   private createPage(clip: Clip, index: number): HTMLElement {
@@ -87,7 +172,17 @@ export class FeedView {
     label.className = "poster-label";
     label.textContent = "加载中…";
     poster.append(spinner, label);
-    page.append(host, poster);
+    const loading = document.createElement("span");
+    loading.className = "media-loading";
+    loading.setAttribute("role", "status");
+    const ring = document.createElement("i");
+    ring.className = "media-loading-ring";
+    ring.setAttribute("aria-hidden", "true");
+    const loadingLabel = document.createElement("span");
+    loadingLabel.className = "media-loading-label";
+    loadingLabel.textContent = "正在加载";
+    loading.append(ring, loadingLabel);
+    page.append(host, poster, loading);
     return page;
   }
 }

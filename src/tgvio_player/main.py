@@ -154,7 +154,7 @@ async def run(settings: PlayerSettings) -> None:
             reader,
             window_bytes=settings.cache_window_mb * 1024 * 1024,
             concurrency=settings.cache_concurrency,
-            should_pause=lambda: server_ref[0].playback_saturated
+            should_pause=lambda: server_ref[0].active_playback_streams > 0
             if server_ref[0] is not None
             else False,
         )
@@ -192,7 +192,7 @@ async def run(settings: PlayerSettings) -> None:
                 repository,
                 head_bytes=settings.warm_head_mb * 1024 * 1024,
                 workers=settings.cache_concurrency,
-                should_pause=lambda: server.playback_saturated,
+                should_pause=lambda: server.active_playback_streams > 0,
             )
             tasks.append(asyncio.create_task(warm.run(stop)))
             _LOG.info("TGVIO Player media warm backfill enabled")

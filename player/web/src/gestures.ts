@@ -6,9 +6,9 @@ export type GestureOptions = {
   duration: () => number;
   onTap?: () => void;
   onFastForward?: (speed: number | null) => void;
-  onScrubStart?: () => void;
+  onScrubStart?: () => boolean | void;
   onScrubMove?: (time: number, clientX: number) => void;
-  onScrubEnd?: (time: number | null) => void;
+  onScrubEnd?: (time: number | null, resumePlayback: boolean) => void;
 };
 
 const LONG_PRESS_MS = 450;
@@ -31,6 +31,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
   let longTimer = 0;
   let baseFraction = 0;
   let scrubTime = 0;
+  let resumeAfterScrub = true;
 
   const clearLong = () => {
     window.clearTimeout(longTimer);
@@ -45,7 +46,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
   const endScrub = (commit: boolean) => {
     if (!scrubbing) return;
     scrubbing = false;
-    opts.onScrubEnd?.(commit ? scrubTime : null);
+    opts.onScrubEnd?.(commit ? scrubTime : null, resumeAfterScrub);
   };
 
   const onDown = (event: PointerEvent) => {
@@ -93,7 +94,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
         }
         const duration = opts.duration();
         baseFraction = duration > 0 ? Math.min(1, Math.max(0, opts.currentTime() / duration)) : 0;
-        opts.onScrubStart?.();
+        resumeAfterScrub = opts.onScrubStart?.() !== false;
       } else {
         return;
       }

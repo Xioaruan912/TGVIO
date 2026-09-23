@@ -1,4 +1,4 @@
-import type { Clip, FeedResponse, MediaDto, PreloadLevel, VideoListResponse } from "./types";
+import type { ArchiveGroup, Clip, FeedResponse, GroupVideosResponse, LongVideoProgressResponse, MediaDto, PagedMediaResponse, PreloadLevel, RandomVideoListResponse, VideoListResponse } from "./types";
 
 export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
 
@@ -53,6 +53,7 @@ export function clipFromMedia(media: MediaDto): Clip {
     mimeType: media.mime_type ?? null,
     codec: media.codec ?? null,
     category: media.category ?? "short",
+    groups: media.groups ?? [],
   };
 }
 
@@ -82,22 +83,108 @@ class PlayerApi {
   }
 
   async videos(
-    category: "short" | "long",
+    category: "short" | "long" | "all",
     limit: number,
     offset: number,
     cache = false,
-  ): Promise<{ items: Clip[]; hasMore: boolean }> {
-    if (MOCK_MODE) return { items: [], hasMore: false };
-    const suffix = cache ? "&cache=1" : "";
+    search = "",
+  ): Promise<{ items: Clip[]; hasMore: boolean; total: number | null }> {
+    if (MOCK_MODE) return { items: [], hasMore: false, total: 0 };
+    const params = new URLSearchParams({ category, limit: String(limit), offset: String(offset) });
+    if (cache) params.set("cache", "1");
+    if (search) params.set("search", search);
     const payload = await this.request<VideoListResponse>(
-      `/api/v1/videos?category=${category}&limit=${limit}&offset=${offset}${suffix}`,
+      `/api/v1/videos?${params}`,
     );
-    return { items: payload.items.map(clipFromMedia), hasMore: payload.has_more };
+    return {
+      items: payload.items.map(clipFromMedia),
+      hasMore: payload.has_more,
+      total: payload.total,
+    };
   }
 
   async favorites(): Promise<Clip[]> {
     if (MOCK_MODE) return [];
     const payload = await this.request<FeedResponse>("/api/v1/favorites");
+    return payload.items.map(clipFromMedia);
+  }
+
+  async groupVideos(
+    groupId: string,
+    limit: number,
+    cursor: string | null,
+    signal: AbortSignal,
+  ): Promise<{ items: Clip[]; hasMore: boolean; nextCursor: string | null; group: ArchiveGroup }> {
+    if (MOCK_MODE) return { items: [], hasMore: false, nextCursor: null, group: { id: groupId, label: groupId } };
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor) params.set("cursor", cursor);
+    const payload = await this.request<GroupVideosResponse>(
+      `/api/v1/groups/${encodeURIComponent(groupId)}/videos?${params}`,
+      { signal },
+    );
+    return {
+      items: payload.items.map(clipFromMedia),
+      hasMore: payload.has_more,
+      nextCursor: payload.next_cursor,
+      group: payload.group,
+    };
+  }
+
+  async favoritePage(
+    limit: number,
+    cursor: string | null,
+    signal: AbortSignal,
+  ): Promise<{ items: Clip[]; hasMore: boolean; nextCursor: string | null }> {
+    if (MOCK_MODE) return { items: [], hasMore: false, nextCursor: null };
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor) params.set("cursor", cursor);
+    const payload = await this.request<PagedMediaResponse>(`/api/v1/favorites?${params}`, { signal });
+    return { items: payload.items.map(clipFromMedia), hasMore: payload.has_more, nextCursor: payload.next_cursor };
+  }
+
+  async longVideoProgress(): Promise<{
+    positions: Map<string, number>;
+    recent: Array<{ clip: Clip; position: number }>;
+  }> {
+    if (MOCK_MODE) return { positions: new Map(), recent: [] };
+    const payload = await this.request<LongVideoProgressResponse>("/api/v1/long-progress");
+    const items = payload.items.filter(
+      (item) => Number.isFinite(item.position_seconds) && item.position_seconds > 0,
+    );
+    return {
+      positions: new Map(items.map((item) => [item.id, item.position_seconds])),
+      recent: (payload.recent_items ?? [])
+        .filter(
+          (item) => Number.isFinite(item.position_seconds) && item.position_seconds > 0,
+        )
+        .map(({ position_seconds, ...media }) => ({
+          clip: clipFromMedia(media),
+          position: position_seconds,
+        })),
+    };
+  }
+
+  async saveLongVideoProgress(mediaId: string, positionSeconds: number): Promise<void> {
+    if (MOCK_MODE) return;
+    await this.request(`/api/v1/media/${encodeURIComponent(mediaId)}/progress`, {
+      method: "PUT",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ position_seconds: positionSeconds }),
+    });
+  }
+
+  async clearLongVideoProgress(mediaId: string): Promise<void> {
+    if (MOCK_MODE) return;
+    await this.request(`/api/v1/media/${encodeURIComponent(mediaId)}/progress`, {
+      method: "DELETE",
+    });
+  }
+
+  async randomShorts(limit: number, exclude: string[]): Promise<Clip[]> {
+    if (MOCK_MODE) return [];
+    const params = new URLSearchParams({ limit: String(limit) });
+    for (const id of exclude) params.append("exclude", id);
+    const payload = await this.request<RandomVideoListResponse>(`/api/v1/random?${params}`);
     return payload.items.map(clipFromMedia);
   }
 
@@ -139,7 +226,9 @@ class PlayerApi {
   /** Warm only the startup bytes. The server owns the byte-bounded cache. */
   async warm(clip: Clip, level: PreloadLevel, signal: AbortSignal): Promise<void> {
     if (MOCK_MODE || level === "metadata") return;
-    const bytes = level === "strong" ? 1024 * 1024 : 256 * 1024;
+    // Give both swipe directions enough of the MP4 head to reach its first
+    // decodable frame without waiting for a cold origin range on selection.
+    const bytes = level === "strong" ? 2 * 1024 * 1024 : level === "random" ? 1024 * 1024 : 256 * 1024;
     const response = await fetch(clip.streamUrl, {
       credentials: "same-origin",
       headers: { Range: `bytes=0-${bytes - 1}`, "X-TGVIO-Preload": "1" },

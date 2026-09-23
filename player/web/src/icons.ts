@@ -13,14 +13,14 @@ export type IconName =
   | "settings"
   | "sound-on"
   | "sound-off"
-  | "share"
   | "close"
   | "play"
   | "pause"
   | "play-small"
   | "fullscreen"
   | "fullscreen-exit"
-  | "back";
+  | "back"
+  | "lock";
 
 type IconSpec = {
   paths: string[];
@@ -83,9 +83,6 @@ const SPECS: Record<IconName, IconSpec> = {
   "sound-off": {
     paths: ["M11 5 6.7 8.9H4v6.2h2.7L11 19z", "M16 9.4l4.6 5.2", "M20.6 9.4 16 14.6"],
   },
-  share: {
-    paths: ["M12 15.5V4", "M8.2 7.6 12 3.8l3.8 3.8", "M5.5 13.5V19a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5v-5.5"],
-  },
   close: {
     paths: ["M6.5 6.5 17.5 17.5", "M17.5 6.5 6.5 17.5"],
   },
@@ -108,6 +105,9 @@ const SPECS: Record<IconName, IconSpec> = {
   },
   back: {
     paths: ["M14.5 5.5 8 12l6.5 6.5"],
+  },
+  lock: {
+    paths: ["M5.5 10h13v10h-13z", "M8 10V7a4 4 0 0 1 8 0v3", "M12 14v2"],
   },
 };
 

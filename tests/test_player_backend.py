@@ -193,6 +193,68 @@ class PlayerStateTests(unittest.IsolatedAsyncioTestCase):
         await deck.unfavorite(digest, self.media_ids[0])
         self.assertFalse(await self.repo.is_favorite(digest, self.media_ids[0]))
 
+    async def test_favorite_keyset_pages_cover_more_than_two_hundred_items(self) -> None:
+        digest = token_digest("large-favorite-session")
+        extra_ids = [f"{index:064x}" for index in range(100, 301)]
+        package = CatalogPackage(
+            "many-favorites", "TGVIO/2026-09-22/2", "e" * 64,
+            '"many-manifest"', '"many-complete"',
+            tuple(CatalogMedia(media_id, "video", 30) for media_id in extra_ids),
+            tuple(CatalogLocation(media_id, "many-favorites", f"{media_id}.mp4") for media_id in extra_ids),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+        await self.repo.create_player_session(digest, expires_at=9_999_999_999)
+        all_ids = [*self.media_ids, *extra_ids]
+        for media_id in all_ids:
+            await self.repo.set_favorite(digest, media_id, enabled=True)
+        self.repo._require().execute(
+            "UPDATE favorites SET created_at=123 WHERE token_digest=?", (digest,)
+        )
+        deck = ShuffleDeckService(self.repo)
+        received: list[str] = []
+        cursor: tuple[int, str] | None = None
+        while True:
+            page = await deck.favorite_page(digest, limit=6, cursor=cursor)
+            received.extend(media_id for media_id, _created_at in page[:5])
+            if len(page) <= 5:
+                break
+            cursor = page[4][1], page[4][0]
+        self.assertEqual(len(received), len(all_ids))
+        self.assertEqual(len(set(received)), len(all_ids))
+        self.assertEqual(received, sorted(all_ids))
+
+    async def test_archive_groups_follow_active_catalog_locations(self) -> None:
+        sibling_id = "5" * 64
+        sibling = CatalogPackage(
+            package_id="sibling-package",
+            remote_path="TGVIO/2026-09-22/2",
+            manifest_sha256="c" * 64,
+            manifest_etag='"manifest-2"',
+            complete_etag='"complete-2"',
+            media=(CatalogMedia(sibling_id, "video", 20),),
+            locations=(CatalogLocation(sibling_id, "sibling-package", "sibling.mp4"),),
+        )
+        await self.repo.apply_package(sibling)
+        await self.repo.refresh_media_activity()
+
+        media_groups = await self.repo.list_media_groups(sibling_id)
+        self.assertEqual(len(media_groups), 1)
+        group_id, label = media_groups[0]
+        self.assertEqual(label, "2026-09-22")
+        self.assertEqual(
+            await self.repo.list_group_video_ids(group_id, after_id=None, limit=20),
+            sorted([*self.media_ids, sibling_id]),
+        )
+
+        await self.repo.deactivate_packages_not_seen({"package"})
+        await self.repo.refresh_media_activity()
+        self.assertEqual(await self.repo.list_media_groups(sibling_id), [])
+        self.assertEqual(
+            await self.repo.list_group_video_ids(group_id, after_id=None, limit=20),
+            sorted(self.media_ids),
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

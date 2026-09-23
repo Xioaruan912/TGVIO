@@ -26,6 +26,8 @@ export class VideoPool {
   private current: HTMLVideoElement | null = null;
 
   onPressure: ((pressured: boolean) => void) | null = null;
+  onLoading: ((mediaId: string) => void) | null = null;
+  onReady: ((mediaId: string) => void) | null = null;
   onTimeUpdate: ((video: HTMLVideoElement) => void) | null = null;
   onAutoplayBlocked: ((blocked: boolean) => void) | null = null;
   onError: ((mediaId: string) => void) | null = null;
@@ -40,20 +42,6 @@ export class VideoPool {
       video.setAttribute("playsinline", "");
       video.setAttribute("muted", "");
       video.setAttribute("preload", "none");
-      video.addEventListener("loadstart", () => this.clearReady(video));
-      video.addEventListener("playing", () => {
-        this.scheduleReady(video);
-        if (video === this.current) this.onPressure?.(false);
-      });
-      video.addEventListener("canplay", () => {
-        if (video === this.current) this.onPressure?.(false);
-      });
-      video.addEventListener("waiting", () => {
-        if (video === this.current) this.onPressure?.(true);
-      });
-      video.addEventListener("stalled", () => {
-        if (video === this.current) this.onPressure?.(true);
-      });
       video.addEventListener("timeupdate", () => {
         if (video === this.current) this.onTimeUpdate?.(video);
       });
@@ -99,16 +87,16 @@ export class VideoPool {
       if (!video) {
         video = this.videos.find((_, index) => !this.assigned[index]) ?? null;
         if (!video) continue;
-        page.classList.remove("frame-ready");
+        page.classList.remove("frame-ready", "media-ready", "is-loading");
         this.load(video, clip, target.current ? "auto" : "none");
       }
       if (video.dataset.mediaId !== clip.id) {
-        page.classList.remove("frame-ready");
+        page.classList.remove("frame-ready", "media-ready", "is-loading");
         this.load(video, clip, target.current ? "auto" : "none");
       }
       const host = page.querySelector<HTMLElement>(".video-host");
       if (host && video.parentElement !== host) {
-        page.classList.remove("frame-ready");
+        page.classList.remove("frame-ready", "media-ready", "is-loading");
         host.appendChild(video);
       }
       video.classList.toggle("is-current", target.current);
@@ -122,13 +110,21 @@ export class VideoPool {
     }
     const current = this.current;
     if (!current) return;
+    current.defaultMuted = options.muted;
+    if (options.muted) current.setAttribute("muted", "");
+    else current.removeAttribute("muted");
     current.muted = options.muted;
     if (options.paused) current.pause();
     else this.tryPlay(current);
   }
 
   setMuted(muted: boolean): void {
-    for (const video of this.videos) video.muted = muted;
+    for (const video of this.videos) {
+      video.defaultMuted = muted;
+      if (muted) video.setAttribute("muted", "");
+      else video.removeAttribute("muted");
+      video.muted = muted;
+    }
   }
 
   resume(): void {
@@ -173,6 +169,9 @@ export class VideoPool {
     const index = this.videos.indexOf(video);
     if (index >= 0) this.assigned[index] = clip.id;
     this.clips.set(video, clip);
+    video.defaultMuted = true;
+    video.setAttribute("muted", "");
+    video.muted = true;
     // Cancel listeners from the previous assignment so a late loadeddata/error
     // from the old source can never mark the new page ready or report an error
     // for the clip that is now bound to this element.
@@ -182,13 +181,47 @@ export class VideoPool {
     const token = String(++this.loadToken);
     video.dataset.loadToken = token;
     video.dataset.mediaId = clip.id;
+    this.onLoading?.(clip.id);
+    const isCurrentLoad = () => video.dataset.loadToken === token && video === this.current;
+    video.addEventListener("loadstart", () => {
+      if (video.dataset.loadToken === token) this.clearReady(video);
+    }, { once: true, signal: controller.signal });
     video.addEventListener(
       "loadeddata",
       () => {
-        if (video.dataset.loadToken === token) this.scheduleReady(video);
+        if (video.dataset.loadToken !== token) return;
+        video.closest<HTMLElement>(".video-page")?.classList.add("media-ready");
+        this.scheduleReady(video);
+        if (video === this.current) this.onReady?.(clip.id);
       },
       { once: true, signal: controller.signal },
     );
+    video.addEventListener(
+      "canplay",
+      () => {
+        if (!isCurrentLoad()) return;
+        this.onReady?.(clip.id);
+        this.onPressure?.(false);
+      },
+      { once: true, signal: controller.signal },
+    );
+    video.addEventListener(
+      "playing",
+      () => {
+        if (!isCurrentLoad()) return;
+        this.scheduleReady(video);
+        this.onReady?.(clip.id);
+        this.onPressure?.(false);
+      },
+      { once: true, signal: controller.signal },
+    );
+    const markWaiting = () => {
+      if (!isCurrentLoad()) return;
+      this.onLoading?.(clip.id);
+      this.onPressure?.(true);
+    };
+    video.addEventListener("waiting", markWaiting, { signal: controller.signal });
+    video.addEventListener("stalled", markWaiting, { signal: controller.signal });
     video.addEventListener(
       "error",
       () => {
@@ -205,6 +238,7 @@ export class VideoPool {
   private release(video: HTMLVideoElement): void {
     const index = this.videos.indexOf(video);
     if (index >= 0) this.assigned[index] = "";
+    video.closest<HTMLElement>(".video-page")?.classList.remove("frame-ready", "media-ready", "is-loading");
     this.loadAbort.get(video)?.abort();
     this.loadAbort.delete(video);
     this.clips.delete(video);
@@ -226,6 +260,6 @@ export class VideoPool {
   }
 
   private clearReady(video: HTMLVideoElement): void {
-    video.closest<HTMLElement>(".video-page")?.classList.remove("frame-ready");
+    video.closest<HTMLElement>(".video-page")?.classList.remove("frame-ready", "media-ready");
   }
 }

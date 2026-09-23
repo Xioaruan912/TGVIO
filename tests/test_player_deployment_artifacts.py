@@ -38,6 +38,7 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
             [
                 "COPY player/web/package.json player/web/package-lock.json ./",
                 "COPY player/web/index.html player/web/tsconfig.json player/web/vite.config.ts ./",
+                "COPY player/web/public ./public",
                 "COPY player/web/src ./src",
                 "COPY requirements.player.lock ./requirements.player.lock",
                 "COPY src/tgvio_player ./src/tgvio_player",
