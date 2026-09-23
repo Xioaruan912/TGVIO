@@ -112,3 +112,32 @@ clip buffered.
 - Regression: load / 12 slow swipes / 25 rapid swipes = 0 / 0 / 0 `429`.
   Deployment `tgvio-player:r2-19-seamless2` (revision `35f2544`), healthy,
   Bot unchanged.
+
+## Follow-up: windowed upstream reads, TikTok layout, natural swipes
+
+Investigation showed the archive backend (115 Cloud via OpenList) is **not**
+bandwidth-bound but latency-bound per range request: 1 MB ranges cost ~0.65 s
+each (persistent connection) while a single contiguous 16-100 MB range streams
+at 6-12 MB/s, and concurrency above ~4 triggers widespread `403`. The Player's
+1 MB chunk-at-a-time reads therefore capped cold playback at ~0.5 MB/s.
+
+- `MediaRangeCache` now reads upstream in aligned **windows** (default 32 MB) and
+  splits them into 4 MB local chunks as the bytes stream, so the per-request
+  latency is amortised. Windows fetch with an **adaptive limiter** (default 4)
+  that shrinks on `403/429/5xx` and recovers on success; `prime()` is no longer
+  needed on the request path.
+- Result on production: cold Player read of 32 MB went from **0.46 MB/s to
+  7.0 MB/s (~15x)**; cached reads are disk-speed.
+- `TGVIO_PLAYER_CACHE_WINDOW_MB=32`, `TGVIO_PLAYER_CACHE_CONCURRENCY=4`,
+  `CACHE_CHUNK_MB=4`; `FASTSTART_WAIT_SECONDS` reduced to 2 s.
+- TikTok-style short feed: the progress bar and metadata line are hidden, the
+  action rail is a compact 4-button column (228 px vs 313 px), fullscreen moved
+  to the top bar, and the top bar is slimmer.
+- Natural swipes: the gesture layer no longer captures the pointer on
+  pointer-down (only once horizontal scrubbing is confirmed), and
+  `scroll-snap-stop: always` was removed so vertical momentum is native.
+- Verified on production: first short-video frame ~3.8 s after login (cold),
+  switch latency median 0.68 s, feed/large fullscreen both work, large-video
+  seek to 50% works, `429` = 0 across load/12 slow/25 rapid swipes, no range
+  cache errors. Deployment `tgvio-player:r2-19-window` (revision `6e70a8b`),
+  healthy, Bot unchanged.
