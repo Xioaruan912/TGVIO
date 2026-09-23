@@ -141,3 +141,21 @@ at 6-12 MB/s, and concurrency above ~4 triggers widespread `403`. The Player's
   seek to 50% works, `429` = 0 across load/12 slow/25 rapid swipes, no range
   cache errors. Deployment `tgvio-player:r2-19-window` (revision `6e70a8b`),
   healthy, Bot unchanged.
+
+## Follow-up: pre-cache the head of every video
+
+`MediaWarmBackfill` iterates every active video and caches `min(size, 16 MB)`
+(small clips are cached whole) into the disk range cache, so any clip starts
+from local disk on first view. It runs on a small worker pool sharing the range
+cache's adaptive concurrency, skips clips whose first chunk is present
+(resumable), and pauses only when every stream slot is busy. The feed and
+library endpoints also warm the head of every item they return.
+
+- Config: `TGVIO_PLAYER_WARM_ALL=true`, `TGVIO_PLAYER_WARM_HEAD_MB=16`,
+  `TGVIO_PLAYER_CACHE_BYTES=16 GiB` (fits the ~10.2 GB total head size so the
+  LRU never thrashes while warming).
+- Measured: the whole-catalog head is ~10.2 GB; the background pass warms at
+  roughly 18 MB/s and completed ~50 clips in the first 70 s, so the full sweep
+  finishes in roughly 20 minutes and resumes across restarts.
+- Deployment `tgvio-player:r2-19-warmall` (revision `a014843`), healthy, Bot
+  unchanged; verified `429` still 0 and the disk kept >50 GB free.
