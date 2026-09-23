@@ -4,13 +4,13 @@
   left: 0;
   right: 0;
   z-index: 12;
-  padding: calc(var(--safe-top) + 12px) 14px 16px;
+  padding: calc(var(--safe-top) + 8px) 12px 10px;
   display: flex;
   align-items: center;
   justify-content: space-between;
-  gap: 10px;
+  gap: 8px;
   pointer-events: none;
-  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.5), transparent);
+  background: linear-gradient(to bottom, rgba(0, 0, 0, 0.45), transparent);
 }
 
 .topbar-brand {
@@ -40,6 +40,15 @@
   width: 40px;
   height: 40px;
   margin-right: -8px;
+  display: grid;
+  place-items: center;
+  color: rgba(255, 255, 255, 0.86);
+  pointer-events: auto;
+}
+
+.topbar-fullscreen {
+  width: 40px;
+  height: 40px;
   display: grid;
   place-items: center;
   color: rgba(255, 255, 255, 0.86);
@@ -81,24 +90,24 @@
 .action-rail {
   position: absolute;
   right: 10px;
-  bottom: calc(56px + var(--safe-bottom) + 96px);
+  bottom: calc(56px + var(--safe-bottom) + 84px);
   z-index: 14;
   display: flex;
   flex-direction: column;
-  gap: 16px;
+  gap: 12px;
 }
 
 .action-btn {
-  width: 56px;
+  width: 52px;
   display: grid;
   justify-items: center;
-  gap: 6px;
+  gap: 4px;
   color: #fff;
   filter: drop-shadow(0 1px 4px rgba(0, 0, 0, 0.55));
 }
 
 .action-label {
-  font-size: 11px;
+  font-size: 10px;
   color: rgba(255, 255, 255, 0.92);
 }
 
@@ -180,9 +189,15 @@
   left: 0;
   right: 0;
   bottom: calc(56px + var(--safe-bottom) + 8px);
-  padding: 16px 84px 0 16px;
+  padding: 12px 76px 0 14px;
   pointer-events: none;
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.68), transparent);
+  background: linear-gradient(to top, rgba(0, 0, 0, 0.55), transparent 72%);
+}
+
+/* TikTok-style short feed: no progress bar or metadata covering the video. */
+.clip-info .clip-meta,
+.clip-info .progress-row {
+  display: none;
 }
 
 .clip-title {

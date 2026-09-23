@@ -58,11 +58,6 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     startY = event.clientY;
     startAt = Date.now();
     pointerId = event.pointerId;
-    try {
-      el.setPointerCapture(event.pointerId);
-    } catch {
-      /* ignore */
-    }
     if (opts.isLongPressEnabled()) {
       clearLong();
       longTimer = window.setTimeout(() => {
@@ -89,6 +84,13 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
         clearLong();
         scrubbing = true;
         moved = true;
+        // Capture only once a horizontal scrubbing gesture is confirmed, so
+        // vertical scrolling keeps the browser's native momentum.
+        try {
+          el.setPointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
         const duration = opts.duration();
         baseFraction = duration > 0 ? Math.min(1, Math.max(0, opts.currentTime() / duration)) : 0;
         opts.onScrubStart?.();
@@ -116,10 +118,12 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     stopLong();
     if (wasScrub) endScrub(true);
     else if (!wasLong && !wasMoved && elapsed < 600) opts.onTap?.();
-    try {
-      el.releasePointerCapture(event.pointerId);
-    } catch {
-      /* ignore */
+    if (el.hasPointerCapture?.(pointerId)) {
+      try {
+        el.releasePointerCapture(pointerId);
+      } catch {
+        /* ignore */
+      }
     }
   };
 
@@ -129,6 +133,13 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     clearLong();
     stopLong();
     endScrub(false);
+    if (el.hasPointerCapture?.(pointerId)) {
+      try {
+        el.releasePointerCapture(pointerId);
+      } catch {
+        /* ignore */
+      }
+    }
   };
 
   el.addEventListener("pointerdown", onDown);

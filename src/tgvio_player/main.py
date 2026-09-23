@@ -47,6 +47,8 @@ class PlayerSettings:
     large_video_seconds: int
     cache_bytes: int
     cache_chunk_mb: int
+    cache_window_mb: int
+    cache_concurrency: int
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -79,7 +81,9 @@ class PlayerSettings:
             cls._flag(get("FASTSTART_BACKFILL") or "true", "FASTSTART_BACKFILL"),
             cls._integer(get("LARGE_VIDEO_SECONDS") or "300", "LARGE_VIDEO_SECONDS", 30, 86400),
             cls._integer(get("CACHE_BYTES") or str(8 * 1024**3), "CACHE_BYTES", 64 * 1024**2, 512 * 1024**3),
-            cls._integer(get("CACHE_CHUNK_MB") or "1", "CACHE_CHUNK_MB", 1, 32),
+            cls._integer(get("CACHE_CHUNK_MB") or "4", "CACHE_CHUNK_MB", 1, 32),
+            cls._integer(get("CACHE_WINDOW_MB") or "32", "CACHE_WINDOW_MB", 1, 256),
+            cls._integer(get("CACHE_CONCURRENCY") or "4", "CACHE_CONCURRENCY", 1, 16),
         )
 
     @staticmethod
@@ -143,6 +147,8 @@ async def run(settings: PlayerSettings) -> None:
                 max_bytes=settings.cache_bytes,
             ),
             reader,
+            window_bytes=settings.cache_window_mb * 1024 * 1024,
+            concurrency=settings.cache_concurrency,
             should_pause=lambda: server_ref[0].playback_saturated
             if server_ref[0] is not None
             else False,

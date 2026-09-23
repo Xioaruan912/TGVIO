@@ -102,7 +102,7 @@ class MediaRangeCacheTests(unittest.IsolatedAsyncioTestCase):
     async def test_prefetch_populates_following_chunks(self) -> None:
         buffer = bytes(range(64))
         reader = FakeReader(buffer)
-        cache = MediaRangeCache(FakeStore(), reader, prefetch_chunks=2, prefetch_sleep=0)
+        cache = MediaRangeCache(FakeStore(), reader, concurrency=2)
         await collect(cache.stream("k", "pkg", "clip.mp4", len(buffer), ByteRange(0, 7), prefetch=True))
         for _ in range(50):
             if all(("k", i) in cache._store.data for i in range(3)):
@@ -115,13 +115,78 @@ class MediaRangeCacheTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prefetch_head_warms_the_start(self) -> None:
         buffer = bytes(range(64))
-        cache = MediaRangeCache(FakeStore(), FakeReader(buffer), prefetch_chunks=2, prefetch_sleep=0)
+        cache = MediaRangeCache(FakeStore(), FakeReader(buffer), concurrency=2)
         cache.prefetch_head("k", "pkg", "clip.mp4", len(buffer), 999)
         for _ in range(50):
             if ("k", 0) in cache._store.data:
                 break
             await asyncio.sleep(0.01)
         self.assertIn(("k", 0), cache._store.data)
+        await cache.shutdown()
+
+
+class _Body:
+    def __init__(self, payload: bytes) -> None:
+        self.payload = payload
+        self.done = False
+
+    def __aiter__(self):
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self.done:
+            raise StopAsyncIteration
+        self.done = True
+        return self.payload
+
+    async def aclose(self) -> None:
+        return None
+
+
+class _Response:
+    def __init__(self, status: int, payload: bytes = b"") -> None:
+        self.status = status
+        self.content_length = len(payload)
+        self.content_type = None
+        self.content_range = None
+        self.etag = None
+        self.body = _Body(payload)
+
+
+class ThrottleTests(unittest.IsolatedAsyncioTestCase):
+    async def test_throttling_is_retried(self) -> None:
+        buffer = bytes(range(64))
+
+        class Reader:
+            def __init__(self) -> None:
+                self.calls = 0
+
+            async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+                self.calls += 1
+                if self.calls == 1:
+                    return _Response(403)
+                return _Response(206, buffer[byte_range.start : byte_range.end + 1])
+
+        reader = Reader()
+        cache = MediaRangeCache(
+            FakeStore(), reader, concurrency=4, max_attempts=4, backoff_seconds=0.01
+        )
+        result = await collect(
+            cache.stream("k", "pkg", "clip.mp4", len(buffer), ByteRange(0, 7))
+        )
+        self.assertEqual(result, buffer[0:8])
+        self.assertGreaterEqual(reader.calls, 2)
+
+    async def test_persistent_throttling_raises(self) -> None:
+        class Reader:
+            async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+                return _Response(403)
+
+        cache = MediaRangeCache(
+            FakeStore(), Reader(), concurrency=1, max_attempts=2, backoff_seconds=0.01
+        )
+        with self.assertRaises(Exception):
+            await collect(cache.stream("k", "pkg", "clip.mp4", 64, ByteRange(0, 7)))
         await cache.shutdown()
 
 

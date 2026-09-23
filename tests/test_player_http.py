@@ -542,13 +542,13 @@ class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(first.status, 206)
         self.assertEqual(await first.read(), self.buffer[131072:196608])
-        self.assertEqual(self.reader.calls, [(131072, 196607)])
+        self.assertEqual(self.reader.calls, [(0, 199999)])
         second = await self.client.get(
             stream, headers={"Range": "bytes=140000-150000"}, cookies={"tgvio_player_session": cookie}
         )
         self.assertEqual(await second.read(), self.buffer[140000:150001])
         # Chunk 2 is cached, so no further upstream read happens.
-        self.assertEqual(self.reader.calls, [(131072, 196607)])
+        self.assertEqual(self.reader.calls, [(0, 199999)])
 
 
 if __name__ == "__main__":

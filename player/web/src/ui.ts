@@ -183,16 +183,18 @@ export function buildShell(handlers: ShellHandlers): Shell {
 
   const topbar = element("header", "topbar");
   const brandSmall = element("span", "topbar-brand", "TGVIO");
-  const mode = element("span", "topbar-mode");
-  mode.append(element("i", "mode-dot"), element("span", undefined, "随心看"));
   const netSpeed = element("span", "net-speed", "↓ 0 KB/s");
   netSpeed.hidden = true;
+  const fullscreenBtn = element("button", "topbar-fullscreen");
+  fullscreenBtn.type = "button";
+  fullscreenBtn.setAttribute("aria-label", "全屏");
+  fullscreenBtn.appendChild(icon("fullscreen", 22));
   const settingsBtn = element("button", "topbar-settings");
   settingsBtn.type = "button";
   settingsBtn.setAttribute("aria-label", "设置");
   settingsBtn.appendChild(icon("settings", 22));
   settingsBtn.addEventListener("click", () => handlers.onNav("settings"));
-  topbar.append(brandSmall, mode, netSpeed, settingsBtn);
+  topbar.append(brandSmall, netSpeed, fullscreenBtn, settingsBtn);
 
   const actionRail = element("div", "action-rail");
   const favoriteBtn = actionButton(
@@ -219,8 +221,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
   );
   const shuffleBtn = actionButton(iconStack([["shuffle", "icon-single"]], 30), "换一个", "换一个");
   const shareBtn = actionButton(iconStack([["share", "icon-single"]], 30), "分享", "分享");
-  const fullscreenBtn = actionButton(iconStack([["fullscreen", "icon-fs"]], 30), "全屏", "全屏");
-  actionRail.append(favoriteBtn, soundBtn, shuffleBtn, shareBtn, fullscreenBtn);
+  actionRail.append(favoriteBtn, soundBtn, shuffleBtn, shareBtn);
   favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
   soundBtn.addEventListener("click", handlers.onToggleSound);
   shuffleBtn.addEventListener("click", handlers.onShuffle);
