@@ -29,8 +29,6 @@ _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
 _LOGIN_LOCKOUT_SECONDS = 15 * 60
 _FASTSTART_WAIT_SECONDS = 2.0
-_HEAD_PREFETCH_BYTES = 4 * 1024 * 1024
-_WHOLE_CLIP_PREFETCH_BYTES = 4 * 1024 * 1024
 _SECURITY_HEADERS = {
     "Content-Security-Policy": "default-src 'self'; connect-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     "Referrer-Policy": "no-referrer",
@@ -111,6 +109,7 @@ class PlayerHttpServer:
         faststart: object | None = None,
         range_cache: object | None = None,
         large_video_seconds: float = 300.0,
+        warm_head_bytes: int = 16 * 1024 * 1024,
     ) -> None:
         if min(
             max_streams, max_streams_per_client, max_header_size, stream_chunk_size, startup_range_bytes
@@ -139,6 +138,7 @@ class PlayerHttpServer:
         self._faststart = faststart
         self._range_cache = range_cache
         self._large_video_seconds = max(1.0, float(large_video_seconds))
+        self._warm_head_bytes = max(1, int(warm_head_bytes))
         self._login_failures: dict[str, tuple[int, float, float]] = {}
         self._login_lock = asyncio.Lock()
 
@@ -166,8 +166,8 @@ class PlayerHttpServer:
             location[0],
             location[1],
             size,
-            _HEAD_PREFETCH_BYTES,
-            whole_below=_WHOLE_CLIP_PREFETCH_BYTES,
+            self._warm_head_bytes,
+            whole_below=self._warm_head_bytes,
         )
 
     def application(self) -> web.Application:
@@ -288,8 +288,7 @@ class PlayerHttpServer:
             if details is not None:
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
-                if index < 3:
-                    await self._schedule_head_prefetch(media_id, details)
+                await self._schedule_head_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "next_cursor": None})
 
@@ -328,8 +327,7 @@ class PlayerHttpServer:
             if details is not None:
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
-                if index < 3:
-                    await self._schedule_head_prefetch(media_id, details)
+                await self._schedule_head_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "has_more": has_more, "category": category})
 

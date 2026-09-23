@@ -233,6 +233,39 @@ class MediaRangeCache:
         index = byte_range.start // self._chunk_bytes
         await self._chunk(key, package, relpath, size, index)
 
+    def has_chunk(self, key: str, index: int) -> bool:
+        return self._store.has(key, index)
+
+    async def warm(
+        self,
+        key: str,
+        package: str,
+        relpath: str,
+        size: int,
+        length: int,
+        *,
+        whole_below: int = 0,
+    ) -> None:
+        """Fetch and cache the head of a clip (whole file when small enough)."""
+        if size <= 0:
+            return
+        target = size if whole_below and size <= whole_below else min(length, size)
+        if target <= 0:
+            return
+        last_chunk = max(0, (target - 1) // self._chunk_bytes)
+        last_window = self._window_for_chunk(last_chunk)
+        tasks: list[asyncio.Task[object]] = []
+        for window in range(last_window + 1):
+            self._ensure_window(key, package, relpath, size, window)
+            task = self._window_tasks.get((key, window))
+            if task is not None:
+                tasks.append(task)
+        for task in tasks:
+            try:
+                await asyncio.shield(task)
+            except Exception:
+                return
+
     def prefetch_head(
         self,
         key: str,

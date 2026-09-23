@@ -16,6 +16,7 @@ from tgvio_player.application.catalog import CatalogSyncService
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.range_cache import MediaRangeCache
+from tgvio_player.application.warm_backfill import MediaWarmBackfill
 from tgvio_player.infrastructure.faststart_store import FaststartStore
 from tgvio_player.infrastructure.range_store import RangeStore
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
@@ -49,6 +50,8 @@ class PlayerSettings:
     cache_chunk_mb: int
     cache_window_mb: int
     cache_concurrency: int
+    warm_all: bool
+    warm_head_mb: int
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -84,6 +87,8 @@ class PlayerSettings:
             cls._integer(get("CACHE_CHUNK_MB") or "4", "CACHE_CHUNK_MB", 1, 32),
             cls._integer(get("CACHE_WINDOW_MB") or "32", "CACHE_WINDOW_MB", 1, 256),
             cls._integer(get("CACHE_CONCURRENCY") or "4", "CACHE_CONCURRENCY", 1, 16),
+            cls._flag(get("WARM_ALL") or "true", "WARM_ALL"),
+            cls._integer(get("WARM_HEAD_MB") or "16", "WARM_HEAD_MB", 1, 512),
         )
 
     @staticmethod
@@ -165,6 +170,7 @@ async def run(settings: PlayerSettings) -> None:
             faststart=faststart,
             range_cache=range_cache,
             large_video_seconds=settings.large_video_seconds,
+            warm_head_bytes=settings.warm_head_mb * 1024 * 1024,
         )
         server_ref[0] = server
         runner = server.runner()
@@ -180,6 +186,16 @@ async def run(settings: PlayerSettings) -> None:
             )
             tasks.append(asyncio.create_task(backfill.run(stop)))
             _LOG.info("TGVIO Player faststart backfill enabled")
+        if settings.warm_all:
+            warm = MediaWarmBackfill(
+                range_cache,
+                repository,
+                head_bytes=settings.warm_head_mb * 1024 * 1024,
+                workers=settings.cache_concurrency,
+                should_pause=lambda: server.playback_saturated,
+            )
+            tasks.append(asyncio.create_task(warm.run(stop)))
+            _LOG.info("TGVIO Player media warm backfill enabled")
         _LOG.info("TGVIO Player listening on configured Player host and port")
         await stop.wait()
         for task in tasks:
