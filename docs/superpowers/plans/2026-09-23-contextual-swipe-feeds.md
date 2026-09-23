@@ -41,6 +41,7 @@
 
 **Interfaces:**
 - `PlayerCatalogRepository.list_media_groups(media_id: str) -> list[tuple[str, str]]` returns `(group_id, label)` pairs for every active date directory containing the media.
+- `PlayerCatalogRepository.resolve_archive_group(group_id: str) -> str | None` validates a canonical group ID against active catalog paths and returns its label, allowing the HTTP layer to distinguish an unknown group from an exhausted cursor.
 - `PlayerCatalogRepository.list_group_video_ids(group_id: str, *, after_id: str | None, limit: int) -> list[str]` returns active, distinct video IDs in stable ascending ID order. It returns an empty list for a group that no longer exists.
 - `group_id` is the unpadded URL-safe base64 encoding of one validated date-directory name. The repository resolves it only against date-directory names found in active catalog paths; request values are never treated as paths.
 - `GET /api/v1/groups/{group_id}/videos?limit=20&cursor=<media-id>` returns `{"items": [...], "has_more": bool, "next_cursor": string|null, "group": {"id": string, "label": string}}`.
@@ -62,7 +63,7 @@ Expected: the new group assertions fail because the repository and route do not 
 
 - [ ] **Step 3: Implement catalog group queries and the authenticated route**
 
-Add the two repository methods to `PlayerCatalogRepository` and implement them in `PlayerCatalogRepositorySQLite`. Resolve only a single base64url date-directory component against active `catalog_packages.remote_path` parent names. Query distinct active `media.media_id` rows joined to active locations and packages, filter to video rows, and use `media_id > after_id ORDER BY media_id LIMIT limit + 1` to determine `has_more`.
+Add the three repository methods to `PlayerCatalogRepository` and implement them in `PlayerCatalogRepositorySQLite`. Resolve only a single base64url date-directory component against active `catalog_packages.remote_path` parent names. Query distinct active `media.media_id` rows joined to active locations and packages, filter to video rows, and use `media_id > after_id ORDER BY media_id LIMIT limit + 1` to determine `has_more`.
 
 Register the route in `PlayerHttpServer.application()`. Validate `limit` against `_MAX_FEED_LIMIT`; decode and re-encode group IDs to reject non-canonical base64url values; authenticate before returning group contents. Attach each media item's group memberships in `_media_dto`, and schedule stream preparation only for returned group items using the existing `_schedule_head_prefetch` path.
 
