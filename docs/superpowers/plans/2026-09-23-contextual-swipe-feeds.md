@@ -54,9 +54,9 @@ In `tests/test_player_backend.py`, add a repository test that deactivates one pa
 
 - [ ] **Step 2: Run the focused tests and confirm the new behavior fails**
 
-Run: `python -m unittest discover -s tests -p test_player_http.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_http.py`
 
-Run: `python -m unittest discover -s tests -p test_player_backend.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_backend.py`
 
 Expected: the new group assertions fail because the repository and route do not yet expose archive groups.
 
@@ -68,9 +68,9 @@ Register the route in `PlayerHttpServer.application()`. Validate `limit` against
 
 - [ ] **Step 4: Re-run the focused tests**
 
-Run: `python -m unittest discover -s tests -p test_player_http.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_http.py`
 
-Run: `python -m unittest discover -s tests -p test_player_backend.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_backend.py`
 
 Expected: group membership, sibling-package merge, duplicate suppression, authentication, validation, and inactive-package assertions pass.
 
@@ -104,9 +104,9 @@ In `tests/test_player_backend.py`, create and favorite 205 distinct active video
 
 - [ ] **Step 2: Run the focused tests and confirm they fail**
 
-Run: `python -m unittest discover -s tests -p test_player_http.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_http.py`
 
-Run: `python -m unittest discover -s tests -p test_player_backend.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_backend.py`
 
 Expected: the tests fail because favorites currently return a single unpaged list capped at 200 IDs.
 
@@ -184,7 +184,7 @@ Add tests in `tests/test_player_web_source.py` for the required user-visible ent
 
 - [ ] **Step 2: Run the source-level checks and confirm they fail**
 
-Run: `python -m unittest discover -s tests -p test_player_web_source.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_web_source.py`
 
 Expected: failures identify the missing group action, favorites swipe flow, group-end behavior, and context request guard.
 
@@ -202,7 +202,7 @@ After the owner swipes past the last group item and the last page confirms `hasM
 
 - [ ] **Step 6: Run source checks and build**
 
-Run: `python -m unittest discover -s tests -p test_player_web_source.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_web_source.py`
 
 Run: `npm run build` from `player/web`.
 
@@ -231,11 +231,11 @@ Run `git status --short` and compare every pre-existing worktree modification wi
 
 - [ ] **Step 2: Run focused backend and deployment checks**
 
-Run: `python -m unittest discover -s tests -p test_player_http.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_http.py`
 
-Run: `python -m unittest discover -s tests -p test_player_backend.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_backend.py`
 
-Run: `python -m unittest discover -s tests -p test_player_deployment_artifacts.py`
+Run: `PYTHONPATH=src python -m unittest discover -s tests -p test_player_deployment_artifacts.py`
 
 Run: `npm run build` from `player/web`.
 
