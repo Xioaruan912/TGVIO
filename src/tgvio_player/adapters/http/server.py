@@ -59,7 +59,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         *,
         deleter: object | None = None,
         max_streams: int = 8,
-        max_streams_per_client: int = 2,
+        max_streams_per_client: int = 8,
         max_header_size: int = 8192,
         stream_chunk_size: int = 64 * 1024,
         startup_cache: StartupRangeCache | None = None,

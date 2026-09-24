@@ -30,6 +30,10 @@ class PlayerRuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.port, 8790)
         self.assertEqual(settings.catalog_poll_seconds, 60)
 
+    def test_default_client_stream_limit_matches_the_global_limit(self) -> None:
+        settings = PlayerSettings.from_env(player_env())
+        self.assertEqual(settings.max_streams_per_client, settings.max_streams)
+
     def test_disabled_or_weak_configuration_fails_closed(self) -> None:
         with self.assertRaises(ValueError):
             PlayerSettings.from_env(player_env(TGVIO_PLAYER_ENABLED="false"))

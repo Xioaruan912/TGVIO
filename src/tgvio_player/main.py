@@ -81,7 +81,7 @@ class PlayerSettings:
             cls._integer(get("PORT") or "8790", "PORT", 1, 65535),
             cls._integer(get("CATALOG_POLL_SECONDS") or "60", "CATALOG_POLL_SECONDS", 5, 86400),
             cls._integer(get("MAX_STREAMS") or "4", "MAX_STREAMS", 1, 64),
-            cls._integer(get("MAX_STREAMS_PER_CLIENT") or "2", "MAX_STREAMS_PER_CLIENT", 1, 16),
+            cls._integer(get("MAX_STREAMS_PER_CLIENT") or "4", "MAX_STREAMS_PER_CLIENT", 1, 16),
             cls._flag(get("FASTSTART_BACKFILL") or "true", "FASTSTART_BACKFILL"),
             cls._integer(get("LARGE_VIDEO_SECONDS") or "300", "LARGE_VIDEO_SECONDS", 30, 86400),
             cls._integer(get("CACHE_BYTES") or str(8 * 1024**3), "CACHE_BYTES", 64 * 1024**2, 512 * 1024**3),
