@@ -7,12 +7,15 @@ import json
 import math
 from pathlib import Path
 import re
+import time
 from typing import Any
+import uuid
 from urllib.parse import urlsplit
 
 from aiohttp import web
 
 from .client import _prefetch_requested, resolve_client
+from .diagnostics import client_fingerprint, fingerprint, log_event
 from .streaming import PlayerHttpStreamingMixin
 
 from tgvio_player.application.auth import SessionService
@@ -76,6 +79,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         self._deck = deck
         self._reader = reader
         self._deleter = deleter
+        self._max_streams = max_streams
         self._stream_slots = asyncio.BoundedSemaphore(max_streams)
         self._max_streams_per_client = max_streams_per_client
         self._stream_clients: Counter[str] = Counter()
@@ -144,6 +148,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         app.router.add_get("/api/v1/favorites", self._favorites)
         app.router.add_get("/api/v1/long-progress", self._long_video_progress)
         app.router.add_get("/api/v1/cache-stats", self._cache_stats)
+        app.router.add_post("/api/v1/diagnostics/playback-event", self._playback_diagnostic)
         app.router.add_get("/api/v1/media/{media_id}", self._media)
         if self._deleter is not None:
             app.router.add_delete("/api/v1/media/{media_id}", self._delete_media)
@@ -177,26 +182,76 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         """Create a runner with parser-level request-line and header bounds."""
         return web.AppRunner(
             self.application(),
+            access_log=None,
             max_field_size=self._max_header_size,
             max_line_size=self._max_header_size,
         )
 
     @web.middleware
     async def _request_limits(self, request: web.Request, handler: Any) -> web.StreamResponse:
-        if sum(len(name) + len(value) for name, value in request.headers.items()) > self._max_header_size:
-            raise web.HTTPRequestHeaderFieldsTooLarge()
-        if request.content_length is not None and request.content_length > _MAX_JSON_BYTES:
-            raise web.HTTPRequestEntityTooLarge(
-                max_size=_MAX_JSON_BYTES, actual_size=request.content_length
+        request_id = uuid.uuid4().hex
+        request["player_request_id"] = request_id
+        started = time.monotonic()
+        status = 500
+        error_kind: str | None = None
+        try:
+            if sum(len(name) + len(value) for name, value in request.headers.items()) > self._max_header_size:
+                raise web.HTTPRequestHeaderFieldsTooLarge()
+            if request.content_length is not None and request.content_length > _MAX_JSON_BYTES:
+                raise web.HTTPRequestEntityTooLarge(
+                    max_size=_MAX_JSON_BYTES, actual_size=request.content_length
+                )
+            if request.method not in {"GET", "HEAD", "POST", "PUT", "DELETE"}:
+                raise web.HTTPMethodNotAllowed(request.method, {"GET", "HEAD", "POST", "PUT", "DELETE"})
+            if "token" in request.query or "access_token" in request.query:
+                raise web.HTTPBadRequest(text="query tokens are not accepted")
+            response = await handler(request)
+            status = response.status
+            return response
+        except web.HTTPException as exc:
+            status = request.get("player_response_status", exc.status)
+            error_kind = type(exc).__name__
+            raise
+        except asyncio.CancelledError:
+            status = request.get("player_response_status", 499)
+            error_kind = "RequestCancelled"
+            raise
+        except Exception as exc:
+            status = request.get("player_response_status", status)
+            error_kind = type(exc).__name__
+            raise
+        finally:
+            route = request.match_info.route.resource
+            route_name = route.canonical if route is not None else request.path
+            client_id = client_fingerprint(resolve_client(request))
+            media_id = request.match_info.get("media_id", "")
+            log_event(
+                "http_request",
+                request_id=request_id,
+                method=request.method,
+                route=route_name,
+                status=status,
+                duration_ms=round((time.monotonic() - started) * 1000, 1),
+                response_bytes=(
+                    int(response.headers.get("Content-Length", "0"))
+                    if "response" in locals() and response.headers.get("Content-Length", "0").isdigit()
+                    else 0
+                ),
+                client=client_id,
+                media=fingerprint(media_id) if _MEDIA_ID_RE.fullmatch(media_id) else None,
+                range=(request.headers.get("Range", "")[:48]
+                       if re.fullmatch(r"bytes=\d*-\d*", request.headers.get("Range", ""))
+                       else None),
+                preload=request.headers.get("X-TGVIO-Preload") == "1",
+                error=error_kind,
             )
-        if request.method not in {"GET", "HEAD", "POST", "PUT", "DELETE"}:
-            raise web.HTTPMethodNotAllowed(request.method, {"GET", "HEAD", "POST", "PUT", "DELETE"})
-        if "token" in request.query or "access_token" in request.query:
-            raise web.HTTPBadRequest(text="query tokens are not accepted")
-        return await handler(request)
 
     async def _security_headers(self, request: web.Request, response: web.StreamResponse) -> None:
         response.headers.update(_SECURITY_HEADERS)
+        request["player_response_status"] = response.status
+        request_id = request.get("player_request_id")
+        if request_id:
+            response.headers["X-Request-ID"] = request_id
         path = request.path
         if path.startswith("/assets/"):
             # Vite emits content-hashed filenames, so these are immutable.
@@ -218,6 +273,45 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         await self._authenticate(request)
         stats = self._range_cache.stats() if self._range_cache is not None else {}
         return web.json_response({"available": self._range_cache is not None, **stats})
+
+    async def _playback_diagnostic(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        self._require_same_origin(request)
+        payload = await self._json_object(request)
+        event = payload.get("event")
+        media_id = payload.get("media_id")
+        category = payload.get("category")
+        if not isinstance(event, str) or event not in {
+            "media_error", "media_probe", "media_retry", "media_skip", "media_unplayable_streak",
+            "media_stall_warning", "media_stall_skip",
+        }:
+            raise web.HTTPBadRequest(text="invalid diagnostic event")
+        if not isinstance(media_id, str) or not _MEDIA_ID_RE.fullmatch(media_id):
+            raise web.HTTPBadRequest(text="invalid media id")
+        if not isinstance(category, str) or category not in {"short", "long"}:
+            raise web.HTTPBadRequest(text="invalid media category")
+        numeric_fields: dict[str, int] = {}
+        for name, minimum, maximum in (
+            ("media_error_code", 0, 5),
+            ("network_state", 0, 3),
+            ("ready_state", 0, 4),
+            ("retry", 0, 10),
+            ("probe_status", 0, 599),
+            ("failure_streak", 0, 1000),
+        ):
+            value = payload.get(name)
+            if isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum:
+                numeric_fields[name] = value
+        log_event(
+            "frontend_playback",
+            request_id=request.get("player_request_id"),
+            client=client_fingerprint(resolve_client(request)),
+            media=fingerprint(media_id),
+            category=category,
+            action=event,
+            **numeric_fields,
+        )
+        return web.Response(status=204)
 
     async def _frontend_index(self, request: web.Request) -> web.FileResponse:
         del request
@@ -581,23 +675,41 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         await self._authenticate(request)
         self._require_same_origin(request)
         media_id = request.match_info["media_id"]
+        media_fingerprint = fingerprint(media_id)
+        request_id = request.get("player_request_id")
         await self._media_details(media_id)
         locations = await self._repository.active_location_records(media_id)
         if not locations:
             raise web.HTTPNotFound(text="media not found")
 
+        log_event(
+            "media_delete_started",
+            request_id=request_id,
+            media=media_fingerprint,
+            copies=len(locations),
+        )
+
         deleted = 0
         failed = 0
         assert self._deleter is not None
-        for package_id, package_path, remote_relpath in locations:
+        for copy_index, (package_id, package_path, remote_relpath) in enumerate(locations, start=1):
+            failure_kind = "DeleteReturnedFalse"
             try:
                 succeeded = await self._deleter.delete_location(
                     package_path, remote_relpath
                 )
-            except Exception:
+            except Exception as exc:
+                failure_kind = type(exc).__name__
                 succeeded = False
             if not succeeded:
                 failed += 1
+                log_event(
+                    "media_delete_copy_failed",
+                    request_id=request_id,
+                    media=media_fingerprint,
+                    copy=copy_index,
+                    error=failure_kind,
+                )
                 continue
             await self._repository.record_deleted_location(
                 media_id, package_id, remote_relpath
@@ -605,16 +717,33 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
             deleted += 1
 
         removed = await self._repository.finalize_media_deletion(media_id)
+        log_event(
+            "media_delete_repository_finalized",
+            request_id=request_id,
+            media=media_fingerprint,
+            deleted_copies=deleted,
+            failed_copies=failed,
+            removed=removed,
+        )
         if removed:
             if self._range_cache is not None:
                 discard = getattr(self._range_cache, "discard", None)
                 if callable(discard):
+                    stage_started = time.monotonic()
                     await discard(media_id)
+                    log_event("media_delete_cache_cleared", request_id=request_id, media=media_fingerprint,
+                              cache="range", duration_ms=round((time.monotonic() - stage_started) * 1000, 1))
             if self._faststart is not None:
                 discard = getattr(self._faststart, "discard", None)
                 if callable(discard):
+                    stage_started = time.monotonic()
                     await discard(media_id)
+                    log_event("media_delete_cache_cleared", request_id=request_id, media=media_fingerprint,
+                              cache="faststart", duration_ms=round((time.monotonic() - stage_started) * 1000, 1))
+            stage_started = time.monotonic()
             await self._startup_cache.discard(media_id)
+            log_event("media_delete_cache_cleared", request_id=request_id, media=media_fingerprint,
+                      cache="startup_range", duration_ms=round((time.monotonic() - stage_started) * 1000, 1))
         return web.json_response(
             {
                 "id": media_id,

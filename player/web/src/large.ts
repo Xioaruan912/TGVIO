@@ -55,6 +55,7 @@ export class LargePlayer {
   private readonly retryButton: HTMLButtonElement;
   private readonly privacyPlayButton: HTMLButtonElement;
   private readonly clip: Clip;
+  private mediaErrorRetries = 0;
   private readonly onClose: () => void;
   private readonly onUnlock: () => void;
   private readonly onPrivacyLock: () => void;
@@ -115,6 +116,13 @@ export class LargePlayer {
     this.retryButton.hidden = true;
     this.retryButton.addEventListener("click", () => {
       this.retryButton.hidden = true;
+      this.mediaErrorRetries += 1;
+      void api.logPlaybackEvent({
+        event: "media_retry",
+        mediaId: this.clip.id,
+        category: this.clip.category,
+        retry: this.mediaErrorRetries,
+      });
       this.setLoading(true);
       this.video.load();
       if (!this.root.classList.contains("privacy-locked")) {
@@ -218,6 +226,15 @@ export class LargePlayer {
       this.setLoading(false);
       this.retryButton.hidden = false;
       this.showControls();
+      void api.logPlaybackEvent({
+        event: "media_error",
+        mediaId: this.clip.id,
+        category: this.clip.category,
+        mediaErrorCode: this.video.error?.code ?? 0,
+        networkState: this.video.networkState,
+        readyState: this.video.readyState,
+        retry: this.mediaErrorRetries,
+      });
     });
     this.video.addEventListener("progress", () => paintBuffered(this.buffered, this.video));
     this.video.addEventListener("play", () => this.setPlayIcon(true));

@@ -12,6 +12,7 @@ from tgvio_player.domain.ranges import ByteRange, RangeNotSatisfiable
 from tgvio_player.infrastructure.webdav_read import WebDavRangeResponse
 
 from .client import _prefetch_requested, resolve_client
+from .diagnostics import client_fingerprint, fingerprint, log_event
 
 
 _FASTSTART_WAIT_SECONDS = 2.0
@@ -51,7 +52,22 @@ class PlayerHttpStreamingMixin:
                     self._faststart.schedule(media_id, details)
         client = resolve_client(request)
         preload = request.headers.get(_PRELOAD_HEADER) == "1"
-        if not await self._acquire_stream(client, preload=preload):
+        capacity = {}
+        if not await self._acquire_stream(client, preload=preload, diagnostics=capacity):
+            log_event(
+                "stream_rejected",
+                request_id=request.get("player_request_id"),
+                media=fingerprint(media_id),
+                client=client_fingerprint(client),
+                mode="preload" if preload else "foreground",
+                reason=capacity.get("reason", "capacity_timeout"),
+                wait_ms=capacity.get("wait_ms", 0),
+                active_playback=self.active_playback_streams,
+                active_preload=self._preload_active,
+                foreground_waiters=self._foreground_waiters,
+                global_limit=self._max_streams,
+                client_limit=self._max_streams_per_client,
+            )
             raise web.HTTPTooManyRequests(text="stream capacity reached")
         try:
             location = await self._repository.active_media_location(media_id)
@@ -278,7 +294,14 @@ class PlayerHttpStreamingMixin:
             if upstream is not None:
                 await self._close_body(upstream.body)
 
-    async def _acquire_stream(self, client: str, *, preload: bool = False) -> bool:
+    async def _acquire_stream(
+        self,
+        client: str,
+        *,
+        preload: bool = False,
+        diagnostics: dict[str, object] | None = None,
+    ) -> bool:
+        started = asyncio.get_running_loop().time()
         if preload:
             async with self._stream_lock:
                 # Speculative warm-ups never count against playback and are the
@@ -288,6 +311,17 @@ class PlayerHttpStreamingMixin:
                     or self._preload_active >= self._max_preload
                     or self._stream_slots.locked()
                 ):
+                    if diagnostics is not None:
+                        diagnostics.update(
+                            reason=(
+                                "foreground_waiting"
+                                if self._foreground_waiters
+                                else "preload_limit"
+                                if self._preload_active >= self._max_preload
+                                else "global_capacity"
+                            ),
+                            wait_ms=0,
+                        )
                     return False
                 await self._stream_slots.acquire()
                 self._preload_active += 1
@@ -308,6 +342,15 @@ class PlayerHttpStreamingMixin:
                         self._stream_clients[client] += 1
                         return True
                 await asyncio.sleep(_STREAM_SLOT_POLL_SECONDS)
+            if diagnostics is not None:
+                diagnostics.update(
+                    reason=(
+                        "client_limit"
+                        if self._stream_clients[client] >= self._max_streams_per_client
+                        else "global_capacity_timeout"
+                    ),
+                    wait_ms=round((loop.time() - started) * 1000),
+                )
             return False
         finally:
             async with self._stream_lock:

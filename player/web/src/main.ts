@@ -230,6 +230,17 @@ function armStallGuard(clipId: string): void {
     const video = pool?.currentVideo();
     if (feedView?.clipAt(activeIndex)?.id !== clipId) return;
     if (video && video.readyState >= 2) return;
+    const clip = feedView?.clipAt(activeIndex);
+    if (clip) {
+      void api.logPlaybackEvent({
+        event: "media_stall_warning",
+        mediaId: clip.id,
+        category: clip.category,
+        mediaErrorCode: video?.error?.code ?? 0,
+        networkState: video?.networkState ?? 0,
+        readyState: video?.readyState ?? 0,
+      });
+    }
     toast(shell!, "视频加载较慢，正在等待…");
   }, 12000);
   stallSkipTimer = window.setTimeout(() => {
@@ -239,7 +250,28 @@ function armStallGuard(clipId: string): void {
     if (paused) return;
     unplayable.add(clipId);
     skipStreak += 1;
+    const clip = feedView?.clipAt(activeIndex);
+    if (clip) {
+      void api.logPlaybackEvent({
+        event: "media_stall_skip",
+        mediaId: clip.id,
+        category: clip.category,
+        mediaErrorCode: video?.error?.code ?? 0,
+        networkState: video?.networkState ?? 0,
+        readyState: video?.readyState ?? 0,
+        failureStreak: skipStreak,
+      });
+    }
     if (skipStreak > 8) {
+      const clip = feedView?.clipAt(activeIndex);
+      if (clip) {
+        void api.logPlaybackEvent({
+          event: "media_unplayable_streak",
+          mediaId: clip.id,
+          category: clip.category,
+          failureStreak: skipStreak,
+        });
+      }
       toast(shell!, "连续多条视频加载失败");
       return;
     }
@@ -622,11 +654,35 @@ async function goRandom(): Promise<void> {
 async function handleMediaError(clip: Clip): Promise<void> {
   preloader.setPressure(true);
   const attempts = errorRetries.get(clip.id) ?? 0;
+  const video = pool?.currentVideo();
+  void api.logPlaybackEvent({
+    event: "media_error",
+    mediaId: clip.id,
+    category: clip.category,
+    mediaErrorCode: video?.error?.code ?? 0,
+    networkState: video?.networkState ?? 0,
+    readyState: video?.readyState ?? 0,
+    retry: attempts,
+  });
   const status = await api.probe(clip);
+  void api.logPlaybackEvent({
+    event: "media_probe",
+    mediaId: clip.id,
+    category: clip.category,
+    retry: attempts,
+    probeStatus: status,
+  });
   if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
   const transient = status === 0 || status === 429 || status >= 500;
   if (transient && attempts < 2) {
     errorRetries.set(clip.id, attempts + 1);
+    void api.logPlaybackEvent({
+      event: "media_retry",
+      mediaId: clip.id,
+      category: clip.category,
+      retry: attempts + 1,
+      probeStatus: status,
+    });
     toast(shell!, "网络波动，正在重试");
     window.setTimeout(() => {
       if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
@@ -636,7 +692,22 @@ async function handleMediaError(clip: Clip): Promise<void> {
   }
   unplayable.add(clip.id);
   skipStreak += 1;
+  void api.logPlaybackEvent({
+    event: "media_skip",
+    mediaId: clip.id,
+    category: clip.category,
+    retry: attempts,
+    probeStatus: status,
+  });
   if (skipStreak > 8) {
+    void api.logPlaybackEvent({
+      event: "media_unplayable_streak",
+      mediaId: clip.id,
+      category: clip.category,
+      retry: attempts,
+      probeStatus: status,
+      failureStreak: skipStreak,
+    });
     toast(shell!, "连续多条视频无法播放");
     return;
   }

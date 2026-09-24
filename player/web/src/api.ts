@@ -215,6 +215,49 @@ class PlayerApi {
     };
   }
 
+  /** Send an allowlisted playback failure event to the Player diagnostic log. */
+  async logPlaybackEvent(event: {
+    event:
+      | "media_error"
+      | "media_probe"
+      | "media_retry"
+      | "media_skip"
+      | "media_unplayable_streak"
+      | "media_stall_warning"
+      | "media_stall_skip";
+    mediaId: string;
+    category: "short" | "long";
+    mediaErrorCode?: number;
+    networkState?: number;
+    readyState?: number;
+    retry?: number;
+    probeStatus?: number;
+    failureStreak?: number;
+  }): Promise<void> {
+    if (MOCK_MODE) return;
+    try {
+      await fetch("/api/v1/diagnostics/playback-event", {
+        method: "POST",
+        credentials: "same-origin",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          event: event.event,
+          media_id: event.mediaId,
+          category: event.category,
+          media_error_code: event.mediaErrorCode,
+          network_state: event.networkState,
+          ready_state: event.readyState,
+          retry: event.retry,
+          probe_status: event.probeStatus,
+          failure_streak: event.failureStreak,
+        }),
+        keepalive: true,
+      });
+    } catch {
+      // Diagnostic reporting must never interrupt playback recovery.
+    }
+  }
+
   /** Best-effort pre-build of the server-side faststart overlay for a clip. */
   async prepare(mediaId: string): Promise<void> {
     if (MOCK_MODE) return;
