@@ -401,7 +401,12 @@ export function confirmMediaDelete(host: HTMLElement): Promise<boolean> {
   });
 }
 
-export function confirmAudioEnable(host: HTMLElement): Promise<boolean> {
+export type AudioEnableChoice = "keep-muted" | "enable" | "enable-once-per-open";
+
+export function confirmAudioEnable(
+  host: HTMLElement,
+  offerOncePerOpen = false,
+): Promise<AudioEnableChoice> {
   return new Promise((resolve) => {
     const overlay = element("div", "audio-warning");
     overlay.setAttribute("role", "alertdialog");
@@ -421,18 +426,29 @@ export function confirmAudioEnable(host: HTMLElement): Promise<boolean> {
     keepMuted.type = "button";
     enable.type = "button";
     let settled = false;
-    const finish = (accepted: boolean) => {
+    const finish = (choice: AudioEnableChoice) => {
       if (settled) return;
       settled = true;
       overlay.remove();
-      resolve(accepted);
+      resolve(choice);
     };
-    keepMuted.addEventListener("click", () => finish(false));
-    enable.addEventListener("click", () => finish(true));
+    keepMuted.addEventListener("click", () => finish("keep-muted"));
+    enable.addEventListener("click", () => finish("enable"));
     overlay.addEventListener("click", (event) => {
-      if (event.target === overlay) finish(false);
+      if (event.target === overlay) finish("keep-muted");
     });
-    actions.append(keepMuted, enable);
+    actions.append(keepMuted);
+    if (offerOncePerOpen) {
+      const oncePerOpen = element(
+        "button",
+        "audio-warning-frequency",
+        "改为每次重新打开提醒一次",
+      );
+      oncePerOpen.type = "button";
+      oncePerOpen.addEventListener("click", () => finish("enable-once-per-open"));
+      actions.append(oncePerOpen);
+    }
+    actions.append(enable);
     panel.append(title, message, actions);
     overlay.appendChild(panel);
     host.appendChild(overlay);

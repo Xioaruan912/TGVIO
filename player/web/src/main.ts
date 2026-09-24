@@ -1,5 +1,6 @@
 import "./style.css";
 import { ApiError, api, MOCK_MODE, shortId } from "./api";
+import { requestAudioEnable } from "./audio-warning";
 import { FeedView } from "./feed";
 import { ContextFeed } from "./context-feed";
 import { attachFullscreen } from "./fullscreen";
@@ -19,7 +20,6 @@ import {
   buildLogin,
   buildShell,
   closeSheet,
-  confirmAudioEnable,
   confirmMediaDelete,
   element,
   formatTime,
@@ -405,7 +405,7 @@ function toggleSound(): void {
   }
   const host = shell?.root;
   if (!host) return;
-  void confirmAudioEnable(host).then((confirmed) => {
+  void requestAudioEnable(host).then((confirmed) => {
     if (!confirmed || !pool) return;
     muted = false;
     localStorage.setItem(MUTE_KEY, "false");
@@ -877,6 +877,22 @@ function openSettings(): void {
   const body: Node[] = [];
   body.push(sheetSection("播放设置"));
   body.push(sheetToggle("声音", muted ? "已关闭" : "已开启", !muted, toggleSound));
+  body.push(
+    sheetRow({
+      title: "声音安全提示",
+      sub:
+        prefs.soundPromptFrequency === "once-per-open"
+          ? "每次重新打开后提醒一次"
+          : "每次开启声音都提醒",
+      onPick: () => {
+        setPref(
+          "soundPromptFrequency",
+          prefs.soundPromptFrequency === "once-per-open" ? "every-time" : "once-per-open",
+        );
+        openSettings();
+      },
+    }),
+  );
   body.push(
     sheetToggle(
       "长按快进",

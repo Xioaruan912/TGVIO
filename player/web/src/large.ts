@@ -1,11 +1,12 @@
 import { api } from "./api";
+import { requestAudioEnable } from "./audio-warning";
 import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
 import { icon } from "./icons";
 import { NetworkMeter } from "./net";
 import { ThumbnailPreview } from "./preview";
 import { prefs } from "./settings";
-import { confirmAudioEnable, confirmMediaDelete, element, formatTime } from "./ui";
+import { confirmMediaDelete, element, formatTime } from "./ui";
 import type { Clip } from "./types";
 
 const MUTE_KEY = "tgvio.player.muted";
@@ -426,7 +427,7 @@ export class LargePlayer {
       this.soundButton.replaceChildren(icon("sound-off", 24));
       return;
     }
-    void confirmAudioEnable(this.root).then((confirmed) => {
+    void requestAudioEnable(this.root).then((confirmed) => {
       if (!confirmed) return;
       this.muted = false;
       localStorage.setItem(MUTE_KEY, "false");
