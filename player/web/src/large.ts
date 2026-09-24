@@ -5,7 +5,7 @@ import { icon } from "./icons";
 import { NetworkMeter } from "./net";
 import { ThumbnailPreview } from "./preview";
 import { prefs } from "./settings";
-import { confirmAudioEnable, element, formatTime } from "./ui";
+import { confirmAudioEnable, confirmMediaDelete, element, formatTime } from "./ui";
 import type { Clip } from "./types";
 
 const MUTE_KEY = "tgvio.player.muted";
@@ -44,6 +44,7 @@ export class LargePlayer {
   private readonly favoriteButton: HTMLButtonElement;
   private readonly soundButton: HTMLButtonElement;
   private readonly fullscreenButton: HTMLButtonElement;
+  private readonly deleteButton: HTMLButtonElement;
   private readonly preview = new ThumbnailPreview();
   private readonly meter: NetworkMeter;
   private readonly detach: () => void;
@@ -56,9 +57,11 @@ export class LargePlayer {
   private readonly onClose: () => void;
   private readonly onUnlock: () => void;
   private readonly onPrivacyLock: () => void;
+  private readonly onDeleted: (result: { deletedCopies: number; failedCopies: number }) => void;
   private readonly onProgress?: (position: number, duration: number, force: boolean) => void;
   private readonly startAt: number;
   private didRestorePosition = false;
+  private deleted = false;
   private muted = true;
   private userSeeking = false;
 
@@ -70,6 +73,7 @@ export class LargePlayer {
       onUnlock?: () => void;
       onPrivacyLock?: () => void;
       onProgress?: (position: number, duration: number, force: boolean) => void;
+      onDeleted?: (result: { deletedCopies: number; failedCopies: number }) => void;
       startAt?: number;
     } = {},
   ) {
@@ -78,6 +82,7 @@ export class LargePlayer {
     this.onUnlock = options.onUnlock ?? (() => undefined);
     this.onPrivacyLock = options.onPrivacyLock ?? (() => undefined);
     this.onProgress = options.onProgress;
+    this.onDeleted = options.onDeleted ?? (() => undefined);
     this.startAt = Math.max(0, options.startAt ?? 0);
     this.root = element("section", "large-player");
     if (options.privacyLocked) this.root.classList.add("privacy-locked");
@@ -177,6 +182,13 @@ export class LargePlayer {
     this.soundButton.appendChild(icon(this.muted ? "sound-off" : "sound-on", 24));
     this.soundButton.addEventListener("click", () => this.toggleSound());
 
+    this.deleteButton = element("button", "large-btn large-delete");
+    this.deleteButton.type = "button";
+    this.deleteButton.setAttribute("aria-label", "永久删除当前视频");
+    this.deleteButton.appendChild(icon("trash", 24));
+    this.deleteButton.hidden = !clip.deletable;
+    this.deleteButton.addEventListener("click", () => void this.deleteMedia());
+
     this.fullscreenButton = element("button", "large-btn");
     this.fullscreenButton.type = "button";
     this.fullscreenButton.setAttribute("aria-label", "全屏");
@@ -186,6 +198,7 @@ export class LargePlayer {
       timeline,
       this.favoriteButton,
       this.soundButton,
+      this.deleteButton,
       this.fullscreenButton,
     );
     this.root.append(topbar, stage, controls, this.preview.el);
@@ -269,7 +282,7 @@ export class LargePlayer {
   }
 
   destroy(): void {
-    this.flushProgress();
+    if (!this.deleted) this.flushProgress();
     window.clearTimeout(this.controlsHideTimer);
     this.detach();
     this.detachFullscreen();
@@ -373,6 +386,33 @@ export class LargePlayer {
     } catch {
       this.clip.favorite = !enabled;
       this.favoriteButton.classList.toggle("selected", !enabled);
+    }
+  }
+
+  private async deleteMedia(): Promise<void> {
+    if (!this.clip.deletable || !await confirmMediaDelete(this.root)) return;
+    this.deleteButton.disabled = true;
+    this.video.pause();
+    this.video.removeAttribute("src");
+    this.video.load();
+    try {
+      const result = await api.deleteMedia(this.clip.id);
+      if (result.removed) {
+        this.deleted = true;
+        this.onDeleted(result);
+        return;
+      }
+      this.retryButton.textContent = result.deletedCopies > 0
+        ? `已删除 ${result.deletedCopies} 份，${result.failedCopies} 份失败，点此恢复播放`
+        : "删除失败，点此恢复播放";
+      this.retryButton.hidden = false;
+      this.video.src = this.clip.streamUrl;
+    } catch {
+      this.retryButton.textContent = "删除失败，点此恢复播放";
+      this.retryButton.hidden = false;
+      this.video.src = this.clip.streamUrl;
+    } finally {
+      this.deleteButton.disabled = false;
     }
   }
 

@@ -4,6 +4,7 @@ export type ShellHandlers = {
   onTogglePlayback: () => void;
   onPlayGesture: () => void;
   onToggleFavorite: () => void;
+  onDeleteMedia: () => void;
   onToggleSound: () => void;
   onShuffle: () => void;
   onPrivacyLock: () => void;
@@ -23,6 +24,7 @@ export type Shell = {
   timeCurrent: HTMLElement;
   timeTotal: HTMLElement;
   favoriteBtn: HTMLButtonElement;
+  deleteBtn: HTMLButtonElement;
   soundBtn: HTMLButtonElement;
   shuffleBtn: HTMLButtonElement;
   privacyLockBtn: HTMLButtonElement;
@@ -236,13 +238,16 @@ export function buildShell(handlers: ShellHandlers): Shell {
     "隐私遮罩",
     "立即遮住并暂停",
   );
+  const deleteBtn = actionButton(iconStack([["trash", "icon-single"]], 29), "删除", "永久删除当前视频");
+  deleteBtn.classList.add("delete-action");
   const groupBtn = actionButton(iconStack([["library", "icon-single"]], 30), "同组视频", "查看同组视频");
   groupBtn.hidden = true;
   groupBtn.addEventListener("click", handlers.onOpenGroup);
-  actionRail.append(favoriteBtn, groupBtn, soundBtn, shuffleBtn, privacyLockBtn);
+  actionRail.append(favoriteBtn, groupBtn, soundBtn, shuffleBtn, deleteBtn, privacyLockBtn);
   favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
   soundBtn.addEventListener("click", handlers.onToggleSound);
   shuffleBtn.addEventListener("click", handlers.onShuffle);
+  deleteBtn.addEventListener("click", handlers.onDeleteMedia);
   privacyLockBtn.addEventListener("click", handlers.onPrivacyLock);
 
   const pauseIndicator = element("div", "pause-indicator");
@@ -321,6 +326,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
     timeCurrent,
     timeTotal,
     favoriteBtn,
+    deleteBtn,
     soundBtn,
     shuffleBtn,
     privacyLockBtn,
@@ -348,7 +354,51 @@ export function toast(shell: Shell, message: string): void {
   shell.toast.textContent = message;
   shell.toast.classList.add("show");
   window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => shell.toast.classList.remove("show"), 1900);
+  toastTimer = window.setTimeout(() => {
+    shell.toast.classList.remove("show");
+    window.setTimeout(() => {
+      if (!shell.toast.classList.contains("show")) shell.toast.textContent = "";
+    }, 220);
+  }, 1900);
+}
+
+export function confirmMediaDelete(host: HTMLElement): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = element("div", "audio-warning delete-warning");
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "delete-warning-title");
+    const panel = element("section", "audio-warning-panel");
+    const title = element("h2", undefined, "永久删除这个视频？");
+    title.id = "delete-warning-title";
+    const message = element(
+      "p",
+      undefined,
+      "将删除这个视频在 WebDAV 中的全部文件副本。不会删除文件夹和其他视频，删除后无法恢复。",
+    );
+    const actions = element("div", "audio-warning-actions");
+    const cancel = element("button", "audio-warning-cancel", "取消");
+    const confirm = element("button", "delete-warning-confirm", "永久删除视频");
+    cancel.type = "button";
+    confirm.type = "button";
+    let settled = false;
+    const finish = (accepted: boolean) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(accepted);
+    };
+    cancel.addEventListener("click", () => finish(false));
+    confirm.addEventListener("click", () => finish(true));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    actions.append(cancel, confirm);
+    panel.append(title, message, actions);
+    overlay.appendChild(panel);
+    host.appendChild(overlay);
+    cancel.focus();
+  });
 }
 
 export function confirmAudioEnable(host: HTMLElement): Promise<boolean> {

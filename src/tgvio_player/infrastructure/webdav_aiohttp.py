@@ -30,7 +30,7 @@ class WebDavClientSettings:
 
 
 class AioHttpReadOnlyWebDavClient:
-    """Player-only WebDAV reader with bounded metadata reads and Range streams."""
+    """Bounded Player WebDAV transport with opt-in single-file deletion."""
 
     def __init__(self, settings: WebDavClientSettings) -> None:
         parsed = urlsplit(settings.base_url)
@@ -127,6 +127,15 @@ class AioHttpReadOnlyWebDavClient:
             response.headers.get("ETag"),
             body(),
         )
+
+    async def delete(self, remote_path: str) -> bool:
+        response = await self._request("DELETE", remote_path)
+        try:
+            if response.status in {200, 202, 204, 404}:
+                return True
+            return False
+        finally:
+            response.release()
 
     async def _request(self, method: str, remote_path: str, **kwargs: object):
         await self.open()

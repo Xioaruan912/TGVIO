@@ -105,6 +105,7 @@ class PlayerHttpServer:
         deck: ShuffleDeckService,
         reader: ReadOnlyWebDavAdapter,
         *,
+        deleter: object | None = None,
         max_streams: int = 8,
         max_streams_per_client: int = 2,
         max_header_size: int = 8192,
@@ -125,6 +126,7 @@ class PlayerHttpServer:
         self._sessions = sessions
         self._deck = deck
         self._reader = reader
+        self._deleter = deleter
         self._stream_slots = asyncio.BoundedSemaphore(max_streams)
         self._max_streams_per_client = max_streams_per_client
         self._stream_clients: Counter[str] = Counter()
@@ -191,6 +193,8 @@ class PlayerHttpServer:
         app.router.add_get("/api/v1/long-progress", self._long_video_progress)
         app.router.add_get("/api/v1/cache-stats", self._cache_stats)
         app.router.add_get("/api/v1/media/{media_id}", self._media)
+        if self._deleter is not None:
+            app.router.add_delete("/api/v1/media/{media_id}", self._delete_media)
         app.router.add_get("/api/v1/media/{media_id}/stream", self._stream)
         app.router.add_post("/api/v1/media/{media_id}/prepare", self._prepare)
         app.router.add_put("/api/v1/media/{media_id}/favorite", self._favorite)
@@ -618,6 +622,53 @@ class PlayerHttpServer:
         await self._repository.delete_long_video_progress(str(details["media_id"]))
         return web.json_response({"id": details["media_id"], "deleted": True})
 
+    async def _delete_media(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        self._require_same_origin(request)
+        media_id = request.match_info["media_id"]
+        await self._media_details(media_id)
+        locations = await self._repository.active_location_records(media_id)
+        if not locations:
+            raise web.HTTPNotFound(text="media not found")
+
+        deleted = 0
+        failed = 0
+        assert self._deleter is not None
+        for package_id, package_path, remote_relpath in locations:
+            try:
+                succeeded = await self._deleter.delete_location(
+                    package_path, remote_relpath
+                )
+            except Exception:
+                succeeded = False
+            if not succeeded:
+                failed += 1
+                continue
+            await self._repository.record_deleted_location(
+                media_id, package_id, remote_relpath
+            )
+            deleted += 1
+
+        removed = await self._repository.finalize_media_deletion(media_id)
+        if removed:
+            if self._range_cache is not None:
+                discard = getattr(self._range_cache, "discard", None)
+                if callable(discard):
+                    await discard(media_id)
+            if self._faststart is not None:
+                discard = getattr(self._faststart, "discard", None)
+                if callable(discard):
+                    await discard(media_id)
+            await self._startup_cache.discard(media_id)
+        return web.json_response(
+            {
+                "id": media_id,
+                "deleted_copies": deleted,
+                "failed_copies": failed,
+                "removed": removed,
+            }
+        )
+
     async def _stream(self, request: web.Request) -> web.StreamResponse:
         await self._authenticate(request)
         media_id = request.match_info["media_id"]
@@ -913,6 +964,7 @@ class PlayerHttpServer:
             "size_bytes": details.get("size_bytes"),
             "stream_url": stream_url,
             "favorite": await self._repository.is_favorite(session_digest, media_id),
+            "deletable": self._deleter is not None,
             "mime_type": details.get("mime_type"),
             "codec": details.get("codec"),
             "category": "long" if is_long else "short",

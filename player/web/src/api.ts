@@ -50,6 +50,7 @@ export function clipFromMedia(media: MediaDto): Clip {
     sizeBytes: Math.max(0, Math.round(media.size_bytes ?? 0)),
     streamUrl: media.stream_url,
     favorite: media.favorite,
+    deletable: media.deletable ?? false,
     mimeType: media.mime_type ?? null,
     codec: media.codec ?? null,
     category: media.category ?? "short",
@@ -194,6 +195,24 @@ class PlayerApi {
       method: enabled ? "PUT" : "DELETE",
       headers: { "Content-Type": "application/json" },
     });
+  }
+
+  async deleteMedia(mediaId: string): Promise<{
+    deletedCopies: number;
+    failedCopies: number;
+    removed: boolean;
+  }> {
+    if (MOCK_MODE) return { deletedCopies: 1, failedCopies: 0, removed: true };
+    const payload = await this.request<{
+      deleted_copies: number;
+      failed_copies: number;
+      removed: boolean;
+    }>(`/api/v1/media/${encodeURIComponent(mediaId)}`, { method: "DELETE" });
+    return {
+      deletedCopies: payload.deleted_copies,
+      failedCopies: payload.failed_copies,
+      removed: payload.removed,
+    };
   }
 
   /** Best-effort pre-build of the server-side faststart overlay for a clip. */

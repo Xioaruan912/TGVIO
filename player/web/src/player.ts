@@ -176,6 +176,9 @@ export class VideoPool {
     // from the old source can never mark the new page ready or report an error
     // for the clip that is now bound to this element.
     this.loadAbort.get(video)?.abort();
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
     const controller = new AbortController();
     this.loadAbort.set(video, controller);
     const token = String(++this.loadToken);

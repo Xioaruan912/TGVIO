@@ -20,7 +20,8 @@ export type IconName =
   | "fullscreen"
   | "fullscreen-exit"
   | "back"
-  | "lock";
+  | "lock"
+  | "trash";
 
 type IconSpec = {
   paths: string[];
@@ -108,6 +109,9 @@ const SPECS: Record<IconName, IconSpec> = {
   },
   lock: {
     paths: ["M5.5 10h13v10h-13z", "M8 10V7a4 4 0 0 1 8 0v3", "M12 14v2"],
+  },
+  trash: {
+    paths: ["M5 7h14", "M9 7V4.5h6V7", "M7 7l.8 13h8.4L17 7", "M10 11v5", "M14 11v5"],
   },
 };
 

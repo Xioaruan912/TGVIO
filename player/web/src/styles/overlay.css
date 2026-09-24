@@ -423,6 +423,20 @@
   background: var(--cyan);
 }
 
+.delete-action {
+  color: rgba(255, 255, 255, 0.88);
+}
+
+.delete-action:disabled {
+  opacity: 0.42;
+}
+
+.delete-warning-confirm {
+  border: 1px solid rgba(255, 78, 78, 0.36);
+  color: #fff;
+  background: #b4232d;
+}
+
 .toast {
   position: absolute;
   z-index: 40;

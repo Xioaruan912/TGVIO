@@ -559,6 +559,29 @@ class MediaRangeCache:
         await asyncio.gather(*self._tasks, return_exceptions=True)
         self._tasks.clear()
 
+    async def discard(self, key: str) -> None:
+        tasks = [
+            task
+            for (media_id, _window), task in list(self._window_tasks.items())
+            if media_id == key
+        ]
+        for task in tasks:
+            task.cancel()
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
+        for mapping in (
+            self._chunk_events,
+            self._partial_chunks,
+            self._partial_events,
+            self._chunk_conditions,
+            self._foreground_windows,
+        ):
+            for item in [item for item in mapping if item[0] == key]:
+                mapping.pop(item, None)
+        for item in [item for item in self._failed if item.startswith(f"{key}:")]:
+            self._failed.pop(item, None)
+        self._store.delete_key(key)
+
     def stats(self) -> dict[str, object]:
         data = dict(self._store.stats())
         data["window_bytes"] = self._window_bytes

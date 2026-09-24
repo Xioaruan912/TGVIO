@@ -20,6 +20,7 @@ import {
   buildShell,
   closeSheet,
   confirmAudioEnable,
+  confirmMediaDelete,
   element,
   formatTime,
   openSheet,
@@ -70,6 +71,7 @@ let refill: Promise<void> | null = null;
 let randomRefill: Promise<void> | null = null;
 const randomCandidates: Clip[] = [];
 let randomSwitching = false;
+let deletingMedia = false;
 let lastActiveClipId = "";
 let lastActiveIndex = -1;
 let autoplayBlocked = false;
@@ -281,6 +283,7 @@ function updateOverlay(clip: Clip): void {
   if (!shell) return;
   shell.title.textContent = `视频 #${shortId(clip.id)}`;
   shell.meta.textContent = clipMeta(clip);
+  shell.deleteBtn.hidden = !clip.deletable;
   const video = pool?.currentVideo() ?? null;
   const duration = video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : clip.duration;
   shell.seek.max = String(duration || 0);
@@ -318,6 +321,76 @@ async function toggleFavorite(): Promise<void> {
     clip.favorite = !enabled;
     setFavoriteButton(shell!, !enabled);
     toast(shell!, "操作失败，请稍后重试");
+  }
+}
+
+function removeClipById(items: Clip[], mediaId: string): number {
+  const index = items.findIndex((item) => item.id === mediaId);
+  if (index >= 0) items.splice(index, 1);
+  return index;
+}
+
+function purgeClientMedia(mediaId: string): number {
+  favorites.delete(mediaId);
+  unplayable.delete(mediaId);
+  errorRetries.delete(mediaId);
+  progressCompleted.delete(mediaId);
+  progressSaveValues.delete(mediaId);
+  const timer = progressSaveTimers.get(mediaId);
+  if (timer) window.clearTimeout(timer);
+  progressSaveTimers.delete(mediaId);
+  removeClipById(randomCandidates, mediaId);
+  if (contextFeed) removeClipById(contextFeed.clips, mediaId);
+  return removeClipById(clips, mediaId);
+}
+
+async function deleteCurrentMedia(): Promise<void> {
+  const clip = feedView?.clipAt(activeIndex);
+  if (!clip || !clip.deletable || !shell || !pool || deletingMedia) return;
+  if (!await confirmMediaDelete(shell.root)) return;
+
+  deletingMedia = true;
+  shell.deleteBtn.disabled = true;
+  clearStallGuard();
+  paused = true;
+  pool.sync([], { paused: true, muted: true });
+  try {
+    const result = await api.deleteMedia(clip.id);
+    if (!result.removed) {
+      lastActiveClipId = "";
+      applyActive(activeIndex);
+      toast(
+        shell,
+        result.deletedCopies > 0
+          ? `已删除 ${result.deletedCopies} 份，${result.failedCopies} 份失败，视频仍保留`
+          : "源视频删除失败，请稍后重试",
+      );
+      return;
+    }
+
+    const homeIndex = purgeClientMedia(clip.id);
+
+    const remaining = activeClips();
+    if (!remaining.length && contextFeed) {
+      savedHomeIndex = Math.max(0, homeIndex);
+      leaveContext();
+    } else {
+      if (!remaining.length) await ensureFeed(MIN_FEED);
+      feedView?.replaceClips(activeClips());
+      activeIndex = Math.min(activeIndex, Math.max(0, activeClips().length - 1));
+      feedView?.scrollToIndex(activeIndex, false);
+      lastActiveClipId = "";
+      lastActiveIndex = -1;
+      if (activeClips().length) applyActive(activeIndex);
+    }
+    toast(shell, `已永久删除视频（${result.deletedCopies} 份源文件）`);
+  } catch {
+    lastActiveClipId = "";
+    applyActive(activeIndex);
+    toast(shell, "源视频删除失败，请稍后重试");
+  } finally {
+    deletingMedia = false;
+    if (shell) shell.deleteBtn.disabled = false;
   }
 }
 
@@ -630,6 +703,12 @@ function openLongVideos(): void {
         onPrivacyLock: lockPrivacyScreen,
         onProgress: (position, duration, force) =>
           saveLongVideoProgress(clip.id, position, duration, force),
+        onDeleted: (result) => {
+          purgeClientMedia(clip.id);
+          page?.remove(clip.id);
+          closePlayer();
+          toast(shell!, `已永久删除视频（${result.deletedCopies} 份源文件）`);
+        },
       });
       document.body.appendChild(largePlayer.root);
     },
@@ -978,6 +1057,7 @@ function renderFeed(): void {
     onTogglePlayback: togglePlayback,
     onPlayGesture: playGesture,
     onToggleFavorite: () => void toggleFavorite(),
+    onDeleteMedia: () => void deleteCurrentMedia(),
     onToggleSound: toggleSound,
     onShuffle: () => void goRandom(),
     onPrivacyLock: lockPrivacyScreen,
@@ -1016,6 +1096,8 @@ function renderFeed(): void {
     feedView.pageAt(activeIndex)?.classList.remove("is-loading");
     feedView.pageAt(activeIndex)?.classList.add("media-ready");
     shell?.root.classList.add("privacy-ready");
+    errorRetries.delete(mediaId);
+    unplayable.delete(mediaId);
     scheduleWarm();
     scheduleControlsHide();
   };

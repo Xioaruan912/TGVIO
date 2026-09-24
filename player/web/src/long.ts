@@ -52,6 +52,16 @@ export class LongVideoPage {
     this.renderItems();
   }
 
+  remove(mediaId: string): void {
+    const index = this.clips.findIndex((clip) => clip.id === mediaId);
+    if (index >= 0) this.clips.splice(index, 1);
+    this.progressState.positions.delete(mediaId);
+    this.progressState.recent = this.progressState.recent.filter(
+      ({ clip }) => clip.id !== mediaId,
+    );
+    this.renderItems();
+  }
+
   private async loadMore(): Promise<void> {
     if (this.loading || !this.hasMore) return;
     this.loading = true;

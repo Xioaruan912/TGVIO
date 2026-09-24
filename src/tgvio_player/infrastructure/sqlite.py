@@ -129,6 +129,15 @@ class PlayerCatalogRepositorySQLite:
                 )
 
             for location in package.locations:
+                deleted = conn.execute(
+                    """
+                    SELECT 1 FROM player_deleted_locations
+                    WHERE package_id=? AND remote_relpath=?
+                    """,
+                    (location.package_id, location.remote_relpath),
+                ).fetchone()
+                if deleted is not None:
+                    continue
                 conn.execute(
                     """
                     INSERT INTO media_locations(
@@ -430,6 +439,86 @@ class PlayerCatalogRepositorySQLite:
             (str(row["remote_path"]), str(row["remote_relpath"]))
             for row in rows
         ]
+
+    async def active_location_records(
+        self, media_id: str
+    ) -> list[tuple[str, str, str]]:
+        rows = self._require().execute(
+            """
+            SELECT ml.package_id, cp.remote_path, ml.remote_relpath
+            FROM media_locations ml
+            JOIN catalog_packages cp ON cp.package_id=ml.package_id
+            JOIN media ON media.media_id=ml.media_id
+            WHERE ml.media_id=? AND ml.active=1 AND cp.active=1 AND media.active=1
+            ORDER BY cp.package_id, ml.remote_relpath
+            """,
+            (media_id,),
+        ).fetchall()
+        return [
+            (
+                str(row["package_id"]),
+                str(row["remote_path"]),
+                str(row["remote_relpath"]),
+            )
+            for row in rows
+        ]
+
+    async def record_deleted_location(
+        self,
+        media_id: str,
+        package_id: str,
+        remote_relpath: str,
+    ) -> None:
+        async with self._write_transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM media_locations
+                WHERE media_id=? AND package_id=? AND remote_relpath=? AND active=1
+                """,
+                (media_id, package_id, remote_relpath),
+            ).fetchone()
+            if row is None:
+                return
+            conn.execute(
+                """
+                INSERT INTO player_deleted_locations(
+                    package_id, remote_relpath, media_id, deleted_at
+                ) VALUES(?,?,?,?)
+                ON CONFLICT(package_id, remote_relpath) DO UPDATE SET
+                    media_id=excluded.media_id,
+                    deleted_at=excluded.deleted_at
+                """,
+                (package_id, remote_relpath, media_id, int(time.time())),
+            )
+            conn.execute(
+                """
+                UPDATE media_locations SET active=0
+                WHERE media_id=? AND package_id=? AND remote_relpath=?
+                """,
+                (media_id, package_id, remote_relpath),
+            )
+
+    async def finalize_media_deletion(self, media_id: str) -> bool:
+        async with self._write_transaction() as conn:
+            remaining = conn.execute(
+                """
+                SELECT 1
+                FROM media_locations ml
+                JOIN catalog_packages cp ON cp.package_id=ml.package_id
+                WHERE ml.media_id=? AND ml.active=1 AND cp.active=1
+                LIMIT 1
+                """,
+                (media_id,),
+            ).fetchone()
+            removed = remaining is None
+            if removed:
+                conn.execute("UPDATE media SET active=0 WHERE media_id=?", (media_id,))
+                conn.execute("DELETE FROM favorites WHERE media_id=?", (media_id,))
+                conn.execute(
+                    "DELETE FROM player_long_video_progress WHERE media_id=?",
+                    (media_id,),
+                )
+            return removed
 
     async def active_media_location(
         self, media_id: str

@@ -6,6 +6,7 @@ export type MediaDto = {
   size_bytes?: number | null;
   stream_url: string;
   favorite: boolean;
+  deletable?: boolean;
   mime_type?: string | null;
   codec?: string | null;
   category?: "short" | "long";
@@ -58,6 +59,7 @@ export type Clip = {
   sizeBytes: number;
   streamUrl: string;
   favorite: boolean;
+  deletable: boolean;
   mimeType: string | null;
   codec: string | null;
   category: "short" | "long";

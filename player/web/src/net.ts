@@ -149,11 +149,11 @@ export class NetworkMeter {
     const video = this.video;
     const clip = this.clip;
     let label = "等待视频";
-    if (video?.error) label = "视频暂时无法播放";
-    else if (video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
+    if (video && video.readyState >= HTMLMediaElement.HAVE_CURRENT_DATA) {
       const ahead = Math.floor(this.bufferedAheadSeconds(video));
       label = ahead > 0 ? `已就绪 · 已缓冲 ${ahead} 秒` : "已就绪";
-    } else if (clip && video?.networkState === HTMLMediaElement.NETWORK_LOADING) {
+    } else if (video?.error) label = "视频暂时无法播放";
+    else if (clip && video?.networkState === HTMLMediaElement.NETWORK_LOADING) {
       label = "正在准备视频";
     } else if (clip) {
       label = "等待视频数据";

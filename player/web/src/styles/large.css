@@ -477,6 +477,14 @@
   color: var(--favorite);
 }
 
+.large-delete {
+  color: #ff8c92;
+}
+
+.large-delete[hidden] {
+  display: none;
+}
+
 .large-timeline {
   flex: 1 1 auto;
   min-width: 0;

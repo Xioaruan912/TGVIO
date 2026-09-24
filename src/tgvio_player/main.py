@@ -25,7 +25,7 @@ from tgvio_player.infrastructure.webdav_aiohttp import (
     WebDavClientSettings,
 )
 from tgvio_player.infrastructure.webdav_catalog import WebDavArchiveCatalogSource
-from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter
+from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDavDeleteAdapter
 
 
 _LOG = logging.getLogger(__name__)
@@ -52,6 +52,7 @@ class PlayerSettings:
     cache_concurrency: int
     warm_all: bool
     warm_head_mb: int
+    delete_enabled: bool
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -89,6 +90,7 @@ class PlayerSettings:
             cls._integer(get("CACHE_CONCURRENCY") or "4", "CACHE_CONCURRENCY", 1, 16),
             cls._flag(get("WARM_ALL") or "true", "WARM_ALL"),
             cls._integer(get("WARM_HEAD_MB") or "16", "WARM_HEAD_MB", 1, 512),
+            cls._flag(get("DELETE_ENABLED") or "false", "DELETE_ENABLED"),
         )
 
     @staticmethod
@@ -140,6 +142,7 @@ async def run(settings: PlayerSettings) -> None:
     try:
         await client.open()
         reader = ReadOnlyWebDavAdapter(client)
+        deleter = WebDavDeleteAdapter(client) if settings.delete_enabled else None
         sync = CatalogSyncService(WebDavArchiveCatalogSource(client, remote_root=settings.remote_root), repository)
         faststart = FaststartService(
             FaststartStore(settings.data_dir / "faststart"), repository, reader
@@ -164,6 +167,7 @@ async def run(settings: PlayerSettings) -> None:
             SessionService(repository, access_secret=settings.access_secret),
             ShuffleDeckService(repository, max_duration_seconds=settings.large_video_seconds),
             reader,
+            deleter=deleter,
             max_streams=settings.max_streams,
             max_streams_per_client=settings.max_streams_per_client,
             static_dir=Path("/app/player-web"),

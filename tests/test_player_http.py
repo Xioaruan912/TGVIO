@@ -61,6 +61,16 @@ class FakeReadClient:
         )
 
 
+class FakeDeleteClient:
+    def __init__(self) -> None:
+        self.calls: list[tuple[str, str]] = []
+        self.failures: set[tuple[str, str]] = set()
+
+    async def delete_location(self, package_path: str, remote_relpath: str) -> bool:
+        self.calls.append((package_path, remote_relpath))
+        return (package_path, remote_relpath) not in self.failures
+
+
 class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = TemporaryDirectory()
@@ -75,11 +85,13 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.apply_package(package)
         await self.repo.refresh_media_activity()
         self.read_client = FakeReadClient()
+        self.delete_client = FakeDeleteClient()
         self.server = PlayerHttpServer(
             self.repo,
             SessionService(self.repo, access_secret="s" * 32),
             ShuffleDeckService(self.repo),
             ReadOnlyWebDavAdapter(self.read_client),
+            deleter=self.delete_client,
             max_streams=2,
             max_streams_per_client=1,
             startup_cache=StartupRangeCache(max_entries=2, max_bytes=8),
@@ -123,6 +135,76 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.delete(
             f"/api/v1/media/{self.media_id}/favorite", cookies={"tgvio_player_session": cookie}
         )).status, 200)
+
+    async def test_delete_media_removes_every_registered_file_but_no_folder(self) -> None:
+        duplicate = CatalogPackage(
+            "duplicate-package", "TGVIO/2026-09-23/2", "c" * 64,
+            '"manifest-2"', '"complete-2"',
+            (CatalogMedia(self.media_id, "video", 4, "video/mp4", 1080, 1920, 2.0),),
+            (CatalogLocation(self.media_id, "duplicate-package", "nested/copy.mp4"),),
+        )
+        await self.repo.apply_package(duplicate)
+        await self.repo.refresh_media_activity()
+        cookie = await self._login()
+
+        response = await self.client.delete(
+            f"/api/v1/media/{self.media_id}",
+            cookies={"tgvio_player_session": cookie},
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertCountEqual(
+            self.delete_client.calls,
+            [
+                ("TGVIO/2026-09-22/1", "video.mp4"),
+                ("TGVIO/2026-09-23/2", "nested/copy.mp4"),
+            ],
+        )
+        self.assertTrue(all(relpath.endswith(".mp4") for _, relpath in self.delete_client.calls))
+        self.assertEqual((await response.json())["deleted_copies"], 2)
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+
+    async def test_deleted_location_tombstone_prevents_catalog_resurrection(self) -> None:
+        cookie = await self._login()
+        response = await self.client.delete(
+            f"/api/v1/media/{self.media_id}",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(response.status, 200)
+
+        package = CatalogPackage(
+            "package", "TGVIO/2026-09-22/1", "b" * 64, '"manifest"', '"complete"',
+            (CatalogMedia(self.media_id, "video", 4, "video/mp4", 1080, 1920, 2.0),),
+            (CatalogLocation(self.media_id, "package", "video.mp4", '"etag"'),),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+
+    async def test_delete_media_reports_partial_failure_and_keeps_remaining_copy(self) -> None:
+        duplicate = CatalogPackage(
+            "duplicate-package", "TGVIO/2026-09-23/2", "c" * 64,
+            '"manifest-2"', '"complete-2"',
+            (CatalogMedia(self.media_id, "video", 4, "video/mp4", 1080, 1920, 2.0),),
+            (CatalogLocation(self.media_id, "duplicate-package", "copy.mp4"),),
+        )
+        await self.repo.apply_package(duplicate)
+        await self.repo.refresh_media_activity()
+        self.delete_client.failures.add(("TGVIO/2026-09-23/2", "copy.mp4"))
+        cookie = await self._login()
+
+        response = await self.client.delete(
+            f"/api/v1/media/{self.media_id}",
+            cookies={"tgvio_player_session": cookie},
+        )
+
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(body["deleted_copies"], 1)
+        self.assertEqual(body["failed_copies"], 1)
+        self.assertFalse(body["removed"])
+        self.assertIsNotNone(await self.repo.active_media_details(self.media_id))
 
     async def test_range_headers_security_and_invalid_range(self) -> None:
         cookie = await self._login()
