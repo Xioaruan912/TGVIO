@@ -28,6 +28,7 @@ _MAX_FEED_LIMIT = 20
 _MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _FAVORITE_CURSOR_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 _MAX_RANDOM_CANDIDATES = 5
+_MAX_HEAD_PREFETCH_ITEMS = 5
 _DEFAULT_STARTUP_CACHE_ENTRIES = 32
 _DEFAULT_STARTUP_CACHE_BYTES = 64 * 1024 * 1024
 _DEFAULT_STARTUP_RANGE_BYTES = 2 * 1024 * 1024
@@ -169,13 +170,15 @@ class PlayerHttpServer:
         size = int(details.get("size_bytes") or 0)
         if size <= 0:
             return
+        chunk_bytes = int(getattr(self._range_cache, "chunk_bytes", self._warm_head_bytes))
+        head_bytes = min(self._warm_head_bytes, chunk_bytes)
         self._range_cache.prefetch_head(
             media_id,
             location[0],
             location[1],
             size,
-            self._warm_head_bytes,
-            whole_below=self._warm_head_bytes,
+            head_bytes,
+            whole_below=head_bytes,
         )
 
     def application(self) -> web.Application:
@@ -330,7 +333,8 @@ class PlayerHttpServer:
             if details is not None:
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
-                await self._schedule_head_prefetch(media_id, details)
+                if index < _MAX_HEAD_PREFETCH_ITEMS:
+                    await self._schedule_head_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "next_cursor": None})
 
@@ -408,7 +412,8 @@ class PlayerHttpServer:
                 if category != "all":
                     if self._faststart is not None and index < 3:
                         self._faststart.schedule(media_id, details)
-                    await self._schedule_head_prefetch(media_id, details)
+                    if index < _MAX_HEAD_PREFETCH_ITEMS:
+                        await self._schedule_head_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         count_method = getattr(self._repository, "count_video_ids", None)
         if callable(count_method):
@@ -456,7 +461,8 @@ class PlayerHttpServer:
             if details is not None:
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
-                await self._schedule_head_prefetch(media_id, details)
+                if index < _MAX_HEAD_PREFETCH_ITEMS:
+                    await self._schedule_head_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         next_cursor = media_ids[-1] if has_more and media_ids else None
         return web.json_response(

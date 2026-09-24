@@ -5,6 +5,7 @@ import base64
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
+from unittest.mock import AsyncMock, Mock
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -135,6 +136,29 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.delete(
             f"/api/v1/media/{self.media_id}/favorite", cookies={"tgvio_player_session": cookie}
         )).status, 200)
+
+    async def test_feed_limits_background_range_prefetch_to_five_items(self) -> None:
+        cookie = await self._login()
+        self.server._deck.next_items = AsyncMock(return_value=[self.media_id] * 7)
+        self.server._schedule_head_prefetch = AsyncMock()
+
+        response = await self.client.get(
+            "/api/v1/feed?limit=20&cache=1",
+            cookies={"tgvio_player_session": cookie},
+        )
+
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len((await response.json())["items"]), 7)
+        self.assertEqual(self.server._schedule_head_prefetch.await_count, 5)
+
+    async def test_head_prefetch_is_limited_to_one_cache_chunk(self) -> None:
+        cache = Mock(chunk_bytes=1024)
+        self.server._range_cache = cache
+
+        await self.server._schedule_head_prefetch(self.media_id, {"size_bytes": 4096})
+
+        self.assertEqual(cache.prefetch_head.call_args.args[4], 1024)
+        self.assertEqual(cache.prefetch_head.call_args.kwargs["whole_below"], 1024)
 
     async def test_delete_media_removes_every_registered_file_but_no_folder(self) -> None:
         duplicate = CatalogPackage(

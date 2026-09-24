@@ -113,6 +113,7 @@ class MediaRangeCache:
         self._max_attempts = max(1, int(max_attempts))
         self._backoff = max(0.05, float(backoff_seconds))
         self._window_tasks: dict[tuple[str, int], asyncio.Task[object]] = {}
+        self._head_tasks: dict[tuple[str, int], asyncio.Task[object]] = {}
         self._chunk_events: dict[tuple[str, int], asyncio.Event] = {}
         self._partial_chunks: dict[tuple[str, int], bytearray] = {}
         self._partial_events: dict[tuple[str, int], asyncio.Event] = {}
@@ -131,6 +132,10 @@ class MediaRangeCache:
     def open(self) -> None:
         self._store.open()
 
+    @property
+    def chunk_bytes(self) -> int:
+        return self._chunk_bytes
+
     def _chunk_bounds(self, size: int, index: int) -> tuple[int, int]:
         start = index * self._chunk_bytes
         end = min(start + self._chunk_bytes, size) - 1
@@ -148,7 +153,7 @@ class MediaRangeCache:
         window = self._window_for_chunk(index)
         self._mark_foreground(key, window)
         try:
-            self._ensure_window(key, package, relpath, size, window)
+            self._ensure_window(key, package, relpath, size, window, needed_chunk=index)
             await event.wait()
             failure = self._failed.get(f"{key}:{index}")
             if failure is not None:
@@ -169,11 +174,20 @@ class MediaRangeCache:
         window: int,
         *,
         low_priority: bool = False,
+        needed_chunk: int | None = None,
     ) -> None:
         if window * self._window_bytes >= size:
             return
+        if needed_chunk is not None:
+            head_task = self._head_tasks.get((key, needed_chunk))
+            if head_task is not None and not head_task.done():
+                return
         if (key, window) in self._window_tasks:
             return
+        for task_key, head_task in list(self._head_tasks.items()):
+            if task_key[0] == key and self._window_for_chunk(task_key[1]) == window:
+                self._head_tasks.pop(task_key, None)
+                head_task.cancel()
         # A failed window belongs to that fetch attempt. Let a later playback
         # request start a fresh fetch instead of inheriting a stale failure.
         window_start = window * self._window_bytes
@@ -190,15 +204,14 @@ class MediaRangeCache:
             self._partial_chunks.pop(chunk_key, None)
             self._failed.pop(f"{key}:{index}", None)
         task = asyncio.create_task(
-            self._fetch_window(
-                key, package, relpath, size, window, low_priority=low_priority
-            )
+            self._fetch_window(key, package, relpath, size, window, low_priority=low_priority)
         )
         self._window_tasks[(key, window)] = task
         self._tasks.add(task)
 
         def _done(_task: asyncio.Task[object]) -> None:
-            self._window_tasks.pop((key, window), None)
+            if self._window_tasks.get((key, window)) is _task:
+                self._window_tasks.pop((key, window), None)
             self._tasks.discard(_task)
 
         task.add_done_callback(_done)
@@ -212,11 +225,14 @@ class MediaRangeCache:
         window: int,
         *,
         low_priority: bool = False,
+        first_chunk: int | None = None,
+        last_chunk: int | None = None,
+        head_prefetch: bool = False,
     ) -> None:
         window_start = window * self._window_bytes
         window_end = min(window_start + self._window_bytes, size) - 1
-        first_chunk = window_start // self._chunk_bytes
-        last_chunk = window_end // self._chunk_bytes
+        first_chunk = window_start // self._chunk_bytes if first_chunk is None else first_chunk
+        last_chunk = window_end // self._chunk_bytes if last_chunk is None else last_chunk
 
         attempt = 0
         while attempt < self._max_attempts:
@@ -239,8 +255,18 @@ class MediaRangeCache:
                 continue
             response = None
             try:
+                range_start = first_chunk * self._chunk_bytes
+                range_end = min((last_chunk + 1) * self._chunk_bytes, size) - 1
+                while (
+                    first_chunk <= last_chunk
+                    and self._store.read_slice(key, first_chunk, 0, self._chunk_bytes) is not None
+                ):
+                    first_chunk += 1
+                    range_start = first_chunk * self._chunk_bytes
+                if first_chunk > last_chunk:
+                    return
                 response = await self._reader.open_range(
-                    package, relpath, ByteRange(window_start, window_end)
+                    package, relpath, ByteRange(range_start, range_end)
                 )
                 if response.status in {200, 206}:
                     started = time.perf_counter()
@@ -258,8 +284,8 @@ class MediaRangeCache:
                     elapsed = max(0.001, time.perf_counter() - started)
                     _LOG.info(
                         "player.rangecache.window_complete key=%s win=%s bytes=%s elapsed_ms=%.1f mbps=%.2f",
-                        key[:12], window, window_end - window_start + 1, elapsed * 1000,
-                        (window_end - window_start + 1) / elapsed / 1_000_000,
+                        key[:12], window, range_end - range_start + 1, elapsed * 1000,
+                        (range_end - range_start + 1) / elapsed / 1_000_000,
                     )
                     return
                 await self._gate.penalize()
@@ -275,7 +301,12 @@ class MediaRangeCache:
                 break
             await asyncio.sleep(self._backoff * attempt)
         self._window_failures += 1
-        self._mark_failed(key, first_chunk, last_chunk, RangeCacheError("window fetch failed"))
+        if head_prefetch:
+            for index in range(first_chunk, last_chunk + 1):
+                self._failed.pop(f"{key}:{index}", None)
+                self._signal_partial(key, index)
+        else:
+            self._mark_failed(key, first_chunk, last_chunk, RangeCacheError("window fetch failed"))
 
     @staticmethod
     async def _close(response: object) -> None:
@@ -409,6 +440,7 @@ class MediaRangeCache:
                         size,
                         self._window_for_chunk(next_index),
                         low_priority=True,
+                        needed_chunk=next_index,
                     )
 
     async def prime(
@@ -428,7 +460,7 @@ class MediaRangeCache:
         window = self._window_for_chunk(index)
         self._mark_foreground(key, window)
         try:
-            self._ensure_window(key, package, relpath, size, window)
+            self._ensure_window(key, package, relpath, size, window, needed_chunk=index)
             while True:
                 cached = self._store.read_slice(key, index, within, needed)
                 if cached is not None and len(cached) >= needed:
@@ -439,7 +471,7 @@ class MediaRangeCache:
                     break
                 # Another request may have caused this chunk to be persisted since
                 # the initial lookup; ensure the active fetch generation is reused.
-                self._ensure_window(key, package, relpath, size, window)
+                self._ensure_window(key, package, relpath, size, window, needed_chunk=index)
                 failed_key = f"{key}:{index}"
                 failure = self._failed.get(failed_key)
                 if failure is not None:
@@ -472,7 +504,7 @@ class MediaRangeCache:
         window = self._window_for_chunk(index)
         self._mark_foreground(key, window)
         try:
-            self._ensure_window(key, package, relpath, size, window)
+            self._ensure_window(key, package, relpath, size, window, needed_chunk=index)
             while True:
                 cached = self._store.read_slice(key, index, offset, length)
                 if cached:
@@ -550,8 +582,38 @@ class MediaRangeCache:
             return
         target = size if whole_below and size <= whole_below else min(length, size)
         last_chunk = max(0, (target - 1) // self._chunk_bytes)
-        for window in range(0, self._window_for_chunk(last_chunk) + 1):
-            self._ensure_window(key, package, relpath, size, window, low_priority=True)
+        for index in range(last_chunk + 1):
+            expected = min(self._chunk_bytes, size - index * self._chunk_bytes)
+            if self._store.read_slice(key, index, 0, expected) is not None:
+                continue
+            task_key = (key, index)
+            window = self._window_for_chunk(index)
+            if task_key in self._head_tasks or self._window_tasks.get((key, window)) is not None:
+                continue
+            self._failed.pop(f"{key}:{index}", None)
+            task = asyncio.create_task(
+                self._fetch_window(
+                    key,
+                    package,
+                    relpath,
+                    size,
+                    window,
+                    low_priority=True,
+                    first_chunk=index,
+                    last_chunk=index,
+                    head_prefetch=True,
+                )
+            )
+            self._head_tasks[task_key] = task
+            self._tasks.add(task)
+
+            def _done(done: asyncio.Task[object], *, key: tuple[str, int] = task_key) -> None:
+                if self._head_tasks.get(key) is done:
+                    self._head_tasks.pop(key, None)
+                    self._signal_partial(key[0], key[1])
+                self._tasks.discard(done)
+
+            task.add_done_callback(_done)
 
     async def shutdown(self) -> None:
         for task in list(self._tasks):
@@ -565,10 +627,17 @@ class MediaRangeCache:
             for (media_id, _window), task in list(self._window_tasks.items())
             if media_id == key
         ]
+        tasks.extend(
+            task
+            for (media_id, _chunk), task in list(self._head_tasks.items())
+            if media_id == key
+        )
         for task in tasks:
             task.cancel()
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
+        for task_key in [item for item in self._head_tasks if item[0] == key]:
+            self._head_tasks.pop(task_key, None)
         for mapping in (
             self._chunk_events,
             self._partial_chunks,
@@ -587,6 +656,7 @@ class MediaRangeCache:
         data["window_bytes"] = self._window_bytes
         data["concurrency"] = self._gate.limit
         data["windows_inflight"] = len(self._window_tasks)
+        data["head_chunks_inflight"] = len(self._head_tasks)
         data["disk_cache_bytes_served"] = self._disk_cache_bytes_served
         data["inflight_bytes_served"] = self._inflight_bytes_served
         data["upstream_bytes"] = self._upstream_bytes

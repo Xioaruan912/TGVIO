@@ -230,13 +230,59 @@ class MediaRangeCacheTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_prefetch_head_warms_the_start(self) -> None:
         buffer = bytes(range(64))
-        cache = MediaRangeCache(FakeStore(), FakeReader(buffer), concurrency=2)
-        cache.prefetch_head("k", "pkg", "clip.mp4", len(buffer), 999)
+        store = FakeStore()
+        reader = FakeReader(buffer)
+        cache = MediaRangeCache(store, reader, window_bytes=len(buffer), concurrency=2)
+        cache.prefetch_head("k", "pkg", "clip.mp4", len(buffer), 8)
         for _ in range(50):
             if ("k", 0) in cache._store.data:
                 break
             await asyncio.sleep(0.01)
         self.assertIn(("k", 0), cache._store.data)
+        self.assertEqual(reader.calls, [(0, 7)])
+        self.assertEqual(set(store.data), {("k", 0)})
+        await cache.shutdown()
+
+    async def test_stream_reuses_warmed_head_and_fetches_only_missing_chunks(self) -> None:
+        buffer = bytes(range(64))
+        reader = FakeReader(buffer)
+        cache = MediaRangeCache(FakeStore(), reader, window_bytes=len(buffer), concurrency=2)
+        cache.prefetch_head("k", "pkg", "clip.mp4", len(buffer), 8)
+        for _ in range(50):
+            if ("k", 0) in cache._store.data:
+                break
+            await asyncio.sleep(0.01)
+
+        result = await collect(cache.stream("k", "pkg", "clip.mp4", len(buffer), ByteRange(0, 15)))
+
+        self.assertEqual(result, buffer[:16])
+        self.assertEqual(reader.calls, [(0, 7), (8, 63)])
+        await cache.shutdown()
+
+    async def test_failed_head_prefetch_falls_back_to_foreground_window(self) -> None:
+        buffer = bytes(range(64))
+
+        class Reader:
+            def __init__(self) -> None:
+                self.calls: list[tuple[int, int]] = []
+
+            async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+                self.calls.append((byte_range.start, byte_range.end))
+                if len(self.calls) == 1:
+                    return _Response(503)
+                return await FakeReader(buffer).open_range(package, relpath, byte_range)
+
+        reader = Reader()
+        cache = MediaRangeCache(FakeStore(), reader, window_bytes=len(buffer), max_attempts=1)
+        cache.prefetch_head("k", "pkg", "clip.mp4", len(buffer), 8)
+        for _ in range(50):
+            if not cache._head_tasks:
+                break
+            await asyncio.sleep(0.01)
+
+        await cache.prime("k", "pkg", "clip.mp4", len(buffer), ByteRange(0, 7))
+
+        self.assertEqual(reader.calls, [(0, 7), (0, 63)])
         await cache.shutdown()
 
 
