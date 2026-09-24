@@ -287,6 +287,16 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         await self.server._release_stream("playback-client")
         await self.server._release_stream("next-playback-client")
 
+    async def test_preload_preserves_one_global_slot_for_foreground_playback(self) -> None:
+        self.assertTrue(await self.server._acquire_stream("playback-client"))
+        diagnostics: dict[str, object] = {}
+        acquired = await self.server._acquire_stream(
+            "speculative-client", preload=True, diagnostics=diagnostics
+        )
+        self.assertFalse(acquired)
+        self.assertEqual(diagnostics["reason"], "playback_capacity_reserved")
+        await self.server._release_stream("playback-client")
+
     async def test_startup_range_is_cached_with_catalog_etag_and_range_headers(self) -> None:
         cookie = await self._login()
         first = await self.client.get(
@@ -445,6 +455,12 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
 
 
     async def test_preload_requests_do_not_consume_playback_budget(self) -> None:
+        # Keep room for a foreground slot while the preload and active playback
+        # run together. With two slots, the new admission rule correctly rejects
+        # this preload to preserve that final slot.
+        self.server._max_streams = 3
+        self.server._max_preload = 1
+        self.server._stream_slots = asyncio.BoundedSemaphore(3)
         cookie = await self._login()
         stream = f"/api/v1/media/{self.media_id}/stream"
         hold = asyncio.Event()

@@ -309,6 +309,10 @@ class PlayerHttpStreamingMixin:
                 if (
                     self._foreground_waiters
                     or self._preload_active >= self._max_preload
+                    or (
+                        self.active_playback_streams + self._preload_active
+                        >= self._max_streams - 1
+                    )
                     or self._stream_slots.locked()
                 ):
                     if diagnostics is not None:
@@ -318,6 +322,9 @@ class PlayerHttpStreamingMixin:
                                 if self._foreground_waiters
                                 else "preload_limit"
                                 if self._preload_active >= self._max_preload
+                                else "playback_capacity_reserved"
+                                if self.active_playback_streams + self._preload_active
+                                >= self._max_streams - 1
                                 else "global_capacity"
                             ),
                             wait_ms=0,
