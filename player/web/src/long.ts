@@ -3,6 +3,7 @@ import { icon } from "./icons";
 import { prefs } from "./settings";
 import { element, formatTime } from "./ui";
 import type { Clip } from "./types";
+import { omitResumableDuplicates, resumableItems } from "./long-video-list";
 
 const BATCH = 20;
 const EMPTY_PROGRESS = { positions: new Map<string, number>(), recent: [] as Array<{ clip: Clip; position: number }> };
@@ -93,27 +94,31 @@ export class LongVideoPage {
   private renderItems(): void {
     const scrollTop = this.list.scrollTop;
     this.list.replaceChildren();
-    this.appendContinueWatching(this.progressState.recent);
-    for (const clip of this.clips) {
-      this.list.appendChild(this.row(clip, this.progressState.positions.get(clip.id)));
+    const resumable = resumableItems(this.progressState.recent);
+    this.appendContinueWatching(resumable);
+    const library = omitResumableDuplicates(this.clips, resumable);
+    if (library.length) {
+      const section = element("section", "long-library-section");
+      section.setAttribute("aria-label", "全部长视频");
+      section.appendChild(element("h2", "long-library-heading", "全部长视频"));
+      for (const clip of library) {
+        section.appendChild(this.row(clip, this.progressState.positions.get(clip.id)));
+      }
+      this.list.appendChild(section);
     }
-    if (!this.clips.length && !this.hasMore) {
+    if (!this.clips.length && !this.hasMore && !resumable.length) {
       this.list.appendChild(element("p", "long-empty", "暂无长视频"));
     }
     this.list.scrollTop = scrollTop;
   }
 
   private appendContinueWatching(items: Array<{ clip: Clip; position: number }>): void {
-    const resumable = items
-      .filter(({ clip, position }) => position > 10 && position < clip.duration - 30)
-      .slice(0, 5);
-    if (!resumable.length) return;
-
+    if (!items.length) return;
     const section = element("section", "long-resume-section");
     section.setAttribute("aria-label", "继续观看");
     section.appendChild(element("h2", "long-resume-heading", "继续观看"));
     const rows = element("div", "long-resume-items");
-    for (const { clip, position } of resumable) {
+    for (const { clip, position } of items) {
       rows.appendChild(this.row(clip, position, true));
     }
     section.appendChild(rows);

@@ -164,6 +164,19 @@
   gap: 7px;
 }
 
+.long-library-section {
+  display: grid;
+  gap: 8px;
+  align-content: start;
+}
+
+.long-library-heading {
+  margin: 10px 2px 2px;
+  color: var(--muted);
+  font-size: 13px;
+  font-weight: 650;
+}
+
 .long-row {
   display: flex;
   align-items: center;

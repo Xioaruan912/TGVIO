@@ -251,24 +251,41 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         cookie = await self._login()
         wait = asyncio.Event()
         self.read_client.body = ClosableBody([b"later"], wait=wait)
+        first_body = self.read_client.body
         first = asyncio.create_task(self.client.get(
             f"/api/v1/media/{self.media_id}/stream", cookies={"tgvio_player_session": cookie}
         ))
         await asyncio.sleep(0)
-        second = await self.client.get(
+        second = asyncio.create_task(self.client.get(
             f"/api/v1/media/{self.media_id}/stream", cookies={"tgvio_player_session": cookie}
-        )
-        self.assertEqual(second.status, 429)
+        ))
+        await asyncio.sleep(0.05)
+        self.assertFalse(second.done(), "same-client playback should wait for the previous request to release")
         first_response = await first
-        first_response.close()
-        await asyncio.wait_for(self.read_client.body.closed.wait(), timeout=1)
         self.read_client.body = ClosableBody([b"x"])
+        first_response.close()
+        await asyncio.wait_for(first_body.closed.wait(), timeout=1)
+        second_response = await asyncio.wait_for(second, timeout=1)
+        self.assertEqual(second_response.status, 200)
         self.read_client.status = 503
         failed = await self.client.get(
             f"/api/v1/media/{self.media_id}/stream", cookies={"tgvio_player_session": cookie}
         )
         self.assertEqual(failed.status, 502)
         self.assertTrue(self.read_client.body.closed.is_set())
+
+    async def test_foreground_stream_waits_for_capacity_instead_of_returning_429(self) -> None:
+        self.assertTrue(await self.server._acquire_stream("preload-client", preload=True))
+        self.assertTrue(await self.server._acquire_stream("playback-client"))
+        waiting = asyncio.create_task(self.server._acquire_stream("next-playback-client"))
+        await asyncio.sleep(0.05)
+        self.assertFalse(waiting.done(), "foreground playback should wait briefly for a stream slot")
+
+        await self.server._release_stream("preload-client", preload=True)
+        self.assertTrue(await asyncio.wait_for(waiting, timeout=1))
+
+        await self.server._release_stream("playback-client")
+        await self.server._release_stream("next-playback-client")
 
     async def test_startup_range_is_cached_with_catalog_etag_and_range_headers(self) -> None:
         cookie = await self._login()

@@ -76,6 +76,8 @@ let lastActiveClipId = "";
 let lastActiveIndex = -1;
 let autoplayBlocked = false;
 let openSheetKind: string | null = null;
+let groupRequestController: AbortController | null = null;
+let groupRequestGeneration = 0;
 let userSeeking = false;
 let longVideosOpen = false;
 let debugAt = 0;
@@ -208,14 +210,12 @@ function showControlsForActivity(): void {
 }
 
 /**
- * Ask the server to pre-build the faststart overlay for the next few clips so a
+ * Ask the server to pre-build the faststart overlay for the next clip so a
  * swipe does not have to wait for the archive's trailing ``moov``.
  */
 function prepareAhead(index: number): void {
-  for (let offset = 1; offset <= 5; offset += 1) {
-    const clip = feedView?.clipAt(index + offset);
-    if (clip) void api.prepare(clip.id);
-  }
+  const next = feedView?.clipAt(index + 1);
+  if (next) void api.prepare(next.id).catch(() => undefined);
 }
 
 /**
@@ -544,11 +544,13 @@ async function ensureRandomCandidates(): Promise<void> {
   }
   for (const clip of randomCandidates) exclude.add(clip.id);
   const request = api.randomShorts(5 - randomCandidates.length, [...exclude]).then((items) => {
-    const shorts = items.filter((clip) => clip.category === "short");
+    const known = new Set([
+      ...activeClips().map((clip) => clip.id),
+      ...randomCandidates.map((clip) => clip.id),
+    ]);
+    const shorts = items.filter((clip) => clip.category === "short" && !known.has(clip.id));
     randomCandidates.push(...shorts);
-    // Warm candidates in the background; speculative bytes must not block the
-    // user's request to switch to an already-selected random short.
-    void preloader.warmRandomCandidates(shorts);
+    preloader.warmRandomCandidates(shorts);
   });
   randomRefill = request;
   try {
@@ -565,18 +567,34 @@ async function goRandom(): Promise<void> {
   shell.shuffleBtn.setAttribute("aria-busy", "true");
   const label = shell.shuffleBtn.querySelector<HTMLElement>(".action-label");
   if (label) label.textContent = "准备中";
+  const sourceIndex = activeIndex;
+  const sourceId = activeClips()[sourceIndex]?.id;
   try {
     await ensureRandomCandidates();
     if (!randomCandidates.length) {
       toast(shell, "没有可抽取的短视频");
       return;
     }
-    const index = Math.floor(Math.random() * randomCandidates.length);
-    const clip = randomCandidates.splice(index, 1)[0];
-    if (!clip || clip.category !== "short" || !feedView.replaceClipAt(activeIndex, clip)) {
+    const candidateIndex = Math.floor(Math.random() * randomCandidates.length);
+    const clip = randomCandidates[candidateIndex];
+    if (!clip || clip.category !== "short") {
       toast(shell, "随机视频暂时不可用");
       return;
     }
+    if (!await preloader.ensureRandomCandidate(clip)) {
+      toast(shell, "随机视频还在准备中，当前视频会继续播放，请稍后重试");
+      return;
+    }
+    if (activeIndex !== sourceIndex || activeClips()[sourceIndex]?.id !== sourceId) {
+      toast(shell, "当前视频已改变，请重新点换一个");
+      return;
+    }
+    if (!feedView.replaceClipAt(sourceIndex, clip)) {
+      toast(shell, "随机视频暂时不可用");
+      return;
+    }
+    randomCandidates.splice(candidateIndex, 1);
+    seenIds.add(clip.id);
     if (favorites.has(clip.id)) clip.favorite = true;
     lastActiveClipId = "";
     applyActive(activeIndex);
@@ -835,16 +853,111 @@ function openGroupChooser(): void {
   const groups = clip?.groups ?? [];
   if (!shell || !groups.length) return;
   if (groups.length === 1) {
-    void enterContext("group", groups[0]);
+    void openGroupList(groups[0]);
     return;
   }
   openSheetKind = "group-chooser";
   openSheet(shell, "选择归属日期", groups.map((group) => sheetRow({
     title: group.label,
-    sub: "刷看此日期归档的视频",
+    sub: "查看并加入当前播放队列",
     iconName: "play-small",
-    onPick: () => void enterContext("group", group),
+    onPick: () => void openGroupList(group),
   })));
+}
+
+async function openGroupList(group: ArchiveGroup): Promise<void> {
+  if (!shell || !feedView || contextFeed) return;
+  groupRequestController?.abort();
+  const controller = new AbortController();
+  groupRequestController = controller;
+  const generation = ++groupRequestGeneration;
+  const items: Clip[] = [];
+  let cursor: string | null = null;
+  let hasMore = true;
+  let loading = false;
+  let failed = false;
+
+  const render = (): void => {
+    if (!shell || generation !== groupRequestGeneration || openSheetKind !== "group-list") return;
+    const scrollTop = shell.sheetBody.scrollTop;
+    const body: Node[] = [
+      sheetNote("点选视频后会把同组内容接到当前视频后面；上下滑动可继续观看或回到原位置。"),
+    ];
+    if (!items.length && loading) {
+      body.push(sheetRow({ title: "正在加载同组视频…" }));
+    } else if (!items.length && failed) {
+      body.push(sheetRow({ title: "加载失败，点击重试", onPick: () => void loadMore() }));
+    } else if (!items.length && hasMore) {
+      body.push(sheetRow({ title: "加载同组视频", onPick: () => void loadMore() }));
+    } else if (!items.length) {
+      body.push(sheetRow({ title: "这个分组里还没有可播放的视频" }));
+    }
+    for (const item of items) {
+      body.push(sheetRow({
+        title: `视频 #${shortId(item.id)}`,
+        sub: clipMeta(item),
+        note: (feedView?.indexOf(item.id) ?? -1) >= 0 ? "已在播放队列" : "接在当前视频后面",
+        iconName: "play-small",
+        onPick: () => selectGroupItem(item),
+      }));
+    }
+    if (loading && items.length) body.push(sheetRow({ title: "正在加载…" }));
+    else if (failed && items.length) {
+      body.push(sheetRow({ title: "加载失败，点击重试", onPick: () => void loadMore() }));
+    } else if (hasMore && items.length) {
+      body.push(sheetRow({ title: "加载更多同组视频", onPick: () => void loadMore() }));
+    }
+    openSheet(shell, `同组视频 · ${group.label}`, body);
+    shell.sheetBody.scrollTop = scrollTop;
+  };
+
+  const selectGroupItem = (selected: Clip): void => {
+    if (!shell || !feedView) return;
+    const ordered = [selected, ...items.filter((item) => item.id !== selected.id)];
+    let insertAfter = activeIndex;
+    for (const item of ordered) {
+      const existingIndex = feedView.indexOf(item.id);
+      if (existingIndex >= 0) continue;
+      insertAfter = feedView.insertAfter(insertAfter, item);
+      seenIds.add(item.id);
+    }
+    const target = feedView.indexOf(selected.id);
+    closeSheet(shell);
+    openSheetKind = null;
+    setActiveNav(shell, "home");
+    if (target >= 0 && target !== activeIndex) feedView.scrollToIndex(target, true);
+    else if (target === activeIndex) toast(shell, "当前播放的就是这条视频");
+  };
+
+  const loadMore = async (): Promise<void> => {
+    if (loading || !hasMore || controller.signal.aborted) return;
+    loading = true;
+    failed = false;
+    render();
+    try {
+      const page = await api.groupVideos(group.id, FEED_BATCH, cursor, controller.signal);
+      if (generation !== groupRequestGeneration || controller.signal.aborted) return;
+      const known = new Set(items.map((item) => item.id));
+      for (const item of page.items) {
+        if (!known.has(item.id)) {
+          known.add(item.id);
+          items.push(item);
+        }
+      }
+      cursor = page.nextCursor;
+      hasMore = page.hasMore;
+    } catch {
+      if (generation !== groupRequestGeneration || controller.signal.aborted) return;
+      failed = true;
+    } finally {
+      loading = false;
+      render();
+    }
+  };
+
+  openSheetKind = "group-list";
+  render();
+  await loadMore();
 }
 
 function openLibrary(): void {
@@ -1083,6 +1196,14 @@ function renderFeed(): void {
     onNav,
   };
   shell = buildShell(handlers);
+  shell.root.addEventListener("playersheetclose", () => {
+    if (openSheetKind === "group-list" || openSheetKind === "group-chooser") {
+      groupRequestGeneration += 1;
+      groupRequestController?.abort();
+      groupRequestController = null;
+      openSheetKind = null;
+    }
+  });
   if (!privacyUnlocked) shell.root.classList.add("privacy-locked");
   app.replaceChildren(shell.root);
   privacyCover = element("div", "background-privacy-cover", "画面已遮住");

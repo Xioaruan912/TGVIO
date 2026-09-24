@@ -20,6 +20,8 @@ export class PreloadCoordinator {
   private planned = new Map<string, PreloadLevel>();
   private controller: AbortController | null = null;
   private randomController: AbortController | null = null;
+  private readonly randomReady = new Set<string>();
+  private readonly randomWarmTasks = new Map<string, Promise<boolean>>();
   private pressure = false;
   private generation = 0;
 
@@ -51,21 +53,34 @@ export class PreloadCoordinator {
     })();
   }
 
-  warmRandomCandidates(candidates: Clip[]): Promise<void> {
-    this.randomController?.abort();
-    if (this.pressure || candidates.length === 0) return Promise.resolve();
+  warmRandomCandidates(candidates: Clip[]): void {
+    if (this.pressure || candidates.length === 0) return;
+    if (this.randomController && !this.randomController.signal.aborted) return;
     const controller = new AbortController();
     this.randomController = controller;
-    return (async () => {
-      for (const clip of candidates) {
-        if (controller.signal.aborted || this.pressure) return;
-        try {
-          await api.warm(clip, "random", controller.signal);
-        } catch {
-          if (!controller.signal.aborted) return;
+    void (async () => {
+      try {
+        for (const clip of candidates) {
+          if (controller.signal.aborted || this.pressure) return;
+          await this.warmRandomClip(clip, controller.signal);
         }
+      } finally {
+        if (this.randomController === controller) this.randomController = null;
       }
     })();
+  }
+
+  async ensureRandomCandidate(clip: Clip): Promise<boolean> {
+    if (this.randomReady.has(clip.id)) return true;
+    if (this.pressure) return false;
+    const existing = this.randomWarmTasks.get(clip.id);
+    if (existing) return existing;
+    this.randomController?.abort();
+    const controller = new AbortController();
+    this.randomController = controller;
+    const ready = await this.warmRandomClip(clip, controller.signal);
+    if (this.randomController === controller) this.randomController = null;
+    return ready;
   }
 
   setPressure(active: boolean): void {
@@ -89,5 +104,23 @@ export class PreloadCoordinator {
       pressure: this.pressure,
       entries: [...this.planned.entries()].map(([id, level]) => `${id.slice(0, 8)}:${level}`),
     };
+  }
+
+  private warmRandomClip(clip: Clip, signal: AbortSignal): Promise<boolean> {
+    if (this.randomReady.has(clip.id)) return Promise.resolve(true);
+    const existing = this.randomWarmTasks.get(clip.id);
+    if (existing) return existing;
+    const task = api
+      .warm(clip, "random", signal)
+      .then(() => {
+        if (!signal.aborted) this.randomReady.add(clip.id);
+        return !signal.aborted;
+      })
+      .catch(() => false)
+      .finally(() => {
+        if (this.randomWarmTasks.get(clip.id) === task) this.randomWarmTasks.delete(clip.id);
+      });
+    this.randomWarmTasks.set(clip.id, task);
+    return task;
   }
 }

@@ -127,6 +127,23 @@ export class FeedView {
     return true;
   }
 
+  insertAfter(index: number, clip: Clip): number {
+    const existing = this.indexOf(clip.id);
+    if (existing >= 0) return existing;
+    const insertAt = Math.max(0, Math.min(this.clips.length, index + 1));
+    const page = this.createPage(clip, insertAt);
+    this.clips.splice(insertAt, 0, clip);
+    this.pages.splice(insertAt, 0, page);
+    const nextPage = this.pages[insertAt + 1] ?? this.terminalPage;
+    this.el.insertBefore(page, nextPage);
+    this.reindexPages();
+    if (this.candidate >= insertAt) this.candidate += 1;
+    if (this.programmaticTarget !== null && this.programmaticTarget >= insertAt) {
+      this.programmaticTarget += 1;
+    }
+    return insertAt;
+  }
+
   scrollToIndex(index: number, smooth = false): void {
     this.programmaticTarget = smooth ? index : null;
     const top = index * this.el.clientHeight;
@@ -155,6 +172,14 @@ export class FeedView {
     if (this.programmaticTarget !== null && this.candidate !== this.programmaticTarget) return;
     this.programmaticTarget = null;
     this.onSettle?.(this.candidate);
+  }
+
+  private reindexPages(): void {
+    this.indexByMedia.clear();
+    this.pages.forEach((page, index) => {
+      page.dataset.index = String(index);
+      this.indexByMedia.set(this.clips[index].id, index);
+    });
   }
 
   private createPage(clip: Clip, index: number): HTMLElement {
