@@ -11,6 +11,7 @@ import { LongVideoPage } from "./long";
 import { NetworkMeter } from "./net";
 import { VideoPool } from "./player";
 import { PreloadCoordinator } from "./preload";
+import { shouldRetryMediaError } from "./playback-error";
 import { ThumbnailPreview } from "./preview";
 import { prefs, setPref } from "./settings";
 import { icon } from "./icons";
@@ -673,8 +674,7 @@ async function handleMediaError(clip: Clip): Promise<void> {
     probeStatus: status,
   });
   if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
-  const transient = status === 0 || status === 429 || status >= 500;
-  if (transient && attempts < 2) {
+  if (shouldRetryMediaError(status, attempts)) {
     errorRetries.set(clip.id, attempts + 1);
     void api.logPlaybackEvent({
       event: "media_retry",

@@ -6,7 +6,7 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "tsc --target ES2022 --module ESNext --moduleResolution Bundler --skipLibCheck src/long-video-list.ts --outDir .test-dist && node --test tests/*.test.mjs",
+    "test": "tsc --target ES2022 --module ESNext --moduleResolution Bundler --skipLibCheck src/long-video-list.ts src/playback-error.ts --outDir .test-dist && node --test tests/*.test.mjs",
     "preview": "vite preview"
   },
   "devDependencies": {
