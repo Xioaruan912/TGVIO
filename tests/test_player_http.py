@@ -113,7 +113,8 @@ class FakeStorageClient:
     async def move(self, source: str, target: str, *, overwrite: bool):
         self.calls.append(("MOVE", source))
         if self.move_status is not None:
-            raise WebDavWriteError("move", "move_unsupported", self.move_status)
+            category = "move_unsupported" if self.move_status in {405, 501} else "server_error"
+            raise WebDavWriteError("move", category, self.move_status)
         self.files[target] = self.files.pop(source)
 
     async def open_stream(self, path: str):
@@ -313,7 +314,28 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         result = await response.json()
         self.assertFalse(result["ok"])
         self.assertEqual(result["category"], "move_unsupported")
+        self.assertEqual(result["operation"], "move")
         self.assertEqual(result["status_code"], 405)
+
+    async def test_storage_test_identifies_operation_returning_server_error(self) -> None:
+        clients = await self._enable_storage_services()
+        cookie = await self._login()
+        clients["https://dav.example.test"] = FakeStorageClient()
+        clients["https://dav.example.test"].move_status = 502
+        response = await self.client.post(
+            "/api/v1/settings/storage/test",
+            json={
+                "endpoint_url": "https://dav.example.test", "player_root": "test-root",
+                "username": "user", "password": "pass",
+            },
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(response.status, 200)
+        result = await response.json()
+        self.assertFalse(result["ok"])
+        self.assertEqual(result["operation"], "move")
+        self.assertEqual(result["category"], "server_error")
+        self.assertEqual(result["status_code"], 502)
 
     async def test_global_favorites_are_visible_to_a_second_session(self) -> None:
         await self._enable_storage_services()

@@ -149,7 +149,15 @@ export function StorageSettingsPage(options: {
     setBusy(true);
     try {
       const result = await options.api.testStorageSettings({ ...values, username: username.value, password: password.value });
-      showStatus(result.ok ? "连接、写入、校验和清理均成功" : `连接测试失败：${result.category}${result.status_code ? `（HTTP ${result.status_code}）` : ""}`, !result.ok);
+      const operationLabels: Record<string, string> = {
+        mkdir: "创建目录", put: "写入", move: "移动文件", stat: "核验文件",
+        get: "回读校验", delete: "清理临时文件", connection: "连接",
+      };
+      const operation = result.operation ? ` · ${operationLabels[result.operation] ?? "请求"}` : "";
+      showStatus(result.ok
+        ? "连接、写入、移动、回读校验和清理均成功"
+        : `连接测试失败${operation}：${result.category}${result.status_code ? `（HTTP ${result.status_code}）` : ""}`,
+      !result.ok);
     } catch {
       showStatus("连接测试失败，请检查地址和凭据", true);
     } finally { setBusy(false); }

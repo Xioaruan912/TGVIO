@@ -42,7 +42,9 @@ export type StorageSettingsUpdate = Pick<StorageSettingsDto, "endpoint_url" | "p
   username?: string;
   password?: string;
 };
-export type StorageTestDto = { ok: boolean; category: string; status_code: number | null };
+export type StorageTestDto = {
+  ok: boolean; operation: string | null; category: string; status_code: number | null;
+};
 export type WebDavBootstrap = { endpoint_url: string; player_root: string; username: string; password: string };
 export type RecoveryDto = { restored: boolean; revision: number; favorite_count: number };
 
@@ -253,7 +255,7 @@ class PlayerApi {
   }
 
   async testStorageSettings(input: Partial<StorageSettingsUpdate>): Promise<StorageTestDto> {
-    if (MOCK_MODE) return { ok: true, category: "ok", status_code: null };
+    if (MOCK_MODE) return { ok: true, operation: null, category: "ok", status_code: null };
     return this.request<StorageTestDto>("/api/v1/settings/storage/test", {
       method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
     });

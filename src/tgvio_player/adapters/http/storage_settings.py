@@ -205,6 +205,7 @@ class PlayerStorageSettingsHttpMixin:
         temporary_path = f"{probe_path}.tmp"
         payload = b"TGVIO Player WebDAV permission probe"
         category = "ok"
+        operation = "mkdir"
         status_code: int | None = None
         ok = False
         try:
@@ -213,11 +214,15 @@ class PlayerStorageSettingsHttpMixin:
             async def body():
                 yield payload
 
+            operation = "put"
             receipt = await writer.put_stream(
                 temporary_path, body(), size_bytes=len(payload), content_type="application/octet-stream",
             )
+            operation = "move"
             await writer.move(temporary_path, probe_path, overwrite=False)
+            operation = "stat"
             stat = await writer.stat(probe_path)
+            operation = "get"
             fetched = await writer.get_bytes(probe_path, max_bytes=len(payload))
             if (
                 receipt.size_bytes != len(payload) or stat is None
@@ -227,22 +232,27 @@ class PlayerStorageSettingsHttpMixin:
             else:
                 ok = True
         except WebDavWriteError as exc:
+            operation = exc.operation
             category = exc.category
             status_code = exc.status_code
         except Exception:
+            operation = "connection"
             category = "connection_error"
         finally:
             for path in (temporary_path, probe_path):
+                cleanup_operation = "delete"
                 try:
                     await writer.delete(path)
                 except WebDavWriteError as exc:
                     if ok:
                         ok = False
+                        operation = cleanup_operation
                         category = "cleanup_failed"
                         status_code = exc.status_code
                 except Exception:
                     if ok:
                         ok = False
+                        operation = cleanup_operation
                         category = "cleanup_failed"
             close = getattr(writer, "close", None)
             if close is not None:
@@ -250,7 +260,17 @@ class PlayerStorageSettingsHttpMixin:
                     await close()
                 except Exception:
                     pass
-        return {"ok": ok, "category": category, "status_code": status_code}
+        if not ok:
+            _LOG.warning(
+                "Player storage target probe failed: operation=%s category=%s status=%s",
+                operation, category, status_code,
+            )
+        return {
+            "ok": ok,
+            "operation": None if ok else operation,
+            "category": category,
+            "status_code": status_code,
+        }
 
     async def _replace_favorite_writer(self, settings: PlayerStorageSettings) -> None:
         if self._favorite_backup is None or self._storage_client_factory is None:
