@@ -2,12 +2,16 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+import ipaddress
 import json
+import socket
 from typing import Final
 from urllib.parse import quote, unquote, urlsplit
 from xml.etree import ElementTree
 
 from aiohttp import BasicAuth, ClientSession, ClientTimeout
+from aiohttp.abc import AbstractResolver
+from aiohttp.resolver import DefaultResolver
 
 from tgvio_player.domain.catalog import safe_remote_path
 from tgvio_player.domain.ranges import ByteRange
@@ -18,6 +22,31 @@ from tgvio_player.infrastructure.webdav_read import WebDavRangeResponse
 _DAV: Final = "DAV:"
 _PROPFIND_BODY: Final = b"""<?xml version="1.0" encoding="utf-8"?>
 <d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getetag/></d:prop></d:propfind>"""
+
+
+class PublicOnlyResolver(AbstractResolver):
+    """Reject DNS answers that could route Player WebDAV requests to private hosts."""
+
+    def __init__(self, delegate: AbstractResolver | None = None) -> None:
+        self._delegate = delegate or DefaultResolver()
+
+    async def resolve(
+        self, host: str, port: int = 0, family: int = socket.AF_INET
+    ) -> list[dict[str, object]]:
+        answers = await self._delegate.resolve(host, port, family)
+        if not answers:
+            raise OSError("WebDAV hostname did not resolve")
+        for answer in answers:
+            try:
+                address = ipaddress.ip_address(str(answer["host"]).split("%", 1)[0])
+            except ValueError as exc:
+                raise OSError("WebDAV DNS returned an invalid address") from exc
+            if not address.is_global:
+                raise OSError("WebDAV hostname resolves to a non-public address")
+        return answers
+
+    async def close(self) -> None:
+        await self._delegate.close()
 
 
 @dataclass(frozen=True, slots=True)

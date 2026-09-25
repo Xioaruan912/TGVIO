@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+from collections.abc import AsyncIterator
 from typing import Literal, Protocol
 
 from tgvio_player.domain.catalog import (
@@ -19,6 +20,39 @@ class FavoriteSyncJob:
     status: Literal["pending", "running", "retry", "synced", "failed"]
     attempts: int
     error_code: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class UploadReceipt:
+    status_code: int
+    size_bytes: int
+    etag: str | None
+
+
+@dataclass(frozen=True, slots=True)
+class DeleteReceipt:
+    status_code: int
+    deleted: bool
+
+
+@dataclass(frozen=True, slots=True)
+class RemoteFileStat:
+    size_bytes: int
+    etag: str | None
+
+
+class WebDavWriteClient(Protocol):
+    async def ensure_directory(self, path: str) -> None: ...
+
+    async def put_stream(
+        self, path: str, chunks: AsyncIterator[bytes], *, size_bytes: int, content_type: str
+    ) -> UploadReceipt: ...
+
+    async def delete(self, path: str) -> DeleteReceipt: ...
+
+    async def stat(self, path: str) -> RemoteFileStat | None: ...
+
+    async def move(self, source: str, target: str, *, overwrite: bool) -> None: ...
 
 
 class ArchiveCatalogSource(Protocol):
