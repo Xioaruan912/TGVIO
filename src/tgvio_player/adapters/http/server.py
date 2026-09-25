@@ -8,7 +8,7 @@ import math
 from pathlib import Path
 import re
 import time
-from typing import Any
+from typing import Any, Callable
 import uuid
 from urllib.parse import urlsplit
 
@@ -17,11 +17,24 @@ from aiohttp import web
 from .client import _prefetch_requested, resolve_client
 from .diagnostics import client_fingerprint, fingerprint, log_event
 from .streaming import PlayerHttpStreamingMixin
+from .storage_settings import PlayerStorageSettingsHttpMixin
 
 from tgvio_player.application.auth import SessionService
+from tgvio_player.application.favorite_backup import FavoriteBackupError, FavoriteBackupService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.playback import StartupRangeCache
+from tgvio_player.application.player_recovery import (
+    PlayerRecoveryService,
+    RecoveryError,
+    WebDavBootstrap,
+)
 from tgvio_player.domain.auth import token_digest
+from tgvio_player.domain.storage_settings import (
+    PlayerStorageSettings,
+    safe_storage_relpath,
+    validate_webdav_endpoint,
+)
+from tgvio_player.application.ports import WebDavWriteClient, WebDavWriteError
 from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter
 
 
@@ -43,7 +56,7 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-class PlayerHttpServer(PlayerHttpStreamingMixin):
+class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin):
     """Small authenticated HTTP boundary around Player-only services.
 
     This adapter intentionally accepts only Player repository IDs. It has no
@@ -69,6 +82,9 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         range_cache: object | None = None,
         large_video_seconds: float = 300.0,
         warm_head_bytes: int = 16 * 1024 * 1024,
+        favorite_backup: FavoriteBackupService | None = None,
+        recovery_service: PlayerRecoveryService | None = None,
+        storage_client_factory: Callable[[str, str, str], WebDavWriteClient] | None = None,
     ) -> None:
         if min(
             max_streams, max_streams_per_client, max_header_size, stream_chunk_size, startup_range_bytes
@@ -79,6 +95,10 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         self._deck = deck
         self._reader = reader
         self._deleter = deleter
+        self._favorite_backup = favorite_backup
+        self._recovery_service = recovery_service
+        self._storage_client_factory = storage_client_factory
+        self._storage_rate: dict[str, list[float]] = {}
         self._max_streams = max_streams
         self._stream_slots = asyncio.BoundedSemaphore(max_streams)
         self._max_streams_per_client = max_streams_per_client
@@ -146,6 +166,10 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         app.router.add_get("/api/v1/videos", self._videos)
         app.router.add_get("/api/v1/groups/{group_id}/videos", self._group_videos)
         app.router.add_get("/api/v1/favorites", self._favorites)
+        app.router.add_get("/api/v1/settings/storage", self._storage_settings_get)
+        app.router.add_put("/api/v1/settings/storage", self._storage_settings_put)
+        app.router.add_post("/api/v1/settings/storage/test", self._storage_settings_test)
+        app.router.add_post("/api/v1/settings/recover", self._storage_recover)
         app.router.add_get("/api/v1/long-progress", self._long_video_progress)
         app.router.add_get("/api/v1/cache-stats", self._cache_stats)
         app.router.add_post("/api/v1/diagnostics/playback-event", self._playback_diagnostic)
@@ -537,7 +561,12 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         if raw_cursor is not None and cursor is None:
             raise web.HTTPBadRequest(text="invalid paging")
         prefetch = _prefetch_requested(request)
-        rows = await self._deck.favorite_page(digest, limit=limit + 1, cursor=cursor)
+        if self._favorite_backup is not None:
+            rows = await self._repository.list_global_favorite_page(
+                limit=limit + 1, before=cursor,
+            )
+        else:
+            rows = await self._deck.favorite_page(digest, limit=limit + 1, cursor=cursor)
         has_more = len(rows) > limit
         rows = rows[:limit]
         items = []
@@ -585,15 +614,31 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
         self._require_same_origin(request)
         media_id = request.match_info["media_id"]
         await self._media_details(media_id)
-        await self._deck.favorite(digest, media_id)
-        return web.json_response({"id": media_id, "favorite": True})
+        if self._favorite_backup is None:
+            await self._deck.favorite(digest, media_id)
+            status = "synced"
+        else:
+            try:
+                result = await self._favorite_backup.favorite(media_id)
+            except FavoriteBackupError:
+                raise web.HTTPBadRequest(text="favorite could not be saved") from None
+            status = result.sync_status
+        return web.json_response({"id": media_id, "favorite": True, "sync_status": status})
 
     async def _unfavorite(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
         self._require_same_origin(request)
         media_id = request.match_info["media_id"]
-        await self._deck.unfavorite(digest, media_id)
-        return web.json_response({"id": media_id, "favorite": False})
+        if self._favorite_backup is None:
+            await self._deck.unfavorite(digest, media_id)
+            status = "synced"
+        else:
+            try:
+                result = await self._favorite_backup.unfavorite(media_id)
+            except FavoriteBackupError:
+                raise web.HTTPBadGateway(text="favorite removal is pending") from None
+            status = result.sync_status
+        return web.json_response({"id": media_id, "favorite": False, "sync_status": status})
 
     async def _long_video_progress(self, request: web.Request) -> web.Response:
         session_digest = await self._authenticate(request)
@@ -801,7 +846,11 @@ class PlayerHttpServer(PlayerHttpStreamingMixin):
             "duration_seconds": duration,
             "size_bytes": details.get("size_bytes"),
             "stream_url": stream_url,
-            "favorite": await self._repository.is_favorite(session_digest, media_id),
+            "favorite": (
+                await self._repository.is_global_favorite(media_id)
+                if self._favorite_backup is not None
+                else await self._repository.is_favorite(session_digest, media_id)
+            ),
             "deletable": self._deleter is not None,
             "mime_type": details.get("mime_type"),
             "codec": details.get("codec"),

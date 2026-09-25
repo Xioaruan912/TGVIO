@@ -194,6 +194,9 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin):
                         WHERE ml.media_id = media.media_id
                           AND ml.active = 1
                           AND cp.active = 1
+                    ) OR EXISTS (
+                        SELECT 1 FROM favorite_locations fl
+                        WHERE fl.media_id = media.media_id
                     ) THEN 1 ELSE 0 END
                 """
             )
@@ -503,13 +506,14 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin):
         async with self._write_transaction() as conn:
             remaining = conn.execute(
                 """
-                SELECT 1
-                FROM media_locations ml
-                JOIN catalog_packages cp ON cp.package_id=ml.package_id
-                WHERE ml.media_id=? AND ml.active=1 AND cp.active=1
-                LIMIT 1
+                SELECT 1 FROM (
+                    SELECT ml.media_id FROM media_locations ml
+                    JOIN catalog_packages cp ON cp.package_id=ml.package_id
+                    WHERE ml.media_id=? AND ml.active=1 AND cp.active=1
+                    UNION ALL SELECT media_id FROM favorite_locations WHERE media_id=?
+                ) LIMIT 1
                 """,
-                (media_id,),
+                (media_id, media_id),
             ).fetchone()
             removed = remaining is None
             if removed:
@@ -538,12 +542,31 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin):
             (media_id,),
         ).fetchone()
         if row is None:
-            return None
+            favorite = self._require().execute(
+                "SELECT relpath FROM favorite_locations WHERE media_id=?",
+                (media_id,),
+            ).fetchone()
+            if favorite is None:
+                return None
+            return ("__player_favorite__", str(favorite["relpath"]), None)
         return (
             str(row["remote_path"]),
             str(row["remote_relpath"]),
             str(row["remote_etag"]) if row["remote_etag"] is not None else None,
         )
+
+    async def favorite_media_id_for_archive_location(
+        self, package_path: str, remote_relpath: str
+    ) -> str | None:
+        row = self._require().execute(
+            """SELECT ml.media_id FROM media_locations ml
+               JOIN catalog_packages cp ON cp.package_id=ml.package_id
+               WHERE cp.remote_path=? AND ml.remote_relpath=?
+                 AND EXISTS (SELECT 1 FROM favorite_locations fl WHERE fl.media_id=ml.media_id)
+               LIMIT 1""",
+            (package_path, remote_relpath),
+        ).fetchone()
+        return str(row["media_id"]) if row is not None else None
 
     async def active_media_details(self, media_id: str) -> dict[str, object] | None:
         row = self._require().execute(

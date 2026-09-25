@@ -6,21 +6,14 @@ from urllib.parse import quote
 
 from aiohttp import BasicAuth, ClientSession, ClientTimeout, TCPConnector
 
-from tgvio_player.application.ports import DeleteReceipt, RemoteFileStat, UploadReceipt
+from tgvio_player.application.ports import DeleteReceipt, RemoteFileStat, UploadReceipt, WebDavWriteError
 from tgvio_player.domain.storage_settings import safe_storage_relpath, validate_webdav_endpoint
 from tgvio_player.infrastructure.webdav_aiohttp import PublicOnlyResolver
+from tgvio_player.domain.ranges import ByteRange
+from tgvio_player.infrastructure.webdav_read import WebDavRangeResponse
 
 
 _CONTENT_TYPE_RE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
-
-
-class WebDavWriteError(RuntimeError):
-    def __init__(self, operation: str, category: str, status_code: int | None = None) -> None:
-        self.operation = operation
-        self.category = category
-        self.status_code = status_code
-        suffix = f" ({status_code})" if status_code is not None else ""
-        super().__init__(f"WebDAV {operation} failed: {category}{suffix}")
 
 
 class AioHttpWebDavWriteClient:
@@ -173,6 +166,35 @@ class AioHttpWebDavWriteClient:
                 response.release()
 
         return size_bytes, response.headers.get("Content-Type"), chunks()
+
+    async def open_range(
+        self, path: str, byte_range: ByteRange | None
+    ) -> WebDavRangeResponse:
+        headers = {"Range": f"bytes={byte_range.start}-{byte_range.end}"} if byte_range else {}
+        response = await self._request(
+            "GET", safe_storage_relpath(path), operation="get", headers=headers,
+        )
+        if response.status not in {200, 206, 404, 416}:
+            response.release()
+            self._check(response.status, {200, 206, 404, 416}, "get")
+
+        async def chunks() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    yield chunk
+            finally:
+                response.release()
+
+        raw_length = response.headers.get("Content-Length")
+        try:
+            length = int(raw_length) if raw_length is not None else None
+        except ValueError:
+            response.release()
+            raise WebDavWriteError("get", "invalid_response", response.status) from None
+        return WebDavRangeResponse(
+            response.status, response.headers.get("Content-Type"), length,
+            response.headers.get("Content-Range"), response.headers.get("ETag"), chunks(),
+        )
 
     async def move(self, source: str, target: str, *, overwrite: bool) -> None:
         source_path = safe_storage_relpath(source)

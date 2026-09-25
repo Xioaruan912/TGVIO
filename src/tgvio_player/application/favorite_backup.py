@@ -83,6 +83,11 @@ class FavoriteBackupService:
         self._snapshot_exporter = snapshot_exporter
         self._clock = clock
 
+    def replace_writer(self, writer: WebDavWriteClient) -> WebDavWriteClient:
+        previous = self._writer
+        self._writer = writer
+        return previous
+
     async def favorite(self, media_id: str) -> FavoriteSyncStatus:
         self._require_media_id(media_id)
         details = await self._repository.active_media_details(media_id)
@@ -107,14 +112,18 @@ class FavoriteBackupService:
         was_favorite = await self._repository.is_global_favorite(media_id)
         location = await self._repository.get_favorite_location(media_id)
         jobs = await self._repository.list_pending_favorite_sync()
-        has_delete = any(job.media_id == media_id and job.operation == "delete" for job in jobs)
+        delete_job = next(
+            (job for job in jobs if job.media_id == media_id and job.operation == "delete"), None
+        )
+        has_delete = delete_job is not None
         if not was_favorite and location is None and not has_delete:
             return FavoriteSyncStatus(media_id, False, "synced")
         await self._repository.set_global_favorite(media_id, False)
         await self._repository.enqueue_favorite_sync(media_id, "delete")
-        if not has_delete:
+        if delete_job is None or not delete_job.intent_persisted:
             try:
                 await self._snapshot_exporter.export_state()
+                await self._repository.mark_favorite_delete_intent(media_id)
             except Exception as exc:
                 raise FavoriteBackupError("tombstone_backup_failed") from exc
         return FavoriteSyncStatus(media_id, False, "pending")

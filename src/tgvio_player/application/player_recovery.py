@@ -187,6 +187,20 @@ class PlayerRecoveryService:
         self._cipher = cipher
         self._client_factory = client_factory
 
+    def encrypt_credentials(self, username: str, password: str) -> tuple[bytes, bytes]:
+        if not username or not password:
+            raise RecoveryError("WebDAV username and password are required")
+        return (
+            self._cipher.encrypt(username.encode("utf-8"), context=USERNAME_CONTEXT),
+            self._cipher.encrypt(password.encode("utf-8"), context=PASSWORD_CONTEXT),
+        )
+
+    def credentials_for(self, settings: PlayerStorageSettings) -> tuple[str, str]:
+        return (
+            self._decrypt_credential(settings.username_ciphertext, USERNAME_CONTEXT),
+            self._decrypt_credential(settings.password_ciphertext, PASSWORD_CONTEXT),
+        )
+
     async def export_state(self) -> RecoverySnapshotReceipt:
         current = await self._repository.get_storage_settings()
         client = self._client_for_settings(current)
@@ -217,6 +231,9 @@ class PlayerRecoveryService:
             )
             await config_store.save_atomic(config)
             await manifest_store.save_atomic(manifest)
+            for job in pending_jobs:
+                if job.operation == "delete":
+                    await self._repository.mark_favorite_delete_intent(job.media_id)
             await self._repository.save_storage_settings(settings)
             return RecoverySnapshotReceipt(revision, len(favorites))
         except RecoveryError:
@@ -317,6 +334,7 @@ class PlayerRecoveryService:
                 await self._repository.restore_favorite_copy(media_id, relpath, size, mime, created_at)
                 await self._repository.set_global_favorite(media_id, False)
                 await self._repository.enqueue_favorite_sync(media_id, "delete")
+                await self._repository.mark_favorite_delete_intent(media_id)
             return RecoveryResult(True, revision, len(verified) + len(pending))
         except RecoveryError:
             raise
@@ -410,6 +428,9 @@ class PlayerRecoveryService:
             )
             await config_store.save_atomic(config)
             await manifest_store.save_atomic(manifest)
+            for job in pending_jobs:
+                if job.operation == "delete":
+                    await self._repository.mark_favorite_delete_intent(job.media_id)
             await self._repository.save_storage_settings(new_settings)
             for media_id, relpath, size, mime in migrated_locations:
                 await self._repository.save_favorite_location(media_id, relpath, size, mime)

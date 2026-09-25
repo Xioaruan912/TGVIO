@@ -1,0 +1,20 @@
+# SDD ledger — plan: docs/superpowers/plans/2026-09-25-player-webdav-favorites.md
+
+Pre-flight: Task 1 produces PlayerStateCipher/recovery key validation; Tasks 4 and 5 consume cipher + storage settings + WebDAV write adapter from Tasks 1-3. Task 4 now precedes Task 5 and defines EncryptedManifestStore on WebDAV MOVE; no remaining interface order conflicts found. Existing dirty files belong to prior playback/log work and are excluded from this feature's commits.
+
+Task 1: Ruling: Dockerfile.player remains unchanged — it already installs every dependency from requirements.player.lock using the hash-checked lock, so changing it would duplicate existing behavior — cost if wrong: the Player image might fail to install cryptography; the full source suite's runtime-lock build check and successful lock resolution cover this path.
+Task 1: complete (commit 2916edb; focused tests: 9 passed, 6 subtests passed; full suite with both locks: 836 passed, 37 subtests passed)
+Task 1: note — initial full-suite run with Player-only dependencies could not collect Bot tests (missing aiosqlite/Telethon/yt-dlp); reran successfully with both runtime locks.
+Task 2: Ruling: create PlayerStorageSettings in domain/storage_settings.py during Task 2 — repository settings persistence and its tests need the shared model before Task 3 adds URL/path validation there — cost if wrong: model ownership may need a small refactor, but API remains stable.
+Task 2: complete (commit 325404c; tests: 13 passed, 5 subtests; full suite: 838 passed, 37 subtests)
+Task 3: complete (commit 0838119; adapter/archive tests: 20 passed, 20 subtests; full suite: 846 passed, 53 subtests)
+Task 4: Ruling: PlayerRecoveryService depends on PlayerStateCipherPort rather than importing the infrastructure cipher — the repository architecture gate prohibits application-to-infrastructure imports, and dependency injection keeps the crypto boundary testable — cost if wrong: a cipher implementation could miss the port contract; focused crypto/recovery tests exercise both methods.
+Task 4: Ruling: add bounded WebDAV get_bytes/open_stream operations to WebDavWriteClient — restore needs bounded snapshot reads and target migration must copy remote videos without local staging — cost if wrong: writer protocol now combines read and write; only Player-owned WebDAV clients receive it, while the archive read-only contract remains separate.
+Task 4: Ruling: extract PlayerFavoriteRepositoryMixin to sqlite_favorites.py — new repository methods exceeded the 1000-line architecture guard in sqlite.py — cost if wrong: another module boundary to maintain; repository behavior and transaction ownership remain inherited from the same SQLite connection.
+Task 4: complete (commit b19d1a5; recovery/backend/WebDAV tests: 29 passed, 21 subtests; full suite: 854 passed, 53 subtests)
+Task 5: complete (commit a09de49; favorite service tests: 6 passed; full suite: 860 passed, 53 subtests)
+Task 6: Ruling: migration 0006 adds `intent_persisted` so queued deletes remain unclaimable until an encrypted remote tombstone has been exported — without this gate an export failure could still let the worker delete the only backup — cost if wrong: one extra immutable migration column, covered by recovery/outbox tests.
+Task 6: Ruling: `PlayerMediaReader` falls back from archive 404 to a DB-verified favorite object, and catalog activity includes confirmed favorite copies — restored video files remain playable after archive loss — cost if wrong: favorite reads add an independent authenticated WebDAV range request; the response streams and the client closes after consumption.
+Task 6: Ruling: split storage HTTP routes into `PlayerStorageSettingsHttpMixin` after the architecture gate found the server adapter exceeded 1000 source lines — cost if wrong: one adapter module boundary, exercised by route tests and full architecture gate.
+Task 6: complete (focused HTTP/runtime/favorites/recovery/media reader: 70 passed, 5 subtests; full suite: 867 passed, 53 subtests; `git diff --check` clean).
+Task 7: focused frontend tests: 7 passed; `npx tsc --noEmit` passed; no local Vite production build run.

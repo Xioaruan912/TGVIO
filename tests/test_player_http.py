@@ -12,12 +12,16 @@ from aiohttp.test_utils import TestClient, TestServer
 from tgvio_player.adapters.http import PlayerHttpServer
 from tgvio_player.adapters.http.server import resolve_client
 from tgvio_player.application.auth import SessionService
+from tgvio_player.application.favorite_backup import FavoriteBackupService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.playback import StartupRangeCache
+from tgvio_player.application.player_recovery import PlayerRecoveryService
 from tgvio_player.domain.catalog import CatalogLocation, CatalogMedia, CatalogPackage
 from tgvio_player.domain.auth import token_digest
 from tgvio_player.domain.ranges import ByteRange
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
+from tgvio_player.infrastructure.player_crypto import PlayerStateCipher
+from tgvio_player.infrastructure.webdav_write import AioHttpWebDavWriteClient
 from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDavRangeResponse
 
 
@@ -72,6 +76,49 @@ class FakeDeleteClient:
         return (package_path, remote_relpath) not in self.failures
 
 
+class FakeStorageClient:
+    def __init__(self) -> None:
+        self.files: dict[str, bytes] = {}
+        self.calls: list[tuple[str, str]] = []
+
+    async def ensure_directory(self, path: str) -> None:
+        self.calls.append(("MKCOL", path))
+
+    async def put_stream(self, path: str, chunks, *, size_bytes: int, content_type: str):
+        self.calls.append(("PUT", path))
+        payload = bytearray()
+        async for chunk in chunks:
+            payload.extend(chunk)
+        self.files[path] = bytes(payload)
+        return type("Receipt", (), {"status_code": 201, "size_bytes": len(payload), "etag": None})()
+
+    async def stat(self, path: str):
+        self.calls.append(("HEAD", path))
+        value = self.files.get(path)
+        return None if value is None else type("Stat", (), {"size_bytes": len(value), "etag": None})()
+
+    async def delete(self, path: str):
+        self.calls.append(("DELETE", path))
+        self.files.pop(path, None)
+        return type("Receipt", (), {"status_code": 204, "deleted": True})()
+
+    async def get_bytes(self, path: str, *, max_bytes: int):
+        value = self.files.get(path)
+        return value if value is None or len(value) <= max_bytes else None
+
+    async def move(self, source: str, target: str, *, overwrite: bool):
+        self.calls.append(("MOVE", source))
+        self.files[target] = self.files.pop(source)
+
+    async def open_stream(self, path: str):
+        payload = self.files[path]
+
+        async def chunks():
+            yield payload
+
+        return len(payload), "video/mp4", chunks()
+
+
 class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = TemporaryDirectory()
@@ -111,6 +158,38 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         return response.cookies["tgvio_player_session"].value
 
+    async def _enable_storage_services(self) -> dict[str, FakeStorageClient]:
+        await self.client.close()
+        self.cipher = PlayerStateCipher(base64.urlsafe_b64encode(b"r" * 32).decode().rstrip("="))
+        clients: dict[str, FakeStorageClient] = {}
+
+        def factory(endpoint: str, _username: str, _password: str) -> FakeStorageClient:
+            return clients.setdefault(endpoint, FakeStorageClient())
+
+        recovery = PlayerRecoveryService(self.repo, self.cipher, factory)
+        writer = factory("https://file.722225.xyz", "", "")
+
+        async def source(media_id: str):
+            location = await self.repo.active_media_location(media_id)
+            assert location is not None
+            result = await self.read_client.open_range(location[0], None)
+            return result.content_length or 0, result.content_type, result.body
+
+        backup = FavoriteBackupService(self.repo, writer, source, recovery)
+        self.server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            ReadOnlyWebDavAdapter(self.read_client),
+            deleter=self.delete_client,
+            favorite_backup=backup,
+            recovery_service=recovery,
+            storage_client_factory=factory,
+        )
+        self.client = TestClient(TestServer(self.server.application()))
+        await self.client.start_server()
+        return clients
+
     async def test_auth_feed_and_favorite_never_expose_location(self) -> None:
         self.assertEqual((await self.client.get("/api/v1/feed")).status, 401)
         self.assertEqual((await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})).status, 401)
@@ -136,6 +215,95 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self.client.delete(
             f"/api/v1/media/{self.media_id}/favorite", cookies={"tgvio_player_session": cookie}
         )).status, 200)
+
+    async def test_storage_settings_are_authenticated_write_only_and_encrypted(self) -> None:
+        await self._enable_storage_services()
+        self.assertEqual((await self.client.get("/api/v1/settings/storage")).status, 401)
+        cookie = await self._login()
+        response = await self.client.get(
+            "/api/v1/settings/storage", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual(response.status, 200)
+        body = await response.json()
+        self.assertEqual(body["endpoint_url"], "https://file.722225.xyz")
+        self.assertFalse(body["credentials_configured"])
+        self.assertNotIn("username", body)
+        self.assertNotIn("password", body)
+        self.assertNotIn("ciphertext", str(body))
+        self.assertNotIn("recovery_key", body)
+
+        saved = await self.client.put(
+            "/api/v1/settings/storage",
+            json={"username": "alice", "password": "secret-value"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(saved.status, 200)
+        row = await self.repo.get_storage_settings()
+        self.assertNotEqual(row.username_ciphertext, b"alice")
+        self.assertNotEqual(row.password_ciphertext, b"secret-value")
+        self.assertNotIn(b"secret-value", row.password_ciphertext or b"")
+
+        preserved = await self.client.put(
+            "/api/v1/settings/storage", json={"username": "", "password": ""},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(preserved.status, 200)
+        self.assertEqual(await self.repo.get_storage_settings(), row)
+
+    async def test_storage_validation_same_origin_and_probe_cleanup(self) -> None:
+        clients = await self._enable_storage_services()
+        cookie = await self._login()
+        bad = await self.client.put(
+            "/api/v1/settings/storage",
+            json={"endpoint_url": "http://127.0.0.1", "player_root": "../escape"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(bad.status, 400)
+        cross_origin = await self.client.put(
+            "/api/v1/settings/storage", json={},
+            headers={"Origin": "https://attacker.invalid"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(cross_origin.status, 403)
+
+        response = await self.client.post(
+            "/api/v1/settings/storage/test",
+            json={
+                "endpoint_url": "https://dav.example.test", "player_root": "test-root",
+                "username": "user", "password": "pass",
+            },
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertTrue((await response.json())["ok"])
+        client = clients["https://dav.example.test"]
+        operations = [operation for operation, _path in client.calls]
+        self.assertIn("PUT", operations)
+        self.assertIn("HEAD", operations)
+        self.assertIn("DELETE", operations)
+        probe_paths = [path for operation, path in client.calls if operation == "PUT"]
+        self.assertEqual(len(probe_paths), 1)
+        self.assertNotIn(probe_paths[0], client.files)
+        self.assertTrue(probe_paths[0].startswith("test-root/.player-probe-"))
+
+    async def test_global_favorites_are_visible_to_a_second_session(self) -> None:
+        await self._enable_storage_services()
+        first_cookie = await self._login()
+        second_cookie = await self._login()
+        favorite = await self.client.put(
+            f"/api/v1/media/{self.media_id}/favorite",
+            cookies={"tgvio_player_session": first_cookie},
+        )
+        self.assertEqual(favorite.status, 200)
+        payload = await favorite.json()
+        self.assertEqual(payload["sync_status"], "pending")
+        response = await self.client.get(
+            "/api/v1/favorites", cookies={"tgvio_player_session": second_cookie}
+        )
+        self.assertEqual(response.status, 200)
+        data = await response.json()
+        self.assertEqual([item["id"] for item in data["items"]], [self.media_id])
+        self.assertTrue(data["items"][0]["favorite"])
 
     async def test_feed_limits_background_range_prefetch_to_five_items(self) -> None:
         cookie = await self._login()

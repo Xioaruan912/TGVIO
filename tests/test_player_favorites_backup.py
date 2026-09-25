@@ -56,8 +56,11 @@ class SnapshotSpy:
     def __init__(self, repo: PlayerCatalogRepositorySQLite, events: list[str]) -> None:
         self.repo = repo
         self.events = events
+        self.fail = False
 
     async def export_state(self):
+        if self.fail:
+            raise RuntimeError("snapshot unavailable")
         jobs = await self.repo.list_pending_favorite_sync()
         if any(job.operation == "delete" for job in jobs):
             self.events.append("tombstone")
@@ -85,6 +88,7 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.writer = FakeWriter()
         self.events: list[str] = []
         self.writer.events = self.events
+        self.snapshot_exporter = SnapshotSpy(self.repo, self.events)
         self.source_calls = 0
 
         async def source(_media_id: str):
@@ -98,7 +102,7 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
 
         self.source = source
         self.service = FavoriteBackupService(
-            self.repo, self.writer, self.source, SnapshotSpy(self.repo, self.events),
+            self.repo, self.writer, self.source, self.snapshot_exporter,
             clock=lambda: 1000,
         )
 
@@ -190,6 +194,22 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self.repo.get_favorite_location(self.media_id), None)
         self.assertEqual(await self.repo.list_pending_favorite_sync(), [])
         self.assertEqual(self.events[-2:], ["delete", "tombstone"])
+
+    async def test_delete_waits_until_remote_tombstone_is_persisted(self) -> None:
+        await self.service.favorite(self.media_id)
+        await self.service.sync_pending()
+        self.snapshot_exporter.fail = True
+        with self.assertRaises(Exception):
+            await self.service.unfavorite(self.media_id)
+        blocked = await self.service.sync_pending()
+        self.assertEqual(blocked.processed, 0)
+        self.assertTrue(self.writer.files)
+
+        self.snapshot_exporter.fail = False
+        await self.service.unfavorite(self.media_id)
+        deleted = await self.service.sync_pending()
+        self.assertEqual(deleted.synced, 1)
+        self.assertEqual(self.writer.files, {})
 
 
 if __name__ == "__main__":

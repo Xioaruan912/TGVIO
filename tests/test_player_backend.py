@@ -268,6 +268,14 @@ class PlayerStateTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.set_global_favorite(media_id, False)
         self.assertEqual(await self.repo.list_global_favorite_page(limit=10, before=None), [])
 
+    async def test_favorite_copy_keeps_media_active_after_catalog_refresh(self) -> None:
+        media_id = self.media_ids[0]
+        await self.repo.restore_favorite_copy(
+            media_id, "99_收藏/copy.mp4", 10, "video/mp4", 123,
+        )
+        await self.repo.refresh_media_activity()
+        self.assertIsNotNone(await self.repo.active_media_details(media_id))
+
     async def test_legacy_session_favorites_are_merged_when_player_migrates(self) -> None:
         path = Path(self.tmp.name) / "legacy.sqlite3"
         migrations = Path(self.tmp.name) / "legacy-migrations"

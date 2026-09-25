@@ -20,6 +20,7 @@ class FavoriteSyncJob:
     status: Literal["pending", "running", "retry", "synced", "failed"]
     attempts: int
     error_code: str | None
+    intent_persisted: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -56,6 +57,8 @@ class WebDavWriteClient(Protocol):
 
     async def open_stream(self, path: str) -> tuple[int, str | None, AsyncIterator[bytes]]: ...
 
+    async def open_range(self, path: str, byte_range: object | None): ...
+
     async def move(self, source: str, target: str, *, overwrite: bool) -> None: ...
 
 
@@ -90,6 +93,10 @@ class PlayerCatalogRepository(Protocol):
     ) -> int: ...
 
     async def refresh_media_activity(self) -> None: ...
+
+    async def favorite_media_id_for_archive_location(
+        self, package_path: str, remote_relpath: str
+    ) -> str | None: ...
 
     async def count_active_videos(self) -> int: ...
 
@@ -163,6 +170,12 @@ class PlayerCatalogRepository(Protocol):
     ) -> tuple[str, int, str] | None: ...
 
     async def delete_favorite_location(self, media_id: str) -> None: ...
+
+    async def favorite_sync_summary(self) -> dict[str, int | None]: ...
+
+    async def recover_interrupted_favorite_sync(self) -> None: ...
+
+    async def mark_favorite_delete_intent(self, media_id: str) -> None: ...
 
     async def finish_favorite_sync(
         self, job_id: int, status: Literal["retry", "synced", "failed"],

@@ -13,11 +13,14 @@ from aiohttp import web
 from tgvio_player.adapters.http import PlayerHttpServer
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.catalog import CatalogSyncService
+from tgvio_player.application.favorite_backup import FavoriteBackupService, SourceMediaError
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
+from tgvio_player.application.player_recovery import PlayerRecoveryService
 from tgvio_player.application.range_cache import MediaRangeCache
 from tgvio_player.application.warm_backfill import MediaWarmBackfill
 from tgvio_player.infrastructure.faststart_store import FaststartStore
+from tgvio_player.infrastructure.player_crypto import PlayerStateCipher
 from tgvio_player.infrastructure.range_store import RangeStore
 from tgvio_player.infrastructure.player_crypto import decode_recovery_key
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
@@ -27,6 +30,8 @@ from tgvio_player.infrastructure.webdav_aiohttp import (
 )
 from tgvio_player.infrastructure.webdav_catalog import WebDavArchiveCatalogSource
 from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDavDeleteAdapter
+from tgvio_player.infrastructure.player_media_reader import PlayerMediaReader
+from tgvio_player.infrastructure.webdav_write import AioHttpWebDavWriteClient
 
 
 _LOG = logging.getLogger(__name__)
@@ -130,8 +135,36 @@ async def _catalog_poll(sync: CatalogSyncService, seconds: int, stop: asyncio.Ev
             pass
 
 
+async def _favorite_sync_poll(
+    sync: FavoriteBackupService, seconds: int, stop: asyncio.Event
+) -> None:
+    while not stop.is_set():
+        try:
+            result = await sync.sync_pending(limit=2)
+            if result.processed:
+                _LOG.info(
+                    "Player favorite backup batch completed: processed=%s synced=%s retried=%s failed=%s",
+                    result.processed, result.synced, result.retried, result.failed,
+                )
+        except Exception:
+            _LOG.exception("Player favorite backup worker failed")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run(settings: PlayerSettings) -> None:
     repository = PlayerCatalogRepositorySQLite(settings.data_dir / "player.sqlite3")
+    cipher = PlayerStateCipher(settings.recovery_key)
+    write_clients: list[AioHttpWebDavWriteClient] = []
+
+    def storage_client_factory(endpoint: str, username: str, password: str) -> AioHttpWebDavWriteClient:
+        client = AioHttpWebDavWriteClient(endpoint, username, password)
+        write_clients.append(client)
+        return client
+
+    recovery = PlayerRecoveryService(repository, cipher, storage_client_factory)
     client = AioHttpReadOnlyWebDavClient(WebDavClientSettings(
         settings.webdav_url, settings.webdav_user, settings.webdav_password,
     ))
@@ -145,7 +178,37 @@ async def run(settings: PlayerSettings) -> None:
     await repository.open()
     try:
         await client.open()
-        reader = ReadOnlyWebDavAdapter(client)
+        archive_reader = ReadOnlyWebDavAdapter(client)
+        await repository.recover_interrupted_favorite_sync()
+        storage_settings = await repository.get_storage_settings()
+        username, password = recovery.credentials_for(storage_settings)
+        favorite_writer = storage_client_factory(
+            storage_settings.endpoint_url, username, password,
+        )
+
+        async def favorite_source(media_id: str):
+            location = await repository.active_media_location(media_id)
+            if location is None:
+                raise SourceMediaError("source_not_found", 404)
+            response = await archive_reader.open_range(location[0], location[1], None)
+            if response.status == 404:
+                close_body = getattr(response.body, "aclose", None)
+                if close_body is not None:
+                    await close_body()
+                raise SourceMediaError("source_not_found", 404)
+            if response.status not in {200, 206}:
+                raise SourceMediaError("source_request_failed", response.status)
+            if response.content_length is None:
+                raise SourceMediaError("source_length_missing")
+            return response.content_length, response.content_type, response.body
+
+        favorite_backup = FavoriteBackupService(
+            repository, favorite_writer, favorite_source, recovery,
+        )
+        reader = PlayerMediaReader(
+            repository, archive_reader, repository.get_storage_settings,
+            recovery.credentials_for, storage_client_factory,
+        )
         deleter = WebDavDeleteAdapter(client) if settings.delete_enabled else None
         sync = CatalogSyncService(WebDavArchiveCatalogSource(client, remote_root=settings.remote_root), repository)
         faststart = FaststartService(
@@ -179,6 +242,9 @@ async def run(settings: PlayerSettings) -> None:
             range_cache=range_cache,
             large_video_seconds=settings.large_video_seconds,
             warm_head_bytes=settings.warm_head_mb * 1024 * 1024,
+            favorite_backup=favorite_backup,
+            recovery_service=recovery,
+            storage_client_factory=storage_client_factory,
         )
         server_ref[0] = server
         runner = server.runner()
@@ -186,7 +252,8 @@ async def run(settings: PlayerSettings) -> None:
         site = web.TCPSite(runner, settings.host, settings.port)
         await site.start()
         tasks: list[asyncio.Task[object]] = [
-            asyncio.create_task(_catalog_poll(sync, settings.catalog_poll_seconds, stop))
+            asyncio.create_task(_catalog_poll(sync, settings.catalog_poll_seconds, stop)),
+            asyncio.create_task(_favorite_sync_poll(favorite_backup, 5, stop)),
         ]
         if settings.faststart_backfill:
             backfill = FaststartBackfill(
@@ -212,6 +279,8 @@ async def run(settings: PlayerSettings) -> None:
         await range_cache.shutdown()
         await runner.cleanup()
     finally:
+        for write_client in write_clients:
+            await write_client.close()
         await client.close()
         await repository.close()
 

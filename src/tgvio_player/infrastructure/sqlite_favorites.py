@@ -117,9 +117,10 @@ class PlayerFavoriteRepositoryMixin:
         async with self._write_transaction() as conn:
             rows = conn.execute(
                 """
-                SELECT job_id, media_id, operation, attempts, status, error_code
+                SELECT job_id, media_id, operation, attempts, status, error_code, intent_persisted
                 FROM favorite_sync
                 WHERE status IN ('pending','retry') AND next_attempt_at<=?
+                  AND (operation='upload' OR intent_persisted=1)
                 ORDER BY job_id LIMIT ?
                 """,
                 (now, max(0, int(limit))),
@@ -138,6 +139,7 @@ class PlayerFavoriteRepositoryMixin:
                     job_id=int(row["job_id"]), media_id=str(row["media_id"]),
                     operation=str(row["operation"]), status="running",
                     attempts=int(row["attempts"]) + 1, error_code=None,
+                    intent_persisted=bool(row["intent_persisted"]),
                 )
                 for row in rows
             ]
@@ -145,7 +147,7 @@ class PlayerFavoriteRepositoryMixin:
     async def list_pending_favorite_sync(self) -> list[FavoriteSyncJob]:
         rows = self._require().execute(
             """
-            SELECT job_id, media_id, operation, attempts, status, error_code
+            SELECT job_id, media_id, operation, attempts, status, error_code, intent_persisted
             FROM favorite_sync WHERE status IN ('pending','running','retry')
             ORDER BY job_id
             """
@@ -155,6 +157,7 @@ class PlayerFavoriteRepositoryMixin:
                 job_id=int(row["job_id"]), media_id=str(row["media_id"]),
                 operation=str(row["operation"]), status=str(row["status"]),
                 attempts=int(row["attempts"]), error_code=row["error_code"],
+                intent_persisted=bool(row["intent_persisted"]),
             )
             for row in rows
         ]
@@ -206,6 +209,47 @@ class PlayerFavoriteRepositoryMixin:
     async def delete_favorite_location(self, media_id: str) -> None:
         async with self._write_transaction() as conn:
             conn.execute("DELETE FROM favorite_locations WHERE media_id=?", (media_id,))
+
+    async def favorite_sync_summary(self) -> dict[str, int | None]:
+        row = self._require().execute(
+            """
+            SELECT
+                SUM(CASE WHEN status IN ('pending','running','retry') THEN 1 ELSE 0 END) AS pending,
+                SUM(CASE WHEN status='failed' THEN 1 ELSE 0 END) AS failed,
+                MAX(CASE WHEN status='synced' THEN updated_at END) AS last_success_at
+            FROM favorite_sync
+            """
+        ).fetchone()
+        return {
+            "pending": int(row["pending"] or 0),
+            "failed": int(row["failed"] or 0),
+            "last_success_at": int(row["last_success_at"])
+            if row["last_success_at"] is not None else None,
+        }
+
+    async def recover_interrupted_favorite_sync(self) -> None:
+        now = int(time.time())
+        async with self._write_transaction() as conn:
+            conn.execute(
+                """
+                UPDATE favorite_sync
+                SET status='retry', claimed_at=NULL, next_attempt_at=?, updated_at=?,
+                    error_code=COALESCE(error_code, 'process_interrupted')
+                WHERE status='running'
+                """,
+                (now, now),
+            )
+
+    async def mark_favorite_delete_intent(self, media_id: str) -> None:
+        async with self._write_transaction() as conn:
+            conn.execute(
+                """
+                UPDATE favorite_sync SET intent_persisted=1, updated_at=?
+                WHERE media_id=? AND operation='delete'
+                  AND status IN ('pending','running','retry')
+                """,
+                (int(time.time()), media_id),
+            )
 
     async def restore_favorite_copy(
         self, media_id: str, relpath: str, size_bytes: int, mime_type: str, created_at: int
