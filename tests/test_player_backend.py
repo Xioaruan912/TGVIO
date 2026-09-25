@@ -233,7 +233,7 @@ class PlayerStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([row[0] for row in first_page], [media_id])
 
         initial = await self.repo.get_storage_settings()
-        self.assertEqual(initial.endpoint_url, "https://file.722225.xyz")
+        self.assertEqual(initial.endpoint_url, "https://file.722225.xyz/dav")
         self.assertEqual(initial.player_root, "115/Pron/99_TGPLAYER")
         self.assertEqual(initial.favorites_dir, "99_收藏")
         configured = PlayerStorageSettings(

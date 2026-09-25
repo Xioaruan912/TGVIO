@@ -226,7 +226,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(response.status, 200)
         body = await response.json()
-        self.assertEqual(body["endpoint_url"], "https://file.722225.xyz")
+        self.assertEqual(body["endpoint_url"], "https://file.722225.xyz/dav")
         self.assertFalse(body["credentials_configured"])
         self.assertNotIn("username", body)
         self.assertNotIn("password", body)

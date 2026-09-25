@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 import ipaddress
 import re
-from urllib.parse import urlsplit
+from urllib.parse import quote, unquote, urlsplit
 
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
@@ -30,9 +30,15 @@ def validate_webdav_endpoint(value: str) -> str:
     if (
         parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username
         or parsed.password or parsed.query or parsed.fragment
-        or parsed.path not in {"", "/"}
     ):
-        raise ValueError("WebDAV endpoint must be a public HTTPS origin without userinfo")
+        raise ValueError("WebDAV endpoint must be a public HTTPS URL without userinfo")
+    decoded_path = unquote(parsed.path)
+    if (
+        "\\" in decoded_path or _CONTROL_RE.search(decoded_path)
+        or "//" in decoded_path
+        or any(part in {".", ".."} for part in decoded_path.split("/"))
+    ):
+        raise ValueError("WebDAV endpoint has an unsafe path")
     hostname = parsed.hostname.rstrip(".").lower()
     if not hostname or hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith(".local"):
         raise ValueError("WebDAV endpoint must use a public hostname")
@@ -47,7 +53,8 @@ def validate_webdav_endpoint(value: str) -> str:
     authority = hostname if port is None else f"{hostname}:{port}"
     if address is not None and address.version == 6:
         authority = f"[{hostname}]" if port is None else f"[{hostname}]:{port}"
-    return f"https://{authority}"
+    safe_path = quote(decoded_path.rstrip("/"), safe="/:@!$&'()*+,;=-._~")
+    return f"https://{authority}{safe_path}"
 
 
 def safe_storage_relpath(value: str) -> str:

@@ -11,7 +11,23 @@ export type StorageSettingsApi = {
 };
 
 export function validateStorageDraft(endpoint: string, root: string, favorites: string): string | null {
-  if (!/^https:\/\/[a-z0-9.-]+(?::\d+)?$/i.test(endpoint.trim())) return "请输入 HTTPS WebDAV 域名";
+  const endpointValue = endpoint.trim();
+  const endpointMatch = /^https:\/\/[^/?#]+([^?#]*)$/i.exec(endpointValue);
+  let endpointPath = "";
+  try {
+    const parsed = new URL(endpointValue);
+    endpointPath = decodeURIComponent(endpointMatch?.[1] ?? "");
+    if (
+      parsed.protocol !== "https:" || !parsed.hostname || parsed.username || parsed.password
+      || parsed.search || parsed.hash || !endpointMatch
+      || !/^[a-z0-9.-]+(?::\d+)?$/i.test(parsed.host)
+      || endpointPath.includes("\\") || endpointPath.includes("//")
+      || /[\x00-\x1f\x7f]/.test(endpointPath)
+      || endpointPath.split("/").some((part) => part === "." || part === "..")
+    ) return "请输入有效的 HTTPS WebDAV 地址";
+  } catch {
+    return "请输入有效的 HTTPS WebDAV 地址";
+  }
   for (const value of [root, favorites]) {
     if (!value.trim() || value.startsWith("/") || value.includes("\\") || value.split("/").some((part) => !part || part === "." || part === "..")) {
       return "路径不能是绝对路径，也不能包含 ..";

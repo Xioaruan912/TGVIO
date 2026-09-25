@@ -71,10 +71,16 @@ class WebDavWriteSafetyTests(unittest.TestCase):
             "http://dav.example.test", "https://user:pass@dav.example.test",
             "https://127.0.0.1", "https://169.254.2.3", "https://10.0.0.1",
             "https://[::1]", "https://dav.example.test/path?query=1",
+            "https://dav.example.test/a/../b", "https://dav.example.test//dav",
+            "https://dav.example.test/%2e%2e/dav",
         ):
             with self.subTest(value=value), self.assertRaises(ValueError):
                 validate_webdav_endpoint(value)
         self.assertEqual(validate_webdav_endpoint("https://dav.example.test"), "https://dav.example.test")
+        self.assertEqual(
+            validate_webdav_endpoint("https://dav.example.test/dav/"),
+            "https://dav.example.test/dav",
+        )
 
     def test_resolver_rejects_private_dns_answer(self) -> None:
         resolver = PublicOnlyResolver(delegate=FakeResolver("192.168.1.10"))
@@ -94,6 +100,18 @@ class WebDavWriteSafetyTests(unittest.TestCase):
 
 
 class WebDavWriteTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_configured_dav_path_prefixes_all_webdav_requests(self) -> None:
+        session = FakeSession(201)
+        client = AioHttpWebDavWriteClient("https://dav.example.test/dav", "u", "p", session=session)
+        await client.ensure_directory("root/favorites")
+        self.assertEqual(
+            [call[1] for call in session.calls],
+            [
+                "https://dav.example.test/dav/root",
+                "https://dav.example.test/dav/root/favorites",
+            ],
+        )
+
     async def test_mkcol_accepts_created_and_already_exists(self) -> None:
         for status in (201, 405):
             session = FakeSession(status)

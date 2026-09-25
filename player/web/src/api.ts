@@ -408,7 +408,7 @@ class PlayerApi {
 
 function mockStorageSettings(): StorageSettingsDto {
   return {
-    endpoint_url: "https://file.722225.xyz", player_root: "115/Pron/99_TGPLAYER",
+    endpoint_url: "https://file.722225.xyz/dav", player_root: "115/Pron/99_TGPLAYER",
     favorites_dir: "99_收藏", credentials_configured: false, revision: 0,
     sync_status: "synced", pending_count: 0, failed_count: 0, last_success_at: null,
   };
