@@ -52,7 +52,17 @@ class WebDavWriteClient(Protocol):
 
     async def stat(self, path: str) -> RemoteFileStat | None: ...
 
+    async def get_bytes(self, path: str, *, max_bytes: int) -> bytes | None: ...
+
+    async def open_stream(self, path: str) -> tuple[int, str | None, AsyncIterator[bytes]]: ...
+
     async def move(self, source: str, target: str, *, overwrite: bool) -> None: ...
+
+
+class PlayerStateCipherPort(Protocol):
+    def encrypt(self, payload: bytes, *, context: bytes) -> bytes: ...
+
+    def decrypt(self, envelope: bytes, *, context: bytes) -> bytes: ...
 
 
 class ArchiveCatalogSource(Protocol):
@@ -135,6 +145,8 @@ class PlayerCatalogRepository(Protocol):
 
     async def claim_favorite_sync(self, *, limit: int) -> list[FavoriteSyncJob]: ...
 
+    async def list_pending_favorite_sync(self) -> list[FavoriteSyncJob]: ...
+
     async def finish_favorite_sync(
         self, job_id: int, status: Literal["retry", "synced", "failed"],
         error_code: str | None, *, retry_at: int | None = None,
@@ -143,6 +155,12 @@ class PlayerCatalogRepository(Protocol):
     async def save_favorite_location(
         self, media_id: str, relpath: str, size_bytes: int, mime_type: str
     ) -> None: ...
+
+    async def restore_favorite_copy(
+        self, media_id: str, relpath: str, size_bytes: int, mime_type: str, created_at: int
+    ) -> None: ...
+
+    async def restore_pending_favorite(self, media_id: str, created_at: int) -> None: ...
 
     async def list_favorite_locations(
         self,

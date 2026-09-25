@@ -12,10 +12,14 @@ from tgvio_player.infrastructure.webdav_write import (
 
 
 class FakeResponse:
-    def __init__(self, status: int, *, headers: dict[str, str] | None = None) -> None:
+    def __init__(
+        self, status: int, *, headers: dict[str, str] | None = None,
+        chunks: tuple[bytes, ...] = (),
+    ) -> None:
         self.status = status
         self.headers = headers or {}
         self.closed = False
+        self.content = FakeContent(chunks)
 
     async def read(self) -> bytes:
         return b""
@@ -24,12 +28,22 @@ class FakeResponse:
         self.closed = True
 
 
+class FakeContent:
+    def __init__(self, chunks: tuple[bytes, ...]) -> None:
+        self.chunks = chunks
+
+    async def iter_chunked(self, _size: int):
+        for chunk in self.chunks:
+            yield chunk
+
+
 class FakeSession:
     def __init__(self, status: int = 201, headers: dict[str, str] | None = None) -> None:
         self.status = status
         self.headers = headers or {}
         self.calls: list[tuple[str, str, dict[str, object]]] = []
         self.payload = bytearray()
+        self.response_chunks: tuple[bytes, ...] = ()
 
     async def request(self, method: str, url: str, **kwargs: object) -> FakeResponse:
         self.calls.append((method, url, kwargs))
@@ -37,7 +51,7 @@ class FakeSession:
         if hasattr(data, "__aiter__"):
             async for chunk in data:  # type: ignore[union-attr]
                 self.payload.extend(chunk)
-        return FakeResponse(self.status, headers=self.headers)
+        return FakeResponse(self.status, headers=self.headers, chunks=self.response_chunks)
 
 
 class FakeResolver:
@@ -135,6 +149,31 @@ class WebDavWriteTransportTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(WebDavWriteError) as raised:
             await unsupported.move("root/temp", "root/manifest", overwrite=True)
         self.assertEqual(raised.exception.category, "move_unsupported")
+
+    async def test_get_bytes_is_bounded_and_streaming_get_releases_response(self) -> None:
+        session = FakeSession(200, {"Content-Length": "4", "Content-Type": "video/mp4"})
+        session.response_chunks = (b"ab", b"cd")
+        client = AioHttpWebDavWriteClient("https://dav.example.test", "u", "p", session=session)
+        self.assertEqual(await client.get_bytes("root/config", max_bytes=4), b"abcd")
+
+        session.response_chunks = (b"ab", b"cd")
+        size, mime, body = await client.open_stream("root/video.mp4")
+        self.assertEqual((size, mime), (4, "video/mp4"))
+        self.assertEqual(b"".join([chunk async for chunk in body]), b"abcd")
+
+        session.response_chunks = (b"abc", b"def")
+        with self.assertRaises(WebDavWriteError) as raised:
+            await client.get_bytes("root/config", max_bytes=4)
+        self.assertEqual(raised.exception.category, "response_too_large")
+
+    async def test_get_missing_is_idempotent_but_open_stream_requires_existing_file(self) -> None:
+        client = AioHttpWebDavWriteClient(
+            "https://dav.example.test", "u", "p", session=FakeSession(404),
+        )
+        self.assertIsNone(await client.get_bytes("root/missing", max_bytes=20))
+        with self.assertRaises(WebDavWriteError) as raised:
+            await client.open_stream("root/missing")
+        self.assertEqual(raised.exception.status_code, 404)
 
 
 if __name__ == "__main__":

@@ -1,60 +1,17 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
-import ipaddress
 import re
-from urllib.parse import quote, urlsplit
+from urllib.parse import quote
 
 from aiohttp import BasicAuth, ClientSession, ClientTimeout, TCPConnector
 
 from tgvio_player.application.ports import DeleteReceipt, RemoteFileStat, UploadReceipt
+from tgvio_player.domain.storage_settings import safe_storage_relpath, validate_webdav_endpoint
 from tgvio_player.infrastructure.webdav_aiohttp import PublicOnlyResolver
 
 
-_CONTROL_RE = re.compile(r"[\x00-\x1f\x7f]")
 _CONTENT_TYPE_RE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
-
-
-def validate_webdav_endpoint(value: str) -> str:
-    if not isinstance(value, str) or not value or _CONTROL_RE.search(value):
-        raise ValueError("WebDAV endpoint must be a public HTTPS origin")
-    parsed = urlsplit(value.strip())
-    try:
-        port = parsed.port
-    except ValueError as exc:
-        raise ValueError("WebDAV endpoint has an invalid port") from exc
-    if (
-        parsed.scheme.lower() != "https" or not parsed.hostname or parsed.username
-        or parsed.password or parsed.query or parsed.fragment
-        or parsed.path not in {"", "/"}
-    ):
-        raise ValueError("WebDAV endpoint must be a public HTTPS origin without userinfo")
-    hostname = parsed.hostname.rstrip(".").lower()
-    if not hostname or hostname == "localhost" or hostname.endswith(".localhost") or hostname.endswith(".local"):
-        raise ValueError("WebDAV endpoint must use a public hostname")
-    try:
-        address = ipaddress.ip_address(hostname)
-    except ValueError:
-        address = None
-    if address is not None and not address.is_global:
-        raise ValueError("WebDAV endpoint must use a public IP address")
-    if port is not None and not 1 <= port <= 65535:
-        raise ValueError("WebDAV endpoint has an invalid port")
-    authority = hostname if port is None else f"{hostname}:{port}"
-    if address is not None and address.version == 6:
-        authority = f"[{hostname}]" if port is None else f"[{hostname}]:{port}"
-    return f"https://{authority}"
-
-
-def safe_storage_relpath(value: str) -> str:
-    if not isinstance(value, str) or not value or value.startswith("/"):
-        raise ValueError("unsafe WebDAV relative path")
-    if "\\" in value or _CONTROL_RE.search(value):
-        raise ValueError("unsafe WebDAV relative path")
-    parts = value.split("/")
-    if any(not part or part in {".", ".."} for part in parts):
-        raise ValueError("unsafe WebDAV relative path")
-    return value
 
 
 class WebDavWriteError(RuntimeError):
@@ -175,6 +132,47 @@ class AioHttpWebDavWriteClient:
             return RemoteFileStat(size_bytes, response.headers.get("ETag"))
         finally:
             response.release()
+
+    async def get_bytes(self, path: str, *, max_bytes: int) -> bytes | None:
+        if max_bytes < 1:
+            raise ValueError("max_bytes must be positive")
+        response = await self._request("GET", safe_storage_relpath(path), operation="get")
+        try:
+            if response.status == 404:
+                return None
+            self._check(response.status, {200}, "get")
+            payload = bytearray()
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                payload.extend(chunk)
+                if len(payload) > max_bytes:
+                    raise WebDavWriteError("get", "response_too_large", response.status)
+            return bytes(payload)
+        finally:
+            response.release()
+
+    async def open_stream(self, path: str) -> tuple[int, str | None, AsyncIterator[bytes]]:
+        response = await self._request("GET", safe_storage_relpath(path), operation="get")
+        if response.status == 404:
+            response.release()
+            raise WebDavWriteError("get", "not_found", 404)
+        try:
+            self._check(response.status, {200}, "get")
+            raw_size = response.headers.get("Content-Length")
+            size_bytes = int(raw_size) if raw_size is not None else -1
+            if size_bytes < 0:
+                raise WebDavWriteError("get", "invalid_response", response.status)
+        except Exception:
+            response.release()
+            raise
+
+        async def chunks() -> AsyncIterator[bytes]:
+            try:
+                async for chunk in response.content.iter_chunked(64 * 1024):
+                    yield chunk
+            finally:
+                response.release()
+
+        return size_bytes, response.headers.get("Content-Type"), chunks()
 
     async def move(self, source: str, target: str, *, overwrite: bool) -> None:
         source_path = safe_storage_relpath(source)
