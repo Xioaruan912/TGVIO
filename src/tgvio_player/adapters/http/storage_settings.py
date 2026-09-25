@@ -202,8 +202,8 @@ class PlayerStorageSettingsHttpMixin:
         assert self._storage_client_factory is not None
         writer = self._storage_client_factory(endpoint, username, password)
         probe_path = f"{safe_storage_relpath(root)}/.player-probe-{uuid.uuid4().hex}.bin"
-        temporary_path = f"{probe_path}.tmp"
         payload = b"TGVIO Player WebDAV permission probe"
+        replacement = b"TGVIO Player WebDAV overwrite probe"
         category = "ok"
         operation = "mkdir"
         status_code: int | None = None
@@ -211,22 +211,25 @@ class PlayerStorageSettingsHttpMixin:
         try:
             await writer.ensure_directory(root)
 
-            async def body():
-                yield payload
-
             operation = "put"
-            receipt = await writer.put_stream(
-                temporary_path, body(), size_bytes=len(payload), content_type="application/octet-stream",
+            async def body(content: bytes):
+                yield content
+
+            first_receipt = await writer.put_stream(
+                probe_path, body(payload), size_bytes=len(payload), content_type="application/octet-stream",
             )
-            operation = "move"
-            await writer.move(temporary_path, probe_path, overwrite=False)
+            replacement_receipt = await writer.put_stream(
+                probe_path, body(replacement), size_bytes=len(replacement),
+                content_type="application/octet-stream",
+            )
             operation = "stat"
             stat = await writer.stat(probe_path)
             operation = "get"
-            fetched = await writer.get_bytes(probe_path, max_bytes=len(payload))
+            fetched = await writer.get_bytes(probe_path, max_bytes=len(replacement))
             if (
-                receipt.size_bytes != len(payload) or stat is None
-                or stat.size_bytes != len(payload) or fetched != payload
+                first_receipt.size_bytes != len(payload)
+                or replacement_receipt.size_bytes != len(replacement) or stat is None
+                or stat.size_bytes != len(replacement) or fetched != replacement
             ):
                 category = "verification_mismatch"
             else:
@@ -239,21 +242,20 @@ class PlayerStorageSettingsHttpMixin:
             operation = "connection"
             category = "connection_error"
         finally:
-            for path in (temporary_path, probe_path):
-                cleanup_operation = "delete"
-                try:
-                    await writer.delete(path)
-                except WebDavWriteError as exc:
-                    if ok:
-                        ok = False
-                        operation = cleanup_operation
-                        category = "cleanup_failed"
-                        status_code = exc.status_code
-                except Exception:
-                    if ok:
-                        ok = False
-                        operation = cleanup_operation
-                        category = "cleanup_failed"
+            cleanup_operation = "delete"
+            try:
+                await writer.delete(probe_path)
+            except WebDavWriteError as exc:
+                if ok:
+                    ok = False
+                    operation = cleanup_operation
+                    category = "cleanup_failed"
+                    status_code = exc.status_code
+            except Exception:
+                if ok:
+                    ok = False
+                    operation = cleanup_operation
+                    category = "cleanup_failed"
             close = getattr(writer, "close", None)
             if close is not None:
                 try:

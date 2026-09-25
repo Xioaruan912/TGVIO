@@ -27,12 +27,13 @@ class MemoryDav:
         self.directories: set[str] = set()
         self.fail_move = False
         self.fail_put = False
+        self.fail_put_path: str | None = None
 
     async def ensure_directory(self, path: str) -> None:
         self.directories.add(path)
 
     async def put_stream(self, path: str, chunks, *, size_bytes: int, content_type: str):
-        if self.fail_put:
+        if self.fail_put or path == self.fail_put_path:
             raise OSError("simulated write failure")
         payload = bytearray()
         async for chunk in chunks:
@@ -84,15 +85,25 @@ class MemoryDavFactory:
 
 
 class EncryptedManifestStoreTests(unittest.IsolatedAsyncioTestCase):
-    async def test_interrupted_pointer_move_preserves_last_valid_manifest(self) -> None:
+    async def test_pointer_update_does_not_require_webdav_move(self) -> None:
         dav = MemoryDav()
         cipher = PlayerStateCipher(base64.urlsafe_b64encode(b"k" * 32).decode().rstrip("="))
         store = EncryptedManifestStore(dav, cipher, "root", context=FAVORITES_CONTEXT)
         await store.save_atomic({"schema_version": 1, "revision": 1, "items": []})
         dav.fail_move = True
+        await store.save_atomic({"schema_version": 1, "revision": 2, "items": []})
+        loaded = await store.load()
+        self.assertEqual(loaded["revision"], 2)
+
+    async def test_failed_pointer_put_preserves_last_valid_manifest(self) -> None:
+        dav = MemoryDav()
+        cipher = PlayerStateCipher(base64.urlsafe_b64encode(b"p" * 32).decode().rstrip("="))
+        store = EncryptedManifestStore(dav, cipher, "root", context=FAVORITES_CONTEXT)
+        await store.save_atomic({"schema_version": 1, "revision": 1, "items": []})
+        dav.fail_put_path = "root/favorites-manifest.enc"
         with self.assertRaises(OSError):
             await store.save_atomic({"schema_version": 1, "revision": 2, "items": []})
-        dav.fail_move = False
+        dav.fail_put_path = None
         loaded = await store.load()
         self.assertEqual(loaded["revision"], 1)
 
@@ -261,11 +272,11 @@ class PlayerRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.cipher.encrypt(b"partial-password", context=b"webdav-password"), 3,
         )
         partial_dav = self.factory(partial.endpoint_url, "carol", "partial-password")
-        partial_dav.fail_move = True
+        partial_dav.fail_put_path = "partial-root/player-config.enc"
         with self.assertRaises(RecoveryError):
             await self.service.migrate_target(partial)
         self.assertEqual(await self.repo.get_storage_settings(), new_settings)
-        partial_dav.fail_move = False
+        partial_dav.fail_put_path = None
         retried = await self.service.migrate_target(partial)
         self.assertTrue(retried.migrated)
         self.assertEqual(retried.revision, 3)

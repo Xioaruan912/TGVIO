@@ -7,7 +7,6 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import PurePosixPath
-import secrets
 from typing import Any
 
 from tgvio_player.application.ports import (
@@ -88,7 +87,7 @@ async def _put_bytes(client: WebDavWriteClient, path: str, payload: bytes, conte
 
 
 class EncryptedManifestStore:
-    """Immutable encrypted revisions with a small atomically replaced pointer."""
+    """Immutable encrypted revisions with a directly written, verified pointer."""
 
     def __init__(
         self,
@@ -171,9 +170,11 @@ class EncryptedManifestStore:
             "file": filename,
             "sha256": hashlib.sha256(encrypted).hexdigest(),
         })
-        temporary = _join(self._root, f".{self._name}.pointer-{secrets.token_hex(8)}.tmp")
-        await _put_bytes(self._client, temporary, pointer, "application/json")
-        await self._client.move(temporary, _join(self._root, f"{self._name}.enc"), overwrite=True)
+        pointer_path = _join(self._root, f"{self._name}.enc")
+        await _put_bytes(self._client, pointer_path, pointer, "application/json")
+        written_pointer = await self._client.get_bytes(pointer_path, max_bytes=4096)
+        if written_pointer != pointer:
+            raise RecoveryError("remote snapshot pointer verification failed")
 
 
 class PlayerRecoveryService:

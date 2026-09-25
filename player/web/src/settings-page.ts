@@ -150,12 +150,12 @@ export function StorageSettingsPage(options: {
     try {
       const result = await options.api.testStorageSettings({ ...values, username: username.value, password: password.value });
       const operationLabels: Record<string, string> = {
-        mkdir: "创建目录", put: "写入", move: "移动文件", stat: "核验文件",
+        mkdir: "创建目录", put: "写入/覆盖", stat: "核验文件",
         get: "回读校验", delete: "清理临时文件", connection: "连接",
       };
       const operation = result.operation ? ` · ${operationLabels[result.operation] ?? "请求"}` : "";
       showStatus(result.ok
-        ? "连接、写入、移动、回读校验和清理均成功"
+        ? "连接、写入/覆盖、回读校验和清理均成功"
         : `连接测试失败${operation}：${result.category}${result.status_code ? `（HTTP ${result.status_code}）` : ""}`,
       !result.ok);
     } catch {
