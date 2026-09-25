@@ -10,6 +10,7 @@ services:
       TGVIO_PLAYER_ENABLED: ${TGVIO_PLAYER_ENABLED:?set true only for an approved Player deployment}
       TGVIO_PLAYER_DATA_DIR: /var/lib/tgvio-player
       TGVIO_PLAYER_ACCESS_SECRET: ${TGVIO_PLAYER_ACCESS_SECRET:?set a Player-only access secret}
+      TGVIO_PLAYER_RECOVERY_KEY: ${TGVIO_PLAYER_RECOVERY_KEY:?set a Player-only 256-bit recovery key}
       TGVIO_PLAYER_WEBDAV_URL: ${TGVIO_PLAYER_WEBDAV_URL:?set the Player WebDAV URL}
       TGVIO_PLAYER_WEBDAV_USER: ${TGVIO_PLAYER_WEBDAV_USER:?set the Player WebDAV user}
       TGVIO_PLAYER_WEBDAV_PASSWORD: ${TGVIO_PLAYER_WEBDAV_PASSWORD:?set the Player WebDAV password}
