@@ -13,6 +13,7 @@ from tgvio_player.application.streaming import prepare_stream_request
 from tgvio_player.domain.auth import token_digest, verify_access_secret
 from tgvio_player.domain.catalog import CatalogLocation, CatalogMedia, CatalogPackage
 from tgvio_player.domain.ranges import ByteRange, RangeNotSatisfiable, parse_single_range
+from tgvio_player.domain.storage_settings import PlayerStorageSettings
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 from tgvio_player.infrastructure.webdav_read import (
     ReadOnlyWebDavAdapter,
@@ -223,6 +224,86 @@ class PlayerStateTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(received), len(all_ids))
         self.assertEqual(len(set(received)), len(all_ids))
         self.assertEqual(received, sorted(all_ids))
+
+    async def test_global_favorite_settings_outbox_and_copy_locations(self) -> None:
+        media_id = self.media_ids[0]
+        await self.repo.set_global_favorite(media_id, True)
+        await self.repo.set_global_favorite(media_id, True)
+        first_page = await self.repo.list_global_favorite_page(limit=10, before=None)
+        self.assertEqual([row[0] for row in first_page], [media_id])
+
+        initial = await self.repo.get_storage_settings()
+        self.assertEqual(initial.endpoint_url, "https://file.722225.xyz")
+        self.assertEqual(initial.player_root, "115/Pron/99_TGPLAYER")
+        self.assertEqual(initial.favorites_dir, "99_收藏")
+        configured = PlayerStorageSettings(
+            endpoint_url="https://dav.example.test",
+            player_root="player/root",
+            favorites_dir="Saved",
+            username_ciphertext=b"encrypted-user",
+            password_ciphertext=b"encrypted-password",
+            revision=3,
+        )
+        await self.repo.save_storage_settings(configured)
+        self.assertEqual(await self.repo.get_storage_settings(), configured)
+
+        await self.repo.enqueue_favorite_sync(media_id, "upload")
+        await self.repo.enqueue_favorite_sync(media_id, "upload")
+        jobs = await self.repo.claim_favorite_sync(limit=10)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual((jobs[0].media_id, jobs[0].operation, jobs[0].attempts), (media_id, "upload", 1))
+        await self.repo.finish_favorite_sync(jobs[0].job_id, "retry", "http_503")
+        retry = await self.repo.claim_favorite_sync(limit=10)
+        self.assertEqual(len(retry), 1)
+        self.assertEqual(retry[0].attempts, 2)
+        await self.repo.finish_favorite_sync(retry[0].job_id, "synced", None)
+        self.assertEqual(await self.repo.claim_favorite_sync(limit=10), [])
+
+        await self.repo.save_favorite_location(media_id, "99_收藏/item.mp4", 10, "video/mp4")
+        self.assertEqual(
+            await self.repo.list_favorite_locations(),
+            [(media_id, "99_收藏/item.mp4", 10, "video/mp4")],
+        )
+        await self.repo.set_global_favorite(media_id, False)
+        await self.repo.set_global_favorite(media_id, False)
+        self.assertEqual(await self.repo.list_global_favorite_page(limit=10, before=None), [])
+
+    async def test_legacy_session_favorites_are_merged_when_player_migrates(self) -> None:
+        path = Path(self.tmp.name) / "legacy.sqlite3"
+        migrations = Path(self.tmp.name) / "legacy-migrations"
+        migrations.mkdir()
+        source_migrations = Path(__file__).parents[1] / "src/tgvio_player/infrastructure/migrations"
+        for migration in sorted(source_migrations.glob("000[1-4]_*.sql")):
+            (migrations / migration.name).write_bytes(migration.read_bytes())
+
+        legacy = PlayerCatalogRepositorySQLite(path, migrations_dir=migrations)
+        await legacy.open()
+        await legacy.apply_package(CatalogPackage(
+            "legacy", "TGVIO/2026-09-22/legacy", "a" * 64, None, None,
+            tuple(CatalogMedia(media_id, "video", 10) for media_id in self.media_ids[:2]),
+            tuple(CatalogLocation(media_id, "legacy", f"{index}.mp4") for index, media_id in enumerate(self.media_ids[:2])),
+        ))
+        await legacy.create_player_session("1" * 64, expires_at=9_999_999_999)
+        await legacy.create_player_session("2" * 64, expires_at=9_999_999_999)
+        await legacy.set_favorite("1" * 64, self.media_ids[0], enabled=True)
+        await legacy.set_favorite("2" * 64, self.media_ids[0], enabled=True)
+        await legacy.set_favorite("2" * 64, self.media_ids[1], enabled=True)
+        await legacy.close()
+
+        migrated = PlayerCatalogRepositorySQLite(path)
+        await migrated.open()
+        rows = await migrated.list_global_favorite_page(limit=10, before=None)
+        self.assertEqual({row[0] for row in rows}, set(self.media_ids[:2]))
+        self.assertEqual(len(rows), 2)
+        await migrated.close()
+
+        reopened = PlayerCatalogRepositorySQLite(path)
+        await reopened.open()
+        try:
+            repeated = await reopened.list_global_favorite_page(limit=10, before=None)
+            self.assertEqual(repeated, rows)
+        finally:
+            await reopened.close()
 
     async def test_archive_groups_follow_active_catalog_locations(self) -> None:
         sibling_id = "5" * 64

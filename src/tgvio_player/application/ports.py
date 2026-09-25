@@ -1,12 +1,24 @@
 from __future__ import annotations
 
-from typing import Protocol
+from dataclasses import dataclass
+from typing import Literal, Protocol
 
 from tgvio_player.domain.catalog import (
     ArchiveDiscovery,
     CatalogPackage,
     CatalogSyncResult,
 )
+from tgvio_player.domain.storage_settings import PlayerStorageSettings
+
+
+@dataclass(frozen=True, slots=True)
+class FavoriteSyncJob:
+    job_id: int
+    media_id: str
+    operation: Literal["upload", "delete"]
+    status: Literal["pending", "running", "retry", "synced", "failed"]
+    attempts: int
+    error_code: str | None
 
 
 class ArchiveCatalogSource(Protocol):
@@ -72,6 +84,35 @@ class PlayerCatalogRepository(Protocol):
     ) -> None: ...
 
     async def delete_long_video_progress(self, media_id: str) -> None: ...
+
+    async def get_storage_settings(self) -> PlayerStorageSettings: ...
+
+    async def save_storage_settings(self, settings: PlayerStorageSettings) -> None: ...
+
+    async def set_global_favorite(self, media_id: str, enabled: bool) -> None: ...
+
+    async def list_global_favorite_page(
+        self, *, limit: int, before: tuple[int, str] | None
+    ) -> list[tuple[str, int]]: ...
+
+    async def enqueue_favorite_sync(
+        self, media_id: str, operation: Literal["upload", "delete"]
+    ) -> None: ...
+
+    async def claim_favorite_sync(self, *, limit: int) -> list[FavoriteSyncJob]: ...
+
+    async def finish_favorite_sync(
+        self, job_id: int, status: Literal["retry", "synced", "failed"],
+        error_code: str | None, *, retry_at: int | None = None,
+    ) -> None: ...
+
+    async def save_favorite_location(
+        self, media_id: str, relpath: str, size_bytes: int, mime_type: str
+    ) -> None: ...
+
+    async def list_favorite_locations(
+        self,
+    ) -> list[tuple[str, str, int, str]]: ...
 
 
 class CatalogSyncServicePort(Protocol):
