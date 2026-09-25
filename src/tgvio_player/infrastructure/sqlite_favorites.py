@@ -240,6 +240,18 @@ class PlayerFavoriteRepositoryMixin:
                 (now, now),
             )
 
+    async def retry_failed_favorite_sync(self) -> int:
+        now = int(time.time())
+        async with self._write_transaction() as conn:
+            cursor = conn.execute(
+                """UPDATE favorite_sync
+                   SET status='retry', error_code=NULL, next_attempt_at=?,
+                       claimed_at=NULL, updated_at=?
+                   WHERE status='failed'""",
+                (now, now),
+            )
+            return int(cursor.rowcount)
+
     async def mark_favorite_delete_intent(self, media_id: str) -> None:
         async with self._write_transaction() as conn:
             conn.execute(

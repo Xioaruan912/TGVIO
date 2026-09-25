@@ -305,6 +305,20 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual([item["id"] for item in data["items"]], [self.media_id])
         self.assertTrue(data["items"][0]["favorite"])
 
+    async def test_storage_retry_requeues_failed_favorite_sync(self) -> None:
+        await self._enable_storage_services()
+        cookie = await self._login()
+        await self.repo.set_global_favorite(self.media_id, True)
+        await self.repo.enqueue_favorite_sync(self.media_id, "upload")
+        job = (await self.repo.claim_favorite_sync(limit=1))[0]
+        await self.repo.finish_favorite_sync(job.job_id, "failed", "source_not_found")
+        response = await self.client.post(
+            "/api/v1/settings/storage/retry", cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["retried"], 1)
+        self.assertEqual((await self.repo.claim_favorite_sync(limit=1))[0].media_id, self.media_id)
+
     async def test_feed_limits_background_range_prefetch_to_five_items(self) -> None:
         cookie = await self._login()
         self.server._deck.next_items = AsyncMock(return_value=[self.media_id] * 7)

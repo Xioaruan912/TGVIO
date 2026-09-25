@@ -18,3 +18,5 @@ Task 6: Ruling: `PlayerMediaReader` falls back from archive 404 to a DB-verified
 Task 6: Ruling: split storage HTTP routes into `PlayerStorageSettingsHttpMixin` after the architecture gate found the server adapter exceeded 1000 source lines — cost if wrong: one adapter module boundary, exercised by route tests and full architecture gate.
 Task 6: complete (focused HTTP/runtime/favorites/recovery/media reader: 70 passed, 5 subtests; full suite: 867 passed, 53 subtests; `git diff --check` clean).
 Task 7: focused frontend tests: 7 passed; `npx tsc --noEmit` passed; no local Vite production build run.
+Task 7: Ruling: expose one rate-limited authenticated retry action for failed favorite outbox jobs — avoids requiring users to toggle a favorite off/on and preserves the delete tombstone claim gate — cost if wrong: retries can re-run a failed item across devices; idempotent PUT/DELETE jobs and the outbox state machine bound effects.
+Task 7: complete (frontend tests: 7 passed; settings page `npx tsc --noEmit` passed; retry HTTP case passed; no local Vite production build).

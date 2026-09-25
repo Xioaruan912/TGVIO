@@ -3,6 +3,25 @@ import type { ArchiveGroup, Clip, FeedResponse, GroupVideosResponse, LongVideoPr
 export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
 
 export type ApiErrorCode = "unauthorized" | "unavailable";
+export type FavoriteSyncStatus = "pending" | "syncing" | "synced" | "failed";
+export type StorageSettingsDto = {
+  endpoint_url: string;
+  player_root: string;
+  favorites_dir: string;
+  credentials_configured: boolean;
+  revision: number;
+  sync_status: FavoriteSyncStatus;
+  pending_count: number;
+  failed_count: number;
+  last_success_at: number | null;
+};
+export type StorageSettingsUpdate = Pick<StorageSettingsDto, "endpoint_url" | "player_root" | "favorites_dir"> & {
+  username?: string;
+  password?: string;
+};
+export type StorageTestDto = { ok: boolean; category: string; status_code: number | null };
+export type WebDavBootstrap = { endpoint_url: string; player_root: string; username: string; password: string };
+export type RecoveryDto = { restored: boolean; revision: number; favorite_count: number };
 
 export class ApiError extends Error {
   readonly code: ApiErrorCode;
@@ -189,11 +208,44 @@ class PlayerApi {
     return payload.items.map(clipFromMedia);
   }
 
-  async setFavorite(mediaId: string, enabled: boolean): Promise<void> {
-    if (MOCK_MODE) return;
-    await this.request(`/api/v1/media/${encodeURIComponent(mediaId)}/favorite`, {
+  async setFavorite(mediaId: string, enabled: boolean): Promise<{ favorite: boolean; syncStatus: FavoriteSyncStatus }> {
+    if (MOCK_MODE) return { favorite: enabled, syncStatus: "synced" };
+    const payload = await this.request<{ favorite: boolean; sync_status: FavoriteSyncStatus }>(`/api/v1/media/${encodeURIComponent(mediaId)}/favorite`, {
       method: enabled ? "PUT" : "DELETE",
       headers: { "Content-Type": "application/json" },
+    });
+    return { favorite: payload.favorite, syncStatus: payload.sync_status };
+  }
+
+  async storageSettings(): Promise<StorageSettingsDto> {
+    if (MOCK_MODE) return mockStorageSettings();
+    return this.request<StorageSettingsDto>("/api/v1/settings/storage");
+  }
+
+  async updateStorageSettings(input: StorageSettingsUpdate): Promise<StorageSettingsDto> {
+    if (MOCK_MODE) return { ...mockStorageSettings(), ...input };
+    return this.request<StorageSettingsDto>("/api/v1/settings/storage", {
+      method: "PUT", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+    });
+  }
+
+  async testStorageSettings(input: Partial<StorageSettingsUpdate>): Promise<StorageTestDto> {
+    if (MOCK_MODE) return { ok: true, category: "ok", status_code: null };
+    return this.request<StorageTestDto>("/api/v1/settings/storage/test", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
+    });
+  }
+
+  async retryFavoriteSync(): Promise<number> {
+    if (MOCK_MODE) return 0;
+    const payload = await this.request<{ retried: number }>("/api/v1/settings/storage/retry", { method: "POST" });
+    return payload.retried;
+  }
+
+  async restorePlayerState(input: WebDavBootstrap): Promise<RecoveryDto> {
+    if (MOCK_MODE) return { restored: true, revision: 1, favorite_count: 0 };
+    return this.request<RecoveryDto>("/api/v1/settings/recover", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(input),
     });
   }
 
@@ -327,6 +379,14 @@ class PlayerApi {
     }
     return response.json() as Promise<T>;
   }
+}
+
+function mockStorageSettings(): StorageSettingsDto {
+  return {
+    endpoint_url: "https://file.722225.xyz", player_root: "115/Pron/99_TGPLAYER",
+    favorites_dir: "99_收藏", credentials_configured: false, revision: 0,
+    sync_status: "synced", pending_count: 0, failed_count: 0, last_success_at: null,
+  };
 }
 
 export const api = new PlayerApi();

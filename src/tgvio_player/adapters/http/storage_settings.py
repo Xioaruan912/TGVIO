@@ -14,6 +14,15 @@ from .diagnostics import client_fingerprint
 
 
 class PlayerStorageSettingsHttpMixin:
+    async def _storage_retry(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        self._require_same_origin(request)
+        self._enforce_storage_rate(request)
+        if self._favorite_backup is None:
+            raise web.HTTPServiceUnavailable(text="favorite sync unavailable")
+        retried = await self._favorite_backup.retry_failed()
+        return web.json_response({"retried": retried})
+
     async def _storage_settings_get(self, request: web.Request) -> web.Response:
         await self._authenticate(request)
         return web.json_response(await self._storage_settings_dto())

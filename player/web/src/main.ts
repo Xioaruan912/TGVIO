@@ -7,6 +7,7 @@ import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
 import { LargePlayer } from "./large";
 import { VideoLibraryPage } from "./library";
+import { StorageSettingsPage } from "./settings-page";
 import { LongVideoPage } from "./long";
 import { NetworkMeter } from "./net";
 import { VideoPool } from "./player";
@@ -346,8 +347,9 @@ async function toggleFavorite(): Promise<void> {
   clip.favorite = enabled;
   setFavoriteButton(shell!, enabled);
   try {
-    await api.setFavorite(clip.id, enabled);
-    toast(shell!, enabled ? "已收藏" : "已取消收藏");
+    const result = await api.setFavorite(clip.id, enabled);
+    const syncText = ({ pending: "待上传", syncing: "同步中", synced: "已同步", failed: "同步失败" } as const)[result.syncStatus];
+    toast(shell!, enabled ? `已收藏 · ${syncText}` : "已取消收藏");
   } catch {
     if (enabled) favorites.delete(clip.id);
     else favorites.add(clip.id);
@@ -1156,6 +1158,11 @@ function openSettings(): void {
     ),
   );
   body.push(sheetSection("账户"));
+  body.push(sheetRow({
+    title: "收藏与 WebDAV",
+    sub: "共享收藏、备份位置与新 VPS 恢复",
+    onPick: openStorageSettings,
+  }));
   body.push(
     sheetRow({
       title: "退出当前访问",
@@ -1172,6 +1179,12 @@ function openSettings(): void {
   openSheetKind = "settings";
   openSheet(shell, "设置", body);
   setActiveNav(shell, "settings");
+}
+
+function openStorageSettings(): void {
+  if (!shell) return;
+  openSheetKind = "storage-settings";
+  openSheet(shell, "收藏与 WebDAV", [StorageSettingsPage({ api, onBack: openSettings })]);
 }
 
 function onNav(action: string): void {

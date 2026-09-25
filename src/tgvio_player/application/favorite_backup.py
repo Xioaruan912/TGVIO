@@ -88,6 +88,10 @@ class FavoriteBackupService:
         self._writer = writer
         return previous
 
+    async def retry_failed(self) -> int:
+        """Requeue failed jobs; delete jobs still require a durable tombstone."""
+        return await self._repository.retry_failed_favorite_sync()
+
     async def favorite(self, media_id: str) -> FavoriteSyncStatus:
         self._require_media_id(media_id)
         details = await self._repository.active_media_details(media_id)
