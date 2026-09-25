@@ -235,3 +235,4 @@ python3 scripts/release_guard.py architecture .
 - **WebDAV 收藏需要可写账号**：现有 Archive WebDAV 凭据是只读用途，不能复用作收藏目标账号。设置页连接测试会实际验证写入方法；HTTP `405` / `rejected` 表示服务器或账号拒绝对应方法，应换用对配置根路径有写权限的专用凭据。不得将只读凭据保存为收藏配置，也不能把凭据放进聊天或仓库。
 - **WebDAV 端点可能有前缀路径**：`file.722225.xyz` 的 WebDAV 服务端点是 `https://file.722225.xyz/dav`；根路径 `OPTIONS /` 返回 405，而 `/dav` 返回 200 和 DAV 能力。请求 URL 必须把配置的端点路径前缀保留下来，再追加 Player 保存目录；不要把 WebDAV 端点限制成纯域名。
 - **先确认挂载点再诊断权限**：WebDAV 写入探测返回 405 时，先用不带凭据的 `OPTIONS` 比较域名根路径与预期挂载路径。错误端点的 405 不能证明账号只读；只有在正确 DAV 挂载点的 MKCOL/PUT 探测后，才能判断账号权限或服务方法支持情况。
+- **连接测试要覆盖保存流程**：原测试只验证 MKCOL/PUT/HEAD/DELETE，可能显示成功，但加密状态保存还需要 GET 和 MOVE。现在测试探测会临时 PUT、MOVE、HEAD、GET 校验并清理两条临时路径；保存失败日志只记录操作、分类和 HTTP 状态，不能记录凭据或请求头。

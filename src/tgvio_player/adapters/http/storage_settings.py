@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 import time
 import uuid
 from typing import Any
@@ -11,6 +12,8 @@ from tgvio_player.application.ports import WebDavWriteClient, WebDavWriteError
 from tgvio_player.domain.storage_settings import PlayerStorageSettings, safe_storage_relpath, validate_webdav_endpoint
 from .client import resolve_client
 from .diagnostics import client_fingerprint
+
+_LOG = logging.getLogger("tgvio_player.storage")
 
 
 class PlayerStorageSettingsHttpMixin:
@@ -89,6 +92,10 @@ class PlayerStorageSettingsHttpMixin:
             else:
                 probe = await self._probe_storage_target(endpoint, player_root, username, password)
                 if not probe["ok"]:
+                    _LOG.warning(
+                        "Player storage save preflight failed: operation=probe category=%s status=%s",
+                        probe["category"], probe["status_code"],
+                    )
                     raise RecoveryError("WebDAV credentials could not write the configured target")
                 await self._repository.save_storage_settings(new_settings)
                 try:
@@ -97,7 +104,22 @@ class PlayerStorageSettingsHttpMixin:
                     await self._repository.save_storage_settings(old)
                     raise
             await self._replace_favorite_writer(new_settings)
-        except Exception:
+        except Exception as exc:
+            root_cause: BaseException = exc
+            while root_cause.__cause__ is not None:
+                root_cause = root_cause.__cause__
+            if isinstance(root_cause, WebDavWriteError):
+                operation = root_cause.operation
+                category = root_cause.category
+                status_code = root_cause.status_code
+            else:
+                operation = "storage_save"
+                category = type(root_cause).__name__
+                status_code = None
+            _LOG.warning(
+                "Player storage settings save failed: operation=%s category=%s status=%s",
+                operation, category, status_code,
+            )
             raise web.HTTPBadRequest(text="storage settings could not be saved") from None
         return web.json_response(await self._storage_settings_dto())
 
@@ -180,6 +202,7 @@ class PlayerStorageSettingsHttpMixin:
         assert self._storage_client_factory is not None
         writer = self._storage_client_factory(endpoint, username, password)
         probe_path = f"{safe_storage_relpath(root)}/.player-probe-{uuid.uuid4().hex}.bin"
+        temporary_path = f"{probe_path}.tmp"
         payload = b"TGVIO Player WebDAV permission probe"
         category = "ok"
         status_code: int | None = None
@@ -191,10 +214,15 @@ class PlayerStorageSettingsHttpMixin:
                 yield payload
 
             receipt = await writer.put_stream(
-                probe_path, body(), size_bytes=len(payload), content_type="application/octet-stream",
+                temporary_path, body(), size_bytes=len(payload), content_type="application/octet-stream",
             )
+            await writer.move(temporary_path, probe_path, overwrite=False)
             stat = await writer.stat(probe_path)
-            if receipt.size_bytes != len(payload) or stat is None or stat.size_bytes != len(payload):
+            fetched = await writer.get_bytes(probe_path, max_bytes=len(payload))
+            if (
+                receipt.size_bytes != len(payload) or stat is None
+                or stat.size_bytes != len(payload) or fetched != payload
+            ):
                 category = "verification_mismatch"
             else:
                 ok = True
@@ -204,17 +232,18 @@ class PlayerStorageSettingsHttpMixin:
         except Exception:
             category = "connection_error"
         finally:
-            try:
-                await writer.delete(probe_path)
-            except WebDavWriteError as exc:
-                if ok:
-                    ok = False
-                    category = "cleanup_failed"
-                    status_code = exc.status_code
-            except Exception:
-                if ok:
-                    ok = False
-                    category = "cleanup_failed"
+            for path in (temporary_path, probe_path):
+                try:
+                    await writer.delete(path)
+                except WebDavWriteError as exc:
+                    if ok:
+                        ok = False
+                        category = "cleanup_failed"
+                        status_code = exc.status_code
+                except Exception:
+                    if ok:
+                        ok = False
+                        category = "cleanup_failed"
             close = getattr(writer, "close", None)
             if close is not None:
                 try:
