@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ipaddress
 import logging
 import os
@@ -19,6 +19,7 @@ from tgvio_player.application.range_cache import MediaRangeCache
 from tgvio_player.application.warm_backfill import MediaWarmBackfill
 from tgvio_player.infrastructure.faststart_store import FaststartStore
 from tgvio_player.infrastructure.range_store import RangeStore
+from tgvio_player.infrastructure.player_crypto import decode_recovery_key
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 from tgvio_player.infrastructure.webdav_aiohttp import (
     AioHttpReadOnlyWebDavClient,
@@ -35,6 +36,7 @@ _LOG = logging.getLogger(__name__)
 class PlayerSettings:
     data_dir: Path
     access_secret: str
+    recovery_key: str = field(repr=False)
     webdav_url: str
     webdav_user: str
     webdav_password: str
@@ -60,7 +62,7 @@ class PlayerSettings:
         get = lambda name: values.get(f"TGVIO_PLAYER_{name}", "").strip()
         if get("ENABLED").lower() != "true":
             raise ValueError("TGVIO_PLAYER_ENABLED must be true")
-        required = ("DATA_DIR", "ACCESS_SECRET", "WEBDAV_URL", "WEBDAV_USER", "WEBDAV_PASSWORD", "REMOTE_ROOT")
+        required = ("DATA_DIR", "ACCESS_SECRET", "RECOVERY_KEY", "WEBDAV_URL", "WEBDAV_USER", "WEBDAV_PASSWORD", "REMOTE_ROOT")
         missing = [f"TGVIO_PLAYER_{name}" for name in required if not get(name)]
         if missing:
             raise ValueError("missing required Player settings: " + ", ".join(missing))
@@ -70,13 +72,15 @@ class PlayerSettings:
             raise ValueError(
                 "TGVIO_PLAYER_ACCESS_SECRET must be at least 32 characters or a 9-digit PIN"
             )
+        recovery_key = get("RECOVERY_KEY")
+        decode_recovery_key(recovery_key)
         host = get("HOST") or "0.0.0.0"
         try:
             ipaddress.ip_address(host)
         except ValueError as exc:
             raise ValueError("TGVIO_PLAYER_HOST must be an IP address") from exc
         return cls(
-            Path(get("DATA_DIR")), secret, get("WEBDAV_URL"), get("WEBDAV_USER"),
+            Path(get("DATA_DIR")), secret, recovery_key, get("WEBDAV_URL"), get("WEBDAV_USER"),
             get("WEBDAV_PASSWORD"), get("REMOTE_ROOT"), host,
             cls._integer(get("PORT") or "8790", "PORT", 1, 65535),
             cls._integer(get("CATALOG_POLL_SECONDS") or "60", "CATALOG_POLL_SECONDS", 5, 86400),
