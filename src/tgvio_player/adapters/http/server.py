@@ -15,7 +15,13 @@ from urllib.parse import urlsplit
 from aiohttp import web
 
 from .client import _prefetch_requested, resolve_client
-from .diagnostics import client_fingerprint, fingerprint, log_event
+from .diagnostics import (
+    classify_http_outcome,
+    client_fingerprint,
+    fingerprint,
+    log_event,
+    playback_session,
+)
 from .streaming import PlayerHttpStreamingMixin
 from .storage_settings import PlayerStorageSettingsHttpMixin
 
@@ -264,10 +270,22 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
                 ),
                 client=client_id,
                 media=fingerprint(media_id) if _MEDIA_ID_RE.fullmatch(media_id) else None,
+                media_id=media_id if _MEDIA_ID_RE.fullmatch(media_id) else None,
                 range=(request.headers.get("Range", "")[:48]
                        if re.fullmatch(r"bytes=\d*-\d*", request.headers.get("Range", ""))
                        else None),
                 preload=request.headers.get("X-TGVIO-Preload") == "1",
+                stream_kind=(
+                    "preload" if request.headers.get("X-TGVIO-Preload") == "1"
+                    else "video" if request.path.endswith("/stream")
+                    else "api"
+                ),
+                session=playback_session(request.query.get("playback_session")),
+                outcome=classify_http_outcome(
+                    status,
+                    error_kind,
+                    is_stream=request.path.endswith("/stream"),
+                ),
                 error=error_kind,
             )
 
@@ -307,7 +325,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
         media_id = payload.get("media_id")
         category = payload.get("category")
         if not isinstance(event, str) or event not in {
-            "media_error", "media_probe", "media_retry", "media_skip", "media_unplayable_streak",
+            "media_play", "media_error", "media_probe", "media_retry", "media_skip", "media_unplayable_streak",
             "media_stall_warning", "media_stall_skip",
         }:
             raise web.HTTPBadRequest(text="invalid diagnostic event")
@@ -332,8 +350,10 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
             request_id=request.get("player_request_id"),
             client=client_fingerprint(resolve_client(request)),
             media=fingerprint(media_id),
+            media_id=media_id,
             category=category,
             action=event,
+            session=playback_session(payload.get("playback_session")),
             **numeric_fields,
         )
         return web.Response(status=204)

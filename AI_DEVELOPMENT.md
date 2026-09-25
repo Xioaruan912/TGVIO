@@ -191,6 +191,19 @@ R2-19 是基于 WebDAV Archive 的私有短视频 Web 播放服务，完整设�
 
 
 
+### 6.4 Player VPS 发布、日志诊断与线上验收
+
+处理生产 Player 的播放问题时，按这套流程执行；本次排障暴露的这些边界不能省略：
+
+- **日志看 VPS**：本地 `logs/` 不代表生产现场。通过仓库现有 SSH 配置登录 Player VPS，并读取 `tgvio-player` 容器日志；不要把本地日志或一次历史统计当作线上当前故障。
+- **先限定时间，再判断故障**：使用 `docker logs --since 10m tgvio-player`（需要时缩到 `5m` 或放宽到 `15m`），把请求时间、媒体指纹/ID、播放 session、HTTP 状态和 outcome 放在同一条证据链里。24 小时的 404/5xx 汇总只说明历史总量，不能证明用户当前遇到同一故障。区分媒体确实不存在、无效 Range、并发受限、上游/服务端错误、浏览器断开和主动取消；断开/取消不应冒充视频损坏。
+- **保留核验结果并按规则续播**：诊断日志要保留媒体 ID（或稳定指纹）、HTTP 状态、播放 session 与分类结果。可跳过的 404 按现有规则跳过该媒体并继续；不要因总错误数掩盖某一批次的结果。只有日志显示 206、接口返回成功或页面显示播放器控件都不算“视频能播放”。
+- **不在本地构建**：Player 修改可以在本地编辑并运行测试、lint 等源码级检查，但不要在本机运行 `npm build`、Docker 构建、镜像构建或打包生产产物。Docker 网络可能不可用，而且生产前端与运行镜像必须在目标 VPS 上由发布流程构建。
+- **推送并在 VPS 部署**：把干净源码包传到 VPS 的独立 Player release 目录，再使用 `scripts/player_release.sh` 在 VPS 构建候选镜像，并用 `scripts/player_deploy.sh --env-file <临时的 VPS Player env> --execute` 执行 Player-only 部署。临时 env 从 VPS Player env 复制，权限保持 `0600`，并显式覆盖为刚构建的镜像 tag；直接使用仍指向旧镜像的正式 env 会把刚部署的新版本切回基线。沿用当前部署脚本与回滚路径；确认 Player health 正常、运行镜像 tag 正确、Bot 容器 ID 未变化，且通过 HTTPS 实际读取 `index.html`，确认其 JS bundle hash 与候选构建一致。容器启动或 health 正常不等于新前端已生效。不要直接改 Bot compose、重启 Bot，或把密钥打进命令输出/发布包。
+- **验收必须用 BrowserAct 访问生产站**：部署后通过 `browser-act` 打开 `https://csdn.im`，用真实浏览器操作验证这次改动；curl、单元测试和 API 返回不能替代这一步。测试首页刷新确实换出新的一批，再对该批 20 条不同媒体逐条验证真实播放（至少确认 `playing` 且 `currentTime` 前进/画面帧可用），并把浏览器结果与 VPS 上同一播放 session 的日志对应。记录实际播放数、跳过数、媒体 ID/HTTP 状态及错误；范围不够或媒体不足时明确报告，不能声称“20 条无故障”。
+- **登录口令留在 VPS**：生产访问口令只从 VPS 上权限受限的 Player 配置中读取和使用，绝不打印、复制到仓库/本机文件、文档、聊天、shell 历史或 BrowserAct 回显。BrowserAct 的 `input` 会回显明文，不能用它输入口令；使用不会回显脚本内容的 `eval --stdin` 安全提交，且只返回非敏感状态。不要让没有该口令的用户代输，也不要把 BrowserAct 会话停留在等待用户输入口令的状态；由执行环境安全完成登录，再继续浏览器验收。若口令被意外回显，立即轮换 VPS 口令并重启 Player。口令不写入本文档。
+- **BrowserAct 会话操作**：复用当前站点会话；每次导航或关键交互后重新读取页面状态，再按当前页面定位控件。避免过期元素索引和未确认页面状态的连点。若认证/权限或播放本身被阻塞，保存可核验的页面与 VPS 日志证据后再报告具体阻塞点。
+
 ---
 
 ## 7. 如何自测
@@ -204,12 +217,9 @@ sh scripts/check_foundation.sh
 
 # 架构与文件大小门禁
 python3 scripts/release_guard.py architecture .
-
-# 无网络 Docker 诊断构建（不启动机器人、不读生产配置）
-scripts/build_check.sh
 ```
 
-测试必须使用 `tests/` 里的 fake 对象；**不要**在测试里连接真实 Telegram、真实 WebDAV 或真实网站，也不要把 `session/`、`.env`、下载缓存放进仓库或镜像。
+测试必须使用 `tests/` 里的 fake 对象；**不要**在测试里连接真实 Telegram、真实 WebDAV 或真实网站，也不要把 `session/`、`.env`、下载缓存放进仓库或镜像。Player 的容器构建遵守 §6.4，只在 VPS 执行；不要在本机运行 Docker 构建。
 
 ---
 

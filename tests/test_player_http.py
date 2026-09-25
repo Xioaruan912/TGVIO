@@ -10,6 +10,7 @@ from unittest.mock import AsyncMock, Mock
 from aiohttp.test_utils import TestClient, TestServer
 
 from tgvio_player.adapters.http import PlayerHttpServer
+from tgvio_player.adapters.http.diagnostics import classify_http_outcome
 from tgvio_player.adapters.http.server import resolve_client
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.favorite_backup import FavoriteBackupService
@@ -455,6 +456,50 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(failed.status, 502)
         self.assertTrue(self.read_client.body.closed.is_set())
+
+    async def test_stream_and_playback_diagnostics_share_session_id(self) -> None:
+        cookie = await self._login()
+        playback_session = "a1" * 16
+        with self.assertLogs("tgvio_player.diagnostics", level="INFO") as captured:
+            stream = await self.client.get(
+                f"/api/v1/media/{self.media_id}/stream?playback_session={playback_session}",
+                headers={"Range": "bytes=1-3"},
+                cookies={"tgvio_player_session": cookie},
+            )
+            await stream.read()
+            event = await self.client.post(
+                "/api/v1/diagnostics/playback-event",
+                json={
+                    "event": "media_play",
+                    "media_id": self.media_id,
+                    "category": "short",
+                    "playback_session": playback_session,
+                },
+                cookies={"tgvio_player_session": cookie},
+            )
+        self.assertEqual(stream.status, 206)
+        self.assertEqual(event.status, 204)
+        self.assertTrue(any(
+            '"event":"http_request"' in line
+            and f'"media_id":"{self.media_id}"' in line
+            and f'"session":"{playback_session}"' in line
+            and '"stream_kind":"video"' in line
+            and '"outcome":"stream_ok"' in line
+            for line in captured.output
+        ))
+        self.assertTrue(any(
+            '"event":"frontend_playback"' in line
+            and f'"media_id":"{self.media_id}"' in line
+            and f'"session":"{playback_session}"' in line
+            and '"action":"media_play"' in line
+            for line in captured.output
+        ))
+
+    async def test_diagnostic_outcomes_separate_missing_media_from_disconnects(self) -> None:
+        self.assertEqual(classify_http_outcome(404, "HTTPNotFound", is_stream=True), "not_found")
+        self.assertEqual(classify_http_outcome(503, "HTTPBadGateway", is_stream=True), "server_error")
+        self.assertEqual(classify_http_outcome(206, "ConnectionResetError", is_stream=True), "client_disconnected")
+        self.assertEqual(classify_http_outcome(429, "HTTPTooManyRequests", is_stream=True), "capacity_limited")
 
     async def test_foreground_stream_waits_for_capacity_instead_of_returning_429(self) -> None:
         self.assertTrue(await self.server._acquire_stream("preload-client", preload=True))

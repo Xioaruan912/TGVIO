@@ -1,4 +1,5 @@
 import type { Clip } from "./types";
+import { withPlaybackSession } from "./api";
 
 type RVFCVideo = HTMLVideoElement & {
   requestVideoFrameCallback?: (callback: (now: number, metadata: unknown) => void) => number;
@@ -28,6 +29,7 @@ export class VideoPool {
   onPressure: ((pressured: boolean) => void) | null = null;
   onLoading: ((mediaId: string) => void) | null = null;
   onReady: ((mediaId: string) => void) | null = null;
+  onPlaybackStarted: ((clip: Clip) => void) | null = null;
   onTimeUpdate: ((video: HTMLVideoElement) => void) | null = null;
   onAutoplayBlocked: ((blocked: boolean) => void) | null = null;
   onError: ((mediaId: string) => void) | null = null;
@@ -215,6 +217,10 @@ export class VideoPool {
         this.scheduleReady(video);
         this.onReady?.(clip.id);
         this.onPressure?.(false);
+        if (video.dataset.playbackReportedToken !== token) {
+          video.dataset.playbackReportedToken = token;
+          this.onPlaybackStarted?.(clip);
+        }
       },
       { once: true, signal: controller.signal },
     );
@@ -234,7 +240,7 @@ export class VideoPool {
       { once: true, signal: controller.signal },
     );
     video.preload = preload;
-    video.src = clip.streamUrl;
+    video.src = withPlaybackSession(clip.streamUrl);
     video.load();
   }
 
@@ -250,6 +256,7 @@ export class VideoPool {
     video.load();
     delete video.dataset.mediaId;
     delete video.dataset.loadToken;
+    delete video.dataset.playbackReportedToken;
     video.classList.remove("is-current");
   }
 

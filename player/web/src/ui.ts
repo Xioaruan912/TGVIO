@@ -90,7 +90,7 @@ function navButton(spec: NavSpec, handlers: ShellHandlers): HTMLButtonElement {
   const button = element("button", "nav-btn");
   button.type = "button";
   button.dataset.action = spec.action;
-  button.setAttribute("aria-label", spec.label);
+  button.setAttribute("aria-label", spec.action === "home" ? "刷新首页并换一批视频" : spec.label);
   const caption = element("small", "nav-label", spec.label);
   button.append(icon(spec.icon, 24), caption);
   button.addEventListener("click", () => handlers.onNav(spec.action));

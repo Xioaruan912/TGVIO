@@ -1,5 +1,5 @@
 import "./style.css";
-import { ApiError, api, MOCK_MODE, shortId } from "./api";
+import { ApiError, api, beginPlaybackSession, MOCK_MODE, shortId } from "./api";
 import { requestAudioEnable } from "./audio-warning";
 import { FeedView } from "./feed";
 import { ContextFeed } from "./context-feed";
@@ -70,7 +70,10 @@ const progressSaveChains = new Map<string, Promise<void>>();
 const progressCompleted = new Set<string>();
 let muted = true;
 let refill: Promise<void> | null = null;
+let homeRefresh: Promise<void> | null = null;
+let homeFeedGeneration = 0;
 let randomRefill: Promise<void> | null = null;
+let randomCandidateGeneration = 0;
 const randomCandidates: Clip[] = [];
 let randomSwitching = false;
 let deletingMedia = false;
@@ -558,12 +561,75 @@ function enqueueProgressWrite(mediaId: string, write: () => Promise<void>): void
 }
 
 function goNext(instant = false): void {
+  if (homeRefresh) return;
+  const generation = homeFeedGeneration;
   const next = activeIndex + 1;
   const load = contextFeed ? ensureContextPage(next + FEED_AHEAD) : ensureFeed(next + FEED_AHEAD);
   void load.then(() => {
+    if (generation !== homeFeedGeneration) return;
     if (!contextFeed) feedView?.setClips(clips);
     if (next < activeClips().length) feedView?.scrollToIndex(next, !instant);
   }).catch(() => toast(shell!, "暂时加载失败"));
+}
+
+async function refreshHome(): Promise<void> {
+  if (!feedView || !pool || contextFeed) return;
+  if (homeRefresh) return homeRefresh;
+  homeFeedGeneration += 1;
+  const task = (async () => {
+    closeSheet(shell!);
+    openSheetKind = null;
+    setActiveNav(shell!, "home");
+    while (refill) await refill.catch(() => undefined);
+
+    const refreshed: Clip[] = [];
+    const selected = new Set(seenIds);
+    for (let request = 0; refreshed.length < MIN_FEED && request < 5; request += 1) {
+      const batch = await api.feed(Math.min(FEED_BATCH, MIN_FEED - refreshed.length), prefs.cacheAhead);
+      if (!batch.length) break;
+      for (const clip of batch) {
+        if (selected.has(clip.id)) continue;
+        selected.add(clip.id);
+        refreshed.push(clip);
+      }
+    }
+    if (!refreshed.length) {
+      toast(shell!, "暂时没有新的可播放视频");
+      return;
+    }
+
+    clearStallGuard();
+    preloader.setPressure(true);
+    pool.sync([], { paused: true, muted: true });
+    beginPlaybackSession();
+    clips.splice(0, clips.length, ...refreshed);
+    for (const clip of refreshed) {
+      seenIds.add(clip.id);
+      if (clip.favorite) favorites.add(clip.id);
+    }
+    randomCandidates.length = 0;
+    randomCandidateGeneration += 1;
+    feedView.replaceClips(clips);
+    activeIndex = 0;
+    lastActiveClipId = "";
+    lastActiveIndex = -1;
+    paused = !privacyUnlocked;
+    preloader.setPressure(false);
+    feedView.scrollToIndex(0, false);
+    applyActive(0);
+    void ensureFeed(activeIndex + FEED_AHEAD)
+      .then(() => feedView?.setClips(clips))
+      .catch(() => undefined);
+    toast(shell!, `已刷新 · ${refreshed.length} 条新视频`);
+  })();
+  homeRefresh = task;
+  try {
+    await task;
+  } catch {
+    toast(shell!, "刷新失败，请稍后重试");
+  } finally {
+    if (homeRefresh === task) homeRefresh = null;
+  }
 }
 
 async function ensureRandomCandidates(): Promise<void> {
@@ -578,7 +644,9 @@ async function ensureRandomCandidates(): Promise<void> {
     if (clip) exclude.add(clip.id);
   }
   for (const clip of randomCandidates) exclude.add(clip.id);
+  const generation = randomCandidateGeneration;
   const request = api.randomShorts(5 - randomCandidates.length, [...exclude]).then((items) => {
+    if (generation !== randomCandidateGeneration) return;
     const known = new Set([
       ...activeClips().map((clip) => clip.id),
       ...randomCandidates.map((clip) => clip.id),
@@ -1199,7 +1267,7 @@ function onNav(action: string): void {
     closeSheet(shell);
     openSheetKind = null;
     setActiveNav(shell, "home");
-    feedView?.scrollToIndex(0, true);
+    void refreshHome();
   } else if (action === "random") {
     closeSheet(shell);
     openSheetKind = null;
@@ -1323,6 +1391,9 @@ function renderFeed(): void {
     scheduleControlsHide();
   };
   pool.onTimeUpdate = updateProgress;
+  pool.onPlaybackStarted = (clip) => {
+    void api.logPlaybackEvent({ event: "media_play", mediaId: clip.id, category: clip.category });
+  };
   pool.onAutoplayBlocked = (blocked) => {
     autoplayBlocked = blocked;
     if (!blocked) {

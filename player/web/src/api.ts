@@ -2,6 +2,29 @@ import type { ArchiveGroup, Clip, FeedResponse, GroupVideosResponse, LongVideoPr
 
 export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
 
+const PLAYBACK_SESSION_KEY = "tgvio.player.session";
+function createPlaybackSession(): string {
+  if (typeof crypto.randomUUID === "function") return crypto.randomUUID().replaceAll("-", "");
+  const bytes = crypto.getRandomValues(new Uint8Array(16));
+  return Array.from(bytes, (byte) => byte.toString(16).padStart(2, "0")).join("");
+}
+
+let playbackSession = createPlaybackSession();
+sessionStorage.setItem(PLAYBACK_SESSION_KEY, playbackSession);
+
+export function beginPlaybackSession(): string {
+  playbackSession = createPlaybackSession();
+  sessionStorage.setItem(PLAYBACK_SESSION_KEY, playbackSession);
+  return playbackSession;
+}
+
+export function withPlaybackSession(url: string): string {
+  if (MOCK_MODE) return url;
+  const tagged = new URL(url, window.location.href);
+  tagged.searchParams.set("playback_session", playbackSession);
+  return tagged.toString();
+}
+
 export type ApiErrorCode = "unauthorized" | "unavailable";
 export type FavoriteSyncStatus = "pending" | "syncing" | "synced" | "failed";
 export type StorageSettingsDto = {
@@ -48,7 +71,7 @@ const MOCK_PALETTE = [
   ["#5a3a24", "#ffd36c", "SIGNAL"],
 ];
 
-const mockMedia: MediaDto[] = Array.from({ length: 24 }, (_, index) => {
+const mockMedia: MediaDto[] = Array.from({ length: 200 }, (_, index) => {
   const [tint, accent, label] = MOCK_PALETTE[index % MOCK_PALETTE.length];
   return {
     id: `mock${String(index).padStart(4, "0")}`.padEnd(64, "0"),
@@ -270,6 +293,7 @@ class PlayerApi {
   /** Send an allowlisted playback failure event to the Player diagnostic log. */
   async logPlaybackEvent(event: {
     event:
+      | "media_play"
       | "media_error"
       | "media_probe"
       | "media_retry"
@@ -296,6 +320,7 @@ class PlayerApi {
           event: event.event,
           media_id: event.mediaId,
           category: event.category,
+          playback_session: playbackSession,
           media_error_code: event.mediaErrorCode,
           network_state: event.networkState,
           ready_state: event.readyState,
@@ -343,7 +368,7 @@ class PlayerApi {
     // Give both swipe directions enough of the MP4 head to reach its first
     // decodable frame without waiting for a cold origin range on selection.
     const bytes = level === "strong" ? 2 * 1024 * 1024 : level === "random" ? 1024 * 1024 : 256 * 1024;
-    const response = await fetch(clip.streamUrl, {
+    const response = await fetch(withPlaybackSession(clip.streamUrl), {
       credentials: "same-origin",
       headers: { Range: `bytes=0-${bytes - 1}`, "X-TGVIO-Preload": "1" },
       signal,
@@ -360,7 +385,7 @@ class PlayerApi {
   async probe(clip: Clip): Promise<number> {
     if (MOCK_MODE) return 200;
     try {
-      const response = await fetch(clip.streamUrl, {
+      const response = await fetch(withPlaybackSession(clip.streamUrl), {
         credentials: "same-origin",
         headers: { Range: "bytes=0-1023", "X-TGVIO-Preload": "1" },
         cache: "no-store",
