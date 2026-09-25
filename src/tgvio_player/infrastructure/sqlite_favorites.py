@@ -59,6 +59,12 @@ class PlayerFavoriteRepositoryMixin:
             else:
                 conn.execute("DELETE FROM player_global_favorites WHERE media_id=?", (media_id,))
 
+    async def is_global_favorite(self, media_id: str) -> bool:
+        row = self._require().execute(
+            "SELECT 1 FROM player_global_favorites WHERE media_id=?", (media_id,)
+        ).fetchone()
+        return row is not None
+
     async def list_global_favorite_page(
         self, *, limit: int, before: tuple[int, str] | None
     ) -> list[tuple[str, int]]:
@@ -187,6 +193,19 @@ class PlayerFavoriteRepositoryMixin:
                 """,
                 (media_id, relpath, size_bytes, mime_type, int(time.time())),
             )
+
+    async def get_favorite_location(self, media_id: str) -> tuple[str, int, str] | None:
+        row = self._require().execute(
+            "SELECT relpath, size_bytes, mime_type FROM favorite_locations WHERE media_id=?",
+            (media_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        return str(row["relpath"]), int(row["size_bytes"]), str(row["mime_type"])
+
+    async def delete_favorite_location(self, media_id: str) -> None:
+        async with self._write_transaction() as conn:
+            conn.execute("DELETE FROM favorite_locations WHERE media_id=?", (media_id,))
 
     async def restore_favorite_copy(
         self, media_id: str, relpath: str, size_bytes: int, mime_type: str, created_at: int

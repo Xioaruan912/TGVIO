@@ -65,6 +65,15 @@ class PlayerStateCipherPort(Protocol):
     def decrypt(self, envelope: bytes, *, context: bytes) -> bytes: ...
 
 
+class WebDavWriteError(RuntimeError):
+    def __init__(self, operation: str, category: str, status_code: int | None = None) -> None:
+        self.operation = operation
+        self.category = category
+        self.status_code = status_code
+        suffix = f" ({status_code})" if status_code is not None else ""
+        super().__init__(f"WebDAV {operation} failed: {category}{suffix}")
+
+
 class ArchiveCatalogSource(Protocol):
     async def discover(self) -> ArchiveDiscovery: ...
 
@@ -146,6 +155,14 @@ class PlayerCatalogRepository(Protocol):
     async def claim_favorite_sync(self, *, limit: int) -> list[FavoriteSyncJob]: ...
 
     async def list_pending_favorite_sync(self) -> list[FavoriteSyncJob]: ...
+
+    async def is_global_favorite(self, media_id: str) -> bool: ...
+
+    async def get_favorite_location(
+        self, media_id: str
+    ) -> tuple[str, int, str] | None: ...
+
+    async def delete_favorite_location(self, media_id: str) -> None: ...
 
     async def finish_favorite_sync(
         self, job_id: int, status: Literal["retry", "synced", "failed"],
