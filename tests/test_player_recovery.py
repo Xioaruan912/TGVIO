@@ -107,6 +107,20 @@ class EncryptedManifestStoreTests(unittest.IsolatedAsyncioTestCase):
         loaded = await store.load()
         self.assertEqual(loaded["revision"], 1)
 
+    async def test_unreferenced_partial_revision_can_be_reused(self) -> None:
+        dav = MemoryDav()
+        cipher = PlayerStateCipher(base64.urlsafe_b64encode(b"o" * 32).decode().rstrip("="))
+        store = EncryptedManifestStore(dav, cipher, "root", context=FAVORITES_CONTEXT)
+        abandoned = {"schema_version": 1, "revision": 2, "items": [{"old": True}]}
+        dav.files["root/favorites-manifest.2.enc"] = cipher.encrypt(
+            json.dumps(abandoned).encode(), context=FAVORITES_CONTEXT,
+        )
+
+        expected = {"schema_version": 1, "revision": 2, "items": []}
+        await store.save_atomic(expected)
+
+        self.assertEqual(await store.load(), expected)
+
     async def test_truncated_or_modified_revision_fails_authentication(self) -> None:
         dav = MemoryDav()
         cipher = PlayerStateCipher(base64.urlsafe_b64encode(b"m" * 32).decode().rstrip("="))

@@ -157,13 +157,19 @@ class EncryptedManifestStore:
         if existing is not None:
             try:
                 existing_value = json.loads(self._cipher.decrypt(existing, context=self._context))
-            except (ValueError, UnicodeDecodeError, json.JSONDecodeError) as exc:
-                raise RecoveryError("snapshot revision is already occupied") from exc
-            if existing_value != value:
-                raise RecoveryError("snapshot revision is already occupied")
-            encrypted = existing
+            except (ValueError, UnicodeDecodeError, json.JSONDecodeError):
+                existing_value = None
+            if existing_value == value:
+                encrypted = existing
+            else:
+                await _put_bytes(self._client, revision_path, encrypted, "application/octet-stream")
         else:
             await _put_bytes(self._client, revision_path, encrypted, "application/octet-stream")
+        written_revision = await self._client.get_bytes(
+            revision_path, max_bytes=_MAX_SNAPSHOT_BYTES,
+        )
+        if written_revision != encrypted:
+            raise RecoveryError("remote snapshot revision verification failed")
         pointer = _json_bytes({
             "schema_version": 1,
             "revision": revision,
