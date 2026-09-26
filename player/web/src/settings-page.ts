@@ -126,6 +126,7 @@ export function StorageSettingsPage(options: {
     root.value = settings.player_root;
     favoriteDir.value = settings.favorites_dir;
     lastFailedCount = settings.failed_count;
+    retry.disabled = lastFailedCount === 0;
     username.placeholder = settings.credentials_configured ? "已配置，留空保留" : "请输入用户名";
     password.placeholder = settings.credentials_configured ? "已配置，留空保留" : "请输入密码";
     showStatus(`同步状态：${settings.sync_status} · 待处理 ${settings.pending_count} · 失败 ${settings.failed_count}`);
