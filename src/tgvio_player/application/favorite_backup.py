@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from collections.abc import AsyncIterator
 from dataclasses import dataclass
+import logging
+from pathlib import PurePosixPath
 import re
 import time
 from typing import Awaitable, Callable, Literal, Protocol
@@ -27,6 +29,7 @@ _CONTAINER_TO_MIME = {
     "webm": "video/webm", "avi": "video/x-msvideo", "mpeg": "video/mpeg",
     "3gp": "video/3gpp", "ogv": "video/ogg", "ts": "video/mp2t",
 }
+_LOG = logging.getLogger("tgvio_player.favorite_backup")
 
 
 class FavoriteBackupError(RuntimeError):
@@ -65,6 +68,7 @@ class SnapshotExporter(Protocol):
 SourceStreamProvider = Callable[
     [str], Awaitable[tuple[int, str | None, AsyncIterator[bytes]]]
 ]
+SourceLocationProvider = Callable[[str], Awaitable[tuple[str, str] | None]]
 
 
 class FavoriteBackupService:
@@ -75,12 +79,14 @@ class FavoriteBackupService:
         source_stream: SourceStreamProvider,
         snapshot_exporter: SnapshotExporter,
         *,
+        source_location: SourceLocationProvider | None = None,
         clock: Callable[[], float] = time.time,
     ) -> None:
         self._repository = repository
         self._writer = writer
         self._source_stream = source_stream
         self._snapshot_exporter = snapshot_exporter
+        self._source_location = source_location
         self._clock = clock
 
     def replace_writer(self, writer: WebDavWriteClient) -> WebDavWriteClient:
@@ -154,6 +160,10 @@ class FavoriteBackupService:
                     await self._retry(job.job_id, job.attempts, "source_network_error")
                     retried += 1
             except WebDavWriteError as exc:
+                _LOG.warning(
+                    "Favorite WebDAV sync failed: media_id=%s operation=%s category=%s status=%s",
+                    job.media_id, exc.operation, exc.category, exc.status_code,
+                )
                 if exc.category in {"unauthorized", "unsafe_redirect", "rejected", "move_unsupported", "not_found_or_conflict"}:
                     await self._repository.finish_favorite_sync(job.job_id, "failed", exc.category)
                     failed += 1
@@ -189,6 +199,36 @@ class FavoriteBackupService:
             raise FavoriteBackupError("invalid_media_size")
         mime_type = self._safe_mime_type(details.get("mime_type"), details.get("container"))
         extension = _MIME_TO_EXTENSION[mime_type][0]
+        settings = await self._repository.get_storage_settings()
+        if self._source_location is not None:
+            location = await self._source_location(media_id)
+            copier = getattr(self._writer, "copy", None)
+            if location is not None and copier is not None:
+                source_path = safe_storage_relpath(f"{location[0]}/{location[1]}")
+                source_name = PurePosixPath(source_path).name
+                relative_path = safe_storage_relpath(
+                    f"{settings.favorites_dir}/{media_id}/{source_name}"
+                )
+                remote_path = self._remote_path(settings.player_root, relative_path)
+                await self._writer.ensure_directory(
+                    self._remote_path(
+                        settings.player_root, f"{settings.favorites_dir}/{media_id}",
+                    )
+                )
+                try:
+                    await copier(source_path, remote_path)
+                except WebDavWriteError as exc:
+                    if exc.category != "copy_unsupported":
+                        raise
+                else:
+                    remote = await self._writer.stat(remote_path)
+                    if remote is None or remote.size_bytes != size_bytes:
+                        raise FavoriteBackupError("verification_mismatch")
+                    await self._repository.save_favorite_location(
+                        media_id, relative_path, size_bytes, mime_type,
+                    )
+                    await self._snapshot_exporter.export_state()
+                    return
         source_size, source_mime, chunks = await self._source_stream(media_id)
         if source_size != size_bytes:
             raise FavoriteBackupError("source_size_mismatch")
@@ -196,7 +236,6 @@ class FavoriteBackupService:
             source_mime = source_mime.split(";", 1)[0].strip().lower()
             if source_mime in _MIME_TO_EXTENSION and source_mime != mime_type:
                 raise FavoriteBackupError("source_mime_mismatch")
-        settings = await self._repository.get_storage_settings()
         relative_path = safe_storage_relpath(f"{settings.favorites_dir}/{media_id}{extension}")
         remote_path = self._remote_path(settings.player_root, relative_path)
         await self._writer.ensure_directory(self._remote_path(settings.player_root, settings.favorites_dir))

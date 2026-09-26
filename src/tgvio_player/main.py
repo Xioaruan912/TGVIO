@@ -202,8 +202,13 @@ async def run(settings: PlayerSettings) -> None:
                 raise SourceMediaError("source_length_missing")
             return response.content_length, response.content_type, response.body
 
+        async def favorite_source_location(media_id: str):
+            location = await repository.active_media_location(media_id)
+            return None if location is None else (location[0], location[1])
+
         favorite_backup = FavoriteBackupService(
             repository, favorite_writer, favorite_source, recovery,
+            source_location=favorite_source_location,
         )
         reader = PlayerMediaReader(
             repository, archive_reader, repository.get_storage_settings,

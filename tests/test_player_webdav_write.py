@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import unittest
 
 from tgvio_player.infrastructure.webdav_aiohttp import PublicOnlyResolver
@@ -15,14 +16,16 @@ class FakeResponse:
     def __init__(
         self, status: int, *, headers: dict[str, str] | None = None,
         chunks: tuple[bytes, ...] = (),
+        body: bytes = b"",
     ) -> None:
         self.status = status
         self.headers = headers or {}
         self.closed = False
         self.content = FakeContent(chunks)
+        self.body = body
 
     async def read(self) -> bytes:
-        return b""
+        return self.body
 
     def release(self) -> None:
         self.closed = True
@@ -65,6 +68,16 @@ class FakeResolver:
         return None
 
 
+class FakeApiSession:
+    def __init__(self, responses: list[FakeResponse]) -> None:
+        self.responses = responses
+        self.calls: list[tuple[str, str, dict[str, object]]] = []
+
+    async def request(self, method: str, url: str, **kwargs: object) -> FakeResponse:
+        self.calls.append((method, url, kwargs))
+        return self.responses.pop(0)
+
+
 class WebDavWriteSafetyTests(unittest.TestCase):
     def test_endpoint_requires_https_without_credentials_or_private_ip(self) -> None:
         for value in (
@@ -100,6 +113,32 @@ class WebDavWriteSafetyTests(unittest.TestCase):
 
 
 class WebDavWriteTransportTests(unittest.IsolatedAsyncioTestCase):
+    async def test_openlist_copy_uses_json_api_without_streaming_file_bytes(self) -> None:
+        api = FakeApiSession([
+            FakeResponse(200, body=json.dumps({
+                "code": 200, "data": {"token": "token-value"},
+            }).encode()),
+            FakeResponse(200, body=b'{"code":200,"message":"success","data":null}'),
+        ])
+        client = AioHttpWebDavWriteClient(
+            "https://dav.example.test/dav", "u", "p",
+            session=FakeSession(), api_session=api,
+        )
+
+        await client.copy(
+            "archive/2026/1/source.mp4", "player/Favorites/media/source.mp4",
+        )
+
+        self.assertEqual([call[1] for call in api.calls], [
+            "https://dav.example.test/api/auth/login",
+            "https://dav.example.test/api/fs/copy",
+        ])
+        self.assertEqual(api.calls[1][2]["json"], {
+            "src_dir": "/archive/2026/1",
+            "dst_dir": "/player/Favorites/media",
+            "names": ["source.mp4"],
+        })
+
     async def test_configured_dav_path_prefixes_all_webdav_requests(self) -> None:
         session = FakeSession(201)
         client = AioHttpWebDavWriteClient("https://dav.example.test/dav", "u", "p", session=session)

@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 from collections.abc import AsyncIterator
+import json
+from pathlib import PurePosixPath
 import re
-from urllib.parse import quote
+from urllib.parse import quote, urlsplit
 
 from aiohttp import BasicAuth, ClientSession, ClientTimeout, TCPConnector
 
@@ -26,6 +28,7 @@ class AioHttpWebDavWriteClient:
         password: str,
         *,
         session: object | None = None,
+        api_session: object | None = None,
         connect_timeout_seconds: float = 10.0,
         read_timeout_seconds: float = 60.0,
     ) -> None:
@@ -33,11 +36,15 @@ class AioHttpWebDavWriteClient:
         if min(connect_timeout_seconds, read_timeout_seconds) <= 0:
             raise ValueError("WebDAV timeouts must be positive")
         self._auth = BasicAuth(username, password)
+        self._username = username
+        self._password = password
         self._timeout = ClientTimeout(
             total=None, connect=connect_timeout_seconds, sock_read=read_timeout_seconds,
         )
         self._session = session
         self._owns_session = session is None
+        self._api_session = api_session
+        self._owns_api_session = api_session is None
 
     async def open(self) -> None:
         if self._session is None:
@@ -52,6 +59,68 @@ class AioHttpWebDavWriteClient:
         if self._owns_session and self._session is not None:
             await self._session.close()  # type: ignore[attr-defined]
         self._session = None
+        if self._owns_api_session and self._api_session is not None:
+            await self._api_session.close()  # type: ignore[attr-defined]
+        self._api_session = None
+
+    async def copy(self, source: str, target: str) -> None:
+        safe_source = safe_storage_relpath(source)
+        safe_target = safe_storage_relpath(target)
+        source_name = PurePosixPath(safe_source).name
+        if PurePosixPath(safe_target).name != source_name:
+            raise WebDavWriteError("copy", "copy_unsupported")
+        endpoint = urlsplit(self._base_url)
+        if endpoint.path.rstrip("/") != "/dav":
+            raise WebDavWriteError("copy", "copy_unsupported")
+        api_base = f"{endpoint.scheme}://{endpoint.netloc}"
+        login = await self._api_request(
+            "POST", f"{api_base}/api/auth/login",
+            json={"username": self._username, "password": self._password},
+        )
+        try:
+            login_payload = json.loads(await login.read())
+            self._check(login.status, {200}, "copy")
+            if login_payload.get("code") != 200 or not isinstance(
+                (login_payload.get("data") or {}).get("token"), str
+            ):
+                raise WebDavWriteError("copy", "unauthorized", login.status)
+            token = login_payload["data"]["token"]
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            raise WebDavWriteError("copy", "copy_unsupported", login.status) from None
+        finally:
+            login.release()
+        copied = await self._api_request(
+            "POST", f"{api_base}/api/fs/copy",
+            headers={"Authorization": token},
+            json={
+                "src_dir": f"/{PurePosixPath(safe_source).parent}",
+                "dst_dir": f"/{PurePosixPath(safe_target).parent}",
+                "names": [source_name],
+            },
+        )
+        try:
+            payload = json.loads(await copied.read())
+            self._check(copied.status, {200}, "copy")
+            code = payload.get("code")
+            if code != 200:
+                self._check(int(code) if isinstance(code, int) else 400, {200}, "copy")
+        except (UnicodeDecodeError, json.JSONDecodeError, AttributeError):
+            raise WebDavWriteError("copy", "invalid_response", copied.status) from None
+        finally:
+            copied.release()
+
+    async def _api_request(self, method: str, url: str, **kwargs: object):
+        if self._api_session is None:
+            connector = TCPConnector(
+                resolver=PublicOnlyResolver(), use_dns_cache=False, ttl_dns_cache=0,
+            )
+            self._api_session = ClientSession(timeout=self._timeout, connector=connector)
+        try:
+            return await self._api_session.request(  # type: ignore[attr-defined]
+                method, url, allow_redirects=False, **kwargs,
+            )
+        except Exception as exc:
+            raise WebDavWriteError("copy", "network_error") from exc
 
     async def ensure_directory(self, path: str) -> None:
         safe_path = safe_storage_relpath(path)

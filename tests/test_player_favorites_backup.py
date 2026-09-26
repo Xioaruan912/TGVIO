@@ -20,6 +20,8 @@ class FakeWriter:
     def __init__(self) -> None:
         self.files: dict[str, bytes] = {}
         self.calls: list[str] = []
+        self.put_error: WebDavWriteError | None = None
+        self.copy_payload: bytes | None = None
         self.delete_error: WebDavWriteError | None = None
         self.bad_stat = False
         self.max_chunk = 0
@@ -30,6 +32,8 @@ class FakeWriter:
 
     async def put_stream(self, path: str, chunks, *, size_bytes: int, content_type: str):
         self.calls.append(path)
+        if self.put_error is not None:
+            raise self.put_error
         payload = bytearray()
         async for chunk in chunks:
             self.max_chunk = max(self.max_chunk, len(chunk))
@@ -42,6 +46,12 @@ class FakeWriter:
         if value is None:
             return None
         return RemoteFileStat(len(value) + (1 if self.bad_stat else 0), '"file"')
+
+    async def copy(self, source: str, target: str) -> None:
+        self.calls.append(f"copy:{source}->{target}")
+        if self.copy_payload is None:
+            raise WebDavWriteError("copy", "copy_unsupported", 404)
+        self.files[target] = self.copy_payload
 
     async def delete(self, path: str):
         self.calls.append(path)
@@ -138,6 +148,30 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.writer.calls, calls_before_duplicate)
         self.assertEqual(await self.repo.list_pending_favorite_sync(), [])
 
+    async def test_same_openlist_source_is_copied_server_side_without_streaming(self) -> None:
+        self.writer.copy_payload = self.payload
+
+        async def source_location(_media_id: str):
+            return "archive/2026/1", "nested/source.mp4"
+
+        service = FavoriteBackupService(
+            self.repo, self.writer, self.source, self.snapshot_exporter,
+            source_location=source_location, clock=lambda: 1000,
+        )
+        await service.favorite(self.media_id)
+        result = await service.sync_pending()
+
+        expected = f"Favorites/{self.media_id}/source.mp4"
+        self.assertEqual((result.synced, result.failed, result.retried), (1, 0, 0))
+        self.assertEqual(self.source_calls, 0)
+        self.assertIn(
+            f"copy:archive/2026/1/nested/source.mp4->player/{expected}", self.writer.calls,
+        )
+        self.assertEqual(
+            await self.repo.list_favorite_locations(),
+            [(self.media_id, expected, len(self.payload), "video/mp4")],
+        )
+
     async def test_size_or_stat_mismatch_does_not_mark_copy_synced(self) -> None:
         self.writer.bad_stat = True
         await self.service.favorite(self.media_id)
@@ -147,6 +181,20 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
         job = await self.repo.list_pending_favorite_sync()
         self.assertEqual(job[0].status, "retry")
         self.assertEqual(job[0].error_code, "verification_mismatch")
+
+    async def test_webdav_failure_log_keeps_media_operation_category_and_status(self) -> None:
+        self.writer.put_error = WebDavWriteError("put", "rejected", 413)
+        await self.service.favorite(self.media_id)
+
+        with self.assertLogs("tgvio_player.favorite_backup", level="WARNING") as captured:
+            result = await self.service.sync_pending()
+
+        self.assertEqual((result.synced, result.failed, result.retried), (0, 1, 0))
+        message = "\n".join(captured.output)
+        self.assertIn(f"media_id={self.media_id}", message)
+        self.assertIn("operation=put", message)
+        self.assertIn("category=rejected", message)
+        self.assertIn("status=413", message)
 
     async def test_missing_original_source_is_classified_without_claiming_success(self) -> None:
         async def missing(_media_id: str):
