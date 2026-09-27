@@ -238,6 +238,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
                 raise web.HTTPBadRequest(text="query tokens are not accepted")
             response = await handler(request)
             status = response.status
+            error_kind = request.get("player_stream_disconnect")
             return response
         except web.HTTPException as exc:
             status = request.get("player_response_status", exc.status)

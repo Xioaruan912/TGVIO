@@ -141,11 +141,14 @@ class PlayerHttpStreamingMixin:
         )
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
-        if data is not None:
-            async for chunk in data:
-                if chunk:
-                    await self._write_chunks(response, chunk)
-        await response.write_eof()
+        try:
+            if data is not None:
+                async for chunk in data:
+                    if chunk:
+                        await self._write_chunks(response, chunk)
+            await response.write_eof()
+        except (BrokenPipeError, ConnectionError, ConnectionResetError) as exc:
+            request["player_stream_disconnect"] = type(exc).__name__
         return response
 
     async def _open_data(
@@ -222,16 +225,19 @@ class PlayerHttpStreamingMixin:
                 break
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
-        for kind, source_offset, length in segments:
-            if length <= 0:
-                continue
-            if kind == "cache":
-                await self._write_chunks(response, overlay.head[source_offset : source_offset + length])
-        if data is not None:
-            async for chunk in data:
-                if chunk:
-                    await self._write_chunks(response, chunk)
-        await response.write_eof()
+        try:
+            for kind, source_offset, length in segments:
+                if length <= 0:
+                    continue
+                if kind == "cache":
+                    await self._write_chunks(response, overlay.head[source_offset : source_offset + length])
+            if data is not None:
+                async for chunk in data:
+                    if chunk:
+                        await self._write_chunks(response, chunk)
+            await response.write_eof()
+        except (BrokenPipeError, ConnectionError, ConnectionResetError) as exc:
+            request["player_stream_disconnect"] = type(exc).__name__
         return response
 
     async def _write_chunks(self, response: web.StreamResponse, data: bytes) -> None:
