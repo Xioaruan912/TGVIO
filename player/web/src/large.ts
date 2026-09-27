@@ -344,8 +344,8 @@ export class LargePlayer {
     document.removeEventListener("visibilitychange", this.onVisibility);
     this.wakeLock.destroy();
     void this.exitPictureInPicture();
-    playerMediaSession.clear();
     this.video.pause();
+    playerMediaSession.clear();
     this.video.removeAttribute("src");
     this.video.load();
     this.preview.destroy();
@@ -369,11 +369,11 @@ export class LargePlayer {
   }
 
   lockPrivacy(): void {
-    playerMediaSession.clear();
-    this.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
     this.root.classList.add("privacy-locked");
     this.video.pause();
     void this.wakeLock.setDesired(false);
+    playerMediaSession.clear();
+    this.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
   }
 
   unlockPrivacy(resumePlayback: boolean): void {
