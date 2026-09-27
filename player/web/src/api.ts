@@ -311,6 +311,7 @@ class PlayerApi {
     retry?: number;
     probeStatus?: number;
     failureStreak?: number;
+    reason?: "unsupported_codec";
   }): Promise<void> {
     if (MOCK_MODE) return;
     try {
@@ -329,6 +330,7 @@ class PlayerApi {
           retry: event.retry,
           probe_status: event.probeStatus,
           failure_streak: event.failureStreak,
+          reason: event.reason,
         }),
         keepalive: true,
       });

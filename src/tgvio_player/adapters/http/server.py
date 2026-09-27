@@ -350,6 +350,8 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
             value = payload.get(name)
             if isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum:
                 numeric_fields[name] = value
+        reason = payload.get("reason")
+        safe_reason = reason if reason in {"unsupported_codec"} else None
         log_event(
             "frontend_playback",
             request_id=request.get("player_request_id"),
@@ -358,6 +360,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
             media_id=media_id,
             category=category,
             action=event,
+            reason=safe_reason,
             session=playback_session(payload.get("playback_session")),
             **numeric_fields,
         )

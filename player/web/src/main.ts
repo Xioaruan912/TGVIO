@@ -151,9 +151,34 @@ function clipMeta(clip: Clip): string {
   return [duration, dimensions, "私有片库"].filter(Boolean).join(" · ");
 }
 
+const codecProbe = document.createElement("video");
+
+function browserCanRender(clip: Clip): boolean {
+  const codec = clip.codec?.toLowerCase() ?? "";
+  if (!codec.includes("hevc") && !codec.includes("h265") && !codec.includes("hvc1") && !codec.includes("hev1")) return true;
+  return Boolean(
+    codecProbe.canPlayType('video/mp4; codecs="hvc1"')
+    || codecProbe.canPlayType('video/mp4; codecs="hev1"'),
+  );
+}
+
 function applyActive(index: number): void {
   const current = feedView?.clipAt(index);
   if (!feedView || !pool || !current) return;
+  if (!browserCanRender(current)) {
+    unplayable.add(current.id);
+    skipStreak += 1;
+    void api.logPlaybackEvent({
+      event: "media_skip",
+      mediaId: current.id,
+      category: current.category,
+      reason: "unsupported_codec",
+      failureStreak: skipStreak,
+    });
+    toast(shell!, "当前浏览器不支持该视频编码，已跳过");
+    window.setTimeout(() => goNext(true), 0);
+    return;
+  }
   if (lastActiveClipId !== current.id || lastActiveIndex !== index) {
     muted = mutedForNextVideo(muted);
     rememberMuted(muted);
