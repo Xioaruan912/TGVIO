@@ -15,6 +15,7 @@ import { PreloadCoordinator } from "./preload";
 import { shouldRetryMediaError } from "./playback-error";
 import { ThumbnailPreview } from "./preview";
 import { prefs, setPref } from "./settings";
+import { initialMutedState, mutedForNextVideo, rememberMuted } from "./sound-policy";
 import { icon } from "./icons";
 import type { ArchiveGroup, Clip } from "./types";
 import {
@@ -47,7 +48,6 @@ const MIN_FEED = 20;
 const FEED_AHEAD = 8;
 const MAX_FEED = 300;
 const DEBUG = MOCK_MODE || new URLSearchParams(window.location.search).has("debug");
-const MUTE_KEY = "tgvio.player.muted";
 
 const clips: Clip[] = [];
 const favorites = new Set<string>();
@@ -68,7 +68,7 @@ const progressSaveTimers = new Map<string, number>();
 const progressSaveValues = new Map<string, number>();
 const progressSaveChains = new Map<string, Promise<void>>();
 const progressCompleted = new Set<string>();
-let muted = true;
+let muted = initialMutedState();
 let refill: Promise<void> | null = null;
 let homeRefresh: Promise<void> | null = null;
 let homeFeedGeneration = 0;
@@ -140,10 +140,10 @@ function applyActive(index: number): void {
   const current = feedView?.clipAt(index);
   if (!feedView || !pool || !current) return;
   if (lastActiveClipId !== current.id || lastActiveIndex !== index) {
-    muted = true;
-    localStorage.setItem(MUTE_KEY, "true");
-    pool.setMuted(true);
-    if (shell) setSoundButton(shell, true);
+    muted = mutedForNextVideo(muted);
+    rememberMuted(muted);
+    pool.setMuted(muted);
+    if (shell) setSoundButton(shell, muted);
     lastActiveClipId = current.id;
     lastActiveIndex = index;
   }
@@ -435,7 +435,7 @@ async function deleteCurrentMedia(): Promise<void> {
 function toggleSound(): void {
   if (!muted) {
     muted = true;
-    localStorage.setItem(MUTE_KEY, "true");
+    rememberMuted(true);
     pool?.setMuted(true);
     if (shell) setSoundButton(shell, true);
     if (openSheetKind === "settings") openSettings();
@@ -446,7 +446,7 @@ function toggleSound(): void {
   void requestAudioEnable(host).then((confirmed) => {
     if (!confirmed || !pool) return;
     muted = false;
-    localStorage.setItem(MUTE_KEY, "false");
+    rememberMuted(false);
     pool.setMuted(false);
     if (shell) setSoundButton(shell, false);
     if (openSheetKind === "settings") openSettings();
@@ -948,10 +948,10 @@ async function enterContext(mode: "group" | "favorites", group?: ArchiveGroup): 
   );
   contextFeed = context;
   lockPrivacyScreen();
-  muted = true;
-  localStorage.setItem(MUTE_KEY, "true");
-  pool.setMuted(true);
-  pool.sync([], { paused: true, muted: true });
+  muted = mutedForNextVideo(muted);
+  rememberMuted(muted);
+  pool.setMuted(muted);
+  pool.sync([], { paused: true, muted });
   closeSheet(shell);
   openSheetKind = null;
   setActiveNav(shell, mode === "favorites" ? "favorites" : "home");
@@ -1135,13 +1135,20 @@ function openSettings(): void {
     sheetRow({
       title: "声音安全提示",
       sub:
-        prefs.soundPromptFrequency === "once-per-open"
-          ? "每次重新打开后提醒一次"
-          : "每次开启声音都提醒",
+        prefs.soundPromptFrequency === "continuous-sound"
+          ? "首次确认后，后续视频默认有声"
+          : prefs.soundPromptFrequency === "once-per-open"
+            ? "每次重新打开后提醒一次"
+            : "每次开启声音都提醒",
       onPick: () => {
+        const next = {
+          "continuous-sound": "every-time",
+          "every-time": "once-per-open",
+          "once-per-open": "continuous-sound",
+        } as const;
         setPref(
           "soundPromptFrequency",
-          prefs.soundPromptFrequency === "once-per-open" ? "every-time" : "once-per-open",
+          next[prefs.soundPromptFrequency],
         );
         openSettings();
       },

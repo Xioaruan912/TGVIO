@@ -6,10 +6,9 @@ import { icon } from "./icons";
 import { NetworkMeter } from "./net";
 import { ThumbnailPreview } from "./preview";
 import { prefs } from "./settings";
+import { initialMutedState, rememberMuted } from "./sound-policy";
 import { confirmMediaDelete, element, formatTime } from "./ui";
 import type { Clip } from "./types";
-
-const MUTE_KEY = "tgvio.player.muted";
 
 function paintBuffered(fill: HTMLElement, video: HTMLVideoElement): void {
   const duration = video.duration;
@@ -64,7 +63,7 @@ export class LargePlayer {
   private readonly startAt: number;
   private didRestorePosition = false;
   private deleted = false;
-  private muted = true;
+  private muted = initialMutedState();
   private userSeeking = false;
 
   constructor(
@@ -437,7 +436,7 @@ export class LargePlayer {
   private toggleSound(): void {
     if (!this.muted) {
       this.muted = true;
-      localStorage.setItem(MUTE_KEY, "true");
+      rememberMuted(true);
       this.video.defaultMuted = true;
       this.video.setAttribute("muted", "");
       this.video.muted = true;
@@ -447,7 +446,7 @@ export class LargePlayer {
     void requestAudioEnable(this.root).then((confirmed) => {
       if (!confirmed) return;
       this.muted = false;
-      localStorage.setItem(MUTE_KEY, "false");
+      rememberMuted(false);
       this.video.defaultMuted = false;
       this.video.removeAttribute("muted");
       this.video.muted = false;

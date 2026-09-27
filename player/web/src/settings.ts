@@ -5,7 +5,8 @@ export type PlayerPrefs = {
   dragThumbnail: boolean;
   cacheAhead: boolean;
   netSpeed: boolean;
-  soundPromptFrequency: "every-time" | "once-per-open";
+  soundPromptFrequency: "every-time" | "once-per-open" | "continuous-sound";
+  soundContinuousConfirmed: boolean;
 };
 
 const KEY = "tgvio.player.prefs";
@@ -17,7 +18,8 @@ const DEFAULTS: PlayerPrefs = {
   dragThumbnail: true,
   cacheAhead: true,
   netSpeed: true,
-  soundPromptFrequency: "every-time",
+  soundPromptFrequency: "continuous-sound",
+  soundContinuousConfirmed: false,
 };
 
 export function loadPrefs(): PlayerPrefs {
@@ -35,9 +37,13 @@ export function loadPrefs(): PlayerPrefs {
       cacheAhead: parsed.cacheAhead ?? DEFAULTS.cacheAhead,
       netSpeed: parsed.netSpeed ?? DEFAULTS.netSpeed,
       soundPromptFrequency:
-        parsed.soundPromptFrequency === "once-per-open"
-          ? "once-per-open"
+        parsed.soundPromptFrequency === "every-time"
+        || parsed.soundPromptFrequency === "once-per-open"
+        || parsed.soundPromptFrequency === "continuous-sound"
+          ? parsed.soundPromptFrequency
           : DEFAULTS.soundPromptFrequency,
+      soundContinuousConfirmed:
+        parsed.soundContinuousConfirmed === true,
     };
   } catch {
     return { ...DEFAULTS };

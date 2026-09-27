@@ -405,7 +405,7 @@ export type AudioEnableChoice = "keep-muted" | "enable" | "enable-once-per-open"
 
 export function confirmAudioEnable(
   host: HTMLElement,
-  offerOncePerOpen = false,
+  options: { offerOncePerOpen?: boolean; continuousSound?: boolean } = {},
 ): Promise<AudioEnableChoice> {
   return new Promise((resolve) => {
     const overlay = element("div", "audio-warning");
@@ -418,11 +418,17 @@ export function confirmAudioEnable(
     const message = element(
       "p",
       undefined,
-      "视频可能包含成人内容或不适合旁人听到的声音。确认周围环境适合后，才会为当前视频开启声音。",
+      options.continuousSound
+        ? "视频可能包含成人内容或不适合旁人听到的声音。确认后，本次及后续视频会默认开启声音，直到你手动静音。"
+        : "视频可能包含成人内容或不适合旁人听到的声音。确认周围环境适合后，才会为当前视频开启声音。",
     );
     const actions = element("div", "audio-warning-actions");
     const keepMuted = element("button", "audio-warning-cancel", "继续静音");
-    const enable = element("button", "audio-warning-confirm", "我知道，开启本条声音");
+    const enable = element(
+      "button",
+      "audio-warning-confirm",
+      options.continuousSound ? "我知道，连续开启声音" : "我知道，开启本条声音",
+    );
     keepMuted.type = "button";
     enable.type = "button";
     let settled = false;
@@ -438,7 +444,7 @@ export function confirmAudioEnable(
       if (event.target === overlay) finish("keep-muted");
     });
     actions.append(keepMuted);
-    if (offerOncePerOpen) {
+    if (options.offerOncePerOpen) {
       const oncePerOpen = element(
         "button",
         "audio-warning-frequency",
