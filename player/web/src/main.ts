@@ -723,7 +723,7 @@ async function goRandom(): Promise<void> {
       toast(shell, "随机视频暂时不可用");
       return;
     }
-    if (!await preloader.ensureRandomCandidate(clip)) {
+    if (!await preloader.ensureRandomCandidate(clip, adaptiveCache.current())) {
       toast(shell, "随机视频还在准备中，当前视频会继续播放，请稍后重试");
       return;
     }
@@ -1560,9 +1560,14 @@ function renderFeed(): void {
   window.addEventListener("resize", onViewportResize);
   window.visualViewport?.addEventListener("resize", onViewportResize);
   document.addEventListener("visibilitychange", onDocumentVisibilityChange);
-  window.addEventListener("pagehide", lockPrivacyForBackground);
+  window.addEventListener("pagehide", () => {
+    if (largePlayer?.isPictureInPictureActive()) privacyCover?.classList.add("visible");
+    else lockPrivacyForBackground();
+  });
   window.addEventListener("pagehide", () => networkConnection?.removeEventListener("change", updateConnectionSignals));
   window.addEventListener("pageshow", () => {
+    networkConnection?.addEventListener("change", updateConnectionSignals);
+    updateConnectionSignals();
     if (!document.hidden) privacyCover?.classList.remove("visible");
   });
   const seek = shell.seek;

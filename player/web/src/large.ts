@@ -92,7 +92,9 @@ export class LargePlayer {
     this.startAt = Math.max(0, options.startAt ?? 0);
     this.root = element("section", "large-player");
     this.root.dataset.wakeLock = this.wakeLock.supported ? "available" : "unsupported";
-    this.root.dataset.mediaSession = playerMediaSession.supported ? "long" : "unsupported";
+    this.root.dataset.mediaSession = playerMediaSession.supported
+      ? options.privacyLocked ? "cleared" : "long"
+      : "unsupported";
     if (options.privacyLocked) this.root.classList.add("privacy-locked");
 
     const topbar = element("header", "large-topbar");

@@ -68,7 +68,8 @@ export class PreloadCoordinator {
     })();
   }
 
-  async ensureRandomCandidate(clip: Clip): Promise<boolean> {
+  async ensureRandomCandidate(clip: Clip, plan: CachePlan): Promise<boolean> {
+    if (plan.randomLimit === 0) return true;
     if (this.randomReady.has(clip.id)) return true;
     if (this.pressure) return false;
     const existing = this.randomWarmTasks.get(clip.id);
