@@ -123,7 +123,7 @@ export class VideoLibraryPage {
         this.category,
         BATCH,
         this.offset,
-        prefs.cacheAhead,
+        prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving",
         this.search,
       );
       if (generation !== this.generation) return;

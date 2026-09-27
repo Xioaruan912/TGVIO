@@ -1,9 +1,14 @@
+export type CacheMode = "auto" | "speed" | "data-saving" | "off";
+
 export type PlayerPrefs = {
   longPressFastForward: boolean;
   fastForwardSpeed: number;
   dragSeek: boolean;
   dragThumbnail: boolean;
-  cacheAhead: boolean;
+  cacheMode: CacheMode;
+  keepScreenAwake: boolean;
+  doubleTapSeek: boolean;
+  gestureGuideSeen: boolean;
   netSpeed: boolean;
   soundPromptFrequency: "every-time" | "once-per-open" | "continuous-sound";
   soundContinuousConfirmed: boolean;
@@ -16,7 +21,10 @@ const DEFAULTS: PlayerPrefs = {
   fastForwardSpeed: 2,
   dragSeek: true,
   dragThumbnail: true,
-  cacheAhead: true,
+  cacheMode: "auto",
+  keepScreenAwake: true,
+  doubleTapSeek: true,
+  gestureGuideSeen: false,
   netSpeed: true,
   soundPromptFrequency: "continuous-sound",
   soundContinuousConfirmed: false,
@@ -26,7 +34,10 @@ export function loadPrefs(): PlayerPrefs {
   try {
     const raw = localStorage.getItem(KEY);
     if (!raw) return { ...DEFAULTS };
-    const parsed = JSON.parse(raw) as Partial<PlayerPrefs>;
+    const parsed = JSON.parse(raw) as Partial<PlayerPrefs> & { cacheAhead?: boolean };
+    const cacheMode: CacheMode = ["auto", "speed", "data-saving", "off"].includes(String(parsed.cacheMode))
+      ? parsed.cacheMode as CacheMode
+      : parsed.cacheAhead === false ? "off" : "auto";
     return {
       longPressFastForward: parsed.longPressFastForward ?? DEFAULTS.longPressFastForward,
       fastForwardSpeed: [2, 3].includes(Number(parsed.fastForwardSpeed))
@@ -34,7 +45,10 @@ export function loadPrefs(): PlayerPrefs {
         : DEFAULTS.fastForwardSpeed,
       dragSeek: parsed.dragSeek ?? DEFAULTS.dragSeek,
       dragThumbnail: parsed.dragThumbnail ?? DEFAULTS.dragThumbnail,
-      cacheAhead: parsed.cacheAhead ?? DEFAULTS.cacheAhead,
+      cacheMode,
+      keepScreenAwake: parsed.keepScreenAwake ?? DEFAULTS.keepScreenAwake,
+      doubleTapSeek: parsed.doubleTapSeek ?? DEFAULTS.doubleTapSeek,
+      gestureGuideSeen: parsed.gestureGuideSeen ?? DEFAULTS.gestureGuideSeen,
       netSpeed: parsed.netSpeed ?? DEFAULTS.netSpeed,
       soundPromptFrequency:
         parsed.soundPromptFrequency === "every-time"

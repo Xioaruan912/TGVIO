@@ -69,7 +69,7 @@ export class LongVideoPage {
     try {
       const progressRequest = this.progress;
       const [{ items, hasMore }, progress] = await Promise.all([
-        api.videos("long", BATCH, this.offset, prefs.cacheAhead),
+        api.videos("long", BATCH, this.offset, prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving"),
         progressRequest,
       ]);
       this.hasMore = hasMore;

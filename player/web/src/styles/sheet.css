@@ -122,6 +122,22 @@
   color: var(--faint);
 }
 
+.sheet-choice-mark {
+  width: 24px;
+  height: 24px;
+  display: grid;
+  place-items: center;
+  flex: none;
+  border-radius: 50%;
+  color: #061014;
+  background: transparent;
+  font-weight: 800;
+}
+
+.sheet-row-choice[aria-pressed="true"] .sheet-choice-mark {
+  background: var(--cyan);
+}
+
 .sheet-row-icon {
   display: grid;
   place-items: center;

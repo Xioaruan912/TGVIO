@@ -573,6 +573,19 @@ export function sheetToggle(
   return row;
 }
 
+export function sheetChoice(
+  title: string,
+  sub: string,
+  selected: boolean,
+  onPick: () => void,
+): HTMLButtonElement {
+  const mark = element("span", "sheet-choice-mark", selected ? "✓" : "");
+  const row = sheetRow({ title, sub, trailing: mark, onPick }) as HTMLButtonElement;
+  row.classList.add("sheet-row-choice");
+  row.setAttribute("aria-pressed", selected ? "true" : "false");
+  return row;
+}
+
 export function closeSheet(shell: Shell): void {
   shell.sheet.hidden = true;
   shell.sheetBody.replaceChildren();

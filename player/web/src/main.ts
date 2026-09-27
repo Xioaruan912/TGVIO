@@ -34,6 +34,7 @@ import {
   setFavoriteButton,
   setSoundButton,
   sheetNote,
+  sheetChoice,
   sheetRow,
   sheetSection,
   sheetToggle,
@@ -113,7 +114,7 @@ async function ensureFeed(minimum: number): Promise<void> {
   }
   const task = (async () => {
     while (clips.length < minimum && clips.length < MAX_FEED) {
-      const batch = await api.feed(FEED_BATCH, prefs.cacheAhead);
+      const batch = await api.feed(FEED_BATCH, prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving");
       if (!batch.length) break;
       for (const clip of batch) {
         if (seenIds.has(clip.id)) continue;
@@ -585,7 +586,7 @@ async function refreshHome(): Promise<void> {
     const refreshed: Clip[] = [];
     const selected = new Set(seenIds);
     for (let request = 0; refreshed.length < MIN_FEED && request < 5; request += 1) {
-      const batch = await api.feed(Math.min(FEED_BATCH, MIN_FEED - refreshed.length), prefs.cacheAhead);
+      const batch = await api.feed(Math.min(FEED_BATCH, MIN_FEED - refreshed.length), prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving");
       if (!batch.length) break;
       for (const clip of batch) {
         if (selected.has(clip.id)) continue;
@@ -1197,17 +1198,25 @@ function openSettings(): void {
       },
     ),
   );
-  body.push(
-    sheetToggle(
-      "边播放边缓存",
-      prefs.cacheAhead ? "大视频预取，拖动秒开" : "已关闭",
-      prefs.cacheAhead,
-      () => {
-        setPref("cacheAhead", !prefs.cacheAhead);
-        openSettings();
-      },
-    ),
-  );
+  const cacheLabels = { auto: "智能（推荐）", speed: "速度优先", "data-saving": "省流量", off: "关闭" } as const;
+  body.push(sheetRow({
+    title: "智能缓存",
+    sub: cacheLabels[prefs.cacheMode],
+    onPick: openCacheModeSettings,
+  }));
+  body.push(sheetToggle(
+    "长视频保持屏幕常亮",
+    prefs.keepScreenAwake ? "播放时防止屏幕自动熄灭" : "已关闭",
+    prefs.keepScreenAwake,
+    () => { setPref("keepScreenAwake", !prefs.keepScreenAwake); openSettings(); },
+  ));
+  body.push(sheetToggle(
+    "双击快进/后退",
+    prefs.doubleTapSeek ? "画面左右两侧双击跳转 10 秒" : "已关闭",
+    prefs.doubleTapSeek,
+    () => { setPref("doubleTapSeek", !prefs.doubleTapSeek); openSettings(); },
+  ));
+  body.push(sheetRow({ title: "查看手势说明", sub: "单击、双击、长按与拖动", onPick: openGestureGuide }));
   body.push(
     sheetToggle(
       "显示网速",
@@ -1254,6 +1263,30 @@ function openSettings(): void {
   openSheetKind = "settings";
   openSheet(shell, "设置", body);
   setActiveNav(shell, "settings");
+}
+
+function openCacheModeSettings(): void {
+  if (!shell) return;
+  const choices = [
+    ["auto", "智能（推荐）", "根据缓冲、卡顿和实测速率自动调整"],
+    ["speed", "速度优先", "更多预取，切换视频更快"],
+    ["data-saving", "省流量", "只加载正在播放的视频"],
+    ["off", "关闭", "禁用后台视频预取"],
+  ] as const;
+  openSheetKind = "cache-settings";
+  openSheet(shell, "智能缓存", choices.map(([value, title, sub]) => sheetChoice(
+    title, sub, prefs.cacheMode === value,
+    () => { setPref("cacheMode", value); openCacheModeSettings(); },
+  )));
+}
+
+function openGestureGuide(): void {
+  if (!shell) return;
+  openSheetKind = "gesture-guide";
+  openSheet(shell, "手势说明", [
+    sheetNote("单击画面播放或暂停；双击左侧后退 10 秒，双击右侧快进 10 秒；长按临时倍速；横向拖动调整进度。"),
+    sheetRow({ title: "返回播放设置", onPick: openSettings }),
+  ]);
 }
 
 function openStorageSettings(): void {
