@@ -7,6 +7,7 @@ import { NetworkMeter } from "./net";
 import { ThumbnailPreview } from "./preview";
 import { prefs } from "./settings";
 import { initialMutedState, rememberMuted } from "./sound-policy";
+import { ScreenWakeLockController } from "./wake-lock";
 import { confirmMediaDelete, element, formatTime } from "./ui";
 import type { Clip } from "./types";
 
@@ -65,6 +66,8 @@ export class LargePlayer {
   private deleted = false;
   private muted = initialMutedState();
   private userSeeking = false;
+  private readonly wakeLock = new ScreenWakeLockController();
+  private readonly onVisibility = () => void this.wakeLock.handleVisibilityChange();
 
   constructor(
     clip: Clip,
@@ -86,6 +89,7 @@ export class LargePlayer {
     this.onDeleted = options.onDeleted ?? (() => undefined);
     this.startAt = Math.max(0, options.startAt ?? 0);
     this.root = element("section", "large-player");
+    this.root.dataset.wakeLock = this.wakeLock.supported ? "available" : "unsupported";
     if (options.privacyLocked) this.root.classList.add("privacy-locked");
 
     const topbar = element("header", "large-topbar");
@@ -236,8 +240,16 @@ export class LargePlayer {
       });
     });
     this.video.addEventListener("progress", () => paintBuffered(this.buffered, this.video));
-    this.video.addEventListener("play", () => this.setPlayIcon(true));
-    this.video.addEventListener("pause", () => this.setPlayIcon(false));
+    this.video.addEventListener("play", () => {
+      this.setPlayIcon(true);
+      void this.wakeLock.setDesired(prefs.keepScreenAwake && !this.root.classList.contains("privacy-locked"));
+      this.root.dataset.wakeLock = prefs.keepScreenAwake && this.wakeLock.supported ? "requested" : "inactive";
+    });
+    this.video.addEventListener("pause", () => {
+      this.setPlayIcon(false);
+      void this.wakeLock.setDesired(false);
+      this.root.dataset.wakeLock = "inactive";
+    });
     this.video.addEventListener("loadedmetadata", () => {
       if (Number.isFinite(this.video.duration)) this.seek.max = String(this.video.duration);
       if (!this.didRestorePosition && this.startAt > 0 && Number.isFinite(this.video.duration)) {
@@ -296,6 +308,7 @@ export class LargePlayer {
     this.video.src = clip.streamUrl;
     if (prefs.netSpeed) this.meter.start();
     if (!options.privacyLocked) void this.video.play().catch(() => undefined);
+    document.addEventListener("visibilitychange", this.onVisibility);
   }
 
   destroy(): void {
@@ -304,6 +317,8 @@ export class LargePlayer {
     this.detach();
     this.detachFullscreen();
     this.meter.stop();
+    document.removeEventListener("visibilitychange", this.onVisibility);
+    this.wakeLock.destroy();
     this.video.pause();
     this.video.removeAttribute("src");
     this.video.load();
@@ -322,6 +337,7 @@ export class LargePlayer {
   lockPrivacy(): void {
     this.root.classList.add("privacy-locked");
     this.video.pause();
+    void this.wakeLock.setDesired(false);
   }
 
   unlockPrivacy(resumePlayback: boolean): void {
