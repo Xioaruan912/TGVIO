@@ -1476,6 +1476,7 @@ function renderFeed(): void {
   document.body.appendChild(privacyCover);
   feedView = new FeedView(shell.feed);
   pool = new VideoPool();
+  pool.shouldContinue = () => privacyUnlocked && !paused && !longVideosOpen;
   pool.onPressure = (pressured) => {
     adaptiveCache.update({ playbackPressure: pressured || longVideosOpen, waiting: pressured });
     preloader.setPressure(pressured || longVideosOpen);

@@ -34,6 +34,7 @@ export class VideoPool {
   onAutoplayBlocked: ((blocked: boolean) => void) | null = null;
   onError: ((mediaId: string) => void) | null = null;
   onUnusableFrame: ((mediaId: string) => void) | null = null;
+  shouldContinue: (() => boolean) | null = null;
 
   constructor() {
     for (let i = 0; i < SLOT_COUNT; i += 1) {
@@ -49,7 +50,7 @@ export class VideoPool {
         if (video === this.current) this.onTimeUpdate?.(video);
       });
       video.addEventListener("ended", () => {
-        if (video === this.current && !video.paused) {
+        if (video === this.current && this.shouldContinue?.()) {
           video.currentTime = 0;
           void video.play().catch(() => undefined);
         }

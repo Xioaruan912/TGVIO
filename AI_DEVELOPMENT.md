@@ -247,3 +247,4 @@ python3 scripts/release_guard.py architecture .
 - **隐私与画中画**：系统媒体控制的 play 在隐私锁下必须无效，锁屏、离开播放器和退出登录都要清空 Media Session。只有用户明确进入长视频画中画时才允许后台继续播放；画中画退出时若页面仍隐藏，立即暂停并加隐私锁。常规退到后台继续沿用黑屏、暂停和隐私锁。
 - **浏览器验收观测点**：播放器根节点的 `data-media-session` 只取 `short|long|cleared|unsupported`；长视频根节点的 `data-wake-lock` 和 `data-picture-in-picture` 用于 BrowserAct 判断能力及生命周期。观测属性不得包含媒体 ID、文件名、URL、WebDAV 路径或凭据。
 - **首帧必须真的可解码**：`readyState=4` 和 `currentTime` 前进仍可能只是音轨在播放。已遇到 Chromium 对 HEVC MOV/MP4 的 `canPlayType` 返回可能支持，但播放后 `videoWidth/videoHeight=0`；Feed 先用 `canPlayType` 检查已知 HEVC 编码，并在开始播放后复核解码尺寸。不支持或有声无画面时按现有规则跳过，分别记录 `media_skip reason=unsupported_codec|no_decoded_frame`。BrowserAct 验收仍需检查实际画面尺寸或 `frame-ready`，不能只看时间推进。
+- **短视频自然结束的状态**：浏览器触发 `ended` 时 `video.paused` 通常已经为 true，不能用 `!paused` 判断是否应循环。循环应读取应用层的期望播放状态，并同时要求隐私已解锁、未手动暂停且未进入长视频页；否则短视频播完会无日志地停在末帧。
