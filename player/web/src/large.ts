@@ -449,6 +449,7 @@ export class LargePlayer {
     if (this.root.classList.contains("privacy-locked")) {
       this.onUnlock();
       this.root.classList.remove("privacy-locked");
+      this.activateMediaSession();
     }
     if (this.video.paused) void this.video.play().catch(() => undefined);
     else this.video.pause();
