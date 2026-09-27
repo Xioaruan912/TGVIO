@@ -42,6 +42,7 @@ import {
   sheetSection,
   sheetToggle,
   showIndicator,
+  showGestureGuide,
   toast,
   type Shell,
   type ShellHandlers,
@@ -909,6 +910,10 @@ function openLongVideos(): void {
         },
       });
       document.body.appendChild(largePlayer.root);
+      if (!prefs.gestureGuideSeen) {
+        setPref("gestureGuideSeen", true);
+        void showGestureGuide(largePlayer.root);
+      }
     },
     () => {
       closePlayer();
@@ -1327,11 +1332,9 @@ function openCacheModeSettings(): void {
 
 function openGestureGuide(): void {
   if (!shell) return;
-  openSheetKind = "gesture-guide";
-  openSheet(shell, "手势说明", [
-    sheetNote("单击画面播放或暂停；双击左侧后退 10 秒，双击右侧快进 10 秒；长按临时倍速；横向拖动调整进度。"),
-    sheetRow({ title: "返回播放设置", onPick: openSettings }),
-  ]);
+  closeSheet(shell);
+  openSheetKind = null;
+  void showGestureGuide(shell.root);
 }
 
 function openStorageSettings(): void {

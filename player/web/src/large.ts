@@ -282,12 +282,14 @@ export class LargePlayer {
     this.detach = attachGestures(stage, {
       isLongPressEnabled: () => prefs.longPressFastForward,
       isDragSeekEnabled: () => prefs.dragSeek,
+      isDoubleTapEnabled: () => prefs.doubleTapSeek,
       fastForwardSpeed: () => prefs.fastForwardSpeed,
       currentTime: () => this.video.currentTime,
       duration: () => this.video.duration,
       onTap: () => {
         if (!this.root.classList.contains("privacy-locked")) this.togglePlay();
       },
+      onDoubleTap: (direction) => this.doubleTapSeek(direction, stage),
       onFastForward: (speed) => {
         this.video.playbackRate = speed ?? 1;
       },
@@ -394,6 +396,17 @@ export class LargePlayer {
       seekTo: (seconds) => { this.video.currentTime = Math.min(this.video.duration || Infinity, Math.max(0, seconds)); },
       isPrivacyUnlocked: () => !this.root.classList.contains("privacy-locked"),
     });
+  }
+
+  private doubleTapSeek(direction: "backward" | "forward", stage: HTMLElement): void {
+    if (this.root.classList.contains("privacy-locked")) return;
+    const delta = direction === "backward" ? -10 : 10;
+    const duration = Number.isFinite(this.video.duration) ? this.video.duration : Infinity;
+    this.video.currentTime = Math.min(duration, Math.max(0, this.video.currentTime + delta));
+    this.updateProgress();
+    const feedback = element("span", `double-tap-feedback ${direction}`, direction === "backward" ? "后退 10 秒" : "前进 10 秒");
+    stage.appendChild(feedback);
+    window.setTimeout(() => feedback.remove(), 650);
   }
 
   private async togglePictureInPicture(): Promise<void> {

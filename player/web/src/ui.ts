@@ -470,6 +470,22 @@ export function showIndicator(shell: Shell, kind: "play" | "pause"): void {
   indicatorTimer = window.setTimeout(() => shell.pauseIndicator.classList.remove("show"), 560);
 }
 
+export function showGestureGuide(host: HTMLElement): Promise<void> {
+  return new Promise((resolve) => {
+    const guide = element("button", "gesture-guide");
+    guide.type = "button";
+    guide.setAttribute("aria-label", "关闭手势说明");
+    guide.append(
+      element("strong", undefined, "长视频手势"),
+      element("span", undefined, "双击左侧后退 10 秒 · 双击右侧前进 10 秒"),
+      element("span", undefined, "长按倍速 · 横向拖动进度 · 单击播放/暂停"),
+      element("small", undefined, "点击任意位置关闭"),
+    );
+    guide.addEventListener("click", () => { guide.remove(); resolve(); }, { once: true });
+    host.appendChild(guide);
+  });
+}
+
 export function setControlsVisible(shell: Shell, visible: boolean): void {
   shell.root.classList.toggle("controls-visible", visible);
 }

@@ -1,10 +1,12 @@
 export type GestureOptions = {
   isLongPressEnabled: () => boolean;
   isDragSeekEnabled: () => boolean;
+  isDoubleTapEnabled?: () => boolean;
   fastForwardSpeed: () => number;
   currentTime: () => number;
   duration: () => number;
   onTap?: () => void;
+  onDoubleTap?: (direction: "backward" | "forward") => void;
   onFastForward?: (speed: number | null) => void;
   onScrubStart?: () => boolean | void;
   onScrubMove?: (time: number, clientX: number) => void;
@@ -12,6 +14,8 @@ export type GestureOptions = {
 };
 
 const LONG_PRESS_MS = 450;
+const DOUBLE_TAP_MS = 260;
+const DOUBLE_TAP_DISTANCE = 48;
 
 /**
  * Reels/Bilibili style gestures for a video surface:
@@ -32,11 +36,15 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
   let baseFraction = 0;
   let scrubTime = 0;
   let resumeAfterScrub = true;
+  let tapTimer = 0;
+  let lastTapAt = 0;
+  let lastTapX = 0;
 
   const clearLong = () => {
     window.clearTimeout(longTimer);
     longTimer = 0;
   };
+  const clearTap = () => { window.clearTimeout(tapTimer); tapTimer = 0; lastTapAt = 0; };
   const stopLong = () => {
     if (longActive) {
       longActive = false;
@@ -59,10 +67,15 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     startY = event.clientY;
     startAt = Date.now();
     pointerId = event.pointerId;
+    if (tapTimer) {
+      window.clearTimeout(tapTimer);
+      tapTimer = -1;
+    }
     if (opts.isLongPressEnabled()) {
       clearLong();
       longTimer = window.setTimeout(() => {
         if (active && !moved && !scrubbing) {
+          clearTap();
           longActive = true;
           opts.onFastForward?.(opts.fastForwardSpeed());
         }
@@ -75,6 +88,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     const dx = event.clientX - startX;
     const dy = event.clientY - startY;
     if (Math.abs(dx) > 6 || Math.abs(dy) > 6) moved = true;
+    if (moved) clearTap();
     if (longActive) {
       if (Math.abs(dx) > 24) stopLong();
       else return;
@@ -118,7 +132,21 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     clearLong();
     stopLong();
     if (wasScrub) endScrub(true);
-    else if (!wasLong && !wasMoved && elapsed < 600) opts.onTap?.();
+    else if (!wasLong && !wasMoved && elapsed < 600) {
+      const rect = el.getBoundingClientRect();
+      const fraction = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
+      const direction = fraction < 0.4 ? "backward" : fraction > 0.6 ? "forward" : null;
+      const now = Date.now();
+      if (opts.isDoubleTapEnabled?.() && direction && tapTimer && now - lastTapAt <= DOUBLE_TAP_MS && Math.abs(event.clientX - lastTapX) <= DOUBLE_TAP_DISTANCE) {
+        clearTap();
+        opts.onDoubleTap?.(direction);
+      } else {
+        clearTap();
+        lastTapAt = now;
+        lastTapX = event.clientX;
+        tapTimer = window.setTimeout(() => { tapTimer = 0; lastTapAt = 0; opts.onTap?.(); }, DOUBLE_TAP_MS);
+      }
+    }
     if (el.hasPointerCapture?.(pointerId)) {
       try {
         el.releasePointerCapture(pointerId);
@@ -134,6 +162,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     clearLong();
     stopLong();
     endScrub(false);
+    clearTap();
     if (el.hasPointerCapture?.(pointerId)) {
       try {
         el.releasePointerCapture(pointerId);
@@ -153,5 +182,6 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     el.removeEventListener("pointerup", onUp);
     el.removeEventListener("pointercancel", onCancel);
     clearLong();
+    clearTap();
   };
 }

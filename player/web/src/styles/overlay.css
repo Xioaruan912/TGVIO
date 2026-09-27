@@ -519,3 +519,19 @@
 }
 
 .feed-terminal p { max-width: 80%; }
+.gesture-guide {
+  position: fixed;
+  z-index: 80;
+  inset: 0;
+  display: grid;
+  place-content: center;
+  justify-items: center;
+  gap: 10px;
+  padding: 28px;
+  color: #fff;
+  text-align: center;
+  background: rgba(0, 0, 0, 0.78);
+}
+.gesture-guide strong { font-size: 22px; }
+.gesture-guide span { font-size: 14px; }
+.gesture-guide small { margin-top: 16px; color: rgba(255,255,255,.65); }

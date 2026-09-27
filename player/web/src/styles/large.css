@@ -503,6 +503,23 @@
   display: none;
 }
 
+.double-tap-feedback {
+  position: absolute;
+  z-index: 5;
+  top: 45%;
+  padding: 10px 14px;
+  border-radius: 999px;
+  background: rgba(0, 0, 0, 0.62);
+  color: #fff;
+  font-size: 14px;
+  pointer-events: none;
+  animation: tap-feedback 650ms ease both;
+}
+.double-tap-feedback.backward { left: 10%; }
+.double-tap-feedback.forward { right: 10%; }
+@keyframes tap-feedback { 0% { opacity: 0; transform: scale(.85); } 25% { opacity: 1; transform: scale(1); } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .double-tap-feedback { animation: none; } }
+
 .large-timeline {
   flex: 1 1 auto;
   min-width: 0;
