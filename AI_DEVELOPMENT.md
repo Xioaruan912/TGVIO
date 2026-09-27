@@ -242,3 +242,4 @@ python3 scripts/release_guard.py architecture .
 - **失败发布会留下孤儿版本文件**：快照先写 `name.<revision>.enc`，再发布 `name.enc` 指针；若发布指针前失败，本地事务会回滚，但远端版本文件仍存在。重试相同 revision 时，仅当当前指针没有引用该版本，才允许覆盖这个孤儿文件，并且必须在更新指针前 GET 回读核验；当前指针已经引用的版本仍不可改写。
 - **收藏同步日志必须能定位实际请求**：批次汇总中的 `failed=2` 无法区分历史任务和本次失败，也不能说明是 404、413 还是 5xx。捕获 `WebDavWriteError` 时记录完整媒体 ID、WebDAV 操作、分类和 HTTP 状态；不要记录凭据、授权头或带签名 URL。
 - **同一 OpenList/115 内收藏应服务端复制**：归档源与 `99_收藏` 都在同一 OpenList 虚拟盘时，不要让 VPS 先 GET 大视频再 PUT 回去。该环境的 WebDAV `COPY`/`MOVE` 经代理返回 502，但 OpenList `POST /api/fs/copy` 可让 115 立即完成同盘复制；使用源文件名复制到按媒体 ID 隔离的子目录，HEAD 核验大小后再保存清单。只有目标不是 OpenList或 API 不可用时才回退流式上传，原归档文件必须保留以免破坏片库索引。
+- **预加载 Range 不支持时降级**：上游忽略或错误实现启动 Range 时，带 `X-TGVIO-Preload: 1` 的推测请求返回 `204`，并用响应头和 `preload_skipped` 日志保留媒体 ID、请求 Range、上游状态与稳定原因；这不表示媒体不可播放。前台播放遇到同类问题必须绕过启动缓存并走普通流式路径，最终 HTTP 状态由中间件按真实响应记录。

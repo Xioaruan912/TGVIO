@@ -21,6 +21,13 @@ _STREAM_SLOT_POLL_SECONDS = 0.025
 _PRELOAD_HEADER = "X-TGVIO-Preload"
 
 
+class StartupRangeUnavailable(RuntimeError):
+    def __init__(self, reason: str, upstream_status: int | None = None) -> None:
+        super().__init__(reason)
+        self.reason = reason
+        self.upstream_status = upstream_status
+
+
 class PlayerHttpStreamingMixin:
     """Player media streaming and fair playback-slot coordination."""
 
@@ -77,7 +84,27 @@ class PlayerHttpStreamingMixin:
             if overlay is not None:
                 return await self._stream_overlay(request, media_id, overlay, location, plan, prefetch)
             if self._is_startup_range(plan.byte_range):
-                return await self._cached_startup_response(request, media_id, location, plan.byte_range, details)
+                try:
+                    return await self._cached_startup_response(request, media_id, location, plan.byte_range, details)
+                except StartupRangeUnavailable as exc:
+                    log_event(
+                        "preload_skipped" if preload else "startup_range_fallback",
+                        request_id=request.get("player_request_id"),
+                        media=fingerprint(media_id),
+                        media_id=media_id,
+                        range=request.headers.get("Range"),
+                        upstream_status=exc.upstream_status,
+                        reason=exc.reason,
+                    )
+                    if preload:
+                        return web.Response(
+                            status=204,
+                            headers={
+                                "X-TGVIO-Preload-Outcome": "skipped",
+                                "X-TGVIO-Preload-Reason": exc.reason,
+                            },
+                        )
+                    return await self._stream_plain(request, media_id, location, details, plan, prefetch)
             return await self._stream_plain(request, media_id, location, details, plan, prefetch)
         finally:
             await self._release_stream(client, preload=preload)
@@ -276,19 +303,19 @@ class PlayerHttpStreamingMixin:
         try:
             upstream = await self._reader.open_range(location[0], location[1], byte_range)
             if upstream.status != 206:
-                raise RuntimeError("media upstream ignored startup range")
+                raise StartupRangeUnavailable("range_ignored", upstream.status)
             if upstream.content_length is not None and upstream.content_length != byte_range.length:
-                raise RuntimeError("media upstream returned invalid startup range length")
+                raise StartupRangeUnavailable("range_length_invalid", upstream.status)
             payload = bytearray()
             async for chunk in upstream.body:
                 remaining = byte_range.length - len(payload)
                 if remaining <= 0:
-                    raise RuntimeError("media upstream exceeded startup range")
+                    raise StartupRangeUnavailable("range_exceeded", upstream.status)
                 if len(chunk) > remaining:
-                    raise RuntimeError("media upstream exceeded startup range")
+                    raise StartupRangeUnavailable("range_exceeded", upstream.status)
                 payload.extend(chunk)
             if len(payload) != byte_range.length:
-                raise RuntimeError("media upstream returned incomplete startup range")
+                raise StartupRangeUnavailable("range_incomplete", upstream.status)
             return bytes(payload)
         finally:
             if upstream is not None:

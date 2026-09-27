@@ -286,6 +286,11 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
                     error_kind,
                     is_stream=request.path.endswith("/stream"),
                 ),
+                preload_outcome=(
+                    response.headers.get("X-TGVIO-Preload-Outcome")
+                    if "response" in locals()
+                    else None
+                ),
                 error=error_kind,
             )
 
