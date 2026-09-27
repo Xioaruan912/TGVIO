@@ -311,7 +311,7 @@ class PlayerApi {
     retry?: number;
     probeStatus?: number;
     failureStreak?: number;
-    reason?: "unsupported_codec";
+    reason?: "unsupported_codec" | "no_decoded_frame";
   }): Promise<void> {
     if (MOCK_MODE) return;
     try {

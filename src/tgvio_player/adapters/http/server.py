@@ -351,7 +351,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
             if isinstance(value, int) and not isinstance(value, bool) and minimum <= value <= maximum:
                 numeric_fields[name] = value
         reason = payload.get("reason")
-        safe_reason = reason if reason in {"unsupported_codec"} else None
+        safe_reason = reason if reason in {"unsupported_codec", "no_decoded_frame"} else None
         log_event(
             "frontend_playback",
             request_id=request.get("player_request_id"),

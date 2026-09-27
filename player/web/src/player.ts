@@ -33,6 +33,7 @@ export class VideoPool {
   onTimeUpdate: ((video: HTMLVideoElement) => void) | null = null;
   onAutoplayBlocked: ((blocked: boolean) => void) | null = null;
   onError: ((mediaId: string) => void) | null = null;
+  onUnusableFrame: ((mediaId: string) => void) | null = null;
 
   constructor() {
     for (let i = 0; i < SLOT_COUNT; i += 1) {
@@ -221,6 +222,12 @@ export class VideoPool {
           video.dataset.playbackReportedToken = token;
           this.onPlaybackStarted?.(clip);
         }
+        const frameTimer = window.setTimeout(() => {
+          if (isCurrentLoad() && video.readyState >= 2 && video.currentTime > 0.5 && video.videoWidth === 0) {
+            this.onUnusableFrame?.(clip.id);
+          }
+        }, 2500);
+        controller.signal.addEventListener("abort", () => window.clearTimeout(frameTimer), { once: true });
       },
       { once: true, signal: controller.signal },
     );

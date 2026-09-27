@@ -1526,6 +1526,22 @@ function renderFeed(): void {
     clearStallGuard();
     void handleMediaError(clip);
   };
+  pool.onUnusableFrame = (mediaId) => {
+    const clip = feedView?.clipAt(activeIndex);
+    if (!clip || clip.id !== mediaId || unplayable.has(mediaId)) return;
+    unplayable.add(mediaId);
+    skipStreak += 1;
+    void api.logPlaybackEvent({
+      event: "media_skip",
+      mediaId,
+      category: clip.category,
+      reason: "no_decoded_frame",
+      readyState: pool?.currentVideo()?.readyState ?? 0,
+      failureStreak: skipStreak,
+    });
+    toast(shell!, "当前浏览器无法显示该视频画面，已跳过");
+    goNext(true);
+  };
   feedView.onCandidate = (index) => {
     renderDebug();
     void index;
