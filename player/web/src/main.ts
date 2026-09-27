@@ -18,6 +18,7 @@ import { ThumbnailPreview } from "./preview";
 import { prefs, setPref } from "./settings";
 import { initialMutedState, mutedForNextVideo, rememberMuted } from "./sound-policy";
 import { icon } from "./icons";
+import { installController } from "./install";
 import type { ArchiveGroup, Clip } from "./types";
 import {
   buildError,
@@ -1245,15 +1246,17 @@ function openSettings(): void {
       },
     ),
   );
-  body.push(sheetSection("iPhone 主屏幕播放器"));
-  body.push(
-    sheetNote(
-      window.matchMedia("(display-mode: standalone)").matches ||
-        (navigator as Navigator & { standalone?: boolean }).standalone === true
-        ? "已在独立播放器模式中运行。Safari 与主屏幕应用使用同一服务端续播进度。"
-        : "在 iPhone Safari 打开此站点，点“分享”→“添加到主屏幕”；如果出现“以 Web App 打开”，请保持开启。添加后从主屏幕图标打开，即可进入独立播放器。若打开时要求验证，再输入访问口令；长视频续播进度会在 Safari 和主屏幕播放器间共享。",
-    ),
-  );
+  body.push(sheetSection("安装播放器"));
+  const installState = installController.state();
+  if (installState === "available") {
+    body.push(sheetRow({ title: "安装 TGVIO", sub: "作为独立应用安装到此设备", onPick: () => void installController.prompt() }));
+  } else if (installState === "installed") {
+    body.push(sheetNote("已安装并在独立播放器模式中运行。"));
+  } else if (installState === "ios-manual") {
+    body.push(sheetNote("在 Safari 点“分享”→“添加到主屏幕”，然后从主屏幕打开。"));
+  } else {
+    body.push(sheetNote("浏览器支持安装时，这里会显示“安装 TGVIO”按钮；也可使用浏览器菜单中的安装功能。"));
+  }
   body.push(sheetSection("账户"));
   body.push(sheetRow({
     title: "收藏与 WebDAV",
@@ -1277,6 +1280,10 @@ function openSettings(): void {
   openSheet(shell, "设置", body);
   setActiveNav(shell, "settings");
 }
+
+installController.subscribe(() => {
+  if (openSheetKind === "settings") openSettings();
+});
 
 function openCacheModeSettings(): void {
   if (!shell) return;
