@@ -1,5 +1,6 @@
 import "./style.css";
 import { ApiError, api, beginPlaybackSession, MOCK_MODE, shortId } from "./api";
+import { AdaptiveCacheController } from "./adaptive-cache";
 import { requestAudioEnable } from "./audio-warning";
 import { FeedView } from "./feed";
 import { ContextFeed } from "./context-feed";
@@ -53,6 +54,16 @@ const DEBUG = MOCK_MODE || new URLSearchParams(window.location.search).has("debu
 const clips: Clip[] = [];
 const favorites = new Set<string>();
 const preloader = new PreloadCoordinator();
+const adaptiveCache = new AdaptiveCacheController(prefs.cacheMode);
+type NetworkConnection = EventTarget & { saveData?: boolean; effectiveType?: string };
+const networkConnection = (navigator as Navigator & { connection?: NetworkConnection }).connection;
+const updateConnectionSignals = () => adaptiveCache.update({
+  saveData: networkConnection?.saveData,
+  effectiveType: networkConnection?.effectiveType,
+});
+updateConnectionSignals();
+networkConnection?.addEventListener("change", updateConnectionSignals);
+preloader.onOutcome = (ok) => adaptiveCache.update({ preloadFailures: ok ? 0 : 1 });
 
 let shell: Shell | null = null;
 let feedView: FeedView | null = null;
@@ -302,7 +313,7 @@ function scheduleWarm(): void {
     if (longVideosOpen) return;
     const video = pool?.currentVideo();
     if (!video || video.readyState < 2 || (privacyUnlocked && video.paused)) return;
-    preloader.plan(activeClips(), activeIndex);
+    preloader.plan(activeClips(), activeIndex, adaptiveCache.current());
     prepareAhead(activeIndex);
   }, 120);
 }
@@ -654,7 +665,7 @@ async function ensureRandomCandidates(): Promise<void> {
     ]);
     const shorts = items.filter((clip) => clip.category === "short" && !known.has(clip.id));
     randomCandidates.push(...shorts);
-    preloader.warmRandomCandidates(shorts);
+    preloader.warmRandomCandidates(shorts, adaptiveCache.current());
   });
   randomRefill = request;
   try {
@@ -724,7 +735,8 @@ async function goRandom(): Promise<void> {
  * Transient failures never permanently blacklist a clip.
  */
 async function handleMediaError(clip: Clip): Promise<void> {
-  preloader.setPressure(true);
+    adaptiveCache.update({ playbackPressure: true });
+    preloader.setPressure(true);
   const attempts = errorRetries.get(clip.id) ?? 0;
   const video = pool?.currentVideo();
   void api.logPlaybackEvent({
@@ -877,6 +889,7 @@ function openLongVideos(): void {
       page?.destroy();
       page = null;
       longVideosOpen = false;
+      adaptiveCache.update({ playbackPressure: false });
       preloader.setPressure(false);
       setActiveNav(shell!, "home");
       scheduleWarm();
@@ -1276,7 +1289,7 @@ function openCacheModeSettings(): void {
   openSheetKind = "cache-settings";
   openSheet(shell, "智能缓存", choices.map(([value, title, sub]) => sheetChoice(
     title, sub, prefs.cacheMode === value,
-    () => { setPref("cacheMode", value); openCacheModeSettings(); },
+    () => { setPref("cacheMode", value); adaptiveCache.setMode(value); openCacheModeSettings(); },
   )));
 }
 
@@ -1344,7 +1357,7 @@ function renderDebug(): void {
   const poolInfo = pool?.diagnostics();
   const preload = preloader.diagnostics();
   shell.debug.hidden = false;
-  shell.debug.textContent = `idx ${activeIndex} · videos ${poolInfo?.elements ?? 0} · playing ${poolInfo?.playing ?? 0} · ${poolInfo?.currentId ?? "-"} ready ${poolInfo?.ready ?? "-"} · preload ${preload.entries.join(",") || "-"} · pressure ${poolInfo ? preload.pressure : false}`;
+  shell.debug.textContent = `idx ${activeIndex} · videos ${poolInfo?.elements ?? 0} · playing ${poolInfo?.playing ?? 0} · ${poolInfo?.currentId ?? "-"} ready ${poolInfo?.ready ?? "-"} · cache ${prefs.cacheMode}/${adaptiveCache.current().kind} · preload ${preload.entries.join(",") || "-"} · pressure ${poolInfo ? preload.pressure : false}`;
 }
 
 function renderLogin(): void {
@@ -1404,6 +1417,7 @@ function renderFeed(): void {
   feedView = new FeedView(shell.feed);
   pool = new VideoPool();
   pool.onPressure = (pressured) => {
+    adaptiveCache.update({ playbackPressure: pressured || longVideosOpen, waiting: pressured });
     preloader.setPressure(pressured || longVideosOpen);
     shell?.root.classList.toggle("playback-pressure", pressured);
     feedView?.pageAt(activeIndex)?.classList.toggle("is-loading", pressured);
@@ -1471,6 +1485,10 @@ function renderFeed(): void {
   feedPreview = new ThumbnailPreview();
   shell.root.appendChild(feedPreview.el);
   feedMeter = new NetworkMeter(shell.netSpeed);
+  feedMeter.onSample = (sample) => {
+    adaptiveCache.setMode(prefs.cacheMode);
+    adaptiveCache.update(sample);
+  };
   attachFullscreen(
     shell.fullscreenBtn,
     () => shell?.viewport ?? null,
@@ -1508,6 +1526,7 @@ function renderFeed(): void {
   window.visualViewport?.addEventListener("resize", onViewportResize);
   document.addEventListener("visibilitychange", onDocumentVisibilityChange);
   window.addEventListener("pagehide", lockPrivacyForBackground);
+  window.addEventListener("pagehide", () => networkConnection?.removeEventListener("change", updateConnectionSignals));
   window.addEventListener("pageshow", () => {
     if (!document.hidden) privacyCover?.classList.remove("visible");
   });

@@ -15,6 +15,7 @@ export function formatSpeed(bytesPerSecond: number): string {
  * browsers omit transfer sizes, so buffered-time growth remains a fallback.
  */
 export class NetworkMeter {
+  onSample?: (sample: PlaybackNetworkSample) => void;
   private readonly el: HTMLElement;
   private video: HTMLVideoElement | null = null;
   private clip: Clip | null = null;
@@ -132,6 +133,7 @@ export class NetworkMeter {
     }
     this.lastBytes = bytes;
     this.lastAt = now;
+    this.onSample?.({ bytesPerSecond: this.ema, bufferedAheadSeconds: this.video ? this.bufferedAheadSeconds(this.video) : 0 });
     this.renderStatus();
   }
 
@@ -162,3 +164,5 @@ export class NetworkMeter {
     this.el.textContent = `${label}${speed}`;
   }
 }
+
+export type PlaybackNetworkSample = { bytesPerSecond: number; bufferedAheadSeconds: number };

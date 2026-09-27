@@ -1,14 +1,6 @@
 import { api } from "./api";
 import type { Clip, PreloadLevel } from "./types";
-
-const WARM_PLAN: { offset: number; level: PreloadLevel }[] = [
-  { offset: 1, level: "strong" },
-  { offset: -1, level: "strong" },
-  { offset: 2, level: "light" },
-  { offset: 3, level: "light" },
-  { offset: 4, level: "light" },
-  { offset: 5, level: "light" },
-];
+import type { CachePlan } from "./adaptive-cache";
 
 /**
  * Warm both adjacent clips so either swipe starts on locally cached bytes. The warm
@@ -25,12 +17,14 @@ export class PreloadCoordinator {
   private pressure = false;
   private generation = 0;
 
-  plan(feed: Clip[], current: number, isRapid = false): void {
+  onOutcome?: (ok: boolean) => void;
+
+  plan(feed: Clip[], current: number, plan: CachePlan, isRapid = false): void {
     this.generation += 1;
     this.controller?.abort();
     this.planned.clear();
     if (isRapid || this.pressure) return;
-    for (const entry of WARM_PLAN) {
+    for (const entry of plan.entries) {
       const clip = feed[current + entry.offset];
       if (clip) this.planned.set(clip.id, entry.level);
     }
@@ -46,15 +40,19 @@ export class PreloadCoordinator {
         if (!clip) continue;
         try {
           await api.warm(clip, level, signal);
+          this.onOutcome?.(true);
         } catch {
+          this.onOutcome?.(false);
           if (!signal.aborted) return;
         }
       }
     })();
   }
 
-  warmRandomCandidates(candidates: Clip[]): void {
+  warmRandomCandidates(candidates: Clip[], plan: CachePlan): void {
     if (this.pressure || candidates.length === 0) return;
+    candidates = candidates.slice(0, plan.randomLimit);
+    if (!candidates.length) return;
     if (this.randomController && !this.randomController.signal.aborted) return;
     const controller = new AbortController();
     this.randomController = controller;
