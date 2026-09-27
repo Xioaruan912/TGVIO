@@ -42,6 +42,9 @@ export class PlayerMediaSession {
     navigator.mediaSession.metadata = null;
     try { navigator.mediaSession.setPositionState(); } catch { /* capability varies */ }
     navigator.mediaSession.playbackState = "none";
+    window.setTimeout(() => {
+      if (navigator.mediaSession.metadata === null) navigator.mediaSession.playbackState = "none";
+    }, 0);
   }
 
   private handler(action: MediaSessionAction, callback: MediaSessionActionHandler): void {

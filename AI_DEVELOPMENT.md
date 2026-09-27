@@ -248,6 +248,7 @@ python3 scripts/release_guard.py architecture .
 - **长视频解锁入口必须汇合**：隐私遮罩上的播放按钮和公共 `unlockPrivacy()` 都要重新激活 Media Session；只移除 `privacy-locked` CSS 类会造成视频能播放但通知栏/耳机控制仍为 cleared。新增解锁入口时必须调用同一媒体会话激活路径。
 - **Media Session 最后清空**：隐私锁与销毁流程先暂停视频，再调用 `playerMediaSession.clear()`；若先 clear 再 `video.pause()`，浏览器可能把系统播放状态重新写成 paused，导致锁屏仍残留控制状态。
 - **Media Session clear 内部也有顺序**：先移除 action handlers、metadata 与 position state，最后才写 `playbackState="none"`。Chromium 的无参数 `setPositionState()` 可能把先前写入的 none 恢复成 paused。
+- **兼容 Chromium 的异步媒体状态**：视频 pause 事件之后，Chromium 还可能在当前任务末尾自动写回 paused；`clear()` 在 metadata 仍为空时于下一任务幂等重写一次 none，防止隐私锁残留系统控制状态。
 - **控件点击不能进入画面手势**：长视频 stage 上的 pointer 手势必须忽略来自 `button/input/a/[role=button]` 的序列。仅阻止 click 冒泡不够，因为手势监听的是 pointerdown/pointerup；否则“播放并显示视频”会先播放，再被 260ms 延迟单击切回暂停。
 - **浏览器验收观测点**：播放器根节点的 `data-media-session` 只取 `short|long|cleared|unsupported`；长视频根节点的 `data-wake-lock` 和 `data-picture-in-picture` 用于 BrowserAct 判断能力及生命周期。观测属性不得包含媒体 ID、文件名、URL、WebDAV 路径或凭据。
 - **首帧必须真的可解码**：`readyState=4` 和 `currentTime` 前进仍可能只是音轨在播放。已遇到 Chromium 对 HEVC MOV/MP4 的 `canPlayType` 返回可能支持，但播放后 `videoWidth/videoHeight=0`；Feed 先用 `canPlayType` 检查已知 HEVC 编码，并在开始播放后复核解码尺寸。不支持或有声无画面时按现有规则跳过，分别记录 `media_skip reason=unsupported_codec|no_decoded_frame`。BrowserAct 验收仍需检查实际画面尺寸或 `frame-ready`，不能只看时间推进。
