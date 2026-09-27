@@ -243,3 +243,6 @@ python3 scripts/release_guard.py architecture .
 - **收藏同步日志必须能定位实际请求**：批次汇总中的 `failed=2` 无法区分历史任务和本次失败，也不能说明是 404、413 还是 5xx。捕获 `WebDavWriteError` 时记录完整媒体 ID、WebDAV 操作、分类和 HTTP 状态；不要记录凭据、授权头或带签名 URL。
 - **同一 OpenList/115 内收藏应服务端复制**：归档源与 `99_收藏` 都在同一 OpenList 虚拟盘时，不要让 VPS 先 GET 大视频再 PUT 回去。该环境的 WebDAV `COPY`/`MOVE` 经代理返回 502，但 OpenList `POST /api/fs/copy` 可让 115 立即完成同盘复制；使用源文件名复制到按媒体 ID 隔离的子目录，HEAD 核验大小后再保存清单。只有目标不是 OpenList或 API 不可用时才回退流式上传，原归档文件必须保留以免破坏片库索引。
 - **预加载 Range 不支持时降级**：上游忽略或错误实现启动 Range 时，带 `X-TGVIO-Preload: 1` 的推测请求返回 `204`，并用响应头和 `preload_skipped` 日志保留媒体 ID、请求 Range、上游状态与稳定原因；这不表示媒体不可播放。前台播放遇到同类问题必须绕过启动缓存并走普通流式路径，最终 HTTP 状态由中间件按真实响应记录。
+- **自适应播放体验的职责边界**：`cacheMode` 取值为 `auto|speed|data-saving|off`，旧 `cacheAhead=false` 迁移为 `off`，其余旧值迁移为 `auto`；`keepScreenAwake`、`doubleTapSeek` 默认开启，`gestureGuideSeen` 只记录首次引导。`adaptive-cache.ts` 只决策预取计划，`preload.ts` 顺序执行并在播放压力下取消；`install.ts` 独占安装事件；`wake-lock.ts` 只服务长视频；`media-session.ts` 的系统元数据只能使用通用标题，不能暴露媒体身份。
+- **隐私与画中画**：系统媒体控制的 play 在隐私锁下必须无效，锁屏、离开播放器和退出登录都要清空 Media Session。只有用户明确进入长视频画中画时才允许后台继续播放；画中画退出时若页面仍隐藏，立即暂停并加隐私锁。常规退到后台继续沿用黑屏、暂停和隐私锁。
+- **浏览器验收观测点**：播放器根节点的 `data-media-session` 只取 `short|long|cleared|unsupported`；长视频根节点的 `data-wake-lock` 和 `data-picture-in-picture` 用于 BrowserAct 判断能力及生命周期。观测属性不得包含媒体 ID、文件名、URL、WebDAV 路径或凭据。

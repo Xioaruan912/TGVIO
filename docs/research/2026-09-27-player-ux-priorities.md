@@ -69,3 +69,10 @@ After the two selected features, investigate in this order:
 2. Privacy-safe Media Session controls for headset/lock-screen play, pause, and seeking.
 3. Feature-detected picture-in-picture for long videos.
 4. Double-tap seek and clearer gesture onboarding for the long-video player.
+
+## 2026-09-27 implementation record
+
+- Preferences now use `cacheMode`, `keepScreenAwake`, `doubleTapSeek`, and `gestureGuideSeen`, with legacy cache migration preserved.
+- Adaptive preload uses playback health and measured buffering; browser connection hints are optional, while `saveData` is authoritative in automatic mode.
+- Native install prompting, long-video Wake Lock, privacy-safe Media Session, explicit Picture-in-Picture, and mutually exclusive double-tap/drag/hold gestures are isolated controllers or focused modules.
+- Production acceptance reads `data-media-session`, `data-wake-lock`, and `data-picture-in-picture`; none of these attributes expose private media identity.
