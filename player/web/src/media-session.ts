@@ -40,8 +40,8 @@ export class PlayerMediaSession {
     if (!this.supported) return;
     this.resetHandlers();
     navigator.mediaSession.metadata = null;
-    navigator.mediaSession.playbackState = "none";
     try { navigator.mediaSession.setPositionState(); } catch { /* capability varies */ }
+    navigator.mediaSession.playbackState = "none";
   }
 
   private handler(action: MediaSessionAction, callback: MediaSessionActionHandler): void {
