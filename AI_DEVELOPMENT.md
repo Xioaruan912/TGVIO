@@ -203,6 +203,8 @@ R2-19 是基于 WebDAV Archive 的私有短视频 Web 播放服务，完整设�
 - **验收必须用 BrowserAct 访问生产站**：部署后通过 `browser-act` 打开 `https://csdn.im`，用真实浏览器操作验证这次改动；curl、单元测试和 API 返回不能替代这一步。测试首页刷新确实换出新的一批，再对该批 20 条不同媒体逐条验证真实播放（至少确认 `playing` 且 `currentTime` 前进/画面帧可用），并把浏览器结果与 VPS 上同一播放 session 的日志对应。记录实际播放数、跳过数、媒体 ID/HTTP 状态及错误；范围不够或媒体不足时明确报告，不能声称“20 条无故障”。
 - **登录口令留在 VPS**：生产访问口令只从 VPS 上权限受限的 Player 配置中读取和使用，绝不打印、复制到仓库/本机文件、文档、聊天、shell 历史或 BrowserAct 回显。BrowserAct 的 `input` 会回显明文，不能用它输入口令；使用不会回显脚本内容的 `eval --stdin` 安全提交，且只返回非敏感状态。不要让没有该口令的用户代输，也不要把 BrowserAct 会话停留在等待用户输入口令的状态；由执行环境安全完成登录，再继续浏览器验收。若口令被意外回显，立即轮换 VPS 口令并重启 Player。口令不写入本文档。
 - **BrowserAct 会话操作**：复用当前站点会话；每次导航或关键交互后重新读取页面状态，再按当前页面定位控件。避免过期元素索引和未确认页面状态的连点。若认证/权限或播放本身被阻塞，保存可核验的页面与 VPS 日志证据后再报告具体阻塞点。
+- **长视频控件会自动隐藏**：`.large-player:not(.controls-visible)` 会把顶栏和底栏设为 `pointer-events:none`。BrowserAct 用稳定 selector 点击隐藏控件会显示 `clicked`，但页面事件不会触发；先单击 `.large-stage` 唤出控件，再立即读取状态并点击目标按钮。可用 `document.elementFromPoint()` 核验实际命中层，不要把正常的自动隐藏误判成遮罩层级故障。
+- **源站速度对照不能直接开放 Player 端口**：生产容器端口 `8790` 只绑定 `127.0.0.1`。对比 Cloudflare 与源站时，在 VPS 使用同一媒体、同一 Range 和同一认证 cookie，并用 `curl --resolve csdn.im:443:127.0.0.1` 保留 HTTPS Host/SNI 绕过 Cloudflare；不要为了测速临时把 Player 端口暴露到公网。外部 IP 直连还会遇到证书 Host 与防火墙限制，不能当作可用用户入口。
 - **声音策略必须分层**：`soundPromptFrequency` 只决定何时显示安全提示，`soundContinuousConfirmed` 只记录连续有声模式是否已确认，`tgvio.player.muted` 只保存用户当前的静音选择。不要用一个布尔值同时表达三种含义。`every-time` 和 `once-per-open` 切换视频时仍重置为静音；`continuous-sound` 只有确认后才跨短视频、同组视频和长视频继承声音状态，用户手动静音后必须继续保持静音。新用户默认 `continuous-sound`，已有明确策略值的用户保持原选择。
 - **已选的下一轮 Player UX 功能**：Owner 已选择“智能缓存模式”和“真正的安装按钮”，调研结论、默认值、兼容性与隐私边界记录在 `docs/research/2026-09-27-player-ux-priorities.md`。开始实现前先读取该文件；不要把智能缓存重新简化成单个布尔开关，也不要在不支持安装事件的平台展示无效安装按钮。
 
