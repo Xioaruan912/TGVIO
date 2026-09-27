@@ -59,6 +59,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
 
   const onDown = (event: PointerEvent) => {
     if (event.button !== 0 && event.pointerType === "mouse") return;
+    if (event.target instanceof Element && event.target.closest("button, input, a, [role='button']")) return;
     active = true;
     moved = false;
     longActive = false;
