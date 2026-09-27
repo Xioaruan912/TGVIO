@@ -19,6 +19,7 @@ import { prefs, setPref } from "./settings";
 import { initialMutedState, mutedForNextVideo, rememberMuted } from "./sound-policy";
 import { icon } from "./icons";
 import { installController } from "./install";
+import { playerMediaSession } from "./media-session";
 import type { ArchiveGroup, Clip } from "./types";
 import {
   buildError,
@@ -198,6 +199,21 @@ function applyActive(index: number): void {
     feedMeter.watch(pool.currentVideo(), current);
     if (prefs.netSpeed) feedMeter.start();
     else feedMeter.stop();
+  }
+  if (shell && privacyUnlocked) {
+    shell.root.dataset.mediaSession = playerMediaSession.supported ? "short" : "unsupported";
+    playerMediaSession.activateShort({
+      play: playGesture,
+      pause: () => { if (!paused) togglePlayback(); },
+      previous: () => feedView?.scrollToIndex(Math.max(0, activeIndex - 1), true),
+      next: () => goNext(),
+      isPrivacyUnlocked: () => privacyUnlocked,
+    });
+    const activeVideo = pool.currentVideo();
+    if (activeVideo) playerMediaSession.sync(activeVideo);
+  } else if (shell) {
+    playerMediaSession.clear();
+    shell.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
   }
   renderDebug();
 }
@@ -496,6 +512,7 @@ function playGesture(): void {
   paused = false;
   shell.root.classList.remove("needs-gesture", "privacy-locked");
   pool.resume();
+  applyActive(activeIndex);
   showIndicator(shell, "play");
 }
 
@@ -511,6 +528,8 @@ function onDocumentVisibilityChange(): void {
 }
 
 function lockPrivacyForBackground(): void {
+  playerMediaSession.clear();
+  if (shell) shell.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
   privacyUnlocked = false;
   paused = true;
   libraryPage?.lockPrivacy();
@@ -522,6 +541,8 @@ function lockPrivacyForBackground(): void {
 }
 
 function lockPrivacyScreen(): void {
+  playerMediaSession.clear();
+  if (shell) shell.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
   privacyUnlocked = false;
   paused = true;
   libraryPage?.lockPrivacy();

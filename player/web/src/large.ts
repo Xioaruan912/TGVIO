@@ -8,6 +8,7 @@ import { ThumbnailPreview } from "./preview";
 import { prefs } from "./settings";
 import { initialMutedState, rememberMuted } from "./sound-policy";
 import { ScreenWakeLockController } from "./wake-lock";
+import { playerMediaSession } from "./media-session";
 import { confirmMediaDelete, element, formatTime } from "./ui";
 import type { Clip } from "./types";
 
@@ -90,6 +91,7 @@ export class LargePlayer {
     this.startAt = Math.max(0, options.startAt ?? 0);
     this.root = element("section", "large-player");
     this.root.dataset.wakeLock = this.wakeLock.supported ? "available" : "unsupported";
+    this.root.dataset.mediaSession = playerMediaSession.supported ? "long" : "unsupported";
     if (options.privacyLocked) this.root.classList.add("privacy-locked");
 
     const topbar = element("header", "large-topbar");
@@ -306,6 +308,7 @@ export class LargePlayer {
     this.video.addEventListener("pause", () => this.showControls());
     this.video.addEventListener("play", () => this.scheduleControlsHide());
     this.video.src = clip.streamUrl;
+    if (!options.privacyLocked) this.activateMediaSession();
     if (prefs.netSpeed) this.meter.start();
     if (!options.privacyLocked) void this.video.play().catch(() => undefined);
     document.addEventListener("visibilitychange", this.onVisibility);
@@ -319,6 +322,7 @@ export class LargePlayer {
     this.meter.stop();
     document.removeEventListener("visibilitychange", this.onVisibility);
     this.wakeLock.destroy();
+    playerMediaSession.clear();
     this.video.pause();
     this.video.removeAttribute("src");
     this.video.load();
@@ -335,6 +339,8 @@ export class LargePlayer {
   }
 
   lockPrivacy(): void {
+    playerMediaSession.clear();
+    this.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
     this.root.classList.add("privacy-locked");
     this.video.pause();
     void this.wakeLock.setDesired(false);
@@ -343,6 +349,7 @@ export class LargePlayer {
   unlockPrivacy(resumePlayback: boolean): void {
     this.root.classList.remove("privacy-locked");
     this.onUnlock();
+    this.activateMediaSession();
     if (resumePlayback) void this.video.play().catch(() => undefined);
   }
 
@@ -350,6 +357,17 @@ export class LargePlayer {
     this.root.classList.toggle("is-loading", loading);
     if (loading) this.showControls();
     else this.scheduleControlsHide();
+  }
+
+  private activateMediaSession(): void {
+    this.root.dataset.mediaSession = playerMediaSession.supported ? "long" : "unsupported";
+    playerMediaSession.activateLong(this.video, {
+      play: () => void this.video.play().catch(() => undefined),
+      pause: () => this.video.pause(),
+      seekBy: (seconds) => { this.video.currentTime = Math.min(this.video.duration || Infinity, Math.max(0, this.video.currentTime + seconds)); },
+      seekTo: (seconds) => { this.video.currentTime = Math.min(this.video.duration || Infinity, Math.max(0, seconds)); },
+      isPrivacyUnlocked: () => !this.root.classList.contains("privacy-locked"),
+    });
   }
 
   private showControls(): void {
@@ -402,6 +420,7 @@ export class LargePlayer {
     this.progress.style.setProperty("--p", `${this.percent(this.video.currentTime)}%`);
     paintBuffered(this.buffered, this.video);
     this.onProgress?.(this.video.currentTime, this.video.duration, false);
+    playerMediaSession.sync(this.video);
   }
 
   private flushProgress(): void {
