@@ -19,6 +19,7 @@ export type IconName =
   | "play-small"
   | "fullscreen"
   | "fullscreen-exit"
+  | "pip"
   | "back"
   | "lock"
   | "trash";
@@ -103,6 +104,9 @@ const SPECS: Record<IconName, IconSpec> = {
   },
   "fullscreen-exit": {
     paths: ["M9 4v5H4", "M15 4v5h5", "M9 20v-5H4", "M15 20v-5h5"],
+  },
+  pip: {
+    paths: ["M4 5h16v14H4z", "M12.5 12.5H19V18h-6.5z"],
   },
   back: {
     paths: ["M14.5 5.5 8 12l6.5 6.5"],

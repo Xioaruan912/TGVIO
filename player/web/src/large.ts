@@ -46,6 +46,7 @@ export class LargePlayer {
   private readonly favoriteButton: HTMLButtonElement;
   private readonly soundButton: HTMLButtonElement;
   private readonly fullscreenButton: HTMLButtonElement;
+  private readonly pipButton: HTMLButtonElement;
   private readonly deleteButton: HTMLButtonElement;
   private readonly preview = new ThumbnailPreview();
   private readonly meter: NetworkMeter;
@@ -206,6 +207,12 @@ export class LargePlayer {
     this.fullscreenButton = element("button", "large-btn");
     this.fullscreenButton.type = "button";
     this.fullscreenButton.setAttribute("aria-label", "全屏");
+    this.pipButton = element("button", "large-btn large-pip");
+    this.pipButton.type = "button";
+    this.pipButton.setAttribute("aria-label", "画中画");
+    this.pipButton.appendChild(icon("pip", 24));
+    this.pipButton.hidden = !document.pictureInPictureEnabled || !("requestPictureInPicture" in this.video);
+    this.pipButton.addEventListener("click", () => void this.togglePictureInPicture());
 
     controls.append(
       this.playButton,
@@ -213,6 +220,7 @@ export class LargePlayer {
       this.favoriteButton,
       this.soundButton,
       this.deleteButton,
+      this.pipButton,
       this.fullscreenButton,
     );
     this.root.append(topbar, stage, controls, this.preview.el);
@@ -251,6 +259,15 @@ export class LargePlayer {
       this.setPlayIcon(false);
       void this.wakeLock.setDesired(false);
       this.root.dataset.wakeLock = "inactive";
+    });
+    this.video.addEventListener("enterpictureinpicture", () => {
+      this.root.dataset.pictureInPicture = "active";
+      this.pipButton.classList.add("selected");
+    });
+    this.video.addEventListener("leavepictureinpicture", () => {
+      this.root.dataset.pictureInPicture = "inactive";
+      this.pipButton.classList.remove("selected");
+      if (document.hidden) this.onPrivacyLock();
     });
     this.video.addEventListener("loadedmetadata", () => {
       if (Number.isFinite(this.video.duration)) this.seek.max = String(this.video.duration);
@@ -322,6 +339,7 @@ export class LargePlayer {
     this.meter.stop();
     document.removeEventListener("visibilitychange", this.onVisibility);
     this.wakeLock.destroy();
+    void this.exitPictureInPicture();
     playerMediaSession.clear();
     this.video.pause();
     this.video.removeAttribute("src");
@@ -332,6 +350,14 @@ export class LargePlayer {
 
   currentVideo(): HTMLVideoElement {
     return this.video;
+  }
+
+  isPictureInPictureActive(): boolean {
+    return document.pictureInPictureElement === this.video;
+  }
+
+  async exitPictureInPicture(): Promise<void> {
+    if (this.isPictureInPictureActive()) await document.exitPictureInPicture().catch(() => undefined);
   }
 
   resume(): void {
@@ -368,6 +394,17 @@ export class LargePlayer {
       seekTo: (seconds) => { this.video.currentTime = Math.min(this.video.duration || Infinity, Math.max(0, seconds)); },
       isPrivacyUnlocked: () => !this.root.classList.contains("privacy-locked"),
     });
+  }
+
+  private async togglePictureInPicture(): Promise<void> {
+    if (this.root.classList.contains("privacy-locked")) return;
+    try {
+      if (this.isPictureInPictureActive()) await document.exitPictureInPicture();
+      else await this.video.requestPictureInPicture();
+    } catch {
+      this.retryButton.textContent = "当前无法进入画中画";
+      this.retryButton.hidden = false;
+    }
   }
 
   private showControls(): void {

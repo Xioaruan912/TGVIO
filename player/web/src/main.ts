@@ -518,6 +518,10 @@ function playGesture(): void {
 
 function onDocumentVisibilityChange(): void {
   if (document.hidden) {
+    if (largePlayer?.isPictureInPictureActive()) {
+      privacyCover?.classList.add("visible");
+      return;
+    }
     lockPrivacyForBackground();
     return;
   }

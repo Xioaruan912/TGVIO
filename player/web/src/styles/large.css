@@ -498,6 +498,11 @@
   display: none;
 }
 
+.large-pip[hidden],
+.large-player.privacy-locked .large-pip {
+  display: none;
+}
+
 .large-timeline {
   flex: 1 1 auto;
   min-width: 0;
