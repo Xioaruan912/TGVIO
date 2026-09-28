@@ -979,6 +979,109 @@ class MergeSelectionTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn(b"ui:sx:0:0", data)
         self.assertTrue(all(len(item) <= 64 for item in data))
 
+    async def test_select_page_adds_only_visible_rows_and_can_undo_page(self) -> None:
+        items = [_summary(1000 + index) for index in range(20)]
+        ui = _UI(FakeCoordinator(pages={0: items}))
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        self.assertIn(b"ui:sb:0:0", _callbacks(event.edits[-1][1]))
+        await ui._handle_source_callback(event, 7, "ui:sb:0:0")
+        self.assertEqual(ui._selection_summary(7)["rows"], 10)
+        self.assertEqual(ui._selection_rows(7)[0][1], 1000)
+        self.assertTrue(any("取消本页" in button.text for row in event.edits[-1][1] for button in row))
+        await ui._handle_source_callback(event, 7, "ui:sp:0:1")
+        await ui._handle_source_callback(event, 7, "ui:sb:0:1")
+        self.assertEqual(ui._selection_summary(7)["rows"], 20)
+        await ui._handle_source_callback(event, 7, "ui:sb:0:0")
+        self.assertEqual([row[1] for row in ui._selection_rows(7)], list(range(1010, 1020)))
+
+    async def test_select_page_respects_item_limit_without_partial_selection(self) -> None:
+        items = [_summary(1000 + index) for index in range(10)]
+        ui = _UI(FakeCoordinator(pages={0: items}), source_merge_max_items=5)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sb:0:0")
+        self.assertEqual(ui._selection_summary(7)["rows"], 0)
+        self.assertTrue(any("超过一次上限" in str(answer) for answer in event.answers))
+
+    async def test_large_selection_review_is_paged_and_buttons_stay_bounded(self) -> None:
+        ui = _UI(FakeCoordinator(pages={0: [_summary(1000 + i) for i in range(50)]}))
+        for index in range(50):
+            ui._toggle_selection(7, 0, _summary(1000 + index))
+        event = _Event()
+        await ui._merge_confirm_card(event, 7, 0, 0)
+        text, buttons = event.edits[-1]
+        self.assertIn("第 1/5 页", text)
+        self.assertLessEqual(len(buttons), 13)
+        self.assertIn(b"ui:srv:0:0:1", _callbacks(buttons))
+        await ui._handle_source_callback(event, 7, "ui:srv:0:0:1")
+        self.assertIn("第 2/5 页", event.edits[-1][0])
+        self.assertIn(b"ui:srm:0:0:1010:1", _callbacks(event.edits[-1][1]))
+
+    async def test_merge_read_failure_keeps_selection_for_retry(self) -> None:
+        coordinator = FakeCoordinator(pages=self._pages())
+        coordinator.merge_count = 0
+        coordinator.merge_accepted = 0
+        coordinator.merge_failed = 2
+        ui = _UI(coordinator)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sm:0:0")
+        self.assertEqual(ui._selection_summary(7)["rows"], 1)
+        self.assertTrue(any("已保留选择" in text for _chat, text in ui._client.sent))
+
+    async def test_merge_with_no_accepted_items_does_not_claim_submission(self) -> None:
+        coordinator = FakeCoordinator(pages=self._pages())
+        coordinator.merge_count = 2
+        coordinator.merge_accepted = 0
+        coordinator.merge_skipped = 0
+        ui = _UI(coordinator)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sm:0:0")
+        self.assertEqual(ui._selection_summary(7)["rows"], 1)
+        self.assertFalse(any("✅ 已合并提交" in text for _chat, text in ui._client.sent))
+
+    async def test_repeated_confirm_during_merge_dispatches_once(self) -> None:
+        class SlowCoordinator(FakeCoordinator):
+            def __init__(self):
+                super().__init__(pages={0: [_summary(30506)]})
+                self.entered = asyncio.Event()
+                self.release = asyncio.Event()
+
+            async def grab_selection(self, selections, *, fingerprints=()):
+                self.entered.set()
+                await self.release.wait()
+                return await super().grab_selection(selections, fingerprints=fingerprints)
+
+        coordinator = SlowCoordinator()
+        ui = _UI(coordinator)
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        first = asyncio.create_task(ui._handle_source_callback(event, 7, "ui:sm:0:0"))
+        await coordinator.entered.wait()
+        await ui._handle_source_callback(event, 7, "ui:sm:0:0")
+        coordinator.release.set()
+        await first
+        self.assertEqual(len(coordinator.selections), 1)
+        self.assertTrue(any("正在合并" in str(answer) for answer in event.answers))
+
+    async def test_unknown_merge_outcome_keeps_selection_and_warns_before_retry(self) -> None:
+        class BrokenCoordinator(FakeCoordinator):
+            async def grab_selection(self, selections, *, fingerprints=()):
+                raise RuntimeError("unknown dispatch outcome")
+
+        ui = _UI(BrokenCoordinator(pages={0: [_summary(30506)]}))
+        event = _Event()
+        await ui._handle_source_callback(event, 7, "ui:pick:0:0")
+        await ui._handle_source_callback(event, 7, "ui:sk:0:0:30506")
+        await ui._handle_source_callback(event, 7, "ui:sm:0:0")
+        self.assertEqual(ui._selection_summary(7)["rows"], 1)
+        self.assertTrue(any("我的任务" in text for _chat, text in ui._client.sent))
+
     async def test_toggle_off_and_clear_reset_the_selection(self) -> None:
         ui = _UI(FakeCoordinator(pages=self._pages()))
         event = _Event()

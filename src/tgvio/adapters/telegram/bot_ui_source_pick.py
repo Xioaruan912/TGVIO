@@ -111,6 +111,18 @@ class BotUISourcePickMixin:
             nav.append(Button.inline("下一页 ➡️", f"ui:sp:{int(source_index)}:{page + 1}".encode()))
         if nav:
             rows.append(nav)
+        if summaries:
+            all_selected = all(
+                self._selection_key(source_index, summary.message_id)
+                in self._selection_for(owner_id)["meta"]
+                for summary in summaries
+            )
+            rows.append([
+                Button.inline(
+                    "🧹 取消本页" if all_selected else "☑️ 选本页",
+                    f"ui:sb:{int(source_index)}:{int(page)}".encode(),
+                )
+            ])
         if selection["rows"]:
             rows.append(
                 [

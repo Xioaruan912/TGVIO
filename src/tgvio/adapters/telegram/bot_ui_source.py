@@ -46,8 +46,10 @@ _ACTIONS = (
     "ui:sf",
     "ui:sd",
     "ui:sk",
+    "ui:sb",
     "ui:sx",
     "ui:sz",
+    "ui:srv",
     "ui:sm",
     "ui:spm",
     "ui:sa",
@@ -436,6 +438,22 @@ class BotUISourceMixin(
                 event, owner_id, source_index, page, with_grid=False
             )
             return True
+        if action.startswith("ui:sb:"):
+            source_index, page = self._two_ints(action, 2, 3)
+            cached = self._pick_cache().get((int(owner_id), int(source_index), int(page)))
+            if cached is None:
+                await self._safe_answer(event, "这一页已过期，请重新打开列表", alert=True)
+                return True
+            summaries = [
+                summary for summary in cached.values()
+                if not self._row_submitted(owner_id, source_index, summary.message_id, page)
+            ]
+            result = self._select_page(owner_id, source_index, summaries)
+            await self._safe_answer(event, result, alert=result.startswith("超过"))
+            await self._show_pick_callback(
+                event, owner_id, source_index, page, with_grid=False
+            )
+            return True
         if action.startswith("ui:pk:"):
             parts = action.split(":")
             if len(parts) < 5:
@@ -458,12 +476,22 @@ class BotUISourceMixin(
                 source_index = int(parts[2])
                 page = int(parts[3])
                 message_id = int(parts[4])
+                review_page = int(parts[5]) if len(parts) > 5 else 0
             except (IndexError, ValueError):
                 await self._safe_answer(event, "操作已过期", alert=True)
                 return True
             await self._remove_from_selection(
-                event, owner_id, source_index, message_id, page
+                event, owner_id, source_index, message_id, page, review_page
             )
+            return True
+        if action.startswith("ui:srv:"):
+            parts = action.split(":")
+            try:
+                source_index, page, review_page = map(int, parts[2:5])
+            except ValueError:
+                await self._safe_answer(event, "操作已过期", alert=True)
+                return True
+            await self._merge_confirm_card(event, owner_id, source_index, page, review_page)
             return True
         if action.startswith("ui:pdr:"):
             parts = action.split(":")

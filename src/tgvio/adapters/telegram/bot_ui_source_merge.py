@@ -14,6 +14,7 @@ from telethon import Button
 from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
 
 _PREVIEW_TILES = 10
+_REVIEW_PAGE_SIZE = 10
 
 
 class BotUISourceMergeMixin:
@@ -90,6 +91,27 @@ class BotUISourceMergeMixin:
         selection["order"] = [entry for entry in selection["order"] if entry != key]
         return True
 
+    def _select_page(self, owner_id: int, source_index: int, summaries: list) -> str:
+        """Add a visible page atomically, or remove it when every row is selected."""
+
+        selection = self._selection_for(owner_id)
+        if not summaries:
+            return "这一页没有可选择的媒体"
+        keys = [self._selection_key(source_index, item.message_id) for item in summaries]
+        if all(key in selection["meta"] for key in keys):
+            for _source, message_id in keys:
+                self._drop_selection_row(owner_id, source_index, message_id)
+            return f"已取消本页 {len(keys)} 组"
+        additions = [item for item, key in zip(summaries, keys) if key not in selection["meta"]]
+        total = self._selection_summary(owner_id)["items"] + sum(
+            int(item.item_count) for item in additions
+        )
+        if total > self._merge_limit():
+            return f"超过一次上限 {self._merge_limit()} 项，请逐项选择或分批发布"
+        for item in additions:
+            self._toggle_selection(owner_id, source_index, item)
+        return f"已选本页 {len(additions)} 组"
+
     def _selection_rows(self, owner_id: int) -> list[tuple[int, int, str]]:
         """``(source_index, message_id, label)`` in selection order."""
 
@@ -128,14 +150,23 @@ class BotUISourceMergeMixin:
         owner_id: int,
         source_index: int,
         page: int,
+        review_page: int = 0,
     ) -> None:
         totals = self._selection_summary(owner_id)
         if not totals["rows"]:
             await self._safe_answer(event, "还没有选择", alert=True)
             return
         limit = self._merge_limit()
-        lines = ["合并发布", "──────────", *self._selection_lines(owner_id)]
-        for position, (_src, _mid, label) in enumerate(self._selection_rows(owner_id), start=1):
+        selected_rows = self._selection_rows(owner_id)
+        total_pages = max(1, (len(selected_rows) + _REVIEW_PAGE_SIZE - 1) // _REVIEW_PAGE_SIZE)
+        review_page = min(max(0, int(review_page)), total_pages - 1)
+        start = review_page * _REVIEW_PAGE_SIZE
+        window = selected_rows[start : start + _REVIEW_PAGE_SIZE]
+        lines = [
+            f"合并发布 · 核对清单 · 第 {review_page + 1}/{total_pages} 页",
+            "──────────", *self._selection_lines(owner_id),
+        ]
+        for position, (_src, _mid, label) in enumerate(window, start=start + 1):
             lines.append(f"{position}) {label}")
         if totals["items"] > limit:
             lines.append(
@@ -143,15 +174,25 @@ class BotUISourceMergeMixin:
             )
         lines.append("──────────")
         rows: list[list] = []
-        for position, (src, mid, _label) in enumerate(self._selection_rows(owner_id), start=1):
+        for position, (src, mid, _label) in enumerate(window, start=start + 1):
+            remove_data = f"ui:srm:{int(src)}:{int(page)}:{int(mid)}"
+            if review_page:
+                remove_data += f":{review_page}"
             rows.append(
                 [
                     Button.inline(
                         f"🗑 移除 {position}",
-                        f"ui:srm:{int(src)}:{int(page)}:{int(mid)}".encode(),
+                        remove_data.encode(),
                     )
                 ]
             )
+        nav = []
+        if review_page > 0:
+            nav.append(Button.inline("⬅️ 上页", f"ui:srv:{source_index}:{page}:{review_page - 1}".encode()))
+        if review_page + 1 < total_pages:
+            nav.append(Button.inline("下页 ➡️", f"ui:srv:{source_index}:{page}:{review_page + 1}".encode()))
+        if nav:
+            rows.append(nav)
         rows.append(
             [
                 Button.inline("✅ 发布", f"ui:sm:{int(source_index)}:{int(page)}".encode()),
@@ -196,6 +237,7 @@ class BotUISourceMergeMixin:
         source_index: int,
         message_id: int,
         page: int,
+        review_page: int = 0,
     ) -> None:
         """Drop one row from the ordered selection (confirm card or preview)."""
 
@@ -211,7 +253,7 @@ class BotUISourceMergeMixin:
         if self._is_preview_message(owner_id, event):
             return
         if self._selection_summary(owner_id)["rows"]:
-            await self._merge_confirm_card(event, owner_id, source_index, page)
+            await self._merge_confirm_card(event, owner_id, source_index, page, review_page)
         else:
             await self._refresh_list_page(owner_id, chat_id)
 
@@ -293,6 +335,26 @@ class BotUISourceMergeMixin:
         source_index: int,
         page: int,
     ) -> None:
+        inflight = getattr(self, "_pick_merges_inflight", None)
+        if inflight is None:
+            inflight = set()
+            self._pick_merges_inflight = inflight
+        if int(owner_id) in inflight:
+            await self._safe_answer(event, "正在合并，请等待当前结果")
+            return
+        inflight.add(int(owner_id))
+        try:
+            await self._publish_merged_once(event, owner_id, source_index, page)
+        finally:
+            inflight.discard(int(owner_id))
+
+    async def _publish_merged_once(
+        self,
+        event,
+        owner_id: int,
+        source_index: int,
+        page: int,
+    ) -> None:
         coordinator = self._source_coordinator()
         selection = self._selection_for(owner_id)
         chat_id = int(event.chat_id)
@@ -309,7 +371,6 @@ class BotUISourceMergeMixin:
             str((selection["meta"].get(key) or {}).get("fingerprint") or "")
             for key in selections
         ]
-        self._pick_selection().pop(int(owner_id), None)
         progress = await self._send_text(chat_id, f"⏳ 正在合并读取 {len(selections)} 组 …")
         progress_id = getattr(progress, "id", None)
         try:
@@ -319,14 +380,15 @@ class BotUISourceMergeMixin:
         except Exception:  # noqa: BLE001 - user-facing miss
             if progress_id is not None:
                 await self._delete_message(chat_id, int(progress_id))
-            await self._send_text(chat_id, "⚠️ 合并抓取失败，请稍后重试。")
+            await self._send_text(chat_id, "⚠️ 合并提交状态未知；已保留选择。请先在「我的任务」确认是否已受理，再决定是否重试。")
             await self._show_pick_callback(
                 event, owner_id, source_index, page, with_grid=False
             )
             return
         if progress_id is not None:
             await self._delete_message(chat_id, int(progress_id))
-        if count:
+        if accepted:
+            self._pick_selection().pop(int(owner_id), None)
             await self._clear_pick_previews(owner_id, chat_id)
             lines = [f"✅ 已合并提交 `{accepted}` 项（来源：`{label}`），正在下载与发布。"]
             if skipped:
@@ -334,9 +396,17 @@ class BotUISourceMergeMixin:
             if failed:
                 lines.append(f"跳过 `{failed}` 组：读取失败。")
             await self._send_text(chat_id, "\n".join(lines))
+        elif count and skipped:
+            self._pick_selection().pop(int(owner_id), None)
+            await self._send_text(chat_id, "这些内容已经在处理或发布过，没有新增任务。")
+        elif count:
+            await self._send_text(
+                chat_id,
+                "⚠️ 已读取媒体，但未确认任务受理；已保留选择。请先在「我的任务」核实，再决定是否重试。",
+            )
         else:
             detail = f"（{failed} 组读取失败）" if failed else ""
-            await self._send_text(chat_id, f"⚠️ 没有读到可用媒体{detail}；已刷新列表。")
+            await self._send_text(chat_id, f"⚠️ 没有读到可用媒体{detail}；已保留选择，可稍后再试。")
         await self._show_pick_callback(
             event, owner_id, source_index, page, with_grid=False, refresh=True
         )
