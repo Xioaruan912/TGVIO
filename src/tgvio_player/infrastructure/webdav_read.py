@@ -26,6 +26,10 @@ class WebDavReadClient(Protocol):
     ) -> WebDavRangeResponse: ...
 
 
+class WebDavDeleteClient(Protocol):
+    async def delete(self, remote_path: str) -> bool: ...
+
+
 class ReadOnlyWebDavAdapter:
     """Validates catalog-owned paths before delegating a streaming Range GET."""
 
@@ -38,3 +42,15 @@ class ReadOnlyWebDavAdapter:
         package = safe_remote_path(package_path, relative=False)
         relpath = safe_remote_path(remote_relpath, relative=True)
         return await self._client.open_range(f"{package}/{relpath}", byte_range)
+
+
+class WebDavDeleteAdapter:
+    """Deletes only a catalog-owned file path assembled from validated parts."""
+
+    def __init__(self, client: WebDavDeleteClient) -> None:
+        self._client = client
+
+    async def delete_location(self, package_path: str, remote_relpath: str) -> bool:
+        package = safe_remote_path(package_path, relative=False)
+        relpath = safe_remote_path(remote_relpath, relative=True)
+        return await self._client.delete(f"{package}/{relpath}")

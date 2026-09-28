@@ -4,9 +4,13 @@ export type ShellHandlers = {
   onTogglePlayback: () => void;
   onPlayGesture: () => void;
   onToggleFavorite: () => void;
+  onDeleteMedia: () => void;
   onToggleSound: () => void;
   onShuffle: () => void;
-  onShare: () => void;
+  onPrivacyLock: () => void;
+  onOpenGroup: () => void;
+  onBackFromContext: () => void;
+  onRetryPlayback: () => void;
   onSeek: (value: number) => void;
   onNav: (action: string) => void;
 };
@@ -21,15 +25,19 @@ export type Shell = {
   timeCurrent: HTMLElement;
   timeTotal: HTMLElement;
   favoriteBtn: HTMLButtonElement;
+  deleteBtn: HTMLButtonElement;
   soundBtn: HTMLButtonElement;
   shuffleBtn: HTMLButtonElement;
-  shareBtn: HTMLButtonElement;
+  privacyLockBtn: HTMLButtonElement;
+  groupBtn: HTMLButtonElement;
+  contextBackBtn: HTMLButtonElement;
   fullscreenBtn: HTMLButtonElement;
   navButtons: HTMLButtonElement[];
   toast: HTMLElement;
   netSpeed: HTMLElement;
   pauseIndicator: HTMLElement;
   gestureButton: HTMLButtonElement;
+  retryButton: HTMLButtonElement;
   debug: HTMLElement;
   sheet: HTMLElement;
   sheetTitle: HTMLElement;
@@ -42,7 +50,6 @@ const MOBILE_NAV: NavSpec[] = [
   { icon: "home", label: "首页", action: "home" },
   { icon: "film", label: "长视频", action: "long" },
   { icon: "heart", label: "收藏", action: "favorites" },
-  { icon: "shuffle", label: "随机", action: "random" },
   { icon: "library", label: "片库", action: "library" },
 ];
 
@@ -85,7 +92,7 @@ function navButton(spec: NavSpec, handlers: ShellHandlers): HTMLButtonElement {
   const button = element("button", "nav-btn");
   button.type = "button";
   button.dataset.action = spec.action;
-  button.setAttribute("aria-label", spec.label);
+  button.setAttribute("aria-label", spec.action === "home" ? "刷新首页并换一批视频" : spec.label);
   const caption = element("small", "nav-label", spec.label);
   button.append(icon(spec.icon, 24), caption);
   button.addEventListener("click", () => handlers.onNav(spec.action));
@@ -183,6 +190,10 @@ export function buildShell(handlers: ShellHandlers): Shell {
 
   const topbar = element("header", "topbar");
   const brandSmall = element("span", "topbar-brand", "TGVIO");
+  const contextBackBtn = element("button", "context-back", "返回");
+  contextBackBtn.type = "button";
+  contextBackBtn.hidden = true;
+  contextBackBtn.addEventListener("click", handlers.onBackFromContext);
   const netSpeed = element("span", "net-speed", "↓ 0 KB/s");
   netSpeed.hidden = true;
   const fullscreenBtn = element("button", "topbar-fullscreen");
@@ -194,7 +205,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
   settingsBtn.setAttribute("aria-label", "设置");
   settingsBtn.appendChild(icon("settings", 22));
   settingsBtn.addEventListener("click", () => handlers.onNav("settings"));
-  topbar.append(brandSmall, netSpeed, fullscreenBtn, settingsBtn);
+  topbar.append(contextBackBtn, brandSmall, netSpeed, fullscreenBtn, settingsBtn);
 
   const actionRail = element("div", "action-rail");
   const favoriteBtn = actionButton(
@@ -219,22 +230,41 @@ export function buildShell(handlers: ShellHandlers): Shell {
     "声音",
     "声音",
   );
-  const shuffleBtn = actionButton(iconStack([["shuffle", "icon-single"]], 30), "换一个", "换一个");
-  const shareBtn = actionButton(iconStack([["share", "icon-single"]], 30), "分享", "分享");
-  actionRail.append(favoriteBtn, soundBtn, shuffleBtn, shareBtn);
+  const shuffleBtn = actionButton(
+    iconStack([["shuffle", "icon-single"]], 30),
+    "换一个",
+    "随机切换短视频",
+  );
+  const privacyLockBtn = actionButton(
+    iconStack([["lock", "icon-single"]], 30),
+    "隐私遮罩",
+    "立即遮住并暂停",
+  );
+  const deleteBtn = actionButton(iconStack([["trash", "icon-single"]], 29), "删除", "永久删除当前视频");
+  deleteBtn.classList.add("delete-action");
+  const groupBtn = actionButton(iconStack([["library", "icon-single"]], 30), "同组视频", "查看同组视频");
+  groupBtn.hidden = true;
+  groupBtn.addEventListener("click", handlers.onOpenGroup);
+  actionRail.append(favoriteBtn, groupBtn, soundBtn, shuffleBtn, deleteBtn, privacyLockBtn);
   favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
   soundBtn.addEventListener("click", handlers.onToggleSound);
   shuffleBtn.addEventListener("click", handlers.onShuffle);
-  shareBtn.addEventListener("click", handlers.onShare);
+  deleteBtn.addEventListener("click", handlers.onDeleteMedia);
+  privacyLockBtn.addEventListener("click", handlers.onPrivacyLock);
 
   const pauseIndicator = element("div", "pause-indicator");
   pauseIndicator.append(iconStack([["play", "ind-play"], ["pause", "ind-pause"]], 34));
 
   const gestureButton = element("button", "gesture-play");
   gestureButton.type = "button";
-  gestureButton.setAttribute("aria-label", "播放");
+  gestureButton.setAttribute("aria-label", "播放并显示视频");
   gestureButton.appendChild(icon("play", 34));
   gestureButton.addEventListener("click", handlers.onPlayGesture);
+
+  const retryButton = element("button", "playback-retry", "重试");
+  retryButton.type = "button";
+  retryButton.setAttribute("aria-label", "重试");
+  retryButton.addEventListener("click", handlers.onRetryPlayback);
 
   const clipInfo = element("div", "clip-info");
   const title = element("h1", "clip-title", "视频");
@@ -266,7 +296,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const toast = element("div", "toast");
   toast.setAttribute("role", "status");
 
-  viewport.append(feed, topbar, actionRail, pauseIndicator, gestureButton, clipInfo, toast, debug);
+  viewport.append(feed, topbar, actionRail, pauseIndicator, gestureButton, retryButton, clipInfo, toast, debug);
   stage.appendChild(viewport);
 
   const bottomNav = element("nav", "bottom-nav");
@@ -303,15 +333,19 @@ export function buildShell(handlers: ShellHandlers): Shell {
     timeCurrent,
     timeTotal,
     favoriteBtn,
+    deleteBtn,
     soundBtn,
     shuffleBtn,
-    shareBtn,
+    privacyLockBtn,
+    groupBtn,
+    contextBackBtn,
     fullscreenBtn,
     navButtons,
     toast,
     netSpeed,
     pauseIndicator,
     gestureButton,
+    retryButton,
     debug,
     sheet,
     sheetTitle,
@@ -328,7 +362,112 @@ export function toast(shell: Shell, message: string): void {
   shell.toast.textContent = message;
   shell.toast.classList.add("show");
   window.clearTimeout(toastTimer);
-  toastTimer = window.setTimeout(() => shell.toast.classList.remove("show"), 1900);
+  toastTimer = window.setTimeout(() => {
+    shell.toast.classList.remove("show");
+    window.setTimeout(() => {
+      if (!shell.toast.classList.contains("show")) shell.toast.textContent = "";
+    }, 220);
+  }, 1900);
+}
+
+export function confirmMediaDelete(host: HTMLElement): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = element("div", "audio-warning delete-warning");
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "delete-warning-title");
+    const panel = element("section", "audio-warning-panel");
+    const title = element("h2", undefined, "永久删除这个视频？");
+    title.id = "delete-warning-title";
+    const message = element(
+      "p",
+      undefined,
+      "将删除这个视频在 WebDAV 中的全部文件副本。不会删除文件夹和其他视频，删除后无法恢复。",
+    );
+    const actions = element("div", "audio-warning-actions");
+    const cancel = element("button", "audio-warning-cancel", "取消");
+    const confirm = element("button", "delete-warning-confirm", "永久删除视频");
+    cancel.type = "button";
+    confirm.type = "button";
+    let settled = false;
+    const finish = (accepted: boolean) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(accepted);
+    };
+    cancel.addEventListener("click", () => finish(false));
+    confirm.addEventListener("click", () => finish(true));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    actions.append(cancel, confirm);
+    panel.append(title, message, actions);
+    overlay.appendChild(panel);
+    host.appendChild(overlay);
+    cancel.focus();
+  });
+}
+
+export type AudioEnableChoice = "keep-muted" | "enable" | "enable-once-per-open";
+
+export function confirmAudioEnable(
+  host: HTMLElement,
+  options: { offerOncePerOpen?: boolean; continuousSound?: boolean } = {},
+): Promise<AudioEnableChoice> {
+  return new Promise((resolve) => {
+    const overlay = element("div", "audio-warning");
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "audio-warning-title");
+    const panel = element("section", "audio-warning-panel");
+    const title = element("h2", undefined, "开启声音前请留意");
+    title.id = "audio-warning-title";
+    const message = element(
+      "p",
+      undefined,
+      options.continuousSound
+        ? "视频可能包含成人内容或不适合旁人听到的声音。确认后，本次及后续视频会默认开启声音，直到你手动静音。"
+        : "视频可能包含成人内容或不适合旁人听到的声音。确认周围环境适合后，才会为当前视频开启声音。",
+    );
+    const actions = element("div", "audio-warning-actions");
+    const keepMuted = element("button", "audio-warning-cancel", "继续静音");
+    const enable = element(
+      "button",
+      "audio-warning-confirm",
+      options.continuousSound ? "我知道，连续开启声音" : "我知道，开启本条声音",
+    );
+    keepMuted.type = "button";
+    enable.type = "button";
+    let settled = false;
+    const finish = (choice: AudioEnableChoice) => {
+      if (settled) return;
+      settled = true;
+      overlay.remove();
+      resolve(choice);
+    };
+    keepMuted.addEventListener("click", () => finish("keep-muted"));
+    enable.addEventListener("click", () => finish("enable"));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish("keep-muted");
+    });
+    actions.append(keepMuted);
+    if (options.offerOncePerOpen) {
+      const oncePerOpen = element(
+        "button",
+        "audio-warning-frequency",
+        "改为每次重新打开提醒一次",
+      );
+      oncePerOpen.type = "button";
+      oncePerOpen.addEventListener("click", () => finish("enable-once-per-open"));
+      actions.append(oncePerOpen);
+    }
+    actions.append(enable);
+    panel.append(title, message, actions);
+    overlay.appendChild(panel);
+    host.appendChild(overlay);
+    keepMuted.focus();
+  });
 }
 
 export function showIndicator(shell: Shell, kind: "play" | "pause"): void {
@@ -337,6 +476,26 @@ export function showIndicator(shell: Shell, kind: "play" | "pause"): void {
   shell.pauseIndicator.classList.add("show");
   window.clearTimeout(indicatorTimer);
   indicatorTimer = window.setTimeout(() => shell.pauseIndicator.classList.remove("show"), 560);
+}
+
+export function showGestureGuide(host: HTMLElement): Promise<void> {
+  return new Promise((resolve) => {
+    const guide = element("button", "gesture-guide");
+    guide.type = "button";
+    guide.setAttribute("aria-label", "关闭手势说明");
+    guide.append(
+      element("strong", undefined, "长视频手势"),
+      element("span", undefined, "双击左侧后退 10 秒 · 双击右侧前进 10 秒"),
+      element("span", undefined, "长按倍速 · 横向拖动进度 · 单击播放/暂停"),
+      element("small", undefined, "点击任意位置关闭"),
+    );
+    guide.addEventListener("click", () => { guide.remove(); resolve(); }, { once: true });
+    host.appendChild(guide);
+  });
+}
+
+export function setControlsVisible(shell: Shell, visible: boolean): void {
+  shell.root.classList.toggle("controls-visible", visible);
 }
 
 export function hideIndicator(shell: Shell): void {
@@ -438,9 +597,23 @@ export function sheetToggle(
   return row;
 }
 
+export function sheetChoice(
+  title: string,
+  sub: string,
+  selected: boolean,
+  onPick: () => void,
+): HTMLButtonElement {
+  const mark = element("span", "sheet-choice-mark", selected ? "✓" : "");
+  const row = sheetRow({ title, sub, trailing: mark, onPick }) as HTMLButtonElement;
+  row.classList.add("sheet-row-choice");
+  row.setAttribute("aria-pressed", selected ? "true" : "false");
+  return row;
+}
+
 export function closeSheet(shell: Shell): void {
   shell.sheet.hidden = true;
   shell.sheetBody.replaceChildren();
+  shell.root.dispatchEvent(new Event("playersheetclose"));
 }
 
 export function formatTime(seconds: number): string {

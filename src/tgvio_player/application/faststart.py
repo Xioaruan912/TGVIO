@@ -370,6 +370,16 @@ class FaststartService:
     async def prepare(self, media_id: str, details: dict[str, object]) -> bool:
         return await self.overlay_for(media_id, details) is not None
 
+    async def discard(self, media_id: str) -> None:
+        lock = self._locks.setdefault(media_id, asyncio.Lock())
+        async with lock:
+            overlay = self._memory.pop(media_id, None)
+            if overlay is not None:
+                self._memory_size -= overlay.front_len
+            self._missing.discard(media_id)
+            self._scheduled.discard(media_id)
+            self._store.delete(media_id)
+
 
 class FaststartBackfill:
     """Low-priority background builder for every active video overlay.

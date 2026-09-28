@@ -3,7 +3,6 @@ from __future__ import annotations
 import hashlib
 import json
 from pathlib import Path
-import shutil
 from tempfile import TemporaryDirectory
 import unittest
 from dataclasses import replace
@@ -271,21 +270,94 @@ class PlayerCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.active_videos, 1)
         self.assertEqual(await self.repo.list_active_video_ids(), [digest])
 
+    async def test_v3_rendition_is_variant_not_independent_video(self) -> None:
+        primary = "9" * 64
+        variant = "8" * 64
+        size_primary = 10000
+        size_variant = 3000
+        manifest: dict[str, object] = {
+            "schema": "tgvio.archive/v3",
+            "package_id": "arc_ladder",
+            "job_id": "job-1",
+            "created_at": "2026-09-22T00:00:00Z",
+            "archive_profile": {
+                "id": "primary",
+                "policy": "required",
+                "policy_version": 1,
+            },
+            "media_count": 2,
+            "media": [
+                {
+                    "index": 1,
+                    "kind": "video",
+                    "path": "primary.mp4",
+                    "original_name": "clip.mp4",
+                    "size_bytes": size_primary,
+                    "sha256": primary,
+                    "mime_type": "video/mp4",
+                    "width": 1080,
+                    "height": 1920,
+                    "duration_seconds": 12.5,
+                    "container": "mp4",
+                    "codec": "h264",
+                },
+                {
+                    "index": 1,
+                    "kind": "video",
+                    "path": "variant.mp4",
+                    "original_name": "clip-480p.mp4",
+                    "size_bytes": size_variant,
+                    "sha256": variant,
+                    "mime_type": "video/mp4",
+                    "width": 270,
+                    "height": 480,
+                    "duration_seconds": 12.5,
+                    "container": "mp4",
+                    "codec": "h264",
+                    "role": "rendition",
+                    "variant_of": primary,
+                    "resolution_label": "480p",
+                    "bitrate_bps": 500_000,
+                },
+            ],
+        }
+        complete: dict[str, object] = {
+            "schema": "tgvio.archive.complete/v1",
+            "package_id": "arc_ladder",
+            "manifest_sha256": canonical_sha(manifest),
+            "media_count": 2,
+            "total_bytes": size_primary + size_variant,
+        }
+        source = FakeArchiveCatalogSource(
+            packages=[
+                ArchivePackageCandidate(
+                    remote_path="TGVIO/2026-09-22/1",
+                    manifest=manifest,
+                    complete=complete,
+                )
+            ]
+        )
+        result = await CatalogSyncService(source, self.repo).sync_once()
+        self.assertEqual(result.committed, 1)
+        self.assertEqual(result.active_videos, 1)
+        self.assertEqual(await self.repo.list_active_video_ids(), [primary])
+        variants = await self.repo.active_variants(primary)
+        self.assertEqual(len(variants), 1)
+        self.assertEqual(variants[0]["variant_media_id"], variant)
+        self.assertEqual(variants[0]["height"], 480)
+        self.assertEqual(variants[0]["label"], "480p")
+        self.assertEqual(variants[0]["bitrate_bps"], 500_000)
+        location = await self.repo.active_media_location(variant)
+        self.assertIsNotNone(location)
+        self.assertEqual(await self.repo.active_variants(variant), [])
+
     async def test_migration_checksum_change_fails_closed(self) -> None:
         with TemporaryDirectory() as temporary:
             root = Path(temporary)
             migrations = root / "migrations"
             migrations.mkdir()
-            baseline = (
-                Path(__file__).parents[1]
-                / "src"
-                / "tgvio_player"
-                / "infrastructure"
-                / "migrations"
-                / "0001_player_baseline.sql"
-            )
-            copied = migrations / baseline.name
-            shutil.copy2(baseline, copied)
+            copied = migrations / "0009_player_public_baseline.sql"
+            copied.write_text("CREATE TABLE baseline_marker(id INTEGER PRIMARY KEY);\n", encoding="utf-8")
             database = root / "player.sqlite3"
             repository = PlayerCatalogRepositorySQLite(database, migrations_dir=migrations)
             await repository.open()

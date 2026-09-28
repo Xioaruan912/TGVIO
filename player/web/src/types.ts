@@ -1,3 +1,13 @@
+export type MediaVariant = {
+  id: string;
+  height: number | null;
+  width: number | null;
+  bitrate_bps?: number | null;
+  label?: string | null;
+  size_bytes?: number | null;
+  stream_url: string;
+};
+
 export type MediaDto = {
   id: string;
   width: number | null;
@@ -6,10 +16,23 @@ export type MediaDto = {
   size_bytes?: number | null;
   stream_url: string;
   favorite: boolean;
+  deletable?: boolean;
   mime_type?: string | null;
   codec?: string | null;
   category?: "short" | "long";
+  groups?: ArchiveGroup[];
+  variants?: MediaVariant[];
 };
+
+export type ArchiveGroup = { id: string; label: string };
+
+export type PagedMediaResponse = {
+  items: MediaDto[];
+  has_more: boolean;
+  next_cursor: string | null;
+};
+
+export type GroupVideosResponse = PagedMediaResponse & { group: ArchiveGroup };
 
 export type FeedResponse = {
   items: MediaDto[];
@@ -20,7 +43,23 @@ export type FeedResponse = {
 export type VideoListResponse = {
   items: MediaDto[];
   has_more: boolean;
-  category: "short" | "long";
+  category: "short" | "long" | "all";
+  total: number | null;
+};
+
+export type RandomVideoListResponse = {
+  items: MediaDto[];
+  category: "short";
+};
+
+export type LongVideoProgressDto = {
+  id: string;
+  position_seconds: number;
+};
+
+export type LongVideoProgressResponse = {
+  items: LongVideoProgressDto[];
+  recent_items?: Array<MediaDto & { position_seconds: number }>;
 };
 
 export type Clip = {
@@ -31,9 +70,15 @@ export type Clip = {
   sizeBytes: number;
   streamUrl: string;
   favorite: boolean;
+  deletable: boolean;
   mimeType: string | null;
   codec: string | null;
   category: "short" | "long";
+  groups: ArchiveGroup[];
+  variants: MediaVariant[];
 };
 
-export type PreloadLevel = "strong" | "light" | "metadata";
+export type PreloadLevel = "strong" | "light" | "random" | "metadata";
+
+/** User's explicit resolution preference. */
+export type QualitySelection = "original" | 480 | 720;

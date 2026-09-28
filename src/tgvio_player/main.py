@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 import ipaddress
 import logging
 import os
@@ -13,19 +13,25 @@ from aiohttp import web
 from tgvio_player.adapters.http import PlayerHttpServer
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.catalog import CatalogSyncService
+from tgvio_player.application.favorite_backup import FavoriteBackupService, SourceMediaError
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
+from tgvio_player.application.player_recovery import PlayerRecoveryService
 from tgvio_player.application.range_cache import MediaRangeCache
 from tgvio_player.application.warm_backfill import MediaWarmBackfill
 from tgvio_player.infrastructure.faststart_store import FaststartStore
+from tgvio_player.infrastructure.player_crypto import PlayerStateCipher
 from tgvio_player.infrastructure.range_store import RangeStore
+from tgvio_player.infrastructure.player_crypto import decode_recovery_key
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 from tgvio_player.infrastructure.webdav_aiohttp import (
     AioHttpReadOnlyWebDavClient,
     WebDavClientSettings,
 )
 from tgvio_player.infrastructure.webdav_catalog import WebDavArchiveCatalogSource
-from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter
+from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDavDeleteAdapter
+from tgvio_player.infrastructure.player_media_reader import PlayerMediaReader
+from tgvio_player.infrastructure.webdav_write import AioHttpWebDavWriteClient
 
 
 _LOG = logging.getLogger(__name__)
@@ -35,6 +41,7 @@ _LOG = logging.getLogger(__name__)
 class PlayerSettings:
     data_dir: Path
     access_secret: str
+    recovery_key: str = field(repr=False)
     webdav_url: str
     webdav_user: str
     webdav_password: str
@@ -52,6 +59,7 @@ class PlayerSettings:
     cache_concurrency: int
     warm_all: bool
     warm_head_mb: int
+    delete_enabled: bool
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -59,7 +67,7 @@ class PlayerSettings:
         get = lambda name: values.get(f"TGVIO_PLAYER_{name}", "").strip()
         if get("ENABLED").lower() != "true":
             raise ValueError("TGVIO_PLAYER_ENABLED must be true")
-        required = ("DATA_DIR", "ACCESS_SECRET", "WEBDAV_URL", "WEBDAV_USER", "WEBDAV_PASSWORD", "REMOTE_ROOT")
+        required = ("DATA_DIR", "ACCESS_SECRET", "RECOVERY_KEY", "WEBDAV_URL", "WEBDAV_USER", "WEBDAV_PASSWORD", "REMOTE_ROOT")
         missing = [f"TGVIO_PLAYER_{name}" for name in required if not get(name)]
         if missing:
             raise ValueError("missing required Player settings: " + ", ".join(missing))
@@ -69,18 +77,20 @@ class PlayerSettings:
             raise ValueError(
                 "TGVIO_PLAYER_ACCESS_SECRET must be at least 32 characters or a 9-digit PIN"
             )
+        recovery_key = get("RECOVERY_KEY")
+        decode_recovery_key(recovery_key)
         host = get("HOST") or "0.0.0.0"
         try:
             ipaddress.ip_address(host)
         except ValueError as exc:
             raise ValueError("TGVIO_PLAYER_HOST must be an IP address") from exc
         return cls(
-            Path(get("DATA_DIR")), secret, get("WEBDAV_URL"), get("WEBDAV_USER"),
+            Path(get("DATA_DIR")), secret, recovery_key, get("WEBDAV_URL"), get("WEBDAV_USER"),
             get("WEBDAV_PASSWORD"), get("REMOTE_ROOT"), host,
             cls._integer(get("PORT") or "8790", "PORT", 1, 65535),
             cls._integer(get("CATALOG_POLL_SECONDS") or "60", "CATALOG_POLL_SECONDS", 5, 86400),
             cls._integer(get("MAX_STREAMS") or "4", "MAX_STREAMS", 1, 64),
-            cls._integer(get("MAX_STREAMS_PER_CLIENT") or "2", "MAX_STREAMS_PER_CLIENT", 1, 16),
+            cls._integer(get("MAX_STREAMS_PER_CLIENT") or "4", "MAX_STREAMS_PER_CLIENT", 1, 16),
             cls._flag(get("FASTSTART_BACKFILL") or "true", "FASTSTART_BACKFILL"),
             cls._integer(get("LARGE_VIDEO_SECONDS") or "300", "LARGE_VIDEO_SECONDS", 30, 86400),
             cls._integer(get("CACHE_BYTES") or str(8 * 1024**3), "CACHE_BYTES", 64 * 1024**2, 512 * 1024**3),
@@ -89,6 +99,7 @@ class PlayerSettings:
             cls._integer(get("CACHE_CONCURRENCY") or "4", "CACHE_CONCURRENCY", 1, 16),
             cls._flag(get("WARM_ALL") or "true", "WARM_ALL"),
             cls._integer(get("WARM_HEAD_MB") or "16", "WARM_HEAD_MB", 1, 512),
+            cls._flag(get("DELETE_ENABLED") or "false", "DELETE_ENABLED"),
         )
 
     @staticmethod
@@ -124,8 +135,36 @@ async def _catalog_poll(sync: CatalogSyncService, seconds: int, stop: asyncio.Ev
             pass
 
 
+async def _favorite_sync_poll(
+    sync: FavoriteBackupService, seconds: int, stop: asyncio.Event
+) -> None:
+    while not stop.is_set():
+        try:
+            result = await sync.sync_pending(limit=2)
+            if result.processed:
+                _LOG.info(
+                    "Player favorite backup batch completed: processed=%s synced=%s retried=%s failed=%s",
+                    result.processed, result.synced, result.retried, result.failed,
+                )
+        except Exception:
+            _LOG.exception("Player favorite backup worker failed")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run(settings: PlayerSettings) -> None:
     repository = PlayerCatalogRepositorySQLite(settings.data_dir / "player.sqlite3")
+    cipher = PlayerStateCipher(settings.recovery_key)
+    write_clients: list[AioHttpWebDavWriteClient] = []
+
+    def storage_client_factory(endpoint: str, username: str, password: str) -> AioHttpWebDavWriteClient:
+        client = AioHttpWebDavWriteClient(endpoint, username, password)
+        write_clients.append(client)
+        return client
+
+    recovery = PlayerRecoveryService(repository, cipher, storage_client_factory)
     client = AioHttpReadOnlyWebDavClient(WebDavClientSettings(
         settings.webdav_url, settings.webdav_user, settings.webdav_password,
     ))
@@ -139,7 +178,43 @@ async def run(settings: PlayerSettings) -> None:
     await repository.open()
     try:
         await client.open()
-        reader = ReadOnlyWebDavAdapter(client)
+        archive_reader = ReadOnlyWebDavAdapter(client)
+        await repository.recover_interrupted_favorite_sync()
+        storage_settings = await repository.get_storage_settings()
+        username, password = recovery.credentials_for(storage_settings)
+        favorite_writer = storage_client_factory(
+            storage_settings.endpoint_url, username, password,
+        )
+
+        async def favorite_source(media_id: str):
+            location = await repository.active_media_location(media_id)
+            if location is None:
+                raise SourceMediaError("source_not_found", 404)
+            response = await archive_reader.open_range(location[0], location[1], None)
+            if response.status == 404:
+                close_body = getattr(response.body, "aclose", None)
+                if close_body is not None:
+                    await close_body()
+                raise SourceMediaError("source_not_found", 404)
+            if response.status not in {200, 206}:
+                raise SourceMediaError("source_request_failed", response.status)
+            if response.content_length is None:
+                raise SourceMediaError("source_length_missing")
+            return response.content_length, response.content_type, response.body
+
+        async def favorite_source_location(media_id: str):
+            location = await repository.active_media_location(media_id)
+            return None if location is None else (location[0], location[1])
+
+        favorite_backup = FavoriteBackupService(
+            repository, favorite_writer, favorite_source, recovery,
+            source_location=favorite_source_location,
+        )
+        reader = PlayerMediaReader(
+            repository, archive_reader, repository.get_storage_settings,
+            recovery.credentials_for, storage_client_factory,
+        )
+        deleter = WebDavDeleteAdapter(client) if settings.delete_enabled else None
         sync = CatalogSyncService(WebDavArchiveCatalogSource(client, remote_root=settings.remote_root), repository)
         faststart = FaststartService(
             FaststartStore(settings.data_dir / "faststart"), repository, reader
@@ -154,7 +229,7 @@ async def run(settings: PlayerSettings) -> None:
             reader,
             window_bytes=settings.cache_window_mb * 1024 * 1024,
             concurrency=settings.cache_concurrency,
-            should_pause=lambda: server_ref[0].playback_saturated
+            should_pause=lambda: server_ref[0].active_playback_streams > 0
             if server_ref[0] is not None
             else False,
         )
@@ -164,6 +239,7 @@ async def run(settings: PlayerSettings) -> None:
             SessionService(repository, access_secret=settings.access_secret),
             ShuffleDeckService(repository, max_duration_seconds=settings.large_video_seconds),
             reader,
+            deleter=deleter,
             max_streams=settings.max_streams,
             max_streams_per_client=settings.max_streams_per_client,
             static_dir=Path("/app/player-web"),
@@ -171,6 +247,9 @@ async def run(settings: PlayerSettings) -> None:
             range_cache=range_cache,
             large_video_seconds=settings.large_video_seconds,
             warm_head_bytes=settings.warm_head_mb * 1024 * 1024,
+            favorite_backup=favorite_backup,
+            recovery_service=recovery,
+            storage_client_factory=storage_client_factory,
         )
         server_ref[0] = server
         runner = server.runner()
@@ -178,7 +257,8 @@ async def run(settings: PlayerSettings) -> None:
         site = web.TCPSite(runner, settings.host, settings.port)
         await site.start()
         tasks: list[asyncio.Task[object]] = [
-            asyncio.create_task(_catalog_poll(sync, settings.catalog_poll_seconds, stop))
+            asyncio.create_task(_catalog_poll(sync, settings.catalog_poll_seconds, stop)),
+            asyncio.create_task(_favorite_sync_poll(favorite_backup, 5, stop)),
         ]
         if settings.faststart_backfill:
             backfill = FaststartBackfill(
@@ -192,7 +272,7 @@ async def run(settings: PlayerSettings) -> None:
                 repository,
                 head_bytes=settings.warm_head_mb * 1024 * 1024,
                 workers=settings.cache_concurrency,
-                should_pause=lambda: server.playback_saturated,
+                should_pause=lambda: server.active_playback_streams > 0,
             )
             tasks.append(asyncio.create_task(warm.run(stop)))
             _LOG.info("TGVIO Player media warm backfill enabled")
@@ -204,6 +284,8 @@ async def run(settings: PlayerSettings) -> None:
         await range_cache.shutdown()
         await runner.cleanup()
     finally:
+        for write_client in write_clients:
+            await write_client.close()
         await client.close()
         await repository.close()
 

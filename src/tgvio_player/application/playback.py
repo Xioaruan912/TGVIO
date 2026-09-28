@@ -75,6 +75,16 @@ class StartupRangeCache:
             else:
                 self._inflight[key] = (task, leases - 1)
 
+    async def discard(self, media_id: str) -> None:
+        async with self._lock:
+            for key in [item for item in self._entries if item.media_id == media_id]:
+                payload = self._entries.pop(key)
+                self._bytes -= len(payload)
+            for key in [item for item in self._inflight if item.media_id == media_id]:
+                task, _leases = self._inflight.pop(key)
+                if not task.done():
+                    task.cancel()
+
     async def _complete(self, key: StartupCacheKey, task: asyncio.Task[bytes]) -> None:
         try:
             payload = task.result()

@@ -18,7 +18,7 @@ from tgvio_player.domain.catalog import (
 
 
 _COMPLETE_SCHEMA = "tgvio.archive.complete/v1"
-_MANIFEST_SCHEMAS = {"tgvio.archive/v1", "tgvio.archive/v2"}
+_MANIFEST_SCHEMAS = {"tgvio.archive/v1", "tgvio.archive/v2", "tgvio.archive/v3"}
 
 
 def _canonical_json_sha256(payload: dict[str, Any]) -> str:
@@ -144,6 +144,9 @@ class CatalogSyncService:
                     duration_seconds=cls._optional_float(raw, "duration_seconds"),
                     container=cls._optional_text(raw, "container"),
                     codec=cls._optional_text(raw, "codec"),
+                    variant_of=cls._optional_text(raw, "variant_of"),
+                    label=cls._optional_text(raw, "resolution_label"),
+                    bitrate_bps=cls._optional_int(raw, "bitrate_bps"),
                 )
             )
             locations.append(

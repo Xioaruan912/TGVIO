@@ -1,6 +1,7 @@
 import type { Clip } from "./types";
 
 const SAMPLE_MS = 500;
+const RESOURCE_WINDOW_MS = 3000;
 
 export function formatSpeed(bytesPerSecond: number): string {
   if (!Number.isFinite(bytesPerSecond) || bytesPerSecond <= 0) return "↓ 0 KB/s";
@@ -10,18 +11,32 @@ export function formatSpeed(bytesPerSecond: number): string {
 }
 
 /**
- * Approximates the network download rate of the playing clip from the growth of
- * the media buffer: buffered seconds map to bytes via the clip's known size, and
- * the sample is smoothed with an exponential moving average. The buffer only
- * grows from network reads, so this tracks how fast bytes are arriving.
+ * Browser buffering is not persistent cache: label it as the browser's own
+ * buffered-ahead window so it is never read as "the file is cached". The
+ * compact form keeps the top-right readout from competing with the center
+ * playback-state indicator.
+ */
+export function formatNetworkStatus(bufferedAheadSeconds: number): string {
+  const seconds = Math.floor(bufferedAheadSeconds);
+  return seconds > 0 ? `缓冲 ${seconds}s` : "";
+}
+
+/**
+ * Measures completed same-origin media transfers from Resource Timing. Some
+ * browsers omit transfer sizes, so buffered-time growth remains a fallback.
  */
 export class NetworkMeter {
+  onSample?: (sample: PlaybackNetworkSample) => void;
   private readonly el: HTMLElement;
   private video: HTMLVideoElement | null = null;
   private clip: Clip | null = null;
   private timer = 0;
   private lastBytes = 0;
   private lastAt = 0;
+  private lastProgressAt = 0;
+  private watchStartedAt = 0;
+  private readonly seenResources = new Set<string>();
+  private readonly transfers: { end: number; bytes: number; duration: number }[] = [];
   private ema = 0;
 
   constructor(el: HTMLElement) {
@@ -33,8 +48,13 @@ export class NetworkMeter {
     this.video = video;
     this.clip = clip;
     this.lastBytes = 0;
-    this.lastAt = 0;
+    this.lastAt = performance.now();
+    this.watchStartedAt = this.lastAt - RESOURCE_WINDOW_MS;
+    this.lastProgressAt = 0;
+    this.seenResources.clear();
+    this.transfers.length = 0;
     this.ema = 0;
+    this.renderStatus();
   }
 
   start(): void {
@@ -50,6 +70,11 @@ export class NetworkMeter {
     this.el.hidden = true;
   }
 
+  /** Smoothed download rate in bytes/second (0 while unknown). */
+  rate(): number {
+    return this.ema;
+  }
+
   private bufferedBytes(): number {
     const video = this.video;
     const clip = this.clip;
@@ -63,17 +88,87 @@ export class NetworkMeter {
     return clip.sizeBytes * Math.min(1, end / duration);
   }
 
+  private resourceRate(now: number): number {
+    const clip = this.clip;
+    if (!clip || typeof performance.getEntriesByType !== "function") return 0;
+    let mediaPath = "";
+    try {
+      mediaPath = new URL(clip.streamUrl, document.baseURI).pathname;
+    } catch {
+      return 0;
+    }
+    const entries = performance.getEntriesByType("resource") as PerformanceResourceTiming[];
+    for (const entry of entries) {
+      let entryPath = "";
+      try {
+        entryPath = new URL(entry.name, document.baseURI).pathname;
+      } catch {
+        continue;
+      }
+      if (entryPath !== mediaPath || entry.startTime < this.watchStartedAt) continue;
+      const key = `${entry.name}|${entry.startTime}|${entry.duration}|${entry.transferSize}|${entry.encodedBodySize}`;
+      if (this.seenResources.has(key)) continue;
+      this.seenResources.add(key);
+      // transferSize is zero for a cache hit, so do not count encodedBodySize
+      // as network traffic in that case.
+      const bytes = entry.transferSize;
+      if (bytes > 0 && entry.responseEnd > 0) {
+        this.transfers.push({
+          end: entry.responseEnd,
+          bytes,
+          duration: Math.max(100, entry.responseEnd - entry.startTime),
+        });
+      }
+    }
+    const cutoff = now - RESOURCE_WINDOW_MS;
+    for (let index = this.transfers.length - 1; index >= 0; index -= 1) {
+      if (this.transfers[index].end < cutoff) this.transfers.splice(index, 1);
+    }
+    const recent = this.transfers.filter((entry) => entry.end >= cutoff);
+    if (!recent.length) return 0;
+    return (
+      (recent.reduce((sum, entry) => sum + entry.bytes, 0) /
+        recent.reduce((sum, entry) => sum + entry.duration, 0)) *
+      1000
+    );
+  }
+
   private sample(): void {
     const now = performance.now();
     const bytes = this.bufferedBytes();
-    if (this.lastAt > 0) {
-      const seconds = (now - this.lastAt) / 1000;
-      const delta = bytes - this.lastBytes;
-      const rate = delta > 0 && seconds > 0 ? delta / seconds : 0;
-      this.ema = this.ema > 0 ? this.ema * 0.6 + rate * 0.4 : rate;
+    const seconds = (now - this.lastAt) / 1000;
+    const delta = bytes - this.lastBytes;
+    const bufferedRate = delta > 0 && seconds > 0 ? delta / seconds : 0;
+    const measuredRate = this.resourceRate(now);
+    const rate = measuredRate || bufferedRate;
+    if (rate > 0) {
+      this.lastProgressAt = now;
+      this.ema = measuredRate || (this.ema > 0 ? this.ema * 0.6 + rate * 0.4 : rate);
+    } else if (now - this.lastProgressAt > RESOURCE_WINDOW_MS) {
+      this.ema = 0;
     }
     this.lastBytes = bytes;
     this.lastAt = now;
-    this.el.textContent = formatSpeed(this.ema);
+    this.onSample?.({ bytesPerSecond: this.ema, bufferedAheadSeconds: this.video ? this.bufferedAheadSeconds(this.video) : 0 });
+    this.renderStatus();
+  }
+
+  private bufferedAheadSeconds(video: HTMLVideoElement): number {
+    const time = video.currentTime;
+    for (let index = 0; index < video.buffered.length; index += 1) {
+      if (video.buffered.start(index) <= time && video.buffered.end(index) >= time) {
+        return Math.max(0, video.buffered.end(index) - time);
+      }
+    }
+    return 0;
+  }
+
+  private renderStatus(): void {
+    const video = this.video;
+    const status = video ? formatNetworkStatus(this.bufferedAheadSeconds(video)) : "";
+    const speed = this.ema > 0 ? formatSpeed(this.ema) : "";
+    this.el.textContent = [status, speed].filter(Boolean).join(" · ") || "↓ 0 KB/s";
   }
 }
+
+export type PlaybackNetworkSample = { bytesPerSecond: number; bufferedAheadSeconds: number };

@@ -3,8 +3,11 @@ import { icon } from "./icons";
 import { prefs } from "./settings";
 import { element, formatTime } from "./ui";
 import type { Clip } from "./types";
+import { omitResumableDuplicates, resumableItems } from "./long-video-list";
 
 const BATCH = 20;
+const EMPTY_PROGRESS = { positions: new Map<string, number>(), recent: [] as Array<{ clip: Clip; position: number }> };
+type ProgressState = Awaited<ReturnType<typeof api.longVideoProgress>>;
 
 /** Full-screen library of large videos; tapping a row opens the dedicated player. */
 export class LongVideoPage {
@@ -13,12 +16,16 @@ export class LongVideoPage {
   private offset = 0;
   private loading = false;
   private hasMore = true;
-  private readonly onOpen: (clip: Clip) => void;
+  private readonly clips: Clip[] = [];
+  private readonly onOpen: (clip: Clip, startAt?: number) => void;
   private readonly onClose: () => void;
+  private progress: ReturnType<typeof api.longVideoProgress>;
+  private progressState: ProgressState = EMPTY_PROGRESS;
 
-  constructor(onOpen: (clip: Clip) => void, onClose: () => void) {
+  constructor(onOpen: (clip: Clip, startAt?: number) => void, onClose: () => void) {
     this.onOpen = onOpen;
     this.onClose = onClose;
+    this.progress = api.longVideoProgress().catch(() => EMPTY_PROGRESS);
     this.root = element("section", "long-page");
     const topbar = element("header", "long-topbar");
     const back = element("button", "long-back");
@@ -37,17 +44,39 @@ export class LongVideoPage {
     this.root.remove();
   }
 
+  async refreshProgress(): Promise<void> {
+    const request = api.longVideoProgress().catch(() => EMPTY_PROGRESS);
+    this.progress = request;
+    const progress = await request;
+    if (this.progress !== request) return;
+    this.progressState = progress;
+    this.renderItems();
+  }
+
+  remove(mediaId: string): void {
+    const index = this.clips.findIndex((clip) => clip.id === mediaId);
+    if (index >= 0) this.clips.splice(index, 1);
+    this.progressState.positions.delete(mediaId);
+    this.progressState.recent = this.progressState.recent.filter(
+      ({ clip }) => clip.id !== mediaId,
+    );
+    this.renderItems();
+  }
+
   private async loadMore(): Promise<void> {
     if (this.loading || !this.hasMore) return;
     this.loading = true;
     try {
-      const { items, hasMore } = await api.videos("long", BATCH, this.offset, prefs.cacheAhead);
+      const progressRequest = this.progress;
+      const [{ items, hasMore }, progress] = await Promise.all([
+        api.videos("long", BATCH, this.offset, prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving"),
+        progressRequest,
+      ]);
       this.hasMore = hasMore;
+      if (this.progress === progressRequest) this.progressState = progress;
       this.offset += items.length;
-      for (const clip of items) this.list.appendChild(this.row(clip));
-      if (!items.length && this.offset === 0) {
-        this.list.appendChild(element("p", "long-empty", "暂无长视频"));
-      }
+      this.clips.push(...items);
+      this.renderItems();
     } catch {
       this.list.appendChild(element("p", "long-empty", "暂时加载失败，请稍后重试"));
       this.hasMore = false;
@@ -62,8 +91,42 @@ export class LongVideoPage {
     }
   }
 
-  private row(clip: Clip): HTMLElement {
-    const row = element("button", "long-row");
+  private renderItems(): void {
+    const scrollTop = this.list.scrollTop;
+    this.list.replaceChildren();
+    const resumable = resumableItems(this.progressState.recent);
+    this.appendContinueWatching(resumable);
+    const library = omitResumableDuplicates(this.clips, resumable);
+    if (library.length) {
+      const section = element("section", "long-library-section");
+      section.setAttribute("aria-label", "全部长视频");
+      section.appendChild(element("h2", "long-library-heading", "全部长视频"));
+      for (const clip of library) {
+        section.appendChild(this.row(clip, this.progressState.positions.get(clip.id)));
+      }
+      this.list.appendChild(section);
+    }
+    if (!this.clips.length && !this.hasMore && !resumable.length) {
+      this.list.appendChild(element("p", "long-empty", "暂无长视频"));
+    }
+    this.list.scrollTop = scrollTop;
+  }
+
+  private appendContinueWatching(items: Array<{ clip: Clip; position: number }>): void {
+    if (!items.length) return;
+    const section = element("section", "long-resume-section");
+    section.setAttribute("aria-label", "继续观看");
+    section.appendChild(element("h2", "long-resume-heading", "继续观看"));
+    const rows = element("div", "long-resume-items");
+    for (const { clip, position } of items) {
+      rows.appendChild(this.row(clip, position, true));
+    }
+    section.appendChild(rows);
+    this.list.appendChild(section);
+  }
+
+  private row(clip: Clip, position: number | undefined, resumeCard = false): HTMLElement {
+    const row = element("button", resumeCard ? "long-row long-resume-row" : "long-row");
     row.type = "button";
     const thumb = element("span", "long-thumb");
     thumb.appendChild(icon("film", 22));
@@ -71,10 +134,23 @@ export class LongVideoPage {
     const dimensions = clip.width && clip.height ? ` · ${clip.width}×${clip.height}` : "";
     text.append(
       element("strong", "long-row-title", `视频 #${clip.id.slice(0, 8)}`),
-      element("small", "long-row-sub", `${formatTime(clip.duration)}${dimensions}`),
+      element(
+        "small",
+        position !== undefined && position > 10 && position < clip.duration - 30
+          ? "long-row-sub long-row-resume"
+          : "long-row-sub",
+        position !== undefined && position > 10 && position < clip.duration - 30
+          ? `继续观看 ${formatTime(position)} / ${formatTime(clip.duration)}${dimensions}`
+          : `${formatTime(clip.duration)}${dimensions}`,
+      ),
     );
     row.append(thumb, text);
-    row.addEventListener("click", () => this.onOpen(clip));
+    row.addEventListener("click", () => {
+      const resumeAt = position !== undefined && position > 10 && position < clip.duration - 30
+        ? position
+        : 0;
+      this.onOpen(clip, resumeAt);
+    });
     return row;
   }
 }

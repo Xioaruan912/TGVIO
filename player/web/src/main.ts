@@ -1,36 +1,50 @@
 import "./style.css";
-import { ApiError, api, MOCK_MODE, shortId } from "./api";
+import { ApiError, api, beginPlaybackSession, MOCK_MODE, shortId } from "./api";
+import { AdaptiveCacheController } from "./adaptive-cache";
+import { requestAudioEnable } from "./audio-warning";
 import { FeedView } from "./feed";
+import { ContextFeed } from "./context-feed";
 import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
 import { LargePlayer } from "./large";
+import { VideoLibraryPage } from "./library";
+import { StorageSettingsPage } from "./settings-page";
 import { LongVideoPage } from "./long";
 import { NetworkMeter } from "./net";
 import { VideoPool } from "./player";
 import { PreloadCoordinator } from "./preload";
+import { shouldRetryMediaError } from "./playback-error";
+import { PlaybackStateController, playbackUi, type PlaybackState } from "./playback-state";
 import { ThumbnailPreview } from "./preview";
 import { prefs, setPref } from "./settings";
+import { initialMutedState, mutedForNextVideo, rememberMuted } from "./sound-policy";
 import { icon } from "./icons";
-import type { Clip } from "./types";
+import { installController } from "./install";
+import { playerMediaSession } from "./media-session";
+import { qualityLabel, qualityOptions, resolveStreamUrl } from "./quality";
+import type { ArchiveGroup, Clip, QualitySelection } from "./types";
 import {
   buildError,
   buildLogin,
   buildShell,
   closeSheet,
+  confirmMediaDelete,
   element,
   formatTime,
   openSheet,
   paintSeek,
   setActiveNav,
+  setControlsVisible,
   hideIndicator,
   setFavoriteButton,
   setSoundButton,
-  sheetEmpty,
   sheetNote,
+  sheetChoice,
   sheetRow,
   sheetSection,
   sheetToggle,
   showIndicator,
+  showGestureGuide,
   toast,
   type Shell,
   type ShellHandlers,
@@ -41,33 +55,71 @@ const MIN_FEED = 20;
 const FEED_AHEAD = 8;
 const MAX_FEED = 300;
 const DEBUG = MOCK_MODE || new URLSearchParams(window.location.search).has("debug");
-const MUTE_KEY = "tgvio.player.muted";
 
 const clips: Clip[] = [];
 const favorites = new Set<string>();
 const preloader = new PreloadCoordinator();
+const adaptiveCache = new AdaptiveCacheController(prefs.cacheMode);
+type NetworkConnection = EventTarget & { saveData?: boolean; effectiveType?: string };
+const networkConnection = (navigator as Navigator & { connection?: NetworkConnection }).connection;
+const updateConnectionSignals = () => adaptiveCache.update({
+  saveData: networkConnection?.saveData,
+  effectiveType: networkConnection?.effectiveType,
+});
+updateConnectionSignals();
+networkConnection?.addEventListener("change", updateConnectionSignals);
+preloader.onOutcome = (ok) => adaptiveCache.update({ preloadFailures: ok ? 0 : 1 });
 
 let shell: Shell | null = null;
 let feedView: FeedView | null = null;
+let contextFeed: ContextFeed | null = null;
+let savedHomeIndex = 0;
 let pool: VideoPool | null = null;
+let libraryPage: VideoLibraryPage | null = null;
 let activeIndex = 0;
 let paused = false;
-let muted = localStorage.getItem(MUTE_KEY) !== "false";
+let privacyUnlocked = false;
+let largePlayer: LargePlayer | null = null;
+let privacyCover: HTMLElement | null = null;
+const progressSaveTimers = new Map<string, number>();
+const progressSaveValues = new Map<string, number>();
+const progressSaveChains = new Map<string, Promise<void>>();
+const progressCompleted = new Set<string>();
+let muted = initialMutedState();
+let quality: QualitySelection = prefs.quality;
 let refill: Promise<void> | null = null;
+let homeRefresh: Promise<void> | null = null;
+let homeFeedGeneration = 0;
+let randomRefill: Promise<void> | null = null;
+let randomCandidateGeneration = 0;
+const randomCandidates: Clip[] = [];
+let randomSwitching = false;
+let deletingMedia = false;
+let lastActiveClipId = "";
+let lastActiveIndex = -1;
 let autoplayBlocked = false;
 let openSheetKind: string | null = null;
+let groupRequestController: AbortController | null = null;
+let groupRequestGeneration = 0;
 let userSeeking = false;
+let longVideosOpen = false;
 let debugAt = 0;
 let skipStreak = 0;
 let warmTimer = 0;
 let resizeTimer = 0;
 let stallWarnTimer = 0;
 let stallSkipTimer = 0;
+let controlsHideTimer = 0;
 let feedPreview: ThumbnailPreview | null = null;
 let feedMeter: NetworkMeter | null = null;
+let playback: PlaybackStateController | null = null;
 const unplayable = new Set<string>();
 const seenIds = new Set<string>();
 const errorRetries = new Map<string, number>();
+
+function activeClips(): Clip[] {
+  return contextFeed?.clips ?? clips;
+}
 
 async function ensureFeed(minimum: number): Promise<void> {
   // A shared in-flight refill may only satisfy an older, smaller minimum, so
@@ -80,7 +132,7 @@ async function ensureFeed(minimum: number): Promise<void> {
   }
   const task = (async () => {
     while (clips.length < minimum && clips.length < MAX_FEED) {
-      const batch = await api.feed(FEED_BATCH, prefs.cacheAhead);
+      const batch = await api.feed(FEED_BATCH, prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving");
       if (!batch.length) break;
       for (const clip of batch) {
         if (seenIds.has(clip.id)) continue;
@@ -103,9 +155,68 @@ function clipMeta(clip: Clip): string {
   return [duration, dimensions, "私有片库"].filter(Boolean).join(" · ");
 }
 
+const codecProbe = document.createElement("video");
+
+function browserCanRender(clip: Clip): boolean {
+  const codec = clip.codec?.toLowerCase() ?? "";
+  if (!codec.includes("hevc") && !codec.includes("h265") && !codec.includes("hvc1") && !codec.includes("hev1")) return true;
+  return Boolean(
+    codecProbe.canPlayType('video/mp4; codecs="hvc1"')
+    || codecProbe.canPlayType('video/mp4; codecs="hev1"'),
+  );
+}
+
+function effectiveStreamUrl(clip: Clip): string {
+  return resolveStreamUrl(clip, quality);
+}
+
+function applyPlaybackState(state: PlaybackState): void {
+  const page = feedView?.pageAt(activeIndex) ?? null;
+  page?.setAttribute("data-playback-state", state);
+  shell?.root.setAttribute("data-playback-state", state);
+  const ui = playbackUi(state);
+  const label = page?.querySelector<HTMLElement>(".media-loading-label");
+  if (label) label.textContent = ui.label ?? "正在加载视频";
+  if (ui.controlsAutoHide) scheduleControlsHide();
+  else showControlsForActivity();
+  renderDebug();
+}
+
+/**
+ * Force the controller's derived state onto the DOM. ``update`` only calls
+ * ``applyPlaybackState`` on a real transition, so after a swipe the newly
+ * active page (which never carried an attribute) must be painted even when the
+ * derived state matches the previous clip's state.
+ */
+function syncPlaybackStateDom(): void {
+  if (playback) applyPlaybackState(playback.state);
+}
+
 function applyActive(index: number): void {
   const current = feedView?.clipAt(index);
   if (!feedView || !pool || !current) return;
+  if (!browserCanRender(current)) {
+    unplayable.add(current.id);
+    skipStreak += 1;
+    void api.logPlaybackEvent({
+      event: "media_skip",
+      mediaId: current.id,
+      category: current.category,
+      reason: "unsupported_codec",
+      failureStreak: skipStreak,
+    });
+    toast(shell!, "当前浏览器不支持该视频编码，已跳过");
+    window.setTimeout(() => goNext(true), 0);
+    return;
+  }
+  if (lastActiveClipId !== current.id || lastActiveIndex !== index) {
+    muted = mutedForNextVideo(muted);
+    rememberMuted(muted);
+    pool.setMuted(muted);
+    if (shell) setSoundButton(shell, muted);
+    lastActiveClipId = current.id;
+    lastActiveIndex = index;
+  }
   if (unplayable.has(current.id)) {
     skipStreak += 1;
     if (skipStreak <= 8) {
@@ -113,20 +224,53 @@ function applyActive(index: number): void {
       return;
     }
   }
-  paused = false;
+  paused = !privacyUnlocked;
   const previous = index > 0 ? feedView.clipAt(index - 1) : null;
-  const next = index + 1 < clips.length ? feedView.clipAt(index + 1) : null;
+  const currentClips = activeClips();
+  const next = index + 1 < currentClips.length ? feedView.clipAt(index + 1) : null;
+  feedView.pageAt(index - 1)?.classList.remove("is-active");
+  feedView.pageAt(index)?.classList.add("is-active");
+  feedView.pageAt(index + 1)?.classList.remove("is-active");
   pool.sync(
     [
-      { page: feedView.pageAt(index - 1), clip: previous, current: false },
-      { page: feedView.pageAt(index), clip: current, current: true },
-      { page: feedView.pageAt(index + 1), clip: next, current: false },
+      {
+        page: feedView.pageAt(index - 1),
+        clip: previous,
+        current: false,
+        streamUrl: previous ? effectiveStreamUrl(previous) : undefined,
+      },
+      {
+        page: feedView.pageAt(index),
+        clip: current,
+        current: true,
+        streamUrl: effectiveStreamUrl(current),
+      },
+      {
+        page: feedView.pageAt(index + 1),
+        clip: next,
+        current: false,
+        streamUrl: next ? effectiveStreamUrl(next) : undefined,
+      },
     ],
     { paused, muted },
   );
+  const currentReady = (pool.currentVideo()?.readyState ?? 0) >= 2;
+  shell?.root.classList.toggle("privacy-ready", currentReady);
+  playback?.update({
+    shouldPlay: !paused && privacyUnlocked && !longVideosOpen,
+    // A swipe always resumes: the previous clip's user pause must not leak in.
+    pausedByUser: false,
+    hasFrame: currentReady,
+    mediaErrored: false,
+    // Not-yet-buffered media is initial loading; waiting after a first frame is
+    // buffering. ``paused`` already short-circuits before this is consulted.
+    networkWaiting: false,
+  });
+  syncPlaybackStateDom();
   updateOverlay(current);
+  showControlsForActivity();
   setFavoriteButton(shell!, favorites.has(current.id));
-  hideIndicator(shell!);
+  shell!.groupBtn.hidden = contextFeed !== null || current.groups.length === 0;
   scheduleWarm();
   armStallGuard(current.id);
   if (feedMeter) {
@@ -134,18 +278,64 @@ function applyActive(index: number): void {
     if (prefs.netSpeed) feedMeter.start();
     else feedMeter.stop();
   }
+  if (shell && privacyUnlocked) {
+    shell.root.dataset.mediaSession = playerMediaSession.supported ? "short" : "unsupported";
+    playerMediaSession.activateShort({
+      play: playGesture,
+      pause: () => { if (!paused) togglePlayback(); },
+      previous: () => feedView?.scrollToIndex(Math.max(0, activeIndex - 1), true),
+      next: () => goNext(),
+      isPrivacyUnlocked: () => privacyUnlocked,
+    });
+    const activeVideo = pool.currentVideo();
+    if (activeVideo) playerMediaSession.sync(activeVideo);
+  } else if (shell) {
+    playerMediaSession.clear();
+    shell.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
+  }
   renderDebug();
 }
 
+function controlsAreBlocked(): boolean {
+  if (userSeeking || openSheetKind !== null) return true;
+  const state = playback?.state;
+  return (
+    state === undefined ||
+    state === "privacy-locked" ||
+    state === "error" ||
+    state === "autoplay-blocked" ||
+    state === "paused" ||
+    state === "buffering"
+  );
+}
+
+function clearControlsHide(): void {
+  window.clearTimeout(controlsHideTimer);
+  controlsHideTimer = 0;
+}
+
+function scheduleControlsHide(): void {
+  clearControlsHide();
+  if (!shell || controlsAreBlocked() || shell.root.contains(document.activeElement)) return;
+  controlsHideTimer = window.setTimeout(() => {
+    if (!shell || controlsAreBlocked() || shell.root.contains(document.activeElement)) return;
+    setControlsVisible(shell, false);
+  }, 2200);
+}
+
+function showControlsForActivity(): void {
+  clearControlsHide();
+  if (shell) setControlsVisible(shell, true);
+  scheduleControlsHide();
+}
+
 /**
- * Ask the server to pre-build the faststart overlay for the next few clips so a
+ * Ask the server to pre-build the faststart overlay for the next clip so a
  * swipe does not have to wait for the archive's trailing ``moov``.
  */
 function prepareAhead(index: number): void {
-  for (let offset = 1; offset <= 3; offset += 1) {
-    const clip = feedView?.clipAt(index + offset);
-    if (clip) void api.prepare(clip.id);
-  }
+  const next = feedView?.clipAt(index + 1);
+  if (next) void api.prepare(next.id).catch(() => undefined);
 }
 
 /**
@@ -160,6 +350,17 @@ function armStallGuard(clipId: string): void {
     const video = pool?.currentVideo();
     if (feedView?.clipAt(activeIndex)?.id !== clipId) return;
     if (video && video.readyState >= 2) return;
+    const clip = feedView?.clipAt(activeIndex);
+    if (clip) {
+      void api.logPlaybackEvent({
+        event: "media_stall_warning",
+        mediaId: clip.id,
+        category: clip.category,
+        mediaErrorCode: video?.error?.code ?? 0,
+        networkState: video?.networkState ?? 0,
+        readyState: video?.readyState ?? 0,
+      });
+    }
     toast(shell!, "视频加载较慢，正在等待…");
   }, 12000);
   stallSkipTimer = window.setTimeout(() => {
@@ -169,7 +370,28 @@ function armStallGuard(clipId: string): void {
     if (paused) return;
     unplayable.add(clipId);
     skipStreak += 1;
+    const clip = feedView?.clipAt(activeIndex);
+    if (clip) {
+      void api.logPlaybackEvent({
+        event: "media_stall_skip",
+        mediaId: clip.id,
+        category: clip.category,
+        mediaErrorCode: video?.error?.code ?? 0,
+        networkState: video?.networkState ?? 0,
+        readyState: video?.readyState ?? 0,
+        failureStreak: skipStreak,
+      });
+    }
     if (skipStreak > 8) {
+      const clip = feedView?.clipAt(activeIndex);
+      if (clip) {
+        void api.logPlaybackEvent({
+          event: "media_unplayable_streak",
+          mediaId: clip.id,
+          category: clip.category,
+          failureStreak: skipStreak,
+        });
+      }
       toast(shell!, "连续多条视频加载失败");
       return;
     }
@@ -184,34 +406,39 @@ function clearStallGuard(): void {
 }
 
 /**
- * Warm N+1 only after the active video is actually playing, never while it is
- * still buffering. Rapid swipes clear the pending timer instead of firing
- * speculative requests that would compete with the active stream.
+ * Warm N+1 as soon as the current video is actually playing. This also runs
+ * behind the initial privacy lock, so the first upward swipe does not start
+ * cold. It never runs while the active clip is still buffering or loading, so
+ * speculative requests cannot compete with the stream the user is waiting on.
  */
 function scheduleWarm(): void {
   window.clearTimeout(warmTimer);
+  if (longVideosOpen) return;
   warmTimer = window.setTimeout(() => {
+    if (longVideosOpen) return;
+    if (playback && (playback.state === "buffering" || playback.state === "loading")) return;
     const video = pool?.currentVideo();
-    if (!video || video.paused || video.readyState < 2) return;
-    preloader.plan(clips, activeIndex);
+    if (!video || video.readyState < 2 || (privacyUnlocked && video.paused)) return;
+    preloader.plan(activeClips(), activeIndex, adaptiveCache.current());
     prepareAhead(activeIndex);
-  }, 900);
+  }, 120);
 }
 
 function commitActive(index: number): void {
   if (!feedView) return;
-  if (index < 0 || index >= clips.length) return;
+  const currentClips = activeClips();
+  if (index < 0 || index >= currentClips.length) return;
   activeIndex = index;
-  void ensureFeed(index + FEED_AHEAD)
-    .then(() => feedView?.setClips(clips))
-    .catch(() => undefined);
+  if (contextFeed) void ensureContextPage(index + FEED_AHEAD);
+  else void ensureFeed(index + FEED_AHEAD).then(() => feedView?.setClips(clips)).catch(() => undefined);
   applyActive(index);
 }
 
 function updateOverlay(clip: Clip): void {
   if (!shell) return;
   shell.title.textContent = `视频 #${shortId(clip.id)}`;
-  shell.meta.textContent = clipMeta(clip);
+  shell.meta.textContent = `${clipMeta(clip)} · 清晰度 ${qualityLabel(clip, quality)}`;
+  shell.deleteBtn.hidden = !clip.deletable;
   const video = pool?.currentVideo() ?? null;
   const duration = video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : clip.duration;
   shell.seek.max = String(duration || 0);
@@ -238,55 +465,390 @@ async function toggleFavorite(): Promise<void> {
   const enabled = !favorites.has(clip.id);
   if (enabled) favorites.add(clip.id);
   else favorites.delete(clip.id);
+  clip.favorite = enabled;
   setFavoriteButton(shell!, enabled);
-  if (openSheetKind === "favorites") void openFavorites();
   try {
-    await api.setFavorite(clip.id, enabled);
-    toast(shell!, enabled ? "已收藏" : "已取消收藏");
+    const result = await api.setFavorite(clip.id, enabled);
+    const syncText = ({ pending: "待上传", syncing: "同步中", synced: "已同步", failed: "同步失败" } as const)[result.syncStatus];
+    toast(shell!, enabled ? `已收藏 · ${syncText}` : "已取消收藏");
   } catch {
     if (enabled) favorites.delete(clip.id);
     else favorites.add(clip.id);
+    clip.favorite = !enabled;
     setFavoriteButton(shell!, !enabled);
     toast(shell!, "操作失败，请稍后重试");
   }
 }
 
+function removeClipById(items: Clip[], mediaId: string): number {
+  const index = items.findIndex((item) => item.id === mediaId);
+  if (index >= 0) items.splice(index, 1);
+  return index;
+}
+
+function purgeClientMedia(mediaId: string): number {
+  favorites.delete(mediaId);
+  unplayable.delete(mediaId);
+  errorRetries.delete(mediaId);
+  progressCompleted.delete(mediaId);
+  progressSaveValues.delete(mediaId);
+  const timer = progressSaveTimers.get(mediaId);
+  if (timer) window.clearTimeout(timer);
+  progressSaveTimers.delete(mediaId);
+  removeClipById(randomCandidates, mediaId);
+  if (contextFeed) removeClipById(contextFeed.clips, mediaId);
+  return removeClipById(clips, mediaId);
+}
+
+async function deleteCurrentMedia(): Promise<void> {
+  const clip = feedView?.clipAt(activeIndex);
+  if (!clip || !clip.deletable || !shell || !pool || deletingMedia) return;
+  if (!await confirmMediaDelete(shell.root)) return;
+
+  deletingMedia = true;
+  shell.deleteBtn.disabled = true;
+  clearStallGuard();
+  paused = true;
+  pool.sync([], { paused: true, muted: true });
+  try {
+    const result = await api.deleteMedia(clip.id);
+    if (!result.removed) {
+      lastActiveClipId = "";
+      applyActive(activeIndex);
+      toast(
+        shell,
+        result.deletedCopies > 0
+          ? `已删除 ${result.deletedCopies} 份，${result.failedCopies} 份失败，视频仍保留`
+          : "源视频删除失败，请稍后重试",
+      );
+      return;
+    }
+
+    const homeIndex = purgeClientMedia(clip.id);
+
+    const remaining = activeClips();
+    if (!remaining.length && contextFeed) {
+      savedHomeIndex = Math.max(0, homeIndex);
+      leaveContext();
+    } else {
+      if (!remaining.length) await ensureFeed(MIN_FEED);
+      feedView?.replaceClips(activeClips());
+      activeIndex = Math.min(activeIndex, Math.max(0, activeClips().length - 1));
+      feedView?.scrollToIndex(activeIndex, false);
+      lastActiveClipId = "";
+      lastActiveIndex = -1;
+      if (activeClips().length) applyActive(activeIndex);
+    }
+    toast(shell, `已永久删除视频（${result.deletedCopies} 份源文件）`);
+  } catch {
+    lastActiveClipId = "";
+    applyActive(activeIndex);
+    toast(shell, "源视频删除失败，请稍后重试");
+  } finally {
+    deletingMedia = false;
+    if (shell) shell.deleteBtn.disabled = false;
+  }
+}
+
 function toggleSound(): void {
-  muted = !muted;
-  localStorage.setItem(MUTE_KEY, muted ? "true" : "false");
-  pool?.setMuted(muted);
-  setSoundButton(shell!, muted);
+  if (!muted) {
+    muted = true;
+    rememberMuted(true);
+    pool?.setMuted(true);
+    if (shell) setSoundButton(shell, true);
+    if (openSheetKind === "settings") openSettings();
+    return;
+  }
+  const host = shell?.root;
+  if (!host) return;
+  void requestAudioEnable(host).then((confirmed) => {
+    if (!confirmed || !pool) return;
+    muted = false;
+    rememberMuted(false);
+    pool.setMuted(false);
+    if (shell) setSoundButton(shell, false);
+    if (openSheetKind === "settings") openSettings();
+  });
+}
+
+function setQuality(selection: QualitySelection): void {
+  quality = selection;
+  setPref("quality", selection);
+  const clip = feedView?.clipAt(activeIndex);
+  if (clip && pool) pool.switchCurrentSource(effectiveStreamUrl(clip));
   if (openSheetKind === "settings") openSettings();
 }
 
 function togglePlayback(): void {
-  if (!pool || !shell) return;
+  if (!pool || !shell || !privacyUnlocked) return;
   paused = !paused;
   const video = pool.currentVideo();
   if (video) {
     if (paused) video.pause();
-    else video.play().catch(() => undefined);
+    else {
+      const requestedClipId = feedView?.clipAt(activeIndex)?.id;
+      void video.play().catch(() => {
+        if (pool?.currentVideo() !== video || feedView?.clipAt(activeIndex)?.id !== requestedClipId) return;
+        paused = true;
+        autoplayBlocked = true;
+        playback?.update({ pausedByUser: true, autoplayBlocked: true });
+        showControlsForActivity();
+      });
+    }
   }
-  showIndicator(shell, paused ? "pause" : "play");
+  playback?.update({ pausedByUser: paused });
+  if (paused) showControlsForActivity();
+  else scheduleControlsHide();
 }
 
 function playGesture(): void {
   if (!pool || !shell) return;
+  privacyUnlocked = true;
   autoplayBlocked = false;
   paused = false;
-  shell.root.classList.remove("needs-gesture");
+  shell.root.classList.remove("privacy-locked");
+  playback?.update({ privacyUnlocked: true, autoplayBlocked: false, pausedByUser: false });
   pool.resume();
-  showIndicator(shell, "play");
+  applyActive(activeIndex);
+}
+
+function onDocumentVisibilityChange(): void {
+  if (document.hidden) {
+    if (largePlayer?.isPictureInPictureActive()) {
+      privacyCover?.classList.add("visible");
+      return;
+    }
+    lockPrivacyForBackground();
+    return;
+  }
+  // The full-page black cover protects the app switcher snapshot only. On
+  // return, keep media locked but allow the user to navigate the app; only a
+  // player-specific play control can reveal and resume a video.
+  privacyCover?.classList.remove("visible");
+}
+
+function lockPrivacyForBackground(): void {
+  playerMediaSession.clear();
+  if (shell) shell.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
+  privacyUnlocked = false;
+  paused = true;
+  playback?.update({ privacyUnlocked: false, pausedByUser: true });
+  libraryPage?.lockPrivacy();
+  const video = largePlayer?.currentVideo() ?? pool?.currentVideo() ?? null;
+  if (largePlayer) largePlayer.lockPrivacy();
+  else shell?.root.classList.add("privacy-locked");
+  video?.pause();
+  privacyCover?.classList.add("visible");
+}
+
+function lockPrivacyScreen(): void {
+  playerMediaSession.clear();
+  if (shell) shell.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
+  privacyUnlocked = false;
+  paused = true;
+  playback?.update({ privacyUnlocked: false, pausedByUser: true });
+  libraryPage?.lockPrivacy();
+  const video = largePlayer?.currentVideo() ?? pool?.currentVideo() ?? null;
+  if (largePlayer) largePlayer.lockPrivacy();
+  else {
+    shell?.root.classList.add("privacy-locked");
+    video?.pause();
+  }
+}
+
+function saveLongVideoProgress(mediaId: string, position: number, duration: number, force: boolean): void {
+  if (!Number.isFinite(position) || !Number.isFinite(duration) || duration <= 0) return;
+  if (position >= duration - 30) {
+    if (progressCompleted.has(mediaId)) return;
+    progressCompleted.add(mediaId);
+    const timer = progressSaveTimers.get(mediaId);
+    if (timer) window.clearTimeout(timer);
+    progressSaveTimers.delete(mediaId);
+    progressSaveValues.delete(mediaId);
+    enqueueProgressWrite(mediaId, () => api.clearLongVideoProgress(mediaId));
+    return;
+  }
+  progressCompleted.delete(mediaId);
+  progressSaveValues.set(mediaId, position);
+  if (force) {
+    const timer = progressSaveTimers.get(mediaId);
+    if (timer) window.clearTimeout(timer);
+    progressSaveTimers.delete(mediaId);
+    const latest = progressSaveValues.get(mediaId);
+    if (latest !== undefined) enqueueProgressWrite(mediaId, () => api.saveLongVideoProgress(mediaId, latest));
+    return;
+  }
+  if (progressSaveTimers.has(mediaId)) return;
+  const nextTimer = window.setTimeout(() => {
+    progressSaveTimers.delete(mediaId);
+    const latest = progressSaveValues.get(mediaId);
+    if (latest !== undefined) enqueueProgressWrite(mediaId, () => api.saveLongVideoProgress(mediaId, latest));
+  }, 8000);
+  progressSaveTimers.set(mediaId, nextTimer);
+}
+
+function enqueueProgressWrite(mediaId: string, write: () => Promise<void>): void {
+  const previous = progressSaveChains.get(mediaId) ?? Promise.resolve();
+  const next = previous.catch(() => undefined).then(write).catch(() => undefined);
+  progressSaveChains.set(mediaId, next);
+  void next.finally(() => {
+    if (progressSaveChains.get(mediaId) === next) progressSaveChains.delete(mediaId);
+  });
 }
 
 function goNext(instant = false): void {
+  if (homeRefresh) return;
+  const generation = homeFeedGeneration;
   const next = activeIndex + 1;
-  void ensureFeed(next + FEED_AHEAD)
-    .then(() => {
-      feedView?.setClips(clips);
-      if (next < clips.length) feedView?.scrollToIndex(next, !instant);
-    })
-    .catch(() => toast(shell!, "暂时加载失败"));
+  const load = contextFeed ? ensureContextPage(next + FEED_AHEAD) : ensureFeed(next + FEED_AHEAD);
+  void load.then(() => {
+    if (generation !== homeFeedGeneration) return;
+    if (!contextFeed) feedView?.setClips(clips);
+    if (next < activeClips().length) feedView?.scrollToIndex(next, !instant);
+  }).catch(() => toast(shell!, "暂时加载失败"));
+}
+
+async function refreshHome(): Promise<void> {
+  if (!feedView || !pool || contextFeed) return;
+  if (homeRefresh) return homeRefresh;
+  homeFeedGeneration += 1;
+  const task = (async () => {
+    closeSheet(shell!);
+    openSheetKind = null;
+    setActiveNav(shell!, "home");
+    while (refill) await refill.catch(() => undefined);
+
+    const refreshed: Clip[] = [];
+    const selected = new Set(seenIds);
+    for (let request = 0; refreshed.length < MIN_FEED && request < 5; request += 1) {
+      const batch = await api.feed(Math.min(FEED_BATCH, MIN_FEED - refreshed.length), prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving");
+      if (!batch.length) break;
+      for (const clip of batch) {
+        if (selected.has(clip.id)) continue;
+        selected.add(clip.id);
+        refreshed.push(clip);
+      }
+    }
+    if (!refreshed.length) {
+      toast(shell!, "暂时没有新的可播放视频");
+      return;
+    }
+
+    clearStallGuard();
+    preloader.setPressure(true);
+    pool.sync([], { paused: true, muted: true });
+    beginPlaybackSession();
+    clips.splice(0, clips.length, ...refreshed);
+    for (const clip of refreshed) {
+      seenIds.add(clip.id);
+      if (clip.favorite) favorites.add(clip.id);
+    }
+    randomCandidates.length = 0;
+    randomCandidateGeneration += 1;
+    feedView.replaceClips(clips);
+    activeIndex = 0;
+    lastActiveClipId = "";
+    lastActiveIndex = -1;
+    paused = !privacyUnlocked;
+    preloader.setPressure(false);
+    feedView.scrollToIndex(0, false);
+    applyActive(0);
+    void ensureFeed(activeIndex + FEED_AHEAD)
+      .then(() => feedView?.setClips(clips))
+      .catch(() => undefined);
+    toast(shell!, `已刷新 · ${refreshed.length} 条新视频`);
+  })();
+  homeRefresh = task;
+  try {
+    await task;
+  } catch {
+    toast(shell!, "刷新失败，请稍后重试");
+  } finally {
+    if (homeRefresh === task) homeRefresh = null;
+  }
+}
+
+async function ensureRandomCandidates(): Promise<void> {
+  if (MOCK_MODE || randomCandidates.length >= 5) return;
+  if (randomRefill) {
+    await randomRefill;
+    if (randomCandidates.length >= 5) return;
+  }
+  const exclude = new Set<string>();
+  for (let index = activeIndex; index <= activeIndex + 5; index += 1) {
+    const clip = feedView?.clipAt(index);
+    if (clip) exclude.add(clip.id);
+  }
+  for (const clip of randomCandidates) exclude.add(clip.id);
+  const generation = randomCandidateGeneration;
+  const request = api.randomShorts(5 - randomCandidates.length, [...exclude]).then((items) => {
+    if (generation !== randomCandidateGeneration) return;
+    const known = new Set([
+      ...activeClips().map((clip) => clip.id),
+      ...randomCandidates.map((clip) => clip.id),
+    ]);
+    const shorts = items.filter((clip) => clip.category === "short" && !known.has(clip.id));
+    randomCandidates.push(...shorts);
+    preloader.warmRandomCandidates(shorts, adaptiveCache.current());
+  });
+  randomRefill = request;
+  try {
+    await request;
+  } finally {
+    if (randomRefill === request) randomRefill = null;
+  }
+}
+
+async function goRandom(): Promise<void> {
+  if (!feedView || !shell || contextFeed || randomSwitching) return;
+  randomSwitching = true;
+  shell.shuffleBtn.disabled = true;
+  shell.shuffleBtn.setAttribute("aria-busy", "true");
+  const label = shell.shuffleBtn.querySelector<HTMLElement>(".action-label");
+  if (label) label.textContent = "准备中";
+  const sourceIndex = activeIndex;
+  const sourceId = activeClips()[sourceIndex]?.id;
+  try {
+    await ensureRandomCandidates();
+    if (!randomCandidates.length) {
+      toast(shell, "没有可抽取的短视频");
+      return;
+    }
+    const candidateIndex = Math.floor(Math.random() * randomCandidates.length);
+    const clip = randomCandidates[candidateIndex];
+    if (!clip || clip.category !== "short") {
+      toast(shell, "随机视频暂时不可用");
+      return;
+    }
+    if (!await preloader.ensureRandomCandidate(clip, adaptiveCache.current())) {
+      toast(shell, "随机视频还在准备中，当前视频会继续播放，请稍后重试");
+      return;
+    }
+    if (activeIndex !== sourceIndex || activeClips()[sourceIndex]?.id !== sourceId) {
+      toast(shell, "当前视频已改变，请重新点换一个");
+      return;
+    }
+    if (!feedView.replaceClipAt(sourceIndex, clip)) {
+      toast(shell, "随机视频暂时不可用");
+      return;
+    }
+    randomCandidates.splice(candidateIndex, 1);
+    seenIds.add(clip.id);
+    if (favorites.has(clip.id)) clip.favorite = true;
+    lastActiveClipId = "";
+    applyActive(activeIndex);
+    void ensureRandomCandidates();
+  } catch {
+    toast(shell, "随机抽取失败，请稍后重试");
+  } finally {
+    randomSwitching = false;
+    if (shell) {
+      shell.shuffleBtn.disabled = false;
+      shell.shuffleBtn.removeAttribute("aria-busy");
+      const currentLabel = shell.shuffleBtn.querySelector<HTMLElement>(".action-label");
+      if (currentLabel) currentLabel.textContent = "换一个";
+    }
+  }
 }
 
 /**
@@ -297,13 +859,38 @@ function goNext(instant = false): void {
  * Transient failures never permanently blacklist a clip.
  */
 async function handleMediaError(clip: Clip): Promise<void> {
-  preloader.setPressure(true);
+    adaptiveCache.update({ playbackPressure: true });
+    preloader.setPressure(true);
   const attempts = errorRetries.get(clip.id) ?? 0;
+  const video = pool?.currentVideo();
+  void api.logPlaybackEvent({
+    event: "media_error",
+    mediaId: clip.id,
+    category: clip.category,
+    mediaErrorCode: video?.error?.code ?? 0,
+    networkState: video?.networkState ?? 0,
+    readyState: video?.readyState ?? 0,
+    retry: attempts,
+  });
   const status = await api.probe(clip);
+  void api.logPlaybackEvent({
+    event: "media_probe",
+    mediaId: clip.id,
+    category: clip.category,
+    retry: attempts,
+    probeStatus: status,
+  });
   if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
-  const transient = status === 0 || status === 429 || status >= 500;
-  if (transient && attempts < 2) {
+  if (shouldRetryMediaError(status, attempts)) {
     errorRetries.set(clip.id, attempts + 1);
+    playback?.update({ mediaErrored: false });
+    void api.logPlaybackEvent({
+      event: "media_retry",
+      mediaId: clip.id,
+      category: clip.category,
+      retry: attempts + 1,
+      probeStatus: status,
+    });
     toast(shell!, "网络波动，正在重试");
     window.setTimeout(() => {
       if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
@@ -311,13 +898,28 @@ async function handleMediaError(clip: Clip): Promise<void> {
     }, 700 * (attempts + 1));
     return;
   }
-  unplayable.add(clip.id);
   skipStreak += 1;
+  playback?.update({ mediaErrored: true });
+  void api.logPlaybackEvent({
+    event: "media_skip",
+    mediaId: clip.id,
+    category: clip.category,
+    retry: attempts,
+    probeStatus: status,
+  });
   if (skipStreak > 8) {
+    void api.logPlaybackEvent({
+      event: "media_unplayable_streak",
+      mediaId: clip.id,
+      category: clip.category,
+      retry: attempts,
+      probeStatus: status,
+      failureStreak: skipStreak,
+    });
     toast(shell!, "连续多条视频无法播放");
     return;
   }
-  goNext(true);
+  toast(shell!, "该视频暂时无法播放，可点击重试");
 }
 
 function feedGestureOptions() {
@@ -336,10 +938,16 @@ function feedGestureOptions() {
       if (video) video.playbackRate = speed ?? 1;
     },
     onScrubStart: () => {
+      if (!privacyUnlocked) return;
+      const video = pool?.currentVideo();
+      const wasPlaying = Boolean(video && !video.paused);
       paused = true;
-      pool?.currentVideo()?.pause();
+      playback?.update({ pausedByUser: true });
+      video?.pause();
+      return wasPlaying;
     },
     onScrubMove: (time: number, clientX: number) => {
+      if (!privacyUnlocked) return;
       const clip = feedView?.clipAt(activeIndex);
       const video = pool?.currentVideo();
       if (!clip || !video || !shell) return;
@@ -349,36 +957,77 @@ function feedGestureOptions() {
       paintSeek(shell.seek);
       if (prefs.dragThumbnail) feedPreview?.show(clip, time, formatTime(time), clientX);
     },
-    onScrubEnd: (time: number | null) => {
+    onScrubEnd: (time: number | null, resumePlayback: boolean) => {
       feedPreview?.hide();
+      if (!privacyUnlocked) return;
       const video = pool?.currentVideo();
       if (!video) return;
       if (time !== null) video.currentTime = time;
-      paused = false;
-      void video.play().catch(() => undefined);
+      paused = !resumePlayback;
+      playback?.update({ pausedByUser: !resumePlayback });
+      if (resumePlayback) void video.play().catch(() => undefined);
+      else video.pause();
     },
   };
 }
 
 function openLongVideos(): void {
   if (!shell) return;
+  longVideosOpen = true;
+  window.clearTimeout(warmTimer);
+  preloader.setPressure(true);
+  playback?.update({ shouldPlay: false });
   let page: LongVideoPage | null = null;
-  let player: LargePlayer | null = null;
   const closePlayer = (): void => {
-    player?.destroy();
-    player = null;
+    largePlayer?.destroy();
+    largePlayer = null;
+    privacyUnlocked = false;
+    paused = true;
+    shell?.root.classList.add("privacy-locked");
+    playback?.update({ privacyUnlocked: false, pausedByUser: true, shouldPlay: false });
+    pool?.currentVideo()?.pause();
   };
   page = new LongVideoPage(
-    (clip: Clip) => {
+    (clip: Clip, startAt = 0) => {
       closePlayer();
-      player = new LargePlayer(clip, closePlayer);
-      document.body.appendChild(player.root);
+      largePlayer = new LargePlayer(clip, () => {
+        closePlayer();
+        const progressWrite = progressSaveChains.get(clip.id) ?? Promise.resolve();
+        void progressWrite.then(() => page?.refreshProgress());
+      }, {
+        privacyLocked: !privacyUnlocked,
+        startAt,
+        onUnlock: () => {
+          privacyUnlocked = true;
+          shell?.root.classList.remove("privacy-locked");
+          playback?.update({ privacyUnlocked: true, pausedByUser: false });
+        },
+        onPrivacyLock: lockPrivacyScreen,
+        onProgress: (position, duration, force) =>
+          saveLongVideoProgress(clip.id, position, duration, force),
+        onDeleted: (result) => {
+          purgeClientMedia(clip.id);
+          page?.remove(clip.id);
+          closePlayer();
+          toast(shell!, `已永久删除视频（${result.deletedCopies} 份源文件）`);
+        },
+      });
+      document.body.appendChild(largePlayer.root);
+      if (!prefs.gestureGuideSeen) {
+        setPref("gestureGuideSeen", true);
+        void showGestureGuide(largePlayer.root);
+      }
     },
     () => {
       closePlayer();
       page?.destroy();
       page = null;
+      longVideosOpen = false;
+      adaptiveCache.update({ playbackPressure: false });
+      preloader.setPressure(false);
+      playback?.update({ shouldPlay: !paused && privacyUnlocked, networkWaiting: false });
       setActiveNav(shell!, "home");
+      scheduleWarm();
     },
   );
   document.body.appendChild(page.root);
@@ -402,56 +1051,227 @@ function openClip(clip: Clip): void {
   commitActive(index);
 }
 
-async function openFavorites(): Promise<void> {
-  if (!shell) return;
-  const body: Node[] = [];
-  let list: Clip[] = [];
-  try {
-    list = await api.favorites();
-  } catch {
-    toast(shell, "暂时加载失败");
-  }
-  if (!list.length) {
-    body.push(sheetEmpty("还没有收藏的视频", "刷视频时点一下右侧的收藏按钮，就会出现在这里"));
-  } else {
-    for (const clip of list) {
-      body.push(
-        sheetRow({
-          title: `视频 #${shortId(clip.id)}`,
-          sub: clipMeta(clip),
-          iconName: "play-small",
-          onPick: () => openClip(clip),
-        }),
-      );
+async function ensureContextPage(minimum: number): Promise<void> {
+  const current = contextFeed;
+  if (!current || !feedView) return;
+  while (contextFeed === current && current.hasMore && current.clips.length < minimum) {
+    const loaded = await current.loadMore();
+    if (contextFeed !== current) return;
+    feedView.removeTerminalPage();
+    feedView.setClips(current.clips);
+    if (!loaded) {
+      const message = current.clips.length ? "加载失败，点击重试" : "暂时加载失败，点击重试";
+      feedView.appendTerminalPage(message, "feed-terminal feed-retry", () => {
+        feedView?.removeTerminalPage();
+        void ensureContextPage(Math.max(FEED_AHEAD, current.clips.length + 1));
+      });
+      if (!current.clips.length) {
+        if (shell) toast(shell, "加载失败，请点击重试");
+      }
+      return;
     }
   }
-  openSheetKind = "favorites";
-  openSheet(shell, list.length ? `我的收藏 · ${list.length}` : "我的收藏", body);
-  setActiveNav(shell, "favorites");
+  if (contextFeed !== current || current.hasMore) return;
+  if (!current.clips.length) {
+    feedView.appendTerminalPage("这里还没有视频，点击返回", "feed-terminal", leaveContext);
+    return;
+  }
+  const label = current.mode === "group" ? "这组视频已看完，已返回短视频" : "收藏已刷完";
+  feedView.appendTerminalPage(label);
+}
+
+async function enterContext(mode: "group" | "favorites", group?: ArchiveGroup): Promise<void> {
+  if (!shell || !feedView || !pool) return;
+  if (!contextFeed) savedHomeIndex = activeIndex;
+  contextFeed?.dispose();
+  const context = new ContextFeed(
+    mode,
+    async (cursor, signal) => {
+      if (mode === "group" && group) {
+        const page = await api.groupVideos(group.id, FEED_BATCH, cursor, signal);
+        return page;
+      }
+      return api.favoritePage(FEED_BATCH, cursor, signal);
+    },
+    group?.id ?? null,
+  );
+  contextFeed = context;
+  lockPrivacyScreen();
+  muted = mutedForNextVideo(muted);
+  rememberMuted(muted);
+  pool.setMuted(muted);
+  pool.sync([], { paused: true, muted });
+  closeSheet(shell);
+  openSheetKind = null;
+  setActiveNav(shell, mode === "favorites" ? "favorites" : "home");
+  shell.contextBackBtn.hidden = false;
+  shell.contextBackBtn.textContent = mode === "favorites" ? "返回短视频" : `返回 ${group?.label ?? "短视频"}`;
+  shell.groupBtn.hidden = true;
+  shell.shuffleBtn.hidden = true;
+  const loaded = await context.loadFirstPage();
+  if (contextFeed !== context) return;
+  feedView.replaceClips(context.clips);
+  activeIndex = 0;
+  lastActiveClipId = "";
+  if (!loaded) {
+    await ensureContextPage(1);
+    return;
+  }
+  if (context.clips.length) commitActive(0);
+  await ensureContextPage(Math.min(FEED_AHEAD, Math.max(1, context.clips.length)));
+  feedView.scrollToIndex(0, false);
+}
+
+function leaveContext(): void {
+  if (!contextFeed || !feedView || !pool) return;
+  contextFeed.dispose();
+  contextFeed = null;
+  pool.sync([], { paused: true, muted: true });
+  feedView.replaceClips(clips);
+  activeIndex = Math.min(savedHomeIndex, Math.max(0, clips.length - 1));
+  feedView.scrollToIndex(activeIndex, false);
+  shell!.contextBackBtn.hidden = true;
+  shell!.shuffleBtn.hidden = false;
+  setActiveNav(shell!, "home");
+  lastActiveClipId = "";
+  if (clips.length) applyActive(activeIndex);
+  toast(shell!, "已返回短视频");
+}
+
+function openGroupChooser(): void {
+  const clip = feedView?.clipAt(activeIndex);
+  const groups = clip?.groups ?? [];
+  if (!shell || !groups.length) return;
+  if (groups.length === 1) {
+    void openGroupList(groups[0]);
+    return;
+  }
+  openSheetKind = "group-chooser";
+  openSheet(shell, "选择归属日期", groups.map((group) => sheetRow({
+    title: group.label,
+    sub: "查看并加入当前播放队列",
+    iconName: "play-small",
+    onPick: () => void openGroupList(group),
+  })));
+}
+
+async function openGroupList(group: ArchiveGroup): Promise<void> {
+  if (!shell || !feedView || contextFeed) return;
+  groupRequestController?.abort();
+  const controller = new AbortController();
+  groupRequestController = controller;
+  const generation = ++groupRequestGeneration;
+  const items: Clip[] = [];
+  let cursor: string | null = null;
+  let hasMore = true;
+  let loading = false;
+  let failed = false;
+
+  const render = (): void => {
+    if (!shell || generation !== groupRequestGeneration || openSheetKind !== "group-list") return;
+    const scrollTop = shell.sheetBody.scrollTop;
+    const body: Node[] = [
+      sheetNote("点选视频后会把同组内容接到当前视频后面；上下滑动可继续观看或回到原位置。"),
+    ];
+    if (!items.length && loading) {
+      body.push(sheetRow({ title: "正在加载同组视频…" }));
+    } else if (!items.length && failed) {
+      body.push(sheetRow({ title: "加载失败，点击重试", onPick: () => void loadMore() }));
+    } else if (!items.length && hasMore) {
+      body.push(sheetRow({ title: "加载同组视频", onPick: () => void loadMore() }));
+    } else if (!items.length) {
+      body.push(sheetRow({ title: "这个分组里还没有可播放的视频" }));
+    }
+    for (const item of items) {
+      body.push(sheetRow({
+        title: `视频 #${shortId(item.id)}`,
+        sub: clipMeta(item),
+        note: (feedView?.indexOf(item.id) ?? -1) >= 0 ? "已在播放队列" : "接在当前视频后面",
+        iconName: "play-small",
+        onPick: () => selectGroupItem(item),
+      }));
+    }
+    if (loading && items.length) body.push(sheetRow({ title: "正在加载…" }));
+    else if (failed && items.length) {
+      body.push(sheetRow({ title: "加载失败，点击重试", onPick: () => void loadMore() }));
+    } else if (hasMore && items.length) {
+      body.push(sheetRow({ title: "加载更多同组视频", onPick: () => void loadMore() }));
+    }
+    openSheet(shell, `同组视频 · ${group.label}`, body);
+    shell.sheetBody.scrollTop = scrollTop;
+  };
+
+  const selectGroupItem = (selected: Clip): void => {
+    if (!shell || !feedView) return;
+    const ordered = [selected, ...items.filter((item) => item.id !== selected.id)];
+    let insertAfter = activeIndex;
+    for (const item of ordered) {
+      const existingIndex = feedView.indexOf(item.id);
+      if (existingIndex >= 0) continue;
+      insertAfter = feedView.insertAfter(insertAfter, item);
+      seenIds.add(item.id);
+    }
+    const target = feedView.indexOf(selected.id);
+    closeSheet(shell);
+    openSheetKind = null;
+    setActiveNav(shell, "home");
+    if (target >= 0 && target !== activeIndex) feedView.scrollToIndex(target, true);
+    else if (target === activeIndex) toast(shell, "当前播放的就是这条视频");
+  };
+
+  const loadMore = async (): Promise<void> => {
+    if (loading || !hasMore || controller.signal.aborted) return;
+    loading = true;
+    failed = false;
+    render();
+    try {
+      const page = await api.groupVideos(group.id, FEED_BATCH, cursor, controller.signal);
+      if (generation !== groupRequestGeneration || controller.signal.aborted) return;
+      const known = new Set(items.map((item) => item.id));
+      for (const item of page.items) {
+        if (!known.has(item.id)) {
+          known.add(item.id);
+          items.push(item);
+        }
+      }
+      cursor = page.nextCursor;
+      hasMore = page.hasMore;
+    } catch {
+      if (generation !== groupRequestGeneration || controller.signal.aborted) return;
+      failed = true;
+    } finally {
+      loading = false;
+      render();
+    }
+  };
+
+  openSheetKind = "group-list";
+  render();
+  await loadMore();
 }
 
 function openLibrary(): void {
   if (!shell) return;
-  const body: Node[] = [sheetNote("本次已加载的视频")];
-  if (!clips.length) {
-    body.push(sheetEmpty("片库为空", "本次还没有加载视频"));
-  } else {
-    clips.forEach((clip, index) => {
-      const trailing = element("span", "sheet-row-heart");
-      if (favorites.has(clip.id)) trailing.appendChild(icon("heart-filled", 18));
-      body.push(
-        sheetRow({
-          title: `视频 ${String(index + 1).padStart(2, "0")}`,
-          sub: clipMeta(clip),
-          note: `#${shortId(clip.id)}`,
-          trailing,
-          onPick: () => openClip(clip),
-        }),
-      );
-    });
-  }
-  openSheetKind = "library";
-  openSheet(shell, "片库", body);
+  lockPrivacyScreen();
+  closeSheet(shell);
+  let page: VideoLibraryPage | null = null;
+  page = new VideoLibraryPage(
+    (clip) => {
+      page?.destroy();
+      if (libraryPage === page) libraryPage = null;
+      page = null;
+      setActiveNav(shell!, "home");
+      openClip(clip);
+    },
+    () => {
+      page?.destroy();
+      if (libraryPage === page) libraryPage = null;
+      page = null;
+      setActiveNav(shell!, "home");
+    },
+  );
+  libraryPage = page;
+  document.body.appendChild(page.root);
   setActiveNav(shell, "library");
 }
 
@@ -460,6 +1280,29 @@ function openSettings(): void {
   const body: Node[] = [];
   body.push(sheetSection("播放设置"));
   body.push(sheetToggle("声音", muted ? "已关闭" : "已开启", !muted, toggleSound));
+  body.push(
+    sheetRow({
+      title: "声音安全提示",
+      sub:
+        prefs.soundPromptFrequency === "continuous-sound"
+          ? "首次确认后，后续视频默认有声"
+          : prefs.soundPromptFrequency === "once-per-open"
+            ? "每次重新打开后提醒一次"
+            : "每次开启声音都提醒",
+      onPick: () => {
+        const next = {
+          "continuous-sound": "every-time",
+          "every-time": "once-per-open",
+          "once-per-open": "continuous-sound",
+        } as const;
+        setPref(
+          "soundPromptFrequency",
+          next[prefs.soundPromptFrequency],
+        );
+        openSettings();
+      },
+    }),
+  );
   body.push(
     sheetToggle(
       "长按快进",
@@ -503,17 +1346,25 @@ function openSettings(): void {
       },
     ),
   );
-  body.push(
-    sheetToggle(
-      "边播放边缓存",
-      prefs.cacheAhead ? "大视频预取，拖动秒开" : "已关闭",
-      prefs.cacheAhead,
-      () => {
-        setPref("cacheAhead", !prefs.cacheAhead);
-        openSettings();
-      },
-    ),
-  );
+  const cacheLabels = { auto: "智能（推荐）", speed: "速度优先", "data-saving": "省流量", off: "关闭" } as const;
+  body.push(sheetRow({
+    title: "智能缓存",
+    sub: cacheLabels[prefs.cacheMode],
+    onPick: openCacheModeSettings,
+  }));
+  body.push(sheetToggle(
+    "长视频保持屏幕常亮",
+    prefs.keepScreenAwake ? "播放时防止屏幕自动熄灭" : "已关闭",
+    prefs.keepScreenAwake,
+    () => { setPref("keepScreenAwake", !prefs.keepScreenAwake); openSettings(); },
+  ));
+  body.push(sheetToggle(
+    "双击快进/后退",
+    prefs.doubleTapSeek ? "画面左右两侧双击跳转 10 秒" : "已关闭",
+    prefs.doubleTapSeek,
+    () => { setPref("doubleTapSeek", !prefs.doubleTapSeek); openSettings(); },
+  ));
+  body.push(sheetRow({ title: "查看手势说明", sub: "单击、双击、长按与拖动", onPick: openGestureGuide }));
   body.push(
     sheetToggle(
       "显示网速",
@@ -529,7 +1380,43 @@ function openSettings(): void {
       },
     ),
   );
+  body.push(sheetSection("清晰度"));
+  const currentClip = feedView?.clipAt(activeIndex) ?? null;
+  const qualityChoices = currentClip
+    ? qualityOptions(currentClip)
+    : [
+        { key: "480", label: "480p", selection: 480 as QualitySelection },
+        { key: "720", label: "720p", selection: 720 as QualitySelection },
+        { key: "original", label: "原画", selection: "original" as QualitySelection },
+      ];
+  for (const option of qualityChoices) {
+    const selected = option.selection === quality;
+    body.push(
+      sheetRow({
+        title: option.label,
+        sub: selected ? "当前清晰度" : undefined,
+        iconName: selected ? "play-small" : undefined,
+        onPick: () => setQuality(option.selection),
+      }),
+    );
+  }
+  body.push(sheetSection("安装播放器"));
+  const installState = installController.state();
+  if (installState === "available") {
+    body.push(sheetRow({ title: "安装 TGVIO", sub: "作为独立应用安装到此设备", onPick: () => void installController.prompt() }));
+  } else if (installState === "installed") {
+    body.push(sheetNote("已安装并在独立播放器模式中运行。"));
+  } else if (installState === "ios-manual") {
+    body.push(sheetNote("在 Safari 点“分享”→“添加到主屏幕”，然后从主屏幕打开。"));
+  } else {
+    body.push(sheetNote("浏览器支持安装时，这里会显示“安装 TGVIO”按钮；也可使用浏览器菜单中的安装功能。"));
+  }
   body.push(sheetSection("账户"));
+  body.push(sheetRow({
+    title: "收藏与 WebDAV",
+    sub: "共享收藏、备份位置与新 VPS 恢复",
+    onPick: openStorageSettings,
+  }));
   body.push(
     sheetRow({
       title: "退出当前访问",
@@ -548,39 +1435,66 @@ function openSettings(): void {
   setActiveNav(shell, "settings");
 }
 
+installController.subscribe(() => {
+  if (openSheetKind === "settings") openSettings();
+});
+
+function openCacheModeSettings(): void {
+  if (!shell) return;
+  const choices = [
+    ["auto", "智能（推荐）", "根据缓冲、卡顿和实测速率自动调整"],
+    ["speed", "速度优先", "更多预取，切换视频更快"],
+    ["data-saving", "省流量", "只加载正在播放的视频"],
+    ["off", "关闭", "禁用后台视频预取"],
+  ] as const;
+  openSheetKind = "cache-settings";
+  openSheet(shell, "智能缓存", choices.map(([value, title, sub]) => sheetChoice(
+    title, sub, prefs.cacheMode === value,
+    () => { setPref("cacheMode", value); adaptiveCache.setMode(value); openCacheModeSettings(); },
+  )));
+}
+
+function openGestureGuide(): void {
+  if (!shell) return;
+  closeSheet(shell);
+  openSheetKind = null;
+  void showGestureGuide(shell.root);
+}
+
+function openStorageSettings(): void {
+  if (!shell) return;
+  openSheetKind = "storage-settings";
+  openSheet(shell, "收藏与 WebDAV", [StorageSettingsPage({ api, onBack: openSettings })]);
+}
+
 function onNav(action: string): void {
   if (!shell) return;
+  if (contextFeed && !["home", "favorites"].includes(action)) leaveContext();
+  if (action !== "home" && action !== "random") lockPrivacyScreen();
   if (action === "home") {
+    if (contextFeed) {
+      leaveContext();
+      return;
+    }
     closeSheet(shell);
     openSheetKind = null;
     setActiveNav(shell, "home");
-    feedView?.scrollToIndex(0, true);
+    void refreshHome();
   } else if (action === "random") {
     closeSheet(shell);
     openSheetKind = null;
     setActiveNav(shell, "random");
-    goNext();
+    void goRandom();
   } else if (action === "long") {
     closeSheet(shell);
     openSheetKind = null;
     openLongVideos();
   } else if (action === "favorites") {
-    void openFavorites();
+    void enterContext("favorites");
   } else if (action === "library") {
     openLibrary();
   } else if (action === "settings") {
     openSettings();
-  }
-}
-
-function shareCurrent(): void {
-  const clip = feedView?.clipAt(activeIndex);
-  if (!clip) return;
-  const shared = navigator.share?.bind(navigator);
-  if (shared) {
-    void shared({ title: `TGVIO 视频 #${shortId(clip.id)}` }).catch(() => undefined);
-  } else {
-    toast(shell!, "当前环境暂不支持分享");
   }
 }
 
@@ -602,7 +1516,7 @@ function renderDebug(): void {
   const poolInfo = pool?.diagnostics();
   const preload = preloader.diagnostics();
   shell.debug.hidden = false;
-  shell.debug.textContent = `idx ${activeIndex} · videos ${poolInfo?.elements ?? 0} · playing ${poolInfo?.playing ?? 0} · ${poolInfo?.currentId ?? "-"} ready ${poolInfo?.ready ?? "-"} · preload ${preload.entries.join(",") || "-"} · pressure ${poolInfo ? preload.pressure : false}`;
+  shell.debug.textContent = `idx ${activeIndex} · videos ${poolInfo?.elements ?? 0} · playing ${poolInfo?.playing ?? 0} · ${poolInfo?.currentId ?? "-"} ready ${poolInfo?.ready ?? "-"} · cache ${prefs.cacheMode}/${adaptiveCache.current().kind} · preload ${preload.entries.join(",") || "-"} · pressure ${poolInfo ? preload.pressure : false}`;
 }
 
 function renderLogin(): void {
@@ -636,22 +1550,69 @@ function renderFeed(): void {
     onTogglePlayback: togglePlayback,
     onPlayGesture: playGesture,
     onToggleFavorite: () => void toggleFavorite(),
+    onDeleteMedia: () => void deleteCurrentMedia(),
     onToggleSound: toggleSound,
-    onShuffle: goNext,
-    onShare: shareCurrent,
+    onShuffle: () => void goRandom(),
+    onPrivacyLock: lockPrivacyScreen,
+    onOpenGroup: openGroupChooser,
+    onBackFromContext: leaveContext,
+    onRetryPlayback: () => {
+      playback?.update({ mediaErrored: false, autoplayBlocked: false });
+      pool?.retryCurrent();
+    },
     onSeek,
     onNav,
   };
   shell = buildShell(handlers);
+  shell.root.addEventListener("playersheetclose", () => {
+    if (openSheetKind === "group-list" || openSheetKind === "group-chooser") {
+      groupRequestGeneration += 1;
+      groupRequestController?.abort();
+      groupRequestController = null;
+      openSheetKind = null;
+    }
+  });
+  if (!privacyUnlocked) shell.root.classList.add("privacy-locked");
   app.replaceChildren(shell.root);
+  privacyCover = element("div", "background-privacy-cover", "画面已遮住");
+  privacyCover.setAttribute("aria-hidden", "true");
+  document.body.appendChild(privacyCover);
   feedView = new FeedView(shell.feed);
   pool = new VideoPool();
+  playback = new PlaybackStateController({
+    privacyUnlocked,
+    shouldPlay: !paused && privacyUnlocked && !longVideosOpen,
+  });
+  playback.onTransition = (state) => applyPlaybackState(state);
+  pool.shouldContinue = () => privacyUnlocked && !paused && !longVideosOpen;
   pool.onPressure = (pressured) => {
-    preloader.setPressure(pressured);
-    shell?.root.classList.toggle("playback-pressure", pressured);
-    if (!pressured) scheduleWarm();
+    adaptiveCache.update({ playbackPressure: pressured || longVideosOpen, waiting: pressured });
+    preloader.setPressure(pressured || longVideosOpen);
+    shell?.root.classList.toggle(
+      "privacy-ready",
+      !pressured && (pool?.currentVideo()?.readyState ?? 0) >= 2,
+    );
+    playback?.update({ networkWaiting: pressured });
+    if (!pressured && !longVideosOpen) scheduleWarm();
+  };
+  pool.onLoading = (mediaId) => {
+    if (feedView?.clipAt(activeIndex)?.id !== mediaId) return;
+    playback?.update({ hasFrame: false });
+    showControlsForActivity();
+  };
+  pool.onReady = (mediaId) => {
+    if (feedView?.clipAt(activeIndex)?.id !== mediaId) return;
+    playback?.update({ hasFrame: true, mediaErrored: false, autoplayBlocked: false, networkWaiting: false });
+    shell?.root.classList.add("privacy-ready");
+    errorRetries.delete(mediaId);
+    unplayable.delete(mediaId);
+    scheduleWarm();
+    scheduleControlsHide();
   };
   pool.onTimeUpdate = updateProgress;
+  pool.onPlaybackStarted = (clip) => {
+    void api.logPlaybackEvent({ event: "media_play", mediaId: clip.id, category: clip.category });
+  };
   pool.onAutoplayBlocked = (blocked) => {
     autoplayBlocked = blocked;
     if (!blocked) {
@@ -659,35 +1620,81 @@ function renderFeed(): void {
       clearStallGuard();
       scheduleWarm();
     }
-    shell?.root.classList.toggle("needs-gesture", blocked);
+    playback?.update({ autoplayBlocked: blocked });
   };
   pool.onError = (mediaId) => {
     if (MOCK_MODE) return;
     const clip = feedView?.clipAt(activeIndex) ?? null;
     if (!clip || clip.id !== mediaId) return;
     clearStallGuard();
+    preloader.dropRandomReady(mediaId);
+    playback?.update({ mediaErrored: true });
     void handleMediaError(clip);
+  };
+  pool.onUnusableFrame = (mediaId) => {
+    const clip = feedView?.clipAt(activeIndex);
+    if (!clip || clip.id !== mediaId || unplayable.has(mediaId)) return;
+    unplayable.add(mediaId);
+    skipStreak += 1;
+    void api.logPlaybackEvent({
+      event: "media_skip",
+      mediaId,
+      category: clip.category,
+      reason: "no_decoded_frame",
+      readyState: pool?.currentVideo()?.readyState ?? 0,
+      failureStreak: skipStreak,
+    });
+    toast(shell!, "当前浏览器无法显示该视频画面，已跳过");
+    goNext(true);
   };
   feedView.onCandidate = (index) => {
     renderDebug();
     void index;
   };
-  feedView.onSettle = commitActive;
+  feedView.onSettle = (index) => {
+    const current = contextFeed;
+    if (current && index === feedView?.terminalIndex) {
+      if (current.mode === "group" && !current.hasMore && !current.error) {
+        leaveContext();
+        toast(shell!, "这组视频已看完，已返回短视频");
+      }
+      return;
+    }
+    commitActive(index);
+  };
   feedView.setClips(clips);
   feedPreview = new ThumbnailPreview();
   shell.root.appendChild(feedPreview.el);
   feedMeter = new NetworkMeter(shell.netSpeed);
+  feedMeter.onSample = (sample) => {
+    adaptiveCache.setMode(prefs.cacheMode);
+    adaptiveCache.update(sample);
+  };
   attachFullscreen(
     shell.fullscreenBtn,
     () => shell?.viewport ?? null,
     () => pool?.currentVideo() ?? null,
   );
   attachGestures(shell.feed, feedGestureOptions());
+  shell.root.classList.add("controls-visible");
+  shell.viewport.addEventListener("pointerdown", showControlsForActivity, { passive: true });
+  shell.viewport.addEventListener("touchstart", showControlsForActivity, { passive: true });
+  shell.root.addEventListener("focusin", showControlsForActivity);
+  shell.root.addEventListener("focusout", scheduleControlsHide);
+  shell.root.addEventListener("playersheetclose", () => {
+    openSheetKind = null;
+    scheduleControlsHide();
+  });
+  document.addEventListener("keydown", (event) => {
+    if (["Shift", "Control", "Alt", "Meta"].includes(event.key)) return;
+    showControlsForActivity();
+  });
   setSoundButton(shell, muted);
   setActiveNav(shell, "home");
   shell.debug.hidden = !DEBUG;
-  if (autoplayBlocked) shell.root.classList.add("needs-gesture");
+  if (playback) applyPlaybackState(playback.state);
   applyActive(0);
+  void ensureRandomCandidates();
 
   window.addEventListener("orientationchange", () => {
     window.setTimeout(() => feedView?.scrollToIndex(activeIndex, false), 220);
@@ -698,11 +1705,16 @@ function renderFeed(): void {
   };
   window.addEventListener("resize", onViewportResize);
   window.visualViewport?.addEventListener("resize", onViewportResize);
-  document.addEventListener("visibilitychange", () => {
-    const video = pool?.currentVideo();
-    if (!video) return;
-    if (document.hidden) video.pause();
-    else if (!paused) void video.play().catch(() => undefined);
+  document.addEventListener("visibilitychange", onDocumentVisibilityChange);
+  window.addEventListener("pagehide", () => {
+    if (largePlayer?.isPictureInPictureActive()) privacyCover?.classList.add("visible");
+    else lockPrivacyForBackground();
+  });
+  window.addEventListener("pagehide", () => networkConnection?.removeEventListener("change", updateConnectionSignals));
+  window.addEventListener("pageshow", () => {
+    networkConnection?.addEventListener("change", updateConnectionSignals);
+    updateConnectionSignals();
+    if (!document.hidden) privacyCover?.classList.remove("visible");
   });
   const seek = shell.seek;
   seek.addEventListener("pointerdown", () => {

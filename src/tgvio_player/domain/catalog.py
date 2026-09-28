@@ -40,6 +40,13 @@ class CatalogMedia:
     duration_seconds: float | None = None
     container: str | None = None
     codec: str | None = None
+    variant_of: str | None = None
+    label: str | None = None
+    bitrate_bps: int | None = None
+
+    @property
+    def is_rendition(self) -> bool:
+        return bool(self.variant_of)
 
 
 @dataclass(frozen=True, slots=True)

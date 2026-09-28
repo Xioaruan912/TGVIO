@@ -1,17 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 from contextlib import asynccontextmanager
-from pathlib import Path
+from datetime import date
+from pathlib import Path, PurePosixPath
+import re
 import sqlite3
 import time
 from typing import AsyncIterator
 
 from tgvio_player.domain.catalog import CatalogPackage
 from tgvio_player.infrastructure.migration import run_migrations
+from tgvio_player.infrastructure.sqlite_favorites import PlayerFavoriteRepositoryMixin
 
 
-class PlayerCatalogRepositorySQLite:
+_GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
+_MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+
+
+class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin):
     """Player-owned SQLite catalog. It never opens the Bot state database."""
 
     def __init__(self, path: Path, *, migrations_dir: Path | None = None) -> None:
@@ -121,6 +130,15 @@ class PlayerCatalogRepositorySQLite:
                 )
 
             for location in package.locations:
+                deleted = conn.execute(
+                    """
+                    SELECT 1 FROM player_deleted_locations
+                    WHERE package_id=? AND remote_relpath=?
+                    """,
+                    (location.package_id, location.remote_relpath),
+                ).fetchone()
+                if deleted is not None:
+                    continue
                 conn.execute(
                     """
                     INSERT INTO media_locations(
@@ -141,6 +159,54 @@ class PlayerCatalogRepositorySQLite:
                         location.remote_etag,
                     ),
                 )
+
+            has_variants = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='media_variants'"
+            ).fetchone() is not None
+            if has_variants:
+                # Variants: a rendition maps to its parent via ``variant_of`` and
+                # must never be listed independently. Older migration fixtures do
+                # not have this table yet, so retain their pre-variant behaviour.
+                renditions = sorted(
+                    (item for item in package.media if item.is_rendition),
+                    key=lambda item: item.height or 0,
+                    reverse=True,
+                )
+                for rank, media in enumerate(renditions):
+                    conn.execute(
+                        """
+                        INSERT INTO media_variants(
+                            variant_media_id, parent_media_id, height, width,
+                            bitrate_bps, label, rank, last_seen_at
+                        )
+                        VALUES(?,?,?,?,?,?,?,CURRENT_TIMESTAMP)
+                        ON CONFLICT(variant_media_id) DO UPDATE SET
+                            parent_media_id=excluded.parent_media_id,
+                            height=excluded.height,
+                            width=excluded.width,
+                            bitrate_bps=excluded.bitrate_bps,
+                            label=excluded.label,
+                            rank=excluded.rank,
+                            last_seen_at=CURRENT_TIMESTAMP
+                        """,
+                        (
+                            media.media_id,
+                            media.variant_of,
+                            media.height,
+                            media.width,
+                            media.bitrate_bps,
+                            media.label or (f"{media.height}p" if media.height else None),
+                            rank,
+                        ),
+                    )
+                # A media id can only be one role at a time: if a content hash is
+                # a primary here, clear any stale variant row that referenced it.
+                for media in package.media:
+                    if not media.is_rendition:
+                        conn.execute(
+                            "DELETE FROM media_variants WHERE variant_media_id=?",
+                            (media.media_id,),
+                        )
 
     async def deactivate_packages_not_seen(self, package_ids: set[str]) -> int:
         async with self._write_transaction() as conn:
@@ -176,13 +242,20 @@ class PlayerCatalogRepositorySQLite:
                         WHERE ml.media_id = media.media_id
                           AND ml.active = 1
                           AND cp.active = 1
+                    ) OR EXISTS (
+                        SELECT 1 FROM favorite_locations fl
+                        WHERE fl.media_id = media.media_id
                     ) THEN 1 ELSE 0 END
                 """
             )
 
     async def count_active_videos(self) -> int:
         row = self._require().execute(
-            "SELECT COUNT(*) AS count FROM media WHERE active=1 AND kind='video'"
+            """
+            SELECT COUNT(*) AS count FROM media
+            WHERE active=1 AND kind='video'
+              AND media_id NOT IN (SELECT variant_media_id FROM media_variants)
+            """
         ).fetchone()
         return int(row["count"])
 
@@ -192,6 +265,7 @@ class PlayerCatalogRepositorySQLite:
             SELECT media_id
             FROM media
             WHERE active=1 AND kind='video'
+              AND media_id NOT IN (SELECT variant_media_id FROM media_variants)
             ORDER BY media_id
             LIMIT ?
             """,
@@ -204,11 +278,16 @@ class PlayerCatalogRepositorySQLite:
         *,
         min_seconds: float | None = None,
         max_seconds: float | None = None,
+        media_id_prefix: str | None = None,
         order: str = "media_id",
         limit: int = 1000,
         offset: int = 0,
     ) -> list[str]:
-        clauses = ["active=1", "kind='video'"]
+        clauses = [
+            "active=1",
+            "kind='video'",
+            "media_id NOT IN (SELECT variant_media_id FROM media_variants)",
+        ]
         params: list[object] = []
         if min_seconds is not None:
             clauses.append("duration_seconds > ?")
@@ -216,6 +295,9 @@ class PlayerCatalogRepositorySQLite:
         if max_seconds is not None:
             clauses.append("duration_seconds <= ?")
             params.append(float(max_seconds))
+        if media_id_prefix is not None:
+            clauses.append("media_id LIKE ?")
+            params.append(f"{media_id_prefix}%")
         order_sql = {
             "duration_desc": "duration_seconds DESC, media_id",
             "duration_asc": "duration_seconds ASC, media_id",
@@ -227,6 +309,181 @@ class PlayerCatalogRepositorySQLite:
             tuple(params),
         ).fetchall()
         return [str(row["media_id"]) for row in rows]
+
+    async def list_media_groups(self, media_id: str) -> list[tuple[str, str]]:
+        if not _MEDIA_ID_RE.fullmatch(media_id):
+            return []
+        rows = self._require().execute(
+            """
+            SELECT DISTINCT cp.remote_path
+            FROM media_locations ml
+            JOIN catalog_packages cp ON cp.package_id=ml.package_id
+            JOIN media ON media.media_id=ml.media_id
+            WHERE ml.media_id=? AND ml.active=1 AND cp.active=1
+              AND media.active=1 AND media.kind='video'
+            ORDER BY cp.remote_path
+            """,
+            (media_id,),
+        ).fetchall()
+        groups: dict[str, str] = {}
+        for row in rows:
+            date_name = PurePosixPath(str(row["remote_path"])).parent.name
+            if self._is_archive_date(date_name):
+                groups[self._encode_group_id(date_name)] = date_name
+        return sorted(groups.items(), key=lambda item: item[1])
+
+    async def resolve_archive_group(self, group_id: str) -> str | None:
+        date_name = self._decode_group_id(group_id)
+        rows = self._require().execute(
+            "SELECT remote_path FROM catalog_packages WHERE active=1"
+        ).fetchall()
+        if self._is_archive_date(date_name) and any(
+            PurePosixPath(str(row["remote_path"])).parent.name == date_name for row in rows
+        ):
+            return date_name
+        return None
+
+    async def list_group_video_ids(
+        self, group_id: str, *, after_id: str | None, limit: int
+    ) -> list[str]:
+        date_name = self._decode_group_id(group_id)
+        if after_id is not None and not _MEDIA_ID_RE.fullmatch(after_id):
+            raise ValueError("invalid media cursor")
+        packages = self._require().execute(
+            "SELECT package_id, remote_path FROM catalog_packages WHERE active=1"
+        ).fetchall()
+        package_ids = [
+            str(row["package_id"])
+            for row in packages
+            if PurePosixPath(str(row["remote_path"])).parent.name == date_name
+        ]
+        if not package_ids:
+            return []
+        placeholders = ",".join("?" for _ in package_ids)
+        clauses = [
+            f"ml.package_id IN ({placeholders})",
+            "ml.active=1",
+            "cp.active=1",
+            "media.active=1",
+            "media.kind='video'",
+        ]
+        params: list[object] = package_ids
+        if after_id is not None:
+            clauses.append("media.media_id > ?")
+            params.append(after_id)
+        params.append(max(1, int(limit)))
+        rows = self._require().execute(
+            """
+            SELECT DISTINCT media.media_id
+            FROM media_locations ml
+            JOIN catalog_packages cp ON cp.package_id=ml.package_id
+            JOIN media ON media.media_id=ml.media_id
+            WHERE """
+            + " AND ".join(clauses)
+            + " ORDER BY media.media_id LIMIT ?",
+            tuple(params),
+        ).fetchall()
+        return [str(row["media_id"]) for row in rows]
+
+    @staticmethod
+    def _encode_group_id(date_name: str) -> str:
+        return base64.urlsafe_b64encode(date_name.encode("utf-8")).decode("ascii").rstrip("=")
+
+    @staticmethod
+    def _is_archive_date(value: str) -> bool:
+        if not _DATE_GROUP_RE.fullmatch(value):
+            return False
+        try:
+            return date.fromisoformat(value).isoformat() == value
+        except ValueError:
+            return False
+
+    @classmethod
+    def _decode_group_id(cls, group_id: str) -> str:
+        if not _GROUP_ID_RE.fullmatch(group_id):
+            raise ValueError("invalid archive group")
+        try:
+            raw = base64.b64decode(
+                group_id + "=" * (-len(group_id) % 4), altchars=b"-_", validate=True
+            )
+            date_name = raw.decode("utf-8")
+        except (ValueError, UnicodeDecodeError):
+            raise ValueError("invalid archive group") from None
+        if (
+            not date_name
+            or not cls._is_archive_date(date_name)
+            or date_name in {".", ".."}
+            or "/" in date_name
+            or "\\" in date_name
+            or cls._encode_group_id(date_name) != group_id
+            or any(ord(char) < 32 or ord(char) == 127 for char in date_name)
+        ):
+            raise ValueError("invalid archive group")
+        return date_name
+
+    async def count_video_ids(
+        self,
+        *,
+        min_seconds: float | None = None,
+        max_seconds: float | None = None,
+        media_id_prefix: str | None = None,
+    ) -> int:
+        clauses = ["active=1", "kind='video'"]
+        params: list[object] = []
+        if min_seconds is not None:
+            clauses.append("duration_seconds > ?")
+            params.append(float(min_seconds))
+        if max_seconds is not None:
+            clauses.append("duration_seconds <= ?")
+            params.append(float(max_seconds))
+        if media_id_prefix is not None:
+            clauses.append("media_id LIKE ?")
+            params.append(f"{media_id_prefix}%")
+        row = self._require().execute(
+            f"SELECT COUNT(*) AS count FROM media WHERE {' AND '.join(clauses)}",
+            tuple(params),
+        ).fetchone()
+        return int(row["count"])
+
+    async def list_long_video_progress(self) -> list[tuple[str, float]]:
+        rows = self._require().execute(
+            """
+            SELECT progress.media_id, progress.position_seconds
+            FROM player_long_video_progress AS progress
+            JOIN media ON media.media_id = progress.media_id
+            WHERE media.active=1 AND media.kind='video'
+              AND progress.position_seconds > 10
+              AND progress.position_seconds < media.duration_seconds - 30
+            ORDER BY progress.updated_at DESC
+            """
+        ).fetchall()
+        return [
+            (str(row["media_id"]), float(row["position_seconds"]))
+            for row in rows
+        ]
+
+    async def save_long_video_progress(
+        self, media_id: str, position_seconds: float
+    ) -> None:
+        async with self._write_transaction() as conn:
+            conn.execute(
+                """
+                INSERT INTO player_long_video_progress(
+                    media_id, position_seconds, updated_at
+                ) VALUES(?,?,?)
+                ON CONFLICT(media_id) DO UPDATE SET
+                    position_seconds=excluded.position_seconds,
+                    updated_at=excluded.updated_at
+                """,
+                (media_id, float(position_seconds), int(time.time())),
+            )
+
+    async def delete_long_video_progress(self, media_id: str) -> None:
+        async with self._write_transaction() as conn:
+            conn.execute(
+                "DELETE FROM player_long_video_progress WHERE media_id=?",
+                (media_id,),
+            )
 
     async def active_locations(self, media_id: str) -> list[tuple[str, str]]:
         rows = self._require().execute(
@@ -243,6 +500,87 @@ class PlayerCatalogRepositorySQLite:
             (str(row["remote_path"]), str(row["remote_relpath"]))
             for row in rows
         ]
+
+    async def active_location_records(
+        self, media_id: str
+    ) -> list[tuple[str, str, str]]:
+        rows = self._require().execute(
+            """
+            SELECT ml.package_id, cp.remote_path, ml.remote_relpath
+            FROM media_locations ml
+            JOIN catalog_packages cp ON cp.package_id=ml.package_id
+            JOIN media ON media.media_id=ml.media_id
+            WHERE ml.media_id=? AND ml.active=1 AND cp.active=1 AND media.active=1
+            ORDER BY cp.package_id, ml.remote_relpath
+            """,
+            (media_id,),
+        ).fetchall()
+        return [
+            (
+                str(row["package_id"]),
+                str(row["remote_path"]),
+                str(row["remote_relpath"]),
+            )
+            for row in rows
+        ]
+
+    async def record_deleted_location(
+        self,
+        media_id: str,
+        package_id: str,
+        remote_relpath: str,
+    ) -> None:
+        async with self._write_transaction() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM media_locations
+                WHERE media_id=? AND package_id=? AND remote_relpath=? AND active=1
+                """,
+                (media_id, package_id, remote_relpath),
+            ).fetchone()
+            if row is None:
+                return
+            conn.execute(
+                """
+                INSERT INTO player_deleted_locations(
+                    package_id, remote_relpath, media_id, deleted_at
+                ) VALUES(?,?,?,?)
+                ON CONFLICT(package_id, remote_relpath) DO UPDATE SET
+                    media_id=excluded.media_id,
+                    deleted_at=excluded.deleted_at
+                """,
+                (package_id, remote_relpath, media_id, int(time.time())),
+            )
+            conn.execute(
+                """
+                UPDATE media_locations SET active=0
+                WHERE media_id=? AND package_id=? AND remote_relpath=?
+                """,
+                (media_id, package_id, remote_relpath),
+            )
+
+    async def finalize_media_deletion(self, media_id: str) -> bool:
+        async with self._write_transaction() as conn:
+            remaining = conn.execute(
+                """
+                SELECT 1 FROM (
+                    SELECT ml.media_id FROM media_locations ml
+                    JOIN catalog_packages cp ON cp.package_id=ml.package_id
+                    WHERE ml.media_id=? AND ml.active=1 AND cp.active=1
+                    UNION ALL SELECT media_id FROM favorite_locations WHERE media_id=?
+                ) LIMIT 1
+                """,
+                (media_id, media_id),
+            ).fetchone()
+            removed = remaining is None
+            if removed:
+                conn.execute("UPDATE media SET active=0 WHERE media_id=?", (media_id,))
+                conn.execute("DELETE FROM favorites WHERE media_id=?", (media_id,))
+                conn.execute(
+                    "DELETE FROM player_long_video_progress WHERE media_id=?",
+                    (media_id,),
+                )
+            return removed
 
     async def active_media_location(
         self, media_id: str
@@ -261,12 +599,31 @@ class PlayerCatalogRepositorySQLite:
             (media_id,),
         ).fetchone()
         if row is None:
-            return None
+            favorite = self._require().execute(
+                "SELECT relpath FROM favorite_locations WHERE media_id=?",
+                (media_id,),
+            ).fetchone()
+            if favorite is None:
+                return None
+            return ("__player_favorite__", str(favorite["relpath"]), None)
         return (
             str(row["remote_path"]),
             str(row["remote_relpath"]),
             str(row["remote_etag"]) if row["remote_etag"] is not None else None,
         )
+
+    async def favorite_media_id_for_archive_location(
+        self, package_path: str, remote_relpath: str
+    ) -> str | None:
+        row = self._require().execute(
+            """SELECT ml.media_id FROM media_locations ml
+               JOIN catalog_packages cp ON cp.package_id=ml.package_id
+               WHERE cp.remote_path=? AND ml.remote_relpath=?
+                 AND EXISTS (SELECT 1 FROM favorite_locations fl WHERE fl.media_id=ml.media_id)
+               LIMIT 1""",
+            (package_path, remote_relpath),
+        ).fetchone()
+        return str(row["media_id"]) if row is not None else None
 
     async def active_media_details(self, media_id: str) -> dict[str, object] | None:
         row = self._require().execute(
@@ -278,6 +635,21 @@ class PlayerCatalogRepositorySQLite:
             (media_id,),
         ).fetchone()
         return None if row is None else dict(row)
+
+    async def active_variants(self, media_id: str) -> list[dict[str, object]]:
+        rows = self._require().execute(
+            """
+            SELECT mv.variant_media_id, mv.height, mv.width, mv.bitrate_bps,
+                   mv.label, mv.rank,
+                   media.size_bytes, media.mime_type
+            FROM media_variants mv
+            JOIN media ON media.media_id = mv.variant_media_id
+            WHERE mv.parent_media_id=? AND media.active=1
+            ORDER BY mv.rank ASC, mv.height DESC
+            """,
+            (media_id,),
+        ).fetchall()
+        return [dict(row) for row in rows]
 
     async def create_player_session(self, token_digest: str, *, expires_at: int) -> None:
         now = int(time.time())
@@ -432,9 +804,39 @@ class PlayerCatalogRepositorySQLite:
             FROM favorites
             JOIN media ON media.media_id=favorites.media_id
             WHERE favorites.token_digest=? AND media.active=1 AND media.kind='video'
+              AND media.media_id NOT IN (SELECT variant_media_id FROM media_variants)
             ORDER BY favorites.created_at DESC, favorites.media_id
             LIMIT ?
             """,
             (token_digest, max(1, int(limit))),
         ).fetchall()
         return [str(row["media_id"]) for row in rows]
+
+    async def list_favorite_page(
+        self,
+        token_digest: str,
+        *,
+        limit: int,
+        before: tuple[int, str] | None,
+    ) -> list[tuple[str, int]]:
+        clauses = [
+            "favorites.token_digest=?",
+            "media.active=1",
+            "media.kind='video'",
+        ]
+        params: list[object] = [token_digest]
+        if before is not None:
+            created_at, media_id = before
+            clauses.append("(favorites.created_at < ? OR (favorites.created_at = ? AND favorites.media_id > ?))")
+            params.extend((int(created_at), int(created_at), media_id))
+        params.append(max(1, int(limit)))
+        rows = self._require().execute(
+            """
+            SELECT favorites.media_id, favorites.created_at
+            FROM favorites
+            JOIN media ON media.media_id=favorites.media_id
+            WHERE """ + " AND ".join(clauses) +
+            " ORDER BY favorites.created_at DESC, favorites.media_id ASC LIMIT ?",
+            tuple(params),
+        ).fetchall()
+        return [(str(row["media_id"]), int(row["created_at"])) for row in rows]

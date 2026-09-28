@@ -13,6 +13,7 @@ from tgvio_player.application.streaming import prepare_stream_request
 from tgvio_player.domain.auth import token_digest, verify_access_secret
 from tgvio_player.domain.catalog import CatalogLocation, CatalogMedia, CatalogPackage
 from tgvio_player.domain.ranges import ByteRange, RangeNotSatisfiable, parse_single_range
+from tgvio_player.domain.storage_settings import PlayerStorageSettings
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 from tgvio_player.infrastructure.webdav_read import (
     ReadOnlyWebDavAdapter,
@@ -192,6 +193,119 @@ class PlayerStateTests(unittest.IsolatedAsyncioTestCase):
         await deck.unfavorite(digest, self.media_ids[0])
         await deck.unfavorite(digest, self.media_ids[0])
         self.assertFalse(await self.repo.is_favorite(digest, self.media_ids[0]))
+
+    async def test_favorite_keyset_pages_cover_more_than_two_hundred_items(self) -> None:
+        digest = token_digest("large-favorite-session")
+        extra_ids = [f"{index:064x}" for index in range(100, 301)]
+        package = CatalogPackage(
+            "many-favorites", "TGVIO/2026-09-22/2", "e" * 64,
+            '"many-manifest"', '"many-complete"',
+            tuple(CatalogMedia(media_id, "video", 30) for media_id in extra_ids),
+            tuple(CatalogLocation(media_id, "many-favorites", f"{media_id}.mp4") for media_id in extra_ids),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+        await self.repo.create_player_session(digest, expires_at=9_999_999_999)
+        all_ids = [*self.media_ids, *extra_ids]
+        for media_id in all_ids:
+            await self.repo.set_favorite(digest, media_id, enabled=True)
+        self.repo._require().execute(
+            "UPDATE favorites SET created_at=123 WHERE token_digest=?", (digest,)
+        )
+        deck = ShuffleDeckService(self.repo)
+        received: list[str] = []
+        cursor: tuple[int, str] | None = None
+        while True:
+            page = await deck.favorite_page(digest, limit=6, cursor=cursor)
+            received.extend(media_id for media_id, _created_at in page[:5])
+            if len(page) <= 5:
+                break
+            cursor = page[4][1], page[4][0]
+        self.assertEqual(len(received), len(all_ids))
+        self.assertEqual(len(set(received)), len(all_ids))
+        self.assertEqual(received, sorted(all_ids))
+
+    async def test_global_favorite_settings_outbox_and_copy_locations(self) -> None:
+        media_id = self.media_ids[0]
+        await self.repo.set_global_favorite(media_id, True)
+        await self.repo.set_global_favorite(media_id, True)
+        first_page = await self.repo.list_global_favorite_page(limit=10, before=None)
+        self.assertEqual([row[0] for row in first_page], [media_id])
+
+        initial = await self.repo.get_storage_settings()
+        self.assertEqual(initial.endpoint_url, "https://webdav.example.invalid/dav")
+        self.assertEqual(initial.player_root, "Player")
+        self.assertEqual(initial.favorites_dir, "Favorites")
+        configured = PlayerStorageSettings(
+            endpoint_url="https://dav.example.test",
+            player_root="player/root",
+            favorites_dir="Saved",
+            username_ciphertext=b"encrypted-user",
+            password_ciphertext=b"encrypted-password",
+            revision=3,
+        )
+        await self.repo.save_storage_settings(configured)
+        self.assertEqual(await self.repo.get_storage_settings(), configured)
+
+        await self.repo.enqueue_favorite_sync(media_id, "upload")
+        await self.repo.enqueue_favorite_sync(media_id, "upload")
+        jobs = await self.repo.claim_favorite_sync(limit=10)
+        self.assertEqual(len(jobs), 1)
+        self.assertEqual((jobs[0].media_id, jobs[0].operation, jobs[0].attempts), (media_id, "upload", 1))
+        await self.repo.finish_favorite_sync(jobs[0].job_id, "retry", "http_503")
+        retry = await self.repo.claim_favorite_sync(limit=10)
+        self.assertEqual(len(retry), 1)
+        self.assertEqual(retry[0].attempts, 2)
+        await self.repo.finish_favorite_sync(retry[0].job_id, "synced", None)
+        self.assertEqual(await self.repo.claim_favorite_sync(limit=10), [])
+
+        await self.repo.save_favorite_location(media_id, "Favorites/item.mp4", 10, "video/mp4")
+        self.assertEqual(
+            await self.repo.list_favorite_locations(),
+            [(media_id, "Favorites/item.mp4", 10, "video/mp4")],
+        )
+        await self.repo.set_global_favorite(media_id, False)
+        await self.repo.set_global_favorite(media_id, False)
+        self.assertEqual(await self.repo.list_global_favorite_page(limit=10, before=None), [])
+
+    async def test_favorite_copy_keeps_media_active_after_catalog_refresh(self) -> None:
+        media_id = self.media_ids[0]
+        await self.repo.restore_favorite_copy(
+            media_id, "Favorites/copy.mp4", 10, "video/mp4", 123,
+        )
+        await self.repo.refresh_media_activity()
+        self.assertIsNotNone(await self.repo.active_media_details(media_id))
+
+    async def test_archive_groups_follow_active_catalog_locations(self) -> None:
+        sibling_id = "5" * 64
+        sibling = CatalogPackage(
+            package_id="sibling-package",
+            remote_path="TGVIO/2026-09-22/2",
+            manifest_sha256="c" * 64,
+            manifest_etag='"manifest-2"',
+            complete_etag='"complete-2"',
+            media=(CatalogMedia(sibling_id, "video", 20),),
+            locations=(CatalogLocation(sibling_id, "sibling-package", "sibling.mp4"),),
+        )
+        await self.repo.apply_package(sibling)
+        await self.repo.refresh_media_activity()
+
+        media_groups = await self.repo.list_media_groups(sibling_id)
+        self.assertEqual(len(media_groups), 1)
+        group_id, label = media_groups[0]
+        self.assertEqual(label, "2026-09-22")
+        self.assertEqual(
+            await self.repo.list_group_video_ids(group_id, after_id=None, limit=20),
+            sorted([*self.media_ids, sibling_id]),
+        )
+
+        await self.repo.deactivate_packages_not_seen({"package"})
+        await self.repo.refresh_media_activity()
+        self.assertEqual(await self.repo.list_media_groups(sibling_id), [])
+        self.assertEqual(
+            await self.repo.list_group_video_ids(group_id, after_id=None, limit=20),
+            sorted(self.media_ids),
+        )
 
 
 if __name__ == "__main__":

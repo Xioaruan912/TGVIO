@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import base64
 import unittest
 
 from tgvio_player.infrastructure.webdav_aiohttp import (
@@ -14,6 +15,7 @@ def player_env(**overrides: str) -> dict[str, str]:
         "TGVIO_PLAYER_ENABLED": "true",
         "TGVIO_PLAYER_DATA_DIR": "/var/lib/tgvio-player",
         "TGVIO_PLAYER_ACCESS_SECRET": "s" * 32,
+        "TGVIO_PLAYER_RECOVERY_KEY": base64.urlsafe_b64encode(b"r" * 32).decode().rstrip("="),
         "TGVIO_PLAYER_WEBDAV_URL": "https://webdav.example.invalid/archive",
         "TGVIO_PLAYER_WEBDAV_USER": "reader",
         "TGVIO_PLAYER_WEBDAV_PASSWORD": "password",
@@ -29,6 +31,10 @@ class PlayerRuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.host, "0.0.0.0")
         self.assertEqual(settings.port, 8790)
         self.assertEqual(settings.catalog_poll_seconds, 60)
+
+    def test_default_client_stream_limit_matches_the_global_limit(self) -> None:
+        settings = PlayerSettings.from_env(player_env())
+        self.assertEqual(settings.max_streams_per_client, settings.max_streams)
 
     def test_disabled_or_weak_configuration_fails_closed(self) -> None:
         with self.assertRaises(ValueError):
@@ -47,6 +53,19 @@ class PlayerRuntimeSettingsTests(unittest.TestCase):
             PlayerSettings.from_env(player_env(TGVIO_PLAYER_HOST="localhost"))
         with self.assertRaises(ValueError):
             PlayerSettings.from_env(player_env(TGVIO_PLAYER_PORT="0"))
+
+    def test_recovery_key_is_required_and_must_be_valid_without_echoing_value(self) -> None:
+        with self.assertRaisesRegex(ValueError, "TGVIO_PLAYER_RECOVERY_KEY"):
+            PlayerSettings.from_env(player_env(TGVIO_PLAYER_RECOVERY_KEY=""))
+
+        exposed_value = "short-secret-value"
+        with self.assertRaises(ValueError) as raised:
+            PlayerSettings.from_env(player_env(TGVIO_PLAYER_RECOVERY_KEY=exposed_value))
+        self.assertIn("TGVIO_PLAYER_RECOVERY_KEY", str(raised.exception))
+        self.assertNotIn(exposed_value, str(raised.exception))
+
+        configured = player_env()
+        self.assertTrue(PlayerSettings.from_env(configured).recovery_key)
 
 
 class PlayerWebDavTransportTests(unittest.TestCase):

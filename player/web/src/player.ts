@@ -1,4 +1,5 @@
 import type { Clip } from "./types";
+import { withPlaybackSession } from "./api";
 
 type RVFCVideo = HTMLVideoElement & {
   requestVideoFrameCallback?: (callback: (now: number, metadata: unknown) => void) => number;
@@ -8,6 +9,7 @@ export type SyncTarget = {
   page: HTMLElement | null;
   clip: Clip | null;
   current: boolean;
+  streamUrl?: string;
 };
 
 const SLOT_COUNT = 3;
@@ -21,14 +23,20 @@ export class VideoPool {
   private readonly videos: HTMLVideoElement[] = [];
   private readonly assigned: string[] = [];
   private readonly clips = new Map<HTMLVideoElement, Clip>();
+  private readonly sources = new Map<HTMLVideoElement, string>();
   private readonly loadAbort = new Map<HTMLVideoElement, AbortController>();
   private loadToken = 0;
   private current: HTMLVideoElement | null = null;
 
   onPressure: ((pressured: boolean) => void) | null = null;
+  onLoading: ((mediaId: string) => void) | null = null;
+  onReady: ((mediaId: string) => void) | null = null;
+  onPlaybackStarted: ((clip: Clip) => void) | null = null;
   onTimeUpdate: ((video: HTMLVideoElement) => void) | null = null;
   onAutoplayBlocked: ((blocked: boolean) => void) | null = null;
   onError: ((mediaId: string) => void) | null = null;
+  onUnusableFrame: ((mediaId: string) => void) | null = null;
+  shouldContinue: (() => boolean) | null = null;
 
   constructor() {
     for (let i = 0; i < SLOT_COUNT; i += 1) {
@@ -40,25 +48,11 @@ export class VideoPool {
       video.setAttribute("playsinline", "");
       video.setAttribute("muted", "");
       video.setAttribute("preload", "none");
-      video.addEventListener("loadstart", () => this.clearReady(video));
-      video.addEventListener("playing", () => {
-        this.scheduleReady(video);
-        if (video === this.current) this.onPressure?.(false);
-      });
-      video.addEventListener("canplay", () => {
-        if (video === this.current) this.onPressure?.(false);
-      });
-      video.addEventListener("waiting", () => {
-        if (video === this.current) this.onPressure?.(true);
-      });
-      video.addEventListener("stalled", () => {
-        if (video === this.current) this.onPressure?.(true);
-      });
       video.addEventListener("timeupdate", () => {
         if (video === this.current) this.onTimeUpdate?.(video);
       });
       video.addEventListener("ended", () => {
-        if (video === this.current && !video.paused) {
+        if (video === this.current && this.shouldContinue?.()) {
           video.currentTime = 0;
           void video.play().catch(() => undefined);
         }
@@ -100,11 +94,12 @@ export class VideoPool {
         video = this.videos.find((_, index) => !this.assigned[index]) ?? null;
         if (!video) continue;
         page.classList.remove("frame-ready");
-        this.load(video, clip, target.current ? "auto" : "none");
+        this.load(video, clip, target.current ? "auto" : "none", target.streamUrl);
       }
-      if (video.dataset.mediaId !== clip.id) {
+      const source = target.streamUrl ?? clip.streamUrl;
+      if (video.dataset.mediaId !== clip.id || this.sources.get(video) !== source) {
         page.classList.remove("frame-ready");
-        this.load(video, clip, target.current ? "auto" : "none");
+        this.load(video, clip, target.current ? "auto" : "none", target.streamUrl);
       }
       const host = page.querySelector<HTMLElement>(".video-host");
       if (host && video.parentElement !== host) {
@@ -122,13 +117,21 @@ export class VideoPool {
     }
     const current = this.current;
     if (!current) return;
+    current.defaultMuted = options.muted;
+    if (options.muted) current.setAttribute("muted", "");
+    else current.removeAttribute("muted");
     current.muted = options.muted;
     if (options.paused) current.pause();
     else this.tryPlay(current);
   }
 
   setMuted(muted: boolean): void {
-    for (const video of this.videos) video.muted = muted;
+    for (const video of this.videos) {
+      video.defaultMuted = muted;
+      if (muted) video.setAttribute("muted", "");
+      else video.removeAttribute("muted");
+      video.muted = muted;
+    }
   }
 
   resume(): void {
@@ -160,35 +163,103 @@ export class VideoPool {
     if (!video) return false;
     const clip = this.clips.get(video);
     if (!clip) return false;
-    this.load(video, clip, "auto");
+    this.load(video, clip, "auto", this.sources.get(video));
     this.tryPlay(video);
     return true;
+  }
+
+  /** Swap the current clip's source while keeping position and play state. */
+  switchCurrentSource(url: string): void {
+    const video = this.current;
+    const clip = video ? this.clips.get(video) : null;
+    if (!video || !clip) return;
+    const time = video.currentTime;
+    const wasPlaying = !video.paused;
+    this.load(video, clip, "auto", url);
+    video.currentTime = time;
+    if (wasPlaying) this.tryPlay(video);
   }
 
   currentClip(): Clip | null {
     return this.current ? this.clips.get(this.current) ?? null : null;
   }
 
-  private load(video: HTMLVideoElement, clip: Clip, preload: HTMLMediaElement["preload"]): void {
+  private load(
+    video: HTMLVideoElement,
+    clip: Clip,
+    preload: HTMLMediaElement["preload"],
+    url?: string,
+  ): void {
     const index = this.videos.indexOf(video);
     if (index >= 0) this.assigned[index] = clip.id;
     this.clips.set(video, clip);
+    video.defaultMuted = true;
+    video.setAttribute("muted", "");
+    video.muted = true;
+    const source = url ?? clip.streamUrl;
+    this.sources.set(video, source);
     // Cancel listeners from the previous assignment so a late loadeddata/error
     // from the old source can never mark the new page ready or report an error
     // for the clip that is now bound to this element.
     this.loadAbort.get(video)?.abort();
+    video.pause();
+    video.removeAttribute("src");
+    video.load();
     const controller = new AbortController();
     this.loadAbort.set(video, controller);
     const token = String(++this.loadToken);
     video.dataset.loadToken = token;
     video.dataset.mediaId = clip.id;
+    this.onLoading?.(clip.id);
+    const isCurrentLoad = () => video.dataset.loadToken === token && video === this.current;
+    video.addEventListener("loadstart", () => {
+      if (video.dataset.loadToken === token) this.clearReady(video);
+    }, { once: true, signal: controller.signal });
     video.addEventListener(
       "loadeddata",
       () => {
-        if (video.dataset.loadToken === token) this.scheduleReady(video);
+        if (video.dataset.loadToken !== token) return;
+        this.scheduleReady(video);
+        if (video === this.current) this.onReady?.(clip.id);
       },
       { once: true, signal: controller.signal },
     );
+    video.addEventListener(
+      "canplay",
+      () => {
+        if (!isCurrentLoad()) return;
+        this.onReady?.(clip.id);
+        this.onPressure?.(false);
+      },
+      { once: true, signal: controller.signal },
+    );
+    video.addEventListener(
+      "playing",
+      () => {
+        if (!isCurrentLoad()) return;
+        this.scheduleReady(video);
+        this.onReady?.(clip.id);
+        this.onPressure?.(false);
+        if (video.dataset.playbackReportedToken !== token) {
+          video.dataset.playbackReportedToken = token;
+          this.onPlaybackStarted?.(clip);
+        }
+        const frameTimer = window.setTimeout(() => {
+          if (isCurrentLoad() && video.readyState >= 2 && video.currentTime > 0.5 && video.videoWidth === 0) {
+            this.onUnusableFrame?.(clip.id);
+          }
+        }, 2500);
+        controller.signal.addEventListener("abort", () => window.clearTimeout(frameTimer), { once: true });
+      },
+      { once: true, signal: controller.signal },
+    );
+    const markWaiting = () => {
+      if (!isCurrentLoad()) return;
+      this.onLoading?.(clip.id);
+      this.onPressure?.(true);
+    };
+    video.addEventListener("waiting", markWaiting, { signal: controller.signal });
+    video.addEventListener("stalled", markWaiting, { signal: controller.signal });
     video.addEventListener(
       "error",
       () => {
@@ -198,21 +269,24 @@ export class VideoPool {
       { once: true, signal: controller.signal },
     );
     video.preload = preload;
-    video.src = clip.streamUrl;
+    video.src = withPlaybackSession(source);
     video.load();
   }
 
   private release(video: HTMLVideoElement): void {
     const index = this.videos.indexOf(video);
     if (index >= 0) this.assigned[index] = "";
+    video.closest<HTMLElement>(".video-page")?.classList.remove("frame-ready");
     this.loadAbort.get(video)?.abort();
     this.loadAbort.delete(video);
     this.clips.delete(video);
+    this.sources.delete(video);
     video.pause();
     video.removeAttribute("src");
     video.load();
     delete video.dataset.mediaId;
     delete video.dataset.loadToken;
+    delete video.dataset.playbackReportedToken;
     video.classList.remove("is-current");
   }
 

@@ -10,6 +10,7 @@ WORKDIR /web
 COPY player/web/package.json player/web/package-lock.json ./
 RUN npm ci
 COPY player/web/index.html player/web/tsconfig.json player/web/vite.config.ts ./
+COPY player/web/public ./public
 COPY player/web/src ./src
 RUN npm run build
 

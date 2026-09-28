@@ -13,14 +13,16 @@ export type IconName =
   | "settings"
   | "sound-on"
   | "sound-off"
-  | "share"
   | "close"
   | "play"
   | "pause"
   | "play-small"
   | "fullscreen"
   | "fullscreen-exit"
-  | "back";
+  | "pip"
+  | "back"
+  | "lock"
+  | "trash";
 
 type IconSpec = {
   paths: string[];
@@ -83,9 +85,6 @@ const SPECS: Record<IconName, IconSpec> = {
   "sound-off": {
     paths: ["M11 5 6.7 8.9H4v6.2h2.7L11 19z", "M16 9.4l4.6 5.2", "M20.6 9.4 16 14.6"],
   },
-  share: {
-    paths: ["M12 15.5V4", "M8.2 7.6 12 3.8l3.8 3.8", "M5.5 13.5V19a1.5 1.5 0 0 0 1.5 1.5h10a1.5 1.5 0 0 0 1.5-1.5v-5.5"],
-  },
   close: {
     paths: ["M6.5 6.5 17.5 17.5", "M17.5 6.5 6.5 17.5"],
   },
@@ -106,8 +105,17 @@ const SPECS: Record<IconName, IconSpec> = {
   "fullscreen-exit": {
     paths: ["M9 4v5H4", "M15 4v5h5", "M9 20v-5H4", "M15 20v-5h5"],
   },
+  pip: {
+    paths: ["M4 5h16v14H4z", "M12.5 12.5H19V18h-6.5z"],
+  },
   back: {
     paths: ["M14.5 5.5 8 12l6.5 6.5"],
+  },
+  lock: {
+    paths: ["M5.5 10h13v10h-13z", "M8 10V7a4 4 0 0 1 8 0v3", "M12 14v2"],
+  },
+  trash: {
+    paths: ["M5 7h14", "M9 7V4.5h6V7", "M7 7l.8 13h8.4L17 7", "M10 11v5", "M14 11v5"],
   },
 };
 

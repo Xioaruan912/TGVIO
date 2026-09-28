@@ -69,3 +69,9 @@ class FaststartStore:
         temporary = target.with_name(f".{target.name}.tmp")
         temporary.write_bytes(payload)
         temporary.replace(target)
+
+    def delete(self, media_id: str) -> None:
+        try:
+            self._path(media_id).unlink()
+        except FileNotFoundError:
+            pass

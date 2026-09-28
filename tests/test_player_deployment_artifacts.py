@@ -38,6 +38,7 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
             [
                 "COPY player/web/package.json player/web/package-lock.json ./",
                 "COPY player/web/index.html player/web/tsconfig.json player/web/vite.config.ts ./",
+                "COPY player/web/public ./public",
                 "COPY player/web/src ./src",
                 "COPY requirements.player.lock ./requirements.player.lock",
                 "COPY src/tgvio_player ./src/tgvio_player",
@@ -69,6 +70,12 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
         for forbidden in ("BOT_TOKEN=", "API_HASH=", "API_ID=", "TGVIO_SOURCE_SESSION="):
             self.assertNotIn(forbidden, template)
 
+    def test_recovery_key_is_passed_only_to_the_player_container(self) -> None:
+        compose = (ROOT / "docker-compose.player.yml").read_text(encoding="utf-8")
+        template = (ROOT / "deploy" / "player.env.example").read_text(encoding="utf-8")
+        self.assertIn("TGVIO_PLAYER_RECOVERY_KEY:", compose)
+        self.assertIn("TGVIO_PLAYER_RECOVERY_KEY=", template)
+
     def test_player_compose_renders_with_an_isolated_environment(self) -> None:
         if shutil.which("docker") is None:
             self.skipTest("docker is not installed")
@@ -78,6 +85,7 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
             "TGVIO_PLAYER_PORT": "8790",
             "TGVIO_PLAYER_HOST_DATA_DIR": "/tmp/tgvio-player-test-data",
             "TGVIO_PLAYER_ACCESS_SECRET": "test-only-access-secret",
+            "TGVIO_PLAYER_RECOVERY_KEY": "r" * 43,
             "TGVIO_PLAYER_WEBDAV_URL": "https://webdav.invalid/read-only",
             "TGVIO_PLAYER_WEBDAV_USER": "test-reader",
             "TGVIO_PLAYER_WEBDAV_PASSWORD": "test-only-password",

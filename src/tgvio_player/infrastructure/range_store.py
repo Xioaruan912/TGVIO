@@ -3,6 +3,7 @@ from __future__ import annotations
 from collections import OrderedDict
 from pathlib import Path
 import os
+import shutil
 import time
 
 
@@ -98,6 +99,14 @@ class RangeStore:
             self._path(key, index).unlink()
         except OSError:
             pass
+
+    def delete_key(self, key: str) -> None:
+        for cache_key, size in list(self._index.items()):
+            if cache_key[0] != key:
+                continue
+            self._index.pop(cache_key, None)
+            self._total -= size
+        shutil.rmtree(self._root / key, ignore_errors=True)
 
     def _evict(self) -> None:
         while self._total > self.max_bytes and self._index:
