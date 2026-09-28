@@ -470,7 +470,8 @@ async function toggleFavorite(): Promise<void> {
   try {
     const result = await api.setFavorite(clip.id, enabled);
     const syncText = ({ pending: "待上传", syncing: "同步中", synced: "已同步", failed: "同步失败" } as const)[result.syncStatus];
-    toast(shell!, enabled ? `已收藏 · ${syncText}` : "已取消收藏");
+    const removalText = ({ pending: "待同步", syncing: "同步中", synced: "已同步", failed: "同步失败" } as const)[result.syncStatus];
+    toast(shell!, enabled ? `已收藏 · ${syncText}` : `已取消收藏 · ${removalText}`);
   } catch {
     if (enabled) favorites.delete(clip.id);
     else favorites.add(clip.id);

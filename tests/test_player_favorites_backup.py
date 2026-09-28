@@ -67,8 +67,10 @@ class SnapshotSpy:
         self.repo = repo
         self.events = events
         self.fail = False
+        self.attempts = 0
 
     async def export_state(self):
+        self.attempts += 1
         if self.fail:
             raise RuntimeError("snapshot unavailable")
         jobs = await self.repo.list_pending_favorite_sync()
@@ -113,7 +115,7 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.source = source
         self.service = FavoriteBackupService(
             self.repo, self.writer, self.source, self.snapshot_exporter,
-            clock=lambda: 1000,
+            clock=lambda: 1000, tombstone_retry_seconds=0,
         )
 
     async def asyncTearDown(self) -> None:
@@ -156,7 +158,7 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
 
         service = FavoriteBackupService(
             self.repo, self.writer, self.source, self.snapshot_exporter,
-            source_location=source_location, clock=lambda: 1000,
+            source_location=source_location, clock=lambda: 1000, tombstone_retry_seconds=0,
         )
         await service.favorite(self.media_id)
         result = await service.sync_pending()
@@ -201,7 +203,8 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
             raise SourceMediaError("source_not_found", 404)
 
         self.service = FavoriteBackupService(
-            self.repo, self.writer, missing, SnapshotSpy(self.repo, self.events), clock=lambda: 1000,
+            self.repo, self.writer, missing, SnapshotSpy(self.repo, self.events),
+            clock=lambda: 1000, tombstone_retry_seconds=0,
         )
         await self.service.favorite(self.media_id)
         result = await self.service.sync_pending()
@@ -214,16 +217,31 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
         ).fetchone()
         self.assertEqual((row["status"], row["error_code"]), ("failed", "source_404"))
 
-    async def test_unfavorite_persists_tombstone_before_delete_and_never_reads_archive(self) -> None:
+    async def test_unfavorite_never_touches_the_archive_and_sync_persists_the_tombstone_first(self) -> None:
         await self.service.favorite(self.media_id)
         await self.service.sync_pending()
         self.events.clear()
         source_calls = self.source_calls
-        await self.service.unfavorite(self.media_id)
-        self.assertEqual(self.events, ["tombstone"])
+        calls_before_removal = list(self.writer.calls)
+        exports_before_removal = self.snapshot_exporter.attempts
+
+        result = await self.service.unfavorite(self.media_id)
+
+        # The request path applies the local removal and enqueues the job without
+        # any archive I/O: that is what used to turn a slow archive into a 502.
+        self.assertEqual(result.sync_status, "pending")
+        self.assertEqual(self.events, [])
+        self.assertEqual(self.writer.calls, calls_before_removal)
+        self.assertEqual(self.snapshot_exporter.attempts, exports_before_removal)
+        self.assertFalse(await self.repo.is_global_favorite(self.media_id))
+        queued = await self.repo.list_pending_favorite_sync()
+        self.assertEqual([(job.operation, job.intent_persisted) for job in queued], [("delete", False)])
+
         self.writer.delete_error = WebDavWriteError("delete", "server_error", 503)
-        result = await self.service.sync_pending()
-        self.assertEqual((result.retried, result.synced), (1, 0))
+        batch = await self.service.sync_pending()
+
+        # The worker persists the tombstone before the delete is attempted.
+        self.assertEqual((batch.retried, batch.synced), (1, 0))
         self.assertEqual(self.events, ["tombstone", "delete"])
         self.assertEqual(self.source_calls, source_calls)
         self.assertEqual(self.writer.calls[-1], f"player/Favorites/{self.media_id}.mp4")
@@ -241,23 +259,47 @@ class FavoriteBackupServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.writer.files, {})
         self.assertEqual(await self.repo.get_favorite_location(self.media_id), None)
         self.assertEqual(await self.repo.list_pending_favorite_sync(), [])
-        self.assertEqual(self.events[-2:], ["delete", "tombstone"])
+        self.assertLess(self.events.index("tombstone"), self.events.index("delete"))
 
-    async def test_delete_waits_until_remote_tombstone_is_persisted(self) -> None:
+    async def test_unfavorite_succeeds_for_the_user_while_the_tombstone_is_unavailable(self) -> None:
         await self.service.favorite(self.media_id)
         await self.service.sync_pending()
         self.snapshot_exporter.fail = True
-        with self.assertRaises(Exception):
-            await self.service.unfavorite(self.media_id)
+
+        # The user must still be able to unfavorite; only the remote cleanup waits.
+        result = await self.service.unfavorite(self.media_id)
+        self.assertEqual(result.sync_status, "pending")
+        self.assertFalse(await self.repo.is_global_favorite(self.media_id))
+        self.assertTrue(await self.repo.get_favorite_location(self.media_id))
+
         blocked = await self.service.sync_pending()
         self.assertEqual(blocked.processed, 0)
         self.assertTrue(self.writer.files)
+        self.assertEqual(self.writer.calls[-1], f"player/Favorites/{self.media_id}.mp4")
 
         self.snapshot_exporter.fail = False
-        await self.service.unfavorite(self.media_id)
         deleted = await self.service.sync_pending()
         self.assertEqual(deleted.synced, 1)
         self.assertEqual(self.writer.files, {})
+        self.assertEqual(await self.repo.get_favorite_location(self.media_id), None)
+
+    async def test_repeated_tombstone_failure_is_throttled_between_sync_cycles(self) -> None:
+        await self.service.favorite(self.media_id)
+        await self.service.sync_pending()
+        throttled = FavoriteBackupService(
+            self.repo, self.writer, self.source, self.snapshot_exporter,
+            clock=lambda: 1000, tombstone_retry_seconds=60,
+        )
+        self.snapshot_exporter.fail = True
+        await throttled.unfavorite(self.media_id)
+        attempts_before = self.snapshot_exporter.attempts
+
+        for _ in range(3):
+            await throttled.sync_pending()
+
+        # A broken archive must not be hammered once per poll cycle.
+        self.assertEqual(self.snapshot_exporter.attempts, attempts_before + 1)
+        self.assertTrue(self.writer.files)
 
 
 if __name__ == "__main__":

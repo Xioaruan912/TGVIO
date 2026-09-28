@@ -81,6 +81,7 @@ class FavoriteBackupService:
         *,
         source_location: SourceLocationProvider | None = None,
         clock: Callable[[], float] = time.time,
+        tombstone_retry_seconds: float = 60.0,
     ) -> None:
         self._repository = repository
         self._writer = writer
@@ -88,6 +89,8 @@ class FavoriteBackupService:
         self._snapshot_exporter = snapshot_exporter
         self._source_location = source_location
         self._clock = clock
+        self._tombstone_retry_seconds = max(0.0, float(tombstone_retry_seconds))
+        self._tombstone_retry_after = 0.0
 
     def replace_writer(self, writer: WebDavWriteClient) -> WebDavWriteClient:
         previous = self._writer
@@ -125,22 +128,51 @@ class FavoriteBackupService:
         delete_job = next(
             (job for job in jobs if job.media_id == media_id and job.operation == "delete"), None
         )
-        has_delete = delete_job is not None
-        if not was_favorite and location is None and not has_delete:
+        if not was_favorite and location is None and delete_job is None:
             return FavoriteSyncStatus(media_id, False, "synced")
         await self._repository.set_global_favorite(media_id, False)
         await self._repository.enqueue_favorite_sync(media_id, "delete")
-        if delete_job is None or not delete_job.intent_persisted:
-            try:
-                await self._snapshot_exporter.export_state()
-                await self._repository.mark_favorite_delete_intent(media_id)
-            except Exception as exc:
-                raise FavoriteBackupError("tombstone_backup_failed") from exc
+        # The remote state snapshot carrying this delete intent is written by the
+        # sync worker before the delete is ever claimed (see
+        # _persist_pending_delete_intents). Doing it here would put archive I/O on
+        # the request path, so a slow or failing archive turned a removal that had
+        # already been applied locally into an HTTP 502.
         return FavoriteSyncStatus(media_id, False, "pending")
+
+    async def _persist_pending_delete_intents(self) -> None:
+        """Make pending delete intents durable in the remote snapshot.
+
+        A delete job is only claimable once `intent_persisted` is set, and the
+        snapshot export is what sets it. Unfavorite used to call that export
+        inline, which blocked the request on the archive backend. It now runs
+        here, once per sync cycle; a failure leaves the job pending for the next
+        attempt instead of failing a user request.
+        """
+        now = self._clock()
+        if now < self._tombstone_retry_after:
+            return
+        pending = await self._repository.list_pending_favorite_sync()
+        blocked = [
+            job for job in pending if job.operation == "delete" and not job.intent_persisted
+        ]
+        if not blocked:
+            return
+        try:
+            await self._snapshot_exporter.export_state()
+            for job in blocked:
+                await self._repository.mark_favorite_delete_intent(job.media_id)
+        except Exception as exc:  # noqa: BLE001 - the next cycle retries
+            self._tombstone_retry_after = now + self._tombstone_retry_seconds
+            _LOG.warning(
+                "Favorite delete intent could not be persisted; the delete stays withheld: "
+                "media_count=%d operation=delete error=%s",
+                len(blocked), type(exc).__name__,
+            )
 
     async def sync_pending(self, limit: int = 2) -> SyncBatchResult:
         if limit < 1:
             return SyncBatchResult(0, 0, 0, 0)
+        await self._persist_pending_delete_intents()
         jobs = await self._repository.claim_favorite_sync(limit=min(16, int(limit)))
         synced = retried = failed = 0
         for job in jobs:
