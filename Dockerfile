@@ -54,6 +54,9 @@ COPY deploy ./deploy
 COPY src ./src
 COPY tests ./tests
 COPY scripts ./scripts
+# Offline Player tests read the Vite/TypeScript sources, so the test image must
+# ship them. The runtime image above deliberately stays Bot-only.
+COPY player ./player
 CMD ["sh", "scripts/check_foundation.sh"]
 
 FROM runtime-base AS runtime

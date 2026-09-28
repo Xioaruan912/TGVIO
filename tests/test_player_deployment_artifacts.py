@@ -46,6 +46,17 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
             ],
         )
 
+    def test_bot_test_stage_ships_player_sources_but_runtime_does_not(self) -> None:
+        dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
+        test_stage = dockerfile.split("FROM runtime-base AS test", 1)[1].split(
+            "FROM runtime-base AS runtime", 1
+        )[0]
+        runtime_stage = dockerfile.split("FROM runtime-base AS runtime", 1)[1]
+        # Player web sources are inputs to offline Player tests; the same
+        # sources must never enter the Bot runtime image.
+        self.assertIn("COPY player ./player", test_stage)
+        self.assertNotIn("COPY player", runtime_stage)
+
     def test_player_lock_excludes_bot_dependencies(self) -> None:
         lock = (ROOT / "requirements.player.lock").read_text(encoding="utf-8")
         self.assertIn("aiohttp==", lock)
