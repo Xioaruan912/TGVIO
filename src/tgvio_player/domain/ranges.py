@@ -4,7 +4,7 @@ from dataclasses import dataclass
 import re
 
 
-_SINGLE_RANGE = re.compile(r"^bytes=(\d+)-(\d*)$")
+_SINGLE_RANGE = re.compile(r"^bytes=(\d*)-(\d*)$")
 
 
 class RangeNotSatisfiable(ValueError):
@@ -27,10 +27,11 @@ class ByteRange:
 
 
 def parse_single_range(value: str | None, *, size_bytes: int) -> ByteRange | None:
-    """Parse only ``bytes=0-``, ``bytes=N-``, and ``bytes=N-M``.
+    """Parse ``bytes=N-M``, ``bytes=N-`` and the RFC 7233 suffix form ``bytes=-N``.
 
-    Suffix and multipart ranges are deliberately unsupported.  A missing Range
-    means a normal full GET, represented by ``None``.
+    Multipart ranges (``bytes=0-9,20-29``) stay unsupported, like any player
+    that only ever asks for one slice at a time. A missing Range means a normal
+    full GET, represented by ``None``.
     """
     if value is None:
         return None
@@ -39,8 +40,17 @@ def parse_single_range(value: str | None, *, size_bytes: int) -> ByteRange | Non
     match = _SINGLE_RANGE.fullmatch(value.strip())
     if match is None or size_bytes == 0:
         raise RangeNotSatisfiable("invalid or unsupported range")
-    start = int(match.group(1))
-    end_text = match.group(2)
+    start_text, end_text = match.group(1), match.group(2)
+    if not start_text and not end_text:
+        raise RangeNotSatisfiable("invalid or unsupported range")
+    if not start_text:
+        # Suffix form: the last N bytes. This is how a player asks for the tail
+        # of a non-faststart file, so it must not be refused.
+        suffix = int(end_text)
+        if suffix <= 0:
+            raise RangeNotSatisfiable("invalid suffix range")
+        return ByteRange(start=max(0, size_bytes - suffix), end=size_bytes - 1)
+    start = int(start_text)
     if start >= size_bytes:
         raise RangeNotSatisfiable("range starts beyond resource")
     end = size_bytes - 1 if not end_text else int(end_text)

@@ -145,26 +145,6 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
         """True when no stream slot is free, so speculative work should pause."""
         return self._stream_slots.locked()
 
-    async def _schedule_head_prefetch(self, media_id: str, details: dict[str, object]) -> None:
-        if self._range_cache is None:
-            return
-        location = await self._repository.active_media_location(media_id)
-        if location is None:
-            return
-        size = int(details.get("size_bytes") or 0)
-        if size <= 0:
-            return
-        chunk_bytes = int(getattr(self._range_cache, "chunk_bytes", self._warm_head_bytes))
-        head_bytes = min(self._warm_head_bytes, chunk_bytes)
-        self._range_cache.prefetch_head(
-            media_id,
-            location[0],
-            location[1],
-            size,
-            head_bytes,
-            whole_below=head_bytes,
-        )
-
     def application(self) -> web.Application:
         app = web.Application(client_max_size=_MAX_JSON_BYTES)
         app.on_response_prepare.append(self._security_headers)
@@ -450,7 +430,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
                 if index < _MAX_HEAD_PREFETCH_ITEMS:
-                    await self._schedule_head_prefetch(media_id, details)
+                    await self._schedule_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         return web.json_response({"items": items, "next_cursor": None})
 
@@ -529,7 +509,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
                     if self._faststart is not None and index < 3:
                         self._faststart.schedule(media_id, details)
                     if index < _MAX_HEAD_PREFETCH_ITEMS:
-                        await self._schedule_head_prefetch(media_id, details)
+                        await self._schedule_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         count_method = getattr(self._repository, "count_video_ids", None)
         if callable(count_method):
@@ -578,7 +558,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
                 if self._faststart is not None and index < 3:
                     self._faststart.schedule(media_id, details)
                 if index < _MAX_HEAD_PREFETCH_ITEMS:
-                    await self._schedule_head_prefetch(media_id, details)
+                    await self._schedule_prefetch(media_id, details)
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         next_cursor = media_ids[-1] if has_more and media_ids else None
         return web.json_response(

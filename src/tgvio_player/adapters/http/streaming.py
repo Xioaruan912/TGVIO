@@ -51,6 +51,39 @@ def _tail_requested(request: web.Request) -> bool:
     return isinstance(value, str) and value.strip().lower() in _DOWNLOAD_FLAG_VALUES
 
 
+def _media_response_headers(
+    request: web.Request,
+    media_id: str,
+    size: int,
+    mime_type: object,
+    plan: StreamRequest,
+) -> tuple[int, int, int, dict[str, str]]:
+    """Build the shared status/range header set for playback, download and HEAD.
+
+    Keeping one builder means a HEAD advertises exactly what the body response
+    would, so a client that probes with HEAD and then ranges does not see the
+    two disagree.
+    """
+    if plan.byte_range is None:
+        start, end, status = 0, size - 1, 200
+    else:
+        start, end, status = plan.byte_range.start, plan.byte_range.end, 206
+    content_type = (
+        str(mime_type)
+        if isinstance(mime_type, str) and mime_type and mime_type != "application/octet-stream"
+        else "video/mp4"
+    )
+    headers = {
+        "Accept-Ranges": "bytes",
+        "Content-Length": str(end - start + 1),
+        "Content-Type": content_type,
+        "Content-Disposition": _content_disposition(request, media_id, content_type),
+    }
+    if status == 206:
+        headers["Content-Range"] = f"bytes {start}-{end}/{size}"
+    return status, start, end, headers
+
+
 def _content_disposition(request: web.Request, media_id: str, mime_type: object) -> str:
     """Build a safe ``Content-Disposition`` for playback or download.
 
@@ -82,6 +115,14 @@ class PlayerHttpStreamingMixin:
             plan = prepare_stream_request(request.headers.get("Range"), size_bytes=int(details["size_bytes"]))
         except RangeNotSatisfiable:
             return web.Response(status=416, headers={"Content-Range": f"bytes */{details['size_bytes']}"})
+        if request.method == "HEAD":
+            # A HEAD must stay free: no archive read, no stream slot, no faststart
+            # build. Players and proxies use it to learn the size and range
+            # support before deciding how to fetch.
+            status, _, _, headers = _media_response_headers(
+                request, media_id, int(details["size_bytes"]), details.get("mime_type"), plan
+            )
+            return web.Response(status=status, headers=headers)
         # Try to build the faststart overlay before taking a stream slot, so the
         # build never holds playback capacity. If it is not ready within a short
         # budget we fall back to the original file and build in the background.
@@ -162,24 +203,9 @@ class PlayerHttpStreamingMixin:
         prefetch: bool,
     ) -> web.StreamResponse:
         size = int(details["size_bytes"])
-        if plan.byte_range is None:
-            start, end, status = 0, size - 1, 200
-        else:
-            start, end, status = plan.byte_range.start, plan.byte_range.end, 206
-        mime = details.get("mime_type")
-        content_type = (
-            str(mime)
-            if isinstance(mime, str) and mime and mime != "application/octet-stream"
-            else "video/mp4"
+        status, start, end, headers = _media_response_headers(
+            request, media_id, size, details.get("mime_type"), plan
         )
-        headers = {
-            "Accept-Ranges": "bytes",
-            "Content-Length": str(end - start + 1),
-            "Content-Type": content_type,
-            "Content-Disposition": _content_disposition(request, media_id, content_type),
-        }
-        if status == 206:
-            headers["Content-Range"] = f"bytes {start}-{end}/{size}"
         data = await self._open_data(
             media_id, location, size, ByteRange(start, end), prefetch
         )
@@ -322,6 +348,47 @@ class PlayerHttpStreamingMixin:
             return False
         descriptor(media_id, location[0], location[1], size, min(self._warm_tail_bytes, size))
         return True
+
+    async def _schedule_prefetch(
+        self, media_id: str, details: dict[str, object]
+    ) -> None:
+        """Warm the ends of a clip the client is about to play.
+
+        Runs off the feed listing, so the first frame and a seek to the end are
+        both served locally without the viewer having to drag first.
+        """
+        if self._range_cache is None:
+            return
+        location = await self._repository.active_media_location(media_id)
+        if location is None:
+            return
+        size = int(details.get("size_bytes") or 0)
+        if size <= 0:
+            return
+        chunk_bytes = int(getattr(self._range_cache, "chunk_bytes", self._warm_head_bytes))
+        head_bytes = min(self._warm_head_bytes, chunk_bytes)
+        self._range_cache.prefetch_head(
+            media_id,
+            location[0],
+            location[1],
+            size,
+            head_bytes,
+            whole_below=head_bytes,
+        )
+        # Long clips are the ones a viewer scrubs to the end of, and the last
+        # window is expensive on a slow archive; short clips play through their
+        # tail anyway, so only long ones are warmed here.
+        tail = getattr(self._range_cache, "prefetch_tail", None)
+        duration = details.get("duration_seconds")
+        if (
+            tail is not None
+            and self._warm_tail_bytes > 0
+            and isinstance(duration, (int, float))
+            and not isinstance(duration, bool)
+            and float(duration) >= self._large_video_seconds
+            and size > self._warm_tail_bytes
+        ):
+            tail(media_id, location[0], location[1], size, min(self._warm_tail_bytes, size))
 
     def _is_startup_range(self, byte_range: ByteRange | None) -> bool:
         return (

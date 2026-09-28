@@ -27,10 +27,16 @@ class RangeTests(unittest.TestCase):
         self.assertEqual(parse_single_range("bytes=0-", size_bytes=10), ByteRange(0, 9))
         self.assertEqual(parse_single_range("bytes=3-", size_bytes=10), ByteRange(3, 9))
         self.assertEqual(parse_single_range("bytes=3-7", size_bytes=10), ByteRange(3, 7))
+        # RFC 7233 suffix ranges: the last N bytes. A player uses this to read the
+        # tail of a file whose moov atom sits at the end.
+        self.assertEqual(parse_single_range("bytes=-4", size_bytes=10), ByteRange(6, 9))
+        self.assertEqual(parse_single_range("bytes=-99", size_bytes=10), ByteRange(0, 9))
         self.assertEqual(prepare_stream_request("bytes=3-", size_bytes=10).content_range, "bytes 3-9/10")
+        self.assertEqual(prepare_stream_request("bytes=-4", size_bytes=10).content_range, "bytes 6-9/10")
+        self.assertEqual(prepare_stream_request("bytes=-4", size_bytes=10).status, 206)
 
-    def test_suffix_multi_invalid_and_unsatisfiable_ranges_are_416(self) -> None:
-        for value in ("bytes=-4", "bytes=0-1,3-4", "items=0-1", "bytes=9-8", "bytes=10-"):
+    def test_multi_invalid_and_unsatisfiable_ranges_are_416(self) -> None:
+        for value in ("bytes=0-1,3-4", "items=0-1", "bytes=9-8", "bytes=10-", "bytes=-0", "bytes=-"):
             with self.subTest(value=value), self.assertRaises(RangeNotSatisfiable):
                 parse_single_range(value, size_bytes=10)
         self.assertEqual(RangeNotSatisfiable.status_code, 416)

@@ -372,7 +372,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
     async def test_feed_limits_background_range_prefetch_to_five_items(self) -> None:
         cookie = await self._login()
         self.server._deck.next_items = AsyncMock(return_value=[self.media_id] * 7)
-        self.server._schedule_head_prefetch = AsyncMock()
+        self.server._schedule_prefetch = AsyncMock()
 
         response = await self.client.get(
             "/api/v1/feed?limit=20&cache=1",
@@ -381,13 +381,13 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(response.status, 200)
         self.assertEqual(len((await response.json())["items"]), 7)
-        self.assertEqual(self.server._schedule_head_prefetch.await_count, 5)
+        self.assertEqual(self.server._schedule_prefetch.await_count, 5)
 
     async def test_head_prefetch_is_limited_to_one_cache_chunk(self) -> None:
         cache = Mock(chunk_bytes=1024)
         self.server._range_cache = cache
 
-        await self.server._schedule_head_prefetch(self.media_id, {"size_bytes": 4096})
+        await self.server._schedule_prefetch(self.media_id, {"size_bytes": 4096})
 
         self.assertEqual(cache.prefetch_head.call_args.args[4], 1024)
         self.assertEqual(cache.prefetch_head.call_args.kwargs["whole_below"], 1024)
@@ -521,9 +521,61 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(self.read_client.body.closed.is_set())
         invalid = await self.client.get(
             f"/api/v1/media/{self.media_id}/stream",
-            headers={"Range": "bytes=-2"}, cookies={"tgvio_player_session": cookie},
+            headers={"Range": "bytes=0-1,2-3"}, cookies={"tgvio_player_session": cookie},
         )
         self.assertEqual(invalid.status, 416)
+        empty_suffix = await self.client.get(
+            f"/api/v1/media/{self.media_id}/stream",
+            headers={"Range": "bytes=-0"}, cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(empty_suffix.status, 416)
+
+    async def test_suffix_range_serves_the_tail(self) -> None:
+        cookie = await self._login()
+        for header, expected_range, expected_length in (
+            ("bytes=-2", ByteRange(2, 3), "2"),
+            ("bytes=-10", ByteRange(0, 3), "4"),
+        ):
+            self.read_client.body = ClosableBody([b"abcd"])
+            self.read_client.calls.clear()
+            response = await self.client.get(
+                f"/api/v1/media/{self.media_id}/stream",
+                headers={"Range": header},
+                cookies={"tgvio_player_session": cookie},
+            )
+            self.assertEqual(response.status, 206, header)
+            self.assertEqual(response.headers["Content-Range"],
+                             f"bytes {expected_range.start}-{expected_range.end}/4", header)
+            self.assertEqual(response.headers["Content-Length"], expected_length, header)
+            # The reader must be asked for the tail slice, not the head.
+            self.assertEqual(self.read_client.calls[-1][1], expected_range, header)
+            await response.read()
+
+    async def test_head_reports_headers_without_touching_the_archive(self) -> None:
+        cookie = await self._login()
+        ranged = await self.client.head(
+            f"/api/v1/media/{self.media_id}/stream",
+            headers={"Range": "bytes=1-3"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(ranged.status, 206)
+        self.assertEqual(await ranged.read(), b"")
+        self.assertEqual(ranged.headers["Content-Range"], "bytes 1-3/4")
+        self.assertEqual(ranged.headers["Content-Length"], "3")
+        self.assertEqual(ranged.headers["Accept-Ranges"], "bytes")
+        self.assertEqual(ranged.headers["Content-Type"], "video/mp4")
+        self.assertIn("filename=", ranged.headers["Content-Disposition"])
+
+        whole = await self.client.head(
+            f"/api/v1/media/{self.media_id}/stream",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(whole.status, 200)
+        self.assertEqual(whole.headers["Content-Length"], "4")
+
+        # Probing must not read the archive or consume a playback slot.
+        self.assertEqual(self.read_client.calls, [])
+        self.assertEqual(self.server.active_playback_streams, 0)
 
     async def test_stream_disposition_names_the_clip_and_download_forces_attachment(self) -> None:
         cookie = await self._login()
@@ -1336,6 +1388,25 @@ class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await prepare.json(), {"prepared": False})
         await asyncio.sleep(0.05)
         self.assertEqual(self.reader.calls, [])
+
+    async def test_long_clip_prefetch_also_warms_the_tail(self) -> None:
+        calls: list[tuple] = []
+        original = self.cache.prefetch_tail
+        self.cache.prefetch_tail = lambda *args, **kwargs: (calls.append(args), original(*args, **kwargs))[1]
+
+        details = await self.repo.active_media_details(self.media_id)
+        assert details is not None
+
+        self.server._large_video_seconds = 10.0
+        await self.server._schedule_prefetch(self.media_id, details)
+        self.assertEqual(len(calls), 1)
+        self.assertEqual(calls[0][3], len(self.buffer))
+        self.assertEqual(calls[0][4], min(64 * 1024, len(self.buffer)))
+
+        calls.clear()
+        self.server._large_video_seconds = 300.0
+        await self.server._schedule_prefetch(self.media_id, details)
+        self.assertEqual(calls, [], "a short clip must not pay for a tail warm")
 
 
 if __name__ == "__main__":
