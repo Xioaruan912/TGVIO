@@ -2,7 +2,7 @@
 
 ## 目标与范围
 
-把 VPS 上优先的 Player 源码安全回收到公开 GitHub：公开树不得新增生产 WebDAV 地址、归档目录或收藏目录；现网 `player.sqlite3` 仍必须通过原有 1～8 号迁移的名称与 SHA-256 校验，不能重放或改写既有数据。完成本阶段只提交、推送 GitHub，不部署或重启生产 Player/Bot。后续 Player 功能调研在同步完成后继续。
+把 VPS 上优先的 Player 源码安全回收到公开 GitHub：公开树不得新增生产 WebDAV 地址、归档目录或收藏目录；现网 `player.sqlite3` 仍必须通过原有 1～8 号迁移的名称与 SHA-256 校验，不能重放或改写既有数据。完成本阶段需提交、推送 GitHub，并把通过验证的同一提交作为 Player-only release 部署 VPS；Bot 不重启。后续 Player 功能调研在同步与部署完成后继续。
 
 不处理已经存在于 Git 历史中的内容；如果需要清理历史，另立有破坏性的专项任务。Bot 迁移、Bot 数据库与 Player 媒体流架构不在本次范围内。
 
@@ -29,7 +29,7 @@
 
 ## 新安装与现网行为
 
-现网旧库的 `player_storage_settings` 行和收藏备份队列不变；部署新程序时仅校验历史链并继续使用现存配置。本阶段不部署新程序。
+现网旧库的 `player_storage_settings` 行和收藏备份队列不变；部署新程序时仅校验历史链并继续使用现存配置。不复制或输出生产配置值。
 
 新安装可启动和浏览其 Archive 媒体。收藏存储目标最初显示为示例值，用户需在现有 Player 设置页保存自己的 WebDAV 地址及目录后使用备份功能。示例 endpoint 不应被误认为可用存储；界面/文档要说明“尚未配置”，备份失败保持可见、可在配置后重试，不能静默丢弃收藏。不得从 archive 的只读 WebDAV 配置推断可写目标。
 
@@ -44,11 +44,13 @@
 
 按测试先行执行：先证明旧链不被当前公开迁移执行器识别、新库基线缺失、篡改被拒绝等预期失败；再实现迁移执行器与基线。测试覆盖全量旧链、旧链缺项或篡改、空库、无账本非空库、公开基线篡改、迁移原子性，以及两种谱系后续增量的顺序。通过离线夹具核对公开基线主要表/索引与旧链最终 schema，并复测 Player 收藏/存储 API。
 
-执行仓库要求的 `python3 -m unittest discover -s tests`、`sh scripts/check_foundation.sh`、`python3 scripts/release_guard.py architecture .`、`scripts/build_check.sh`，另跑 Player 前端测试/构建及 `git diff --check`。在公开前检查暂存区文件清单、secret scan 和生产值扫描。只从 clean、已推送的 Git 树作 release build；本阶段不调用生产部署入口。
+执行仓库要求的 `python3 -m unittest discover -s tests`、`sh scripts/check_foundation.sh`、`python3 scripts/release_guard.py architecture .`、`scripts/build_check.sh`，另跑 Player 前端测试/构建及 `git diff --check`。在公开前检查暂存区文件清单、secret scan 和生产值扫描。只从 clean、已推送的 Git 树作 release build。
+
+部署前以只读方式确认 VPS 当前 Player/Bot 容器身份、健康状态、迁移账本、磁盘与回滚资产。用 SQLite 在线备份 API 为 Player 自有数据库制作仅 root 可读的精确备份，保留上一版 Player image/source/env，绝不备份到 Git 或本地公开树。先在备份副本上运行新迁移执行器的离线演练，核对校验通过、schema 与业务行数不变。用仓库 `player_release.sh` 构建唯一正式 Player image，同阶段传到 VPS；经 `player_deploy.sh` 仅重建 Player 容器。发布后核对 full commit、镜像 ID、健康/重启数、旧迁移账本不变、SQLite `quick_check=ok`、Bot 容器 ID 不变，以及未登录 401、登录/Feed/Range 206 等受控 smoke。不得把认证材料或 WebDAV 路径输出到日志/命令结果。若后验失败，先只读审计，再按 `player_rollback.sh` 恢复上一版 Player image；本次旧库无 schema/data 迁移，正常回滚不恢复数据库，以免覆盖上线期间的合法写入。
 
 ## 风险与回滚
 
-- 最大风险是旧库被新的迁移执行器误判。缓解：固定精确白名单、只读比对生产账本、离线旧链夹具和故障即拒绝启动；不在本阶段把新代码部署 VPS。后续部署须先做生产副本演练和 Player-only rollback。
+- 最大风险是旧库被新的迁移执行器误判。缓解：固定精确白名单、只读比对生产账本、离线旧链夹具和故障即拒绝启动；Player-only 部署前做生产副本演练，保留上一版 image 与精确数据库备份。
 - 公开基线可能遗漏旧 schema 对象。缓解：在本地私有快照运行旧链并与公开基线逐项比较 schema，再运行全仓测试。
 - `.invalid` 示例目标导致新用户误以为备份已配置。缓解：设置页明确未配置状态，失败保留可重试；不得尝试把 Archive 只读凭据当写入授权。
 - 即使本次提交不含生产路径，旧 Git 历史或其他文件可能早已公开相似路径。本阶段不进行历史重写，也不宣称全面清除既往泄露。
