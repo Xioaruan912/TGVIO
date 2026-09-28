@@ -7,6 +7,7 @@ import time
 from typing import Awaitable, Callable, Protocol
 
 from tgvio.application.archive_runtime import ArchiveCanonicalCacheUnavailable
+from tgvio.application.flood_wait import FloodWaitGate
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
 from tgvio.application.ports import CacheOperator, JobRepository
 from tgvio.domain.archive import ArchivePackage, ArchivePackageState
@@ -681,10 +682,12 @@ class AutoRecoveryRuntime:
         schedule_job: Callable[[Job], Awaitable[None]],
         *,
         poll_seconds: float = 2.0,
+        flood_gate: FloodWaitGate | None = None,
     ) -> None:
         self._service = service
         self._schedule_job = schedule_job
         self._poll_seconds = max(0.25, float(poll_seconds))
+        self._flood_gate = flood_gate
         self._wake = asyncio.Event()
         self._task: asyncio.Task | None = None
         self._log = logging.getLogger("tgvio.auto_recovery.runtime")
@@ -708,6 +711,10 @@ class AutoRecoveryRuntime:
         while True:
             self._wake.clear()
             try:
+                if self._flood_gate is not None:
+                    # Lifting an expired flood wait belongs on this loop: it
+                    # already wakes periodically and never blocks publishing.
+                    await self._flood_gate.tick()
                 result = await self._service.run_once()
                 for job in result.retried_jobs:
                     try:

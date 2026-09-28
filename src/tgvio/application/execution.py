@@ -3,6 +3,7 @@ from __future__ import annotations
 import logging
 import time
 
+from tgvio.application.flood_wait import FloodWaitGate
 from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.ports import (
     JobRepository,
@@ -37,11 +38,33 @@ class PublishExecutionEngine:
         repository: JobRepository,
         transport: PublishTransport,
         control: JobControlService | None = None,
+        flood_gate: FloodWaitGate | None = None,
     ) -> None:
         self._repository = repository
         self._transport = transport
         self._control = control
+        self._flood_gate = flood_gate
         self._log = logging.getLogger("tgvio.publish.execution")
+
+    async def _note_flood_wait(self, exc: BaseException, *, job_id: str) -> None:
+        """Pause publishing for the wait Telegram asked for.
+
+        A batch that keeps firing through a flood wait burns the rest of the
+        quota, so one delay becomes several failed jobs. The gate reuses the
+        durable queue pause and lifts itself when the window expires.
+        """
+        if self._flood_gate is None:
+            return
+        until = await self._flood_gate.arm(exc)
+        if until is not None:
+            log_event(
+                self._log,
+                logging.WARNING,
+                "publish.flood_wait",
+                "Telegram flood wait: publish queue paused",
+                job_id=job_id,
+                until=until,
+            )
 
     async def execute(self, job: Job, plan: PublishPlan) -> Job:
         started_at = time.monotonic()
@@ -197,6 +220,7 @@ class PublishExecutionEngine:
         except (JobCancelRequested, JobHoldRequested):
             raise
         except Exception as exc:
+            await self._note_flood_wait(exc, job_id=job.id)
             if isinstance(exc, PublishTransportPartialError):
                 failure_code = "publish_partial"
             elif isinstance(exc, (PublishTransportUncertainError, IncompletePublishReceipts)):

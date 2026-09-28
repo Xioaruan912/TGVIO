@@ -7,6 +7,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from tgvio.application.flood_wait import FloodWaitGate, parse_flood_wait_seconds
 from tgvio.application.job_control import JobCancelRequested, JobControlService, JobHoldRequested
 from tgvio.application.ports import JobRepository, MediaDownloader
 from tgvio.domain.job import (
@@ -58,6 +59,11 @@ def classify_download_error(exc: BaseException) -> tuple[str, str]:
             "telegram_file_timeout",
             "Telegram 反复取用该文件失败（存储侧超时）；稍后会自动重试，或跳过这一项",
         )
+    if parse_flood_wait_seconds(exc) is not None:
+        return (
+            "telegram_flood_wait",
+            "Telegram 要求等待（限流）；发布队列已自动暂停，恢复后继续",
+        )
     return ("download_failed", "下载失败")
 
 
@@ -81,6 +87,7 @@ class JobDownloader:
         item_attempts: int = 2,
         item_tolerance: bool = True,
         item_retry_delay_seconds: float = 5.0,
+        flood_gate: FloodWaitGate | None = None,
     ) -> None:
         self._repository = repository
         self._downloader = downloader
@@ -90,6 +97,7 @@ class JobDownloader:
         self._item_attempts = max(1, int(item_attempts))
         self._item_tolerance = bool(item_tolerance)
         self._item_retry_delay = max(0.0, float(item_retry_delay_seconds))
+        self._flood_gate = flood_gate
         self._log = logging.getLogger("tgvio.download")
 
     async def _download_item_with_retries(self, job: Job, item, target_dir: Path):
@@ -104,6 +112,11 @@ class JobDownloader:
                 raise
             except Exception as exc:  # noqa: BLE001 - retried or reported below
                 last_error = exc
+                if self._flood_gate is not None and parse_flood_wait_seconds(exc) is not None:
+                    # Telegram is asking for a pause: remember it for the publish
+                    # side too, so a download flood wait cannot be followed by an
+                    # upload burst a second later.
+                    await self._flood_gate.arm(exc)
                 if attempt >= self._item_attempts:
                     break
                 log_event(

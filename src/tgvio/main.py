@@ -29,6 +29,7 @@ from tgvio.application.auto_recovery import (
     AutoRecoveryService,
 )
 from tgvio.application.cache_cleanup import CacheCleanupRuntime, CacheCleanupService
+from tgvio.application.flood_wait import FloodWaitGate
 from tgvio.adapters.web.dashboard import DashboardServer
 from tgvio.application.dashboard import DashboardService
 from tgvio.application.diagnostics import (
@@ -274,6 +275,7 @@ async def run(*, check_only: bool = False) -> None:
             if settings.preview_enabled
             else None
         )
+        flood_gate = FloodWaitGate(repository)
         downloader = JobDownloader(
             repository,
             routed_downloader,
@@ -282,6 +284,7 @@ async def run(*, check_only: bool = False) -> None:
             control=control,
             item_attempts=settings.download_item_attempts,
             item_tolerance=settings.download_item_tolerance,
+            flood_gate=flood_gate,
         )
         analyzer = MediaAnalyzer(repository, FFprobeMediaInspector(), control)
         orchestrator = JobOrchestrator(
@@ -323,6 +326,7 @@ async def run(*, check_only: bool = False) -> None:
                     upload_part_size_kb=settings.telegram_part_size_kb,
                 ),
                 control,
+                flood_gate,
             )
         runner = JobRunner(
             repository,
@@ -379,6 +383,7 @@ async def run(*, check_only: bool = False) -> None:
             ),
             intake_runtime.recover,
             poll_seconds=settings.auto_retry_poll_seconds,
+            flood_gate=flood_gate,
         )
         archive_deletion_service = (
             ArchiveDeletionService(
