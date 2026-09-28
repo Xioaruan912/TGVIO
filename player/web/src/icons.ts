@@ -22,6 +22,7 @@ export type IconName =
   | "pip"
   | "back"
   | "lock"
+  | "download"
   | "trash";
 
 type IconSpec = {
@@ -116,6 +117,9 @@ const SPECS: Record<IconName, IconSpec> = {
   },
   trash: {
     paths: ["M5 7h14", "M9 7V4.5h6V7", "M7 7l.8 13h8.4L17 7", "M10 11v5", "M14 11v5"],
+  },
+  download: {
+    paths: ["M12 4v10.2", "M7.7 10 12 14.3 16.3 10", "M5 19h14"],
   },
 };
 

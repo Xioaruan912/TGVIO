@@ -53,6 +53,9 @@ _MAX_HEAD_PREFETCH_ITEMS = 5
 _DEFAULT_STARTUP_CACHE_ENTRIES = 32
 _DEFAULT_STARTUP_CACHE_BYTES = 64 * 1024 * 1024
 _DEFAULT_STARTUP_RANGE_BYTES = 2 * 1024 * 1024
+# How much of a clip's tail an explicit `?tail=1` prepare warms. Background
+# warming of every catalog entry stays disabled (TGVIO_PLAYER_WARM_TAIL_MB=0).
+_DEFAULT_WARM_TAIL_BYTES = 8 * 1024 * 1024
 _LOGIN_FAILURE_LIMIT = 5
 _LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
 _LOGIN_LOCKOUT_SECONDS = 15 * 60
@@ -88,6 +91,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
         range_cache: object | None = None,
         large_video_seconds: float = 300.0,
         warm_head_bytes: int = 16 * 1024 * 1024,
+        warm_tail_bytes: int = _DEFAULT_WARM_TAIL_BYTES,
         favorite_backup: FavoriteBackupService | None = None,
         recovery_service: PlayerRecoveryService | None = None,
         storage_client_factory: Callable[[str, str, str], WebDavWriteClient] | None = None,
@@ -127,6 +131,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
         self._range_cache = range_cache
         self._large_video_seconds = max(1.0, float(large_video_seconds))
         self._warm_head_bytes = max(1, int(warm_head_bytes))
+        self._warm_tail_bytes = max(0, int(warm_tail_bytes))
         self._login_failures: dict[str, tuple[int, float, float]] = {}
         self._login_lock = asyncio.Lock()
 

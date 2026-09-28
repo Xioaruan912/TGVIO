@@ -615,6 +615,34 @@ class MediaRangeCache:
 
             task.add_done_callback(_done)
 
+    def prefetch_tail(
+        self,
+        key: str,
+        package: str,
+        relpath: str,
+        size: int,
+        length: int,
+    ) -> None:
+        """Warm the end of a clip so a first seek to the tail is local.
+
+        Warms the whole aligned window(s) covering the last ``length`` bytes.
+        Warming only the tail chunks would not help: ``prime`` refetches any
+        incomplete window in full, so the window itself is what has to be
+        present. The bytes fetched are the ones playback would have pulled on
+        that seek anyway, only earlier.
+        """
+        if size <= 0:
+            return
+        target = min(max(0, int(length)), size)
+        if target <= 0:
+            return
+        first_chunk = max(0, (size - target) // self._chunk_bytes)
+        last_chunk = max(first_chunk, (size - 1) // self._chunk_bytes)
+        first_window = self._window_for_chunk(first_chunk)
+        last_window = self._window_for_chunk(last_chunk)
+        for window in range(first_window, last_window + 1):
+            self._ensure_window(key, package, relpath, size, window, low_priority=True)
+
     async def shutdown(self) -> None:
         for task in list(self._tasks):
             task.cancel()

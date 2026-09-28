@@ -362,6 +362,22 @@ class PlayerApi {
     }
   }
 
+  /**
+   * Best-effort warm-up of a clip's tail window. Called when a viewer drags
+   * towards the end so the seek itself does not wait for a cold origin read.
+   */
+  async prepareTail(mediaId: string): Promise<void> {
+    if (MOCK_MODE) return;
+    try {
+      await fetch(`/api/v1/media/${encodeURIComponent(mediaId)}/prepare?tail=1`, {
+        method: "POST",
+        credentials: "same-origin",
+      });
+    } catch {
+      /* best effort */
+    }
+  }
+
   async login(secret: string): Promise<void> {
     if (MOCK_MODE) return;
     await this.request("/api/v1/auth/login", {

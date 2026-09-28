@@ -247,6 +247,36 @@ class MediaRangeCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(store.data), {("k", 0)})
         await cache.shutdown()
 
+    async def test_prefetch_tail_warms_the_end_and_not_the_head(self) -> None:
+        buffer = bytes(range(64))
+        store = FakeStore()
+        reader = FakeReader(buffer)
+        cache = MediaRangeCache(store, reader, window_bytes=16, concurrency=2, max_attempts=1)
+        cache.prefetch_tail("k", "pkg", "clip.mp4", len(buffer), 8)
+        for _ in range(50):
+            if ("k", 7) in store.data:
+                break
+            await asyncio.sleep(0.01)
+        # Chunk 7 is the last 8-byte chunk; the covering window is warmed, since a
+        # partial window would be refetched in full by the seek anyway.
+        self.assertIn(("k", 7), store.data)
+        self.assertNotIn(("k", 0), store.data)
+        self.assertEqual(reader.calls, [(48, 63)])
+        await cache.shutdown()
+
+    async def test_prefetch_tail_covers_the_whole_smallest_clip(self) -> None:
+        buffer = bytes(range(64))
+        store = FakeStore()
+        reader = FakeReader(buffer)
+        cache = MediaRangeCache(store, reader, window_bytes=64, concurrency=2, max_attempts=1)
+        cache.prefetch_tail("k", "pkg", "clip.mp4", len(buffer), len(buffer))
+        for _ in range(50):
+            if ("k", 7) in store.data:
+                break
+            await asyncio.sleep(0.01)
+        self.assertIn(("k", 7), store.data)
+        await cache.shutdown()
+
     async def test_stream_reuses_warmed_head_and_fetches_only_missing_chunks(self) -> None:
         buffer = bytes(range(64))
         reader = FakeReader(buffer)

@@ -59,6 +59,7 @@ class PlayerSettings:
     cache_concurrency: int
     warm_all: bool
     warm_head_mb: int
+    warm_tail_mb: int
     delete_enabled: bool
 
     @classmethod
@@ -99,6 +100,7 @@ class PlayerSettings:
             cls._integer(get("CACHE_CONCURRENCY") or "4", "CACHE_CONCURRENCY", 1, 16),
             cls._flag(get("WARM_ALL") or "true", "WARM_ALL"),
             cls._integer(get("WARM_HEAD_MB") or "16", "WARM_HEAD_MB", 1, 512),
+            cls._integer(get("WARM_TAIL_MB") or "8", "WARM_TAIL_MB", 0, 512),
             cls._flag(get("DELETE_ENABLED") or "false", "DELETE_ENABLED"),
         )
 
@@ -247,6 +249,7 @@ async def run(settings: PlayerSettings) -> None:
             range_cache=range_cache,
             large_video_seconds=settings.large_video_seconds,
             warm_head_bytes=settings.warm_head_mb * 1024 * 1024,
+            warm_tail_bytes=settings.warm_tail_mb * 1024 * 1024,
             favorite_backup=favorite_backup,
             recovery_service=recovery,
             storage_client_factory=storage_client_factory,

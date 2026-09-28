@@ -19,6 +19,49 @@ _FASTSTART_WAIT_SECONDS = 2.0
 _FOREGROUND_STREAM_WAIT_SECONDS = 3.0
 _STREAM_SLOT_POLL_SECONDS = 0.025
 _PRELOAD_HEADER = "X-TGVIO-Preload"
+_DOWNLOAD_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
+# Only whitelisted media types may contribute a filename extension. Anything
+# unrecognised falls back to ``.bin`` rather than echoing a client value.
+_DOWNLOAD_EXTENSIONS: dict[str, str] = {
+    "video/mp4": ".mp4",
+    "video/quicktime": ".mov",
+    "video/x-matroska": ".mkv",
+    "video/webm": ".webm",
+    "video/x-msvideo": ".avi",
+    "video/mpeg": ".mpeg",
+    "video/3gpp": ".3gp",
+    "video/ogg": ".ogv",
+    "video/mp2t": ".ts",
+    "audio/mpeg": ".mp3",
+    "audio/mp4": ".m4a",
+    "image/jpeg": ".jpg",
+    "image/png": ".png",
+}
+
+
+def _download_requested(request: web.Request) -> bool:
+    """``?download=1`` switches a stream from inline playback to a save."""
+    value = request.query.get("download")
+    return isinstance(value, str) and value.strip().lower() in _DOWNLOAD_FLAG_VALUES
+
+
+def _tail_requested(request: web.Request) -> bool:
+    """``?tail=1`` asks the server to warm the end of a clip for a seek."""
+    value = request.query.get("tail")
+    return isinstance(value, str) and value.strip().lower() in _DOWNLOAD_FLAG_VALUES
+
+
+def _content_disposition(request: web.Request, media_id: str, mime_type: object) -> str:
+    """Build a safe ``Content-Disposition`` for playback or download.
+
+    The filename is the media fingerprint plus a whitelisted extension, so no
+    remote path, owner data or user-supplied text can reach the header, and a
+    browser's "save as" gets a meaningful name instead of the route name.
+    """
+    mime = str(mime_type or "").split(";", 1)[0].strip().lower()
+    extension = _DOWNLOAD_EXTENSIONS.get(mime, ".bin")
+    disposition = "attachment" if _download_requested(request) else "inline"
+    return f'{disposition}; filename="{fingerprint(media_id)}{extension}"'
 
 
 class StartupRangeUnavailable(RuntimeError):
@@ -133,6 +176,7 @@ class PlayerHttpStreamingMixin:
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
             "Content-Type": content_type,
+            "Content-Disposition": _content_disposition(request, media_id, content_type),
         }
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
@@ -208,6 +252,7 @@ class PlayerHttpStreamingMixin:
             "Accept-Ranges": "bytes",
             "Content-Length": str(end - start + 1),
             "Content-Type": str(overlay.mime),
+            "Content-Disposition": _content_disposition(request, media_id, str(overlay.mime)),
         }
         if status == 206:
             headers["Content-Range"] = f"bytes {start}-{end}/{size}"
@@ -248,12 +293,35 @@ class PlayerHttpStreamingMixin:
     async def _prepare(self, request: web.Request) -> web.Response:
         await self._authenticate(request)
         self._require_same_origin(request)
-        if self._faststart is None:
-            return web.json_response({"prepared": False}, status=202)
         media_id = request.match_info["media_id"]
         details = await self._media_details(media_id)
-        self._faststart.schedule(media_id, details)
-        return web.json_response({"prepared": True}, status=202)
+        prepared = False
+        if self._faststart is not None:
+            self._faststart.schedule(media_id, details)
+            prepared = True
+        if _tail_requested(request):
+            prepared = await self._warm_tail(media_id, details) or prepared
+        return web.json_response({"prepared": prepared}, status=202)
+
+    async def _warm_tail(self, media_id: str, details: dict[str, object]) -> bool:
+        """Warm the tail window for a viewer who is dragging towards the end.
+
+        This is the cost-bounded half of tail caching: the client asks for the
+        clip it is actually about to seek in, instead of the server warming the
+        tail of every catalog entry.
+        """
+        cache = self._range_cache
+        if cache is None or self._warm_tail_bytes <= 0:
+            return False
+        descriptor = getattr(cache, "prefetch_tail", None)
+        if descriptor is None:
+            return False
+        location = await self._repository.active_media_location(media_id)
+        size = int(details.get("size_bytes") or 0)
+        if location is None or size <= 0:
+            return False
+        descriptor(media_id, location[0], location[1], size, min(self._warm_tail_bytes, size))
+        return True
 
     def _is_startup_range(self, byte_range: ByteRange | None) -> bool:
         return (
@@ -287,6 +355,9 @@ class PlayerHttpStreamingMixin:
             "Accept-Ranges": "bytes",
             "Content-Length": str(len(cached)),
             "Content-Range": f"bytes {byte_range.start}-{byte_range.end}/{details['size_bytes']}",
+            "Content-Disposition": _content_disposition(
+                request, media_id, details.get("mime_type") or "video/mp4"
+            ),
         }
         mime_type = details.get("mime_type")
         if isinstance(mime_type, str) and mime_type:

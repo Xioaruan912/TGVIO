@@ -4,6 +4,7 @@ export type ShellHandlers = {
   onTogglePlayback: () => void;
   onPlayGesture: () => void;
   onToggleFavorite: () => void;
+  onDownload: () => void;
   onDeleteMedia: () => void;
   onToggleSound: () => void;
   onShuffle: () => void;
@@ -25,6 +26,7 @@ export type Shell = {
   timeCurrent: HTMLElement;
   timeTotal: HTMLElement;
   favoriteBtn: HTMLButtonElement;
+  downloadBtn: HTMLButtonElement;
   deleteBtn: HTMLButtonElement;
   soundBtn: HTMLButtonElement;
   shuffleBtn: HTMLButtonElement;
@@ -245,8 +247,14 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const groupBtn = actionButton(iconStack([["library", "icon-single"]], 30), "同组视频", "查看同组视频");
   groupBtn.hidden = true;
   groupBtn.addEventListener("click", handlers.onOpenGroup);
-  actionRail.append(favoriteBtn, groupBtn, soundBtn, shuffleBtn, deleteBtn, privacyLockBtn);
+  const downloadBtn = actionButton(
+    iconStack([["download", "icon-single"]], 30),
+    "下载原片",
+    "下载原片",
+  );
+  actionRail.append(favoriteBtn, groupBtn, soundBtn, shuffleBtn, downloadBtn, deleteBtn, privacyLockBtn);
   favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
+  downloadBtn.addEventListener("click", handlers.onDownload);
   soundBtn.addEventListener("click", handlers.onToggleSound);
   shuffleBtn.addEventListener("click", handlers.onShuffle);
   deleteBtn.addEventListener("click", handlers.onDeleteMedia);
@@ -333,6 +341,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
     timeCurrent,
     timeTotal,
     favoriteBtn,
+    downloadBtn,
     deleteBtn,
     soundBtn,
     shuffleBtn,

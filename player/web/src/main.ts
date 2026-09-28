@@ -58,6 +58,8 @@ const DEBUG = MOCK_MODE || new URLSearchParams(window.location.search).has("debu
 
 const clips: Clip[] = [];
 const favorites = new Set<string>();
+// One tail warm-up per clip is enough: the server keeps the bytes on disk.
+const tailWarmed = new Set<string>();
 const preloader = new PreloadCoordinator();
 const adaptiveCache = new AdaptiveCacheController(prefs.cacheMode);
 type NetworkConnection = EventTarget & { saveData?: boolean; effectiveType?: string };
@@ -457,6 +459,28 @@ function updateProgress(): void {
   shell.timeTotal.textContent = formatTime(Number(shell.seek.max));
   paintSeek(shell.seek);
   renderDebug();
+}
+
+/** Ask the server once per clip to warm its tail window for a seek to the end. */
+function warmTail(mediaId: string): void {
+  if (tailWarmed.has(mediaId)) return;
+  tailWarmed.add(mediaId);
+  void api.prepareTail(mediaId);
+}
+
+/** Save the original file; the server answers with an attachment disposition. */
+function downloadCurrent(): void {
+  const clip = feedView?.clipAt(activeIndex);
+  if (!clip) return;
+  const separator = clip.streamUrl.includes("?") ? "&" : "?";
+  const link = document.createElement("a");
+  link.href = `${clip.streamUrl}${separator}download=1`;
+  link.download = "";
+  link.rel = "noopener";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+  toast(shell!, "开始下载原片");
 }
 
 async function toggleFavorite(): Promise<void> {
@@ -952,6 +976,9 @@ function feedGestureOptions() {
       const clip = feedView?.clipAt(activeIndex);
       const video = pool?.currentVideo();
       if (!clip || !video || !shell) return;
+      if (Number.isFinite(video.duration) && video.duration > 0 && time >= video.duration * 0.7) {
+        warmTail(clip.id);
+      }
       video.currentTime = time;
       shell.seek.value = String(time);
       shell.timeCurrent.textContent = formatTime(time);
@@ -1551,6 +1578,7 @@ function renderFeed(): void {
     onTogglePlayback: togglePlayback,
     onPlayGesture: playGesture,
     onToggleFavorite: () => void toggleFavorite(),
+    onDownload: downloadCurrent,
     onDeleteMedia: () => void deleteCurrentMedia(),
     onToggleSound: toggleSound,
     onShuffle: () => void goRandom(),

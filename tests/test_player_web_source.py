@@ -27,5 +27,28 @@ class PlayerContextFeedSourceTests(unittest.TestCase):
         self.assertIn("if (!known.has(clip.id))", context)
 
 
+class PlayerDownloadAndTailSourceTests(unittest.TestCase):
+    """Guard the client wiring for the download action and the tail warm-up."""
+
+    def test_download_action_is_wired_to_the_attachment_stream(self) -> None:
+        main = (ROOT / "player/web/src/main.ts").read_text(encoding="utf-8")
+        ui = (ROOT / "player/web/src/ui.ts").read_text(encoding="utf-8")
+        icons = (ROOT / "player/web/src/icons.ts").read_text(encoding="utf-8")
+        self.assertIn('"下载原片"', ui)
+        self.assertIn("onDownload: () => void;", ui)
+        self.assertIn("downloadBtn.addEventListener(\"click\", handlers.onDownload)", ui)
+        self.assertIn("onDownload: downloadCurrent", main)
+        self.assertIn('`${clip.streamUrl}${separator}download=1`', main)
+        self.assertIn('| "download"', icons)
+
+    def test_seeking_towards_the_end_asks_the_server_to_warm_the_tail(self) -> None:
+        main = (ROOT / "player/web/src/main.ts").read_text(encoding="utf-8")
+        api = (ROOT / "player/web/src/api.ts").read_text(encoding="utf-8")
+        self.assertIn("warmTail(clip.id);", main)
+        self.assertIn("time >= video.duration * 0.7", main)
+        self.assertIn("async prepareTail(mediaId: string)", api)
+        self.assertIn("/prepare?tail=1", api)
+
+
 if __name__ == "__main__":
     unittest.main()

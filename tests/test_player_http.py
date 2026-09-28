@@ -10,7 +10,7 @@ from unittest.mock import AsyncMock, Mock
 from aiohttp.test_utils import TestClient, TestServer
 
 from tgvio_player.adapters.http import PlayerHttpServer
-from tgvio_player.adapters.http.diagnostics import classify_http_outcome
+from tgvio_player.adapters.http.diagnostics import classify_http_outcome, fingerprint
 from tgvio_player.adapters.http.server import resolve_client
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.favorite_backup import FavoriteBackupService
@@ -524,6 +524,43 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             headers={"Range": "bytes=-2"}, cookies={"tgvio_player_session": cookie},
         )
         self.assertEqual(invalid.status, 416)
+
+    async def test_stream_disposition_names_the_clip_and_download_forces_attachment(self) -> None:
+        cookie = await self._login()
+        name = f"{fingerprint(self.media_id)}.mp4"
+
+        async def fetch(query: str, byte_range: str):
+            # FakeReadClient bodies are single-use, exactly like a real upstream
+            # response, so each request needs a fresh one.
+            self.read_client.body = ClosableBody([b"abcd"])
+            response = await self.client.get(
+                f"/api/v1/media/{self.media_id}/stream{query}",
+                headers={"Range": byte_range},
+                cookies={"tgvio_player_session": cookie},
+            )
+            self.assertEqual(response.status, 206)
+            await response.read()
+            return response
+
+        # Playback, the cached startup range and both download flag spellings
+        # must agree on the filename, so a browser's "save as" is meaningful
+        # whichever path served the bytes.
+        self.assertEqual(
+            (await fetch("", "bytes=1-3")).headers["Content-Disposition"],
+            f'inline; filename="{name}"',
+        )
+        self.assertEqual(
+            (await fetch("", "bytes=0-3")).headers["Content-Disposition"],
+            f'inline; filename="{name}"',
+        )
+        self.assertEqual(
+            (await fetch("?download=1", "bytes=1-3")).headers["Content-Disposition"],
+            f'attachment; filename="{name}"',
+        )
+        self.assertEqual(
+            (await fetch("?download=true", "bytes=0-3")).headers["Content-Disposition"],
+            f'attachment; filename="{name}"',
+        )
 
     async def test_stream_capacity_releases_on_client_cancellation(self) -> None:
         cookie = await self._login()
@@ -1210,6 +1247,7 @@ class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
             ShuffleDeckService(self.repo),
             self.reader,
             range_cache=cache,
+            warm_tail_bytes=64 * 1024,
         )
         self.client = TestClient(TestServer(self.server.application()))
         await self.client.start_server()
@@ -1260,6 +1298,44 @@ class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("inflight_bytes_served", stats)
         self.assertIn("upstream_bytes", stats)
         self.assertIn("prime_wait_ms_avg", stats)
+
+    async def test_prepare_tail_warms_the_end_so_a_first_seek_is_local(self) -> None:
+        cookie = await self._login()
+        prepare = await self.client.post(
+            f"/api/v1/media/{self.media_id}/prepare?tail=1",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(prepare.status, 202)
+        self.assertEqual(await prepare.json(), {"prepared": True})
+
+        # The covering window is warmed in the background, and never the head.
+        for _ in range(100):
+            if self.cache.has_chunk(self.media_id, 3):
+                break
+            await asyncio.sleep(0.01)
+        self.assertTrue(self.cache.has_chunk(self.media_id, 3))
+        self.assertEqual(self.reader.calls, [(0, 199999)])
+
+        # A viewer dragging to the end is then served without touching the archive.
+        tail = await self.client.get(
+            f"/api/v1/media/{self.media_id}/stream",
+            headers={"Range": "bytes=199000-199999"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(tail.status, 206)
+        self.assertEqual(await tail.read(), self.buffer[199000:200000])
+        self.assertEqual(self.reader.calls, [(0, 199999)])
+
+    async def test_prepare_without_tail_flag_does_not_warm_the_tail(self) -> None:
+        cookie = await self._login()
+        prepare = await self.client.post(
+            f"/api/v1/media/{self.media_id}/prepare",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(prepare.status, 202)
+        self.assertEqual(await prepare.json(), {"prepared": False})
+        await asyncio.sleep(0.05)
+        self.assertEqual(self.reader.calls, [])
 
 
 if __name__ == "__main__":
