@@ -47,7 +47,8 @@ TGVIO 是 owner 私用的 Telegram 媒体收集、整理、顺序发布与 WebDA
 3. **O / 本地 Player mock**：390×844 Chrome 可显示 Feed 结构、右侧操作和底部导航；mock 视频无法证明真实 WebDAV 播放。
 4. **O / 线上只读**：2026-09-28 `https://csdn.im/` 与 `/healthz` 返回 200；未登录 `/api/v1/feed`、`/api/v1/favorites` 返回 401；VPS `tgvio` 与 `tgvio-player` 容器 healthy。线上 Player 是 2026-09-27 release，代码领先当前 GitHub `main`。因缺少 Player 访问凭证/安全会话，**这里没有实际验证认证后播放、收藏、seek 或手机真机操作**。
 5. **O / 安装流程检查**：未运行 `install.sh` 的“安装并启动”，因为该步骤会启动真实 Bot；只读检查了向导/校验逻辑。**这里没有实际验证首次安装到首次发布**。
-6. **文档差异**：`AI_DEVELOPMENT.md` 第 148 行仍把 `/grab` 当入口，但第 154 行和当前命令分发显示它已删除；面向用户的 `README.md` 已不再推荐 `/grab`。V2 README/AI 文件仍称 Player 未交付/仅 A 阶段，和线上 Player release 不符。旧 AGENTS 身份段也落后于线上，只读运行状态优先。
+6. **文档差异**：研究时 `AI_DEVELOPMENT.md` 把已删除的 `/grab` 当入口，并称 Player 未交付；本次已修正该文件。面向用户的 `README.md` 已不再推荐 `/grab`。V2 README 仍称 Player 仅 A 阶段，和线上 Player release 不符；旧 AGENTS 身份段也落后于线上，只读运行状态优先。
+7. **O / 改动后 fake 回归**：20、50、100 个单视频分别只需 2、5、10 次本页选择点击；确认清单每页最多 10 个移除项，单页按钮行不超过 13。这里验证的是 fake Bot 交互，不是手机 Telegram 真机操作。
 
 ## 6. Web / 竞品调研
 
@@ -173,4 +174,4 @@ Bot：⏳ 正在合并读取 50 组… → ✅ 已提交 N 项；到「我的任
 
 ## 15. 最终建议的下一步
 
-先交付 TOP 1 的低风险 UI 增量并做 owner 手机验收：分别用 20/50/100 行测选取、核对、取消和 0 项读取失败；再决定是否启动 P1 持久选择与失败组定位。Player 的下一轮产品结论须来自已认证的真实播放操作；本次只读访问不足以证明线上播放体验。
+TOP 1 的低风险 UI 增量已交付：功能提交 `39ece75e6bc457dc21194ca8e505ef039e42079e`，测试镜像修复提交 `4d1de27b67762822d7461429e5045ca0fa86c7ab`；Bot release `r2-46-4d1de27-20260928T062735Z` 已上线。全仓离线 811 项测试通过，独立远端后验确认单实例健康、schema v18、`quick_check=ok`、无活动任务或未结算副作用，回滚资产检查通过。下一步由 owner 用手机 Telegram 分别对 20/50/100 行验证选取、核对、取消和读取失败；再决定是否启动 P1 持久选择与失败组定位。Player 的下一轮产品结论须来自已认证的真实播放操作；本次只读访问不足以证明线上播放体验。
