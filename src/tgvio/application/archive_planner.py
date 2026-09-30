@@ -2,6 +2,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Callable
+import hashlib
 import re
 
 from tgvio.domain.archive import (
@@ -18,11 +20,53 @@ from tgvio.domain.job import Job, MediaItem, MediaKind
 
 ARCHIVE_LAYOUT_VERSION = "tgvio.archive/v1"
 ARCHIVE_LAYOUT_VERSION_V2 = "tgvio.archive/v2"
+# A cover is a small still. Anything larger is not a cover and is refused rather
+# than shipped, so a package never grows by an unbounded amount.
+MAX_COVER_BYTES = 1_000_000
+COVER_ALGORITHM = "reuse-publish-thumbnail-v1"
+CoverProvider = Callable[["Job", "MediaItem"], Path | None]
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f/\\]+")
 
 
 class ArchivePlanningError(RuntimeError):
     pass
+
+
+def file_sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for block in iter(lambda: handle.read(1024 * 1024), b""):
+            digest.update(block)
+    return digest.hexdigest()
+
+
+def publish_thumbnail_cover_provider(
+    work_root: Path,
+    *,
+    max_bytes: int = MAX_COVER_BYTES,
+) -> CoverProvider:
+    """Reuse the thumbnail publishing already produced; never generate one here.
+
+    Publishing writes a deterministic ``thumb-<index>.jpg`` next to the media it
+    sent. Archiving re-reads that file when it is still on disk, so a cover costs
+    no extra decode, no extra ffmpeg deadline and cannot delay the job. A missing
+    or oversized file simply yields no cover.
+    """
+    root = Path(work_root)
+
+    def provider(job: Job, item: MediaItem) -> Path | None:
+        if item.kind is not MediaKind.VIDEO:
+            return None
+        candidate = root / f"job-{job.id}" / "publish" / f"thumb-{item.index}.jpg"
+        try:
+            if not candidate.is_file() or candidate.is_symlink():
+                return None
+            size = candidate.stat().st_size
+        except OSError:
+            return None
+        return candidate if 0 < size <= max_bytes else None
+
+    return provider
 
 
 class ArchivePlanner:
@@ -34,8 +78,10 @@ class ArchivePlanner:
         remote_root: str = "",
         profile: ArchiveProfileSnapshot | None = None,
         layout: str = "v1",
+        cover_provider: CoverProvider | None = None,
     ) -> None:
         self._remote_root = self._normalize_remote_root(remote_root)
+        self._cover_provider = cover_provider
         self._profile = profile or ArchiveProfileSnapshot()
         self._layout = "v2" if str(layout).lower() == "v2" else "v1"
         self._layout_version = (
@@ -83,6 +129,7 @@ class ArchivePlanner:
         objects: list[ArchiveObject] = []
         media_manifest: list[dict[str, object]] = []
         used_relpaths: set[str] = set()
+        covers_planned = 0
         for object_index, item in enumerate(candidates):
             local = self._canonical_path(item)
             if not local.is_file():
@@ -110,6 +157,38 @@ class ArchivePlanner:
                 )
             )
             media_manifest.append(self._manifest_item(item, remote_relpath, size))
+            if self._cover_provider is None or item.kind is not MediaKind.VIDEO:
+                continue
+            cover_path = self._cover_for(job, item)
+            if cover_path is None:
+                continue
+            try:
+                cover_size = cover_path.stat().st_size
+                cover_sha256 = file_sha256(cover_path)
+            except OSError:
+                continue
+            cover_name = f"{Path(remote_name).stem}-cover.jpg"
+            cover_relpath = self._unique_relpath(f"cover/{cover_name}", used_relpaths)
+            used_relpaths.add(cover_relpath)
+            objects.append(
+                ArchiveObject(
+                    package_id=package_id,
+                    object_index=len(candidates) + covers_planned,
+                    item_index=item.index,
+                    role=ArchiveObjectRole.COVER,
+                    local_path=str(cover_path),
+                    remote_relpath=cover_relpath,
+                    size_bytes=cover_size,
+                    sha256=cover_sha256,
+                )
+            )
+            media_manifest[-1]["cover"] = {
+                "path": cover_relpath,
+                "size_bytes": cover_size,
+                "mime_type": "image/jpeg",
+                "algorithm": COVER_ALGORITHM,
+            }
+            covers_planned += 1
 
         manifest = {
             "schema": self._layout_version,
@@ -121,9 +200,11 @@ class ArchivePlanner:
                 "policy": self._profile.policy.value,
                 "policy_version": self._profile.policy_version,
             },
-            "media_count": len(objects),
+            "media_count": len(media_manifest),
             "media": media_manifest,
         }
+        if covers_planned:
+            manifest["cover_algorithm"] = COVER_ALGORITHM
         manifest_sha256 = archive_json_sha256(manifest)
         package = ArchivePackage(
             id=package_id,
@@ -219,6 +300,24 @@ class ArchivePlanner:
         if not name or name in {".", ".."}:
             name = f"media-{object_index + 1:03d}.bin"
         return f"{object_index + 1:03d}__{name[:180]}"
+
+    def _cover_for(self, job: Job, item: MediaItem) -> Path | None:
+        """A cover is optional: a failing provider or a junk file just yields none."""
+        assert self._cover_provider is not None
+        try:
+            candidate = self._cover_provider(job, item)
+        except Exception:
+            return None
+        if candidate is None:
+            return None
+        try:
+            if not candidate.is_file() or candidate.is_symlink():
+                return None
+            if not 0 < candidate.stat().st_size <= MAX_COVER_BYTES:
+                return None
+        except OSError:
+            return None
+        return candidate
 
     @staticmethod
     def _manifest_item(

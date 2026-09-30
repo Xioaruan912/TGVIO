@@ -20,7 +20,7 @@ from tgvio.adapters.telegram.user_source import UserSourceDownloader
 from tgvio.adapters.url_downloader import UrlMediaDownloader
 from tgvio.adapters.webdav_archive import WebDavArchiveTransport
 from tgvio.application.archive_deletion import ArchiveDeletionService
-from tgvio.application.archive_planner import ArchivePlanner
+from tgvio.application.archive_planner import ArchivePlanner, publish_thumbnail_cover_provider
 from tgvio.application.archive_runtime import ArchiveRuntime, ArchiveService
 from tgvio.application.auto_recovery import (
     AUTO_RECOVERY_POLICY_KEY,
@@ -205,6 +205,9 @@ async def run(*, check_only: bool = False) -> None:
                         profile_id=settings.archive_profile_id,
                         policy=ArchivePolicy(settings.archive_policy),
                     ),
+                    # Covers reuse the thumbnail publishing already wrote next to
+                    # each media file; nothing is decoded again at archive time.
+                    cover_provider=publish_thumbnail_cover_provider(settings.download_dir),
                 ),
                 archive_transport,
             )

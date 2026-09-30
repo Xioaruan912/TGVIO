@@ -261,3 +261,92 @@ class ArchivePlannerTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "unsafe archive remote root"):
             ArchivePlanner(remote_root="../escape")
+
+    def test_packages_without_a_cover_provider_carry_no_cover_entries(self) -> None:
+        with TemporaryDirectory() as tmp:
+            plan = ArchivePlanner().plan(self._job(Path(tmp), 3))
+        manifest = plan.package.manifest
+        self.assertNotIn("cover_algorithm", manifest)
+        self.assertEqual(manifest["media_count"], 3)
+        for entry in manifest["media"]:
+            self.assertNotIn("cover", entry)
+        self.assertEqual({obj.role.value for obj in plan.package.objects}, {"media"})
+
+    def test_a_provider_cover_becomes_its_own_bounded_object_and_manifest_entry(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = self._job(root, 3)
+            cover = root / "thumb-1.jpg"
+            cover.write_bytes(b"cover-bytes")
+            plan = ArchivePlanner(
+                cover_provider=lambda _job, item: cover if item.kind is MediaKind.VIDEO else None
+            ).plan(job)
+        objects = plan.package.objects
+        covers = [obj for obj in objects if obj.role.value == "cover"]
+        self.assertEqual(len(covers), 1)
+        self.assertEqual(covers[0].local_path, str(cover))
+        self.assertEqual(covers[0].size_bytes, len(b"cover-bytes"))
+        self.assertEqual(len(covers[0].sha256), 64)
+        self.assertEqual(covers[0].remote_relpath, "cover/002__Original 2-cover.jpg")
+        self.assertEqual(len({obj.object_index for obj in objects}), len(objects))
+        manifest = plan.package.manifest
+        self.assertEqual(manifest["cover_algorithm"], "reuse-publish-thumbnail-v1")
+        self.assertEqual(manifest["media_count"], 3, "a cover is not a media object")
+        covered = [entry for entry in manifest["media"] if "cover" in entry]
+        self.assertEqual(len(covered), 1)
+        self.assertEqual(covered[0]["cover"]["path"], "cover/002__Original 2-cover.jpg")
+        self.assertEqual(covered[0]["cover"]["mime_type"], "image/jpeg")
+
+    def test_an_unusable_or_failing_cover_never_breaks_planning(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = self._job(root, 3)
+            oversized = root / "big.jpg"
+            oversized.write_bytes(b"x" * 1_000_001)
+            missing = root / "absent.jpg"
+
+            def boom(_job, _item):
+                raise RuntimeError("ffmpeg gone")
+
+            for provider in (
+                lambda _job, _item: oversized,
+                lambda _job, _item: missing,
+                boom,
+            ):
+                plan = ArchivePlanner(cover_provider=provider).plan(job)
+                self.assertNotIn("cover_algorithm", plan.package.manifest)
+                self.assertEqual(len(plan.package.manifest["media"]), 3)
+                self.assertEqual({obj.role.value for obj in plan.package.objects}, {"media"})
+
+    def test_publish_thumbnail_provider_reuses_only_the_deterministic_file(self) -> None:
+        from tgvio.application.archive_planner import publish_thumbnail_cover_provider
+
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            job = self._job(root, 3)
+            video = self._video_item(root)
+            provider = publish_thumbnail_cover_provider(root)
+            self.assertIsNone(provider(job, video), "an absent thumbnail yields no cover")
+            publish = root / f"job-{job.id}" / "publish"
+            publish.mkdir(parents=True)
+            (publish / "thumb-1.jpg").write_bytes(b"jpeg")
+            self.assertEqual(provider(job, video), publish / "thumb-1.jpg")
+            self.assertIsNone(
+                provider(job, self._video_item(root, index=0, kind=MediaKind.PHOTO)),
+                "a photo never gets a video cover",
+            )
+
+    def _video_item(self, root: Path, *, index: int = 1, kind: MediaKind = MediaKind.VIDEO) -> MediaItem:
+        return MediaItem(
+            index=index,
+            kind=kind,
+            source=f"fixture:{index}",
+            local_path=str(root / f"item-{index + 1}.mp4"),
+            name=f"Original {index + 1}.mp4",
+            size_bytes=12,
+            mime_type="video/mp4",
+            duration_seconds=12.5,
+            container="mp4",
+            codec="h264",
+            sha256=f"sha-{index:064d}"[-64:],
+        )

@@ -27,6 +27,9 @@ class ArchiveObjectState(StrEnum):
 
 class ArchiveObjectRole(StrEnum):
     MEDIA = "media"
+    # A small, versioned still of a media object. Optional: packages without a
+    # consumable thumbnail simply carry no cover and consumers fall back.
+    COVER = "cover"
 
 
 class ArchivePolicy(StrEnum):
