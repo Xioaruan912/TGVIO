@@ -1525,3 +1525,21 @@ class PlayerStreamCapacityFairnessTests(unittest.IsolatedAsyncioTestCase):
         await self.server._release_stream("other-client")
         for _ in range(self.server._max_streams_per_client):
             await self.server._release_stream("monopolist")
+
+    async def test_short_upstream_fails_the_response_instead_of_stalling_the_client(self) -> None:
+        """A short upstream must fail loudly, never leave a half-sent body.
+
+        An explicit Content-Length disables aiohttp's own length check, so a
+        handler that ends cleanly after fewer bytes keeps the connection open
+        with a body that never arrives: the browser stalls with no error and
+        never triggers its retry path.
+        """
+        cookie = await self._login()
+        self.read_client.body = ClosableBody([])
+        response = await self._stream(cookie, "bytes=0-3")
+        with self.assertRaises(Exception) as caught:
+            await asyncio.wait_for(response.read(), timeout=3)
+        self.assertNotIsInstance(
+            caught.exception, asyncio.TimeoutError,
+            "a short upstream stalled the client instead of failing the response",
+        )

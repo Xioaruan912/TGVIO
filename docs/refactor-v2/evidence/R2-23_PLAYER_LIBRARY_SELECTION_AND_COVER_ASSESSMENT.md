@@ -82,15 +82,24 @@
 
 新增回归测试 `tests/test_player_http.py::PlayerStreamCapacityFairnessTests`（先红后绿，4 项）：播放槽位全占时 `bytes=0-1` 仍返回 206；真实 `bytes=0-3` 仍按 429 收敛；探测预算有界且报 `probe_limit`；单客户端无法预留全部全局槽位。同时更新 `test_health_reports_saturated_playback_capacity` 的期望字段。
 
-### 尚未修复的关联发现（需单独排查，未声称已修）
+### 5b-2 关联缺陷（已定位并修复）
 
-在测试夹具中，把 `bytes=0-1` 送入 **startup range 缓存路径**（`_cached_startup_response`）时，请求会**永久挂起**（`/tmp` 复现：`PlayerStreamCapacityFairnessTests` 早期版本，`startup_range_bytes=4`）。同一请求改由 `_stream_plain` 服务（`startup_range_bytes=1`）即正常。触发条件与上游返回体长度/`StartupRangeUnavailable` 之后的回退路径有关，尚未定位到确切成因。生产 `startup_range_bytes` 远大于 2，因此线上 `bytes=0-1` 走的正是这条路径 —— 本轮只把探测请求从**播放槽位竞争**中摘除，没有修复该回退路径本身，需下一轮单独定位（候选疑点：`StartupRangeCache.acquire/release` 的 lease 与 `_complete` 回调交错）。
+上一版把 startup range 回退路径的挂起记为“夹具产物，待排查”。进一步诊断推翻了该结论，**这是一个真实缺陷**，已修：
+
+- **现象**：`_stream_plain` 按请求 Range 声明 `Content-Length`（如 `bytes=0-3` → 4），但若上游 body 提前结束，处理器会**干净收尾**，只发出 0 字节。
+- **为何不报错**：aiohttp 在显式提供 `Content-Length` 时会**关闭自身的长度校验**，因此 `write_eof()` 不会抛错。
+- **客户端后果**：客户端拿到 206 与完整头部，然后**永久等待剩下的字节**：无错误、无超时、不触发浏览器重试/跳过。正是「一直转圈、无法播放」的典型形态，与 429 路径不同，但同属容量/流完整性故障族。
+- **证据**：客户端侧探针显示 `HEADERS: arrived`、`STATUS 206`、`READ-ERR TimeoutError`（2s 内无 body 完成、无连接关闭）。
+- **修复**：`_stream_plain` 自行计数已写字节，若少于声明长度则抛 `IncompleteUpstreamBody`，主动中断连接，让客户端拿到错误而非无限等待；同时记录 `player_stream_incomplete`。
+- **回归测试**：`test_short_upstream_fails_the_response_instead_of_stalling_the_client`（先红后绿；断言必须是「失败」而不是 `TimeoutError`）。注意早期版本用 `assertRaises(Exception)` 写法会把自己的 `TimeoutError` 也当通过，属于空转测试，已改正。
+
+全量 **938 tests OK**（新增 5 项流容量/完整性回归）。
 
 ### 本轮门禁
 
 | 门禁 | 结果 |
 |---|---|
-| Python 全量 | **937 tests OK**（新增 4 项流容量公平性测试） |
+| Python 全量 | **938 tests OK**（新增 5 项流容量/完整性测试） |
 | `release_guard architecture` / `verify-tree` | passed（552 文件） |
 | `git diff --check` | clean |
 | 前端 `npm test` / `npm run build` | 170/170 通过 / 通过（本轮未改前端源码） |

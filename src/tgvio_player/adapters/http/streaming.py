@@ -107,6 +107,15 @@ class StartupRangeUnavailable(RuntimeError):
         self.upstream_status = upstream_status
 
 
+class IncompleteUpstreamBody(RuntimeError):
+    """The upstream ended before delivering the range we already declared.
+
+    An explicit ``Content-Length`` disables aiohttp's own length check, so ending
+    the response cleanly here leaves a body that never arrives: the player stalls
+    with no error and never reaches its retry path.
+    """
+
+
 class PlayerHttpStreamingMixin:
     """Player media streaming and fair playback-slot coordination."""
 
@@ -230,11 +239,17 @@ class PlayerHttpStreamingMixin:
         )
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
+        expected = int(headers["Content-Length"])
+        written = 0
         try:
             if data is not None:
                 async for chunk in data:
                     if chunk:
+                        written += len(chunk)
                         await self._write_chunks(response, chunk)
+            if written < expected:
+                request["player_stream_incomplete"] = f"{written}/{expected}"
+                raise IncompleteUpstreamBody(f"{written} of {expected} bytes")
             await response.write_eof()
         except (BrokenPipeError, ConnectionError, ConnectionResetError) as exc:
             request["player_stream_disconnect"] = type(exc).__name__
