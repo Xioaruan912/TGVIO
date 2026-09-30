@@ -1,4 +1,11 @@
 import { icon, type IconName } from "./icons";
+import { element } from "./components/dom";
+export { element } from "./components/dom";
+import { iconStack, brandMark } from "./components/controls";
+import { navButton, MOBILE_NAV, DESKTOP_NAV } from "./components/navigation";
+import { buildAppHeader } from "./components/app-header";
+import { buildMediaActions } from "./components/media-actions";
+import { activateDialog, animateArrival } from "./components/dialog";
 
 export type ShellHandlers = {
   onTogglePlayback: () => void;
@@ -18,6 +25,9 @@ export type ShellHandlers = {
 
 export type Shell = {
   root: HTMLElement;
+  playBtn?: HTMLButtonElement;
+  mediaStage?: HTMLElement;
+  playerPanel?: HTMLElement;
   feed: HTMLElement;
   viewport: HTMLElement;
   title: HTMLElement;
@@ -46,66 +56,13 @@ export type Shell = {
   sheetBody: HTMLElement;
 };
 
-type NavSpec = { icon: IconName; label: string; action: string };
-
-const MOBILE_NAV: NavSpec[] = [
-  { icon: "home", label: "首页", action: "home" },
-  { icon: "film", label: "长视频", action: "long" },
-  { icon: "heart", label: "收藏", action: "favorites" },
-  { icon: "library", label: "片库", action: "library" },
-];
-
-const DESKTOP_NAV: NavSpec[] = [...MOBILE_NAV, { icon: "settings", label: "设置", action: "settings" }];
+const sheetDialogs = new WeakMap<Shell, () => void>();
 
 let toastTimer = 0;
 let indicatorTimer = 0;
 
-export function element<K extends keyof HTMLElementTagNameMap>(
-  tag: K,
-  className?: string,
-  text?: string,
-): HTMLElementTagNameMap[K] {
-  const node = document.createElement(tag);
-  if (className) node.className = className;
-  if (text !== undefined) node.textContent = text;
-  return node;
-}
 
-function iconStack(pairs: [IconName, string][], size: number): HTMLElement {
-  const wrap = element("span", "icon-stack");
-  for (const [name, className] of pairs) {
-    const svg = icon(name, size);
-    svg.classList.add(className);
-    wrap.appendChild(svg);
-  }
-  return wrap;
-}
 
-function actionButton(stack: HTMLElement, label: string, aria: string): HTMLButtonElement {
-  const button = element("button", "action-btn");
-  button.type = "button";
-  button.setAttribute("aria-label", aria);
-  const caption = element("small", "action-label", label);
-  button.append(stack, caption);
-  return button;
-}
-
-function navButton(spec: NavSpec, handlers: ShellHandlers): HTMLButtonElement {
-  const button = element("button", "nav-btn");
-  button.type = "button";
-  button.dataset.action = spec.action;
-  button.setAttribute("aria-label", spec.action === "home" ? "刷新首页并换一批视频" : spec.label);
-  const caption = element("small", "nav-label", spec.label);
-  button.append(icon(spec.icon, 24), caption);
-  button.addEventListener("click", () => handlers.onNav(spec.action));
-  return button;
-}
-
-function brandMark(): HTMLElement {
-  const logo = element("span", "logo");
-  logo.appendChild(icon("play", 16));
-  return logo;
-}
 
 export function humanizeError(reason: unknown, fallback: string): string {
   const code = (reason as { code?: string } | null)?.code;
@@ -115,14 +72,17 @@ export function humanizeError(reason: unknown, fallback: string): string {
 }
 
 export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLElement {
-  const shell = element("main", "login-shell");
-  const panel = element("section", "login-panel");
+  const shell = element("main", "login-shell sky-login");
+  const panel = element("section", "login-panel sky-login-card");
   const brand = element("div", "login-brand");
-  brand.append(brandMark(), element("strong", undefined, "TGVIO"));
-  const title = element("p", "login-title", "私享视频");
-  const subtitle = element("p", "login-subtitle", "你的私人视频空间");
+  brand.append(brandMark(), element("strong", undefined, "SKY TGVIO"));
+  const title = element("h1", "login-title", "把时光，交给天空");
+  const subtitle = element("p", "login-subtitle", "轻盈进入，只属于你的视频空间。");
   const form = element("form", "login-form");
+  const label = element("label", "login-label", "访问口令");
   const input = element("input", "login-input");
+  input.id = "sky-access-secret";
+  label.htmlFor = input.id;
   input.type = "password";
   input.inputMode = "text";
   input.autocomplete = "current-password";
@@ -132,13 +92,17 @@ export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLEle
   input.placeholder = "输入访问口令";
   input.setAttribute("aria-label", "访问口令");
   input.required = true;
-  const submit = element("button", "login-submit", "进入");
+  const submit = element("button", "login-submit", "进入天空影院");
   submit.type = "submit";
   const error = element("p", "login-error", "");
   error.setAttribute("role", "alert");
-  form.append(input, submit, error);
-  panel.append(brand, title, subtitle, form);
-  shell.appendChild(panel);
+  form.append(label, input, submit, error);
+  panel.append(brand, title, subtitle, form, element("p", "login-footnote", "私密收藏 · 随心播放 · 轻盈相伴"));
+  const decoration = element("div", "sky-decoration");
+  decoration.setAttribute("aria-hidden", "true");
+  decoration.append(element("span", "sky-orbit"), element("span", "sky-cloud"));
+  shell.append(decoration, panel);
+  animateArrival(panel);
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     error.textContent = "";
@@ -155,10 +119,10 @@ export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLEle
 }
 
 export function buildError(message: string, onRetry: () => void): HTMLElement {
-  const shell = element("main", "login-shell");
-  const panel = element("section", "login-panel");
+  const shell = element("main", "login-shell sky-login");
+  const panel = element("section", "login-panel sky-login-card");
   const brand = element("div", "login-brand");
-  brand.append(brandMark(), element("strong", undefined, "TGVIO"));
+  brand.append(brandMark(), element("strong", undefined, "SKY TGVIO"));
   const text = element("p", "login-subtitle", message);
   const button = element("button", "login-submit", "重试");
   button.type = "button";
@@ -169,14 +133,15 @@ export function buildError(message: string, onRetry: () => void): HTMLElement {
 }
 
 export function buildShell(handlers: ShellHandlers): Shell {
-  const root = element("main", "app-shell");
+  const root = element("main", "app-shell sky-shell");
 
   const desktopNav = element("aside", "desktop-nav");
   const desktopBrand = element("div", "desktop-brand");
-  desktopBrand.append(brandMark(), element("strong", undefined, "TGVIO"));
+  desktopBrand.append(brandMark(), element("strong", undefined, "SKY TGVIO"));
   desktopNav.appendChild(desktopBrand);
   const navButtons: HTMLButtonElement[] = [];
   const desktopLinks = element("nav", "desktop-links");
+  desktopLinks.setAttribute("aria-label", "视频分区");
   for (const spec of DESKTOP_NAV) {
     const button = navButton(spec, handlers);
     navButtons.push(button);
@@ -184,81 +149,19 @@ export function buildShell(handlers: ShellHandlers): Shell {
   }
   desktopNav.appendChild(desktopLinks);
 
-  const stage = element("section", "stage");
-  const viewport = element("div", "viewport");
+  const stage = element("section", "stage sky-stage");
+  const viewport = element("div", "viewport sky-viewport");
+  const mediaStage = element("section", "media-stage");
+  mediaStage.setAttribute("aria-label", "视频画面与手势区域");
+  const playerPanel = element("section", "player-panel");
+  playerPanel.setAttribute("aria-label", "播放控制");
   const feed = element("div", "feed");
   feed.id = "feed";
   feed.setAttribute("aria-label", "竖屏视频流");
 
-  const topbar = element("header", "topbar");
-  const brandSmall = element("span", "topbar-brand", "TGVIO");
-  const contextBackBtn = element("button", "context-back", "返回");
-  contextBackBtn.type = "button";
-  contextBackBtn.hidden = true;
-  contextBackBtn.addEventListener("click", handlers.onBackFromContext);
-  const netSpeed = element("span", "net-speed", "↓ 0 KB/s");
-  netSpeed.hidden = true;
-  const fullscreenBtn = element("button", "topbar-fullscreen");
-  fullscreenBtn.type = "button";
-  fullscreenBtn.setAttribute("aria-label", "全屏");
-  fullscreenBtn.appendChild(icon("fullscreen", 22));
-  const settingsBtn = element("button", "topbar-settings");
-  settingsBtn.type = "button";
-  settingsBtn.setAttribute("aria-label", "设置");
-  settingsBtn.appendChild(icon("settings", 22));
-  settingsBtn.addEventListener("click", () => handlers.onNav("settings"));
-  topbar.append(contextBackBtn, brandSmall, netSpeed, fullscreenBtn, settingsBtn);
+  const { topbar, contextBackBtn, netSpeed, fullscreenBtn } = buildAppHeader(handlers);
 
-  const actionRail = element("div", "action-rail");
-  const favoriteBtn = actionButton(
-    iconStack(
-      [
-        ["heart", "icon-outline"],
-        ["heart-filled", "icon-filled"],
-      ],
-      30,
-    ),
-    "收藏",
-    "收藏",
-  );
-  const soundBtn = actionButton(
-    iconStack(
-      [
-        ["sound-on", "icon-unmuted"],
-        ["sound-off", "icon-muted"],
-      ],
-      30,
-    ),
-    "声音",
-    "声音",
-  );
-  const shuffleBtn = actionButton(
-    iconStack([["shuffle", "icon-single"]], 30),
-    "换一个",
-    "随机切换短视频",
-  );
-  const privacyLockBtn = actionButton(
-    iconStack([["lock", "icon-single"]], 30),
-    "隐私遮罩",
-    "立即遮住并暂停",
-  );
-  const deleteBtn = actionButton(iconStack([["trash", "icon-single"]], 29), "删除", "永久删除当前视频");
-  deleteBtn.classList.add("delete-action");
-  const groupBtn = actionButton(iconStack([["library", "icon-single"]], 30), "同组视频", "查看同组视频");
-  groupBtn.hidden = true;
-  groupBtn.addEventListener("click", handlers.onOpenGroup);
-  const downloadBtn = actionButton(
-    iconStack([["download", "icon-single"]], 30),
-    "下载原片",
-    "下载原片",
-  );
-  actionRail.append(favoriteBtn, groupBtn, soundBtn, shuffleBtn, downloadBtn, deleteBtn, privacyLockBtn);
-  favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
-  downloadBtn.addEventListener("click", handlers.onDownload);
-  soundBtn.addEventListener("click", handlers.onToggleSound);
-  shuffleBtn.addEventListener("click", handlers.onShuffle);
-  deleteBtn.addEventListener("click", handlers.onDeleteMedia);
-  privacyLockBtn.addEventListener("click", handlers.onPrivacyLock);
+  const { actionRail, favoriteBtn, soundBtn, shuffleBtn, privacyLockBtn, deleteBtn, groupBtn, downloadBtn } = buildMediaActions(handlers);
 
   const pauseIndicator = element("div", "pause-indicator");
   pauseIndicator.append(iconStack([["play", "ind-play"], ["pause", "ind-pause"]], 34));
@@ -278,6 +181,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const title = element("h1", "clip-title", "视频");
   const meta = element("p", "clip-meta", "");
   const progressRow = element("div", "progress-row");
+  progressRow.style.minHeight = "48px";
   const seek = element("input", "seek");
   seek.type = "range";
   seek.min = "0";
@@ -285,18 +189,43 @@ export function buildShell(handlers: ShellHandlers): Shell {
   seek.step = "0.05";
   seek.value = "0";
   seek.setAttribute("aria-label", "播放进度");
-  seek.addEventListener("input", () => handlers.onSeek(Number(seek.value)));
-  seek.addEventListener("pointerdown", () => seek.classList.add("dragging"));
-  const stopDrag = () => seek.classList.remove("dragging");
-  seek.addEventListener("pointerup", stopDrag);
-  seek.addEventListener("pointercancel", stopDrag);
-  seek.addEventListener("change", stopDrag);
+  // The parent seek controller owns all input/drag/commit listeners.
   const timeline = element("div", "timeline");
   const timeCurrent = element("span", undefined, "0:00");
   const timeTotal = element("span", undefined, "0:00");
   timeline.append(timeCurrent, timeTotal);
   progressRow.append(seek, timeline);
-  clipInfo.append(title, meta, progressRow);
+  clipInfo.append(title, meta);
+  const transport = element("div", "transport-row");
+  const playBtn = element("button", "transport-play");
+  playBtn.type = "button";
+  const playIcon = icon("play", 22);
+  playIcon.classList.add("icon-play");
+  const pauseIcon = icon("pause", 22);
+  pauseIcon.classList.add("icon-pause");
+  const playLabel = element("span", "transport-label", "播放");
+  playBtn.append(playIcon, pauseIcon, playLabel);
+  const syncPlay = () => {
+    const locked = root.classList.contains("privacy-locked") || root.dataset.playbackState === "privacy-locked";
+    const playing = !locked && root.dataset.playbackState === "playing";
+    playIcon.style.display = playing ? "none" : "";
+    pauseIcon.style.display = playing ? "" : "none";
+    const label = locked ? "解锁并播放" : playing ? "暂停" : "播放";
+    playLabel.textContent = label;
+    playBtn.setAttribute("aria-label", label);
+  };
+  playBtn.addEventListener("click", () => {
+    if (root.classList.contains("privacy-locked") || root.dataset.playbackState === "privacy-locked" || root.dataset.playbackState === "autoplay-blocked") handlers.onPlayGesture();
+    else handlers.onTogglePlayback();
+  });
+  // State comes from PlaybackStateController via the parent's root attributes.
+  new MutationObserver(syncPlay).observe(root, { attributes: true, attributeFilter: ["class", "data-playback-state"] });
+  syncPlay();
+  transport.append(playBtn, soundBtn, favoriteBtn);
+  const moreActions = element("details", "media-actions");
+  const moreSummary = element("summary", "media-actions-toggle", "更多操作");
+  moreActions.append(moreSummary, actionRail);
+  playerPanel.append(clipInfo, progressRow, transport, moreActions);
 
   const debug = element("output", "debug");
   debug.hidden = true;
@@ -304,10 +233,12 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const toast = element("div", "toast");
   toast.setAttribute("role", "status");
 
-  viewport.append(feed, topbar, actionRail, pauseIndicator, gestureButton, retryButton, clipInfo, toast, debug);
+  mediaStage.append(feed, pauseIndicator, gestureButton, retryButton, debug);
+  viewport.append(topbar, mediaStage, playerPanel, toast);
   stage.appendChild(viewport);
 
   const bottomNav = element("nav", "bottom-nav");
+  bottomNav.setAttribute("aria-label", "视频分区");
   for (const spec of MOBILE_NAV) {
     const button = navButton(spec, handlers);
     navButtons.push(button);
@@ -317,10 +248,15 @@ export function buildShell(handlers: ShellHandlers): Shell {
   const sheet = element("div", "sheet");
   sheet.hidden = true;
   const sheetCard = element("section", "sheet-card");
+  sheetCard.setAttribute("role", "dialog");
+  sheetCard.setAttribute("aria-modal", "true");
+  sheetCard.setAttribute("aria-labelledby", "sky-sheet-title");
+  sheetCard.tabIndex = -1;
   const handle = element("div", "sheet-handle");
   handle.setAttribute("aria-hidden", "true");
   const sheetHead = element("header", "sheet-head");
   const sheetTitle = element("h2", "sheet-title", "");
+  sheetTitle.id = "sky-sheet-title";
   const sheetClose = element("button", "sheet-close");
   sheetClose.type = "button";
   sheetClose.setAttribute("aria-label", "关闭");
@@ -333,6 +269,9 @@ export function buildShell(handlers: ShellHandlers): Shell {
   root.append(desktopNav, stage, bottomNav, sheet);
   const shell: Shell = {
     root,
+    playBtn,
+    mediaStage,
+    playerPanel,
     feed,
     viewport,
     title,
@@ -399,9 +338,11 @@ export function confirmMediaDelete(host: HTMLElement): Promise<boolean> {
     cancel.type = "button";
     confirm.type = "button";
     let settled = false;
+    let releaseDialog: (() => void) | undefined;
     const finish = (accepted: boolean) => {
       if (settled) return;
       settled = true;
+      releaseDialog?.();
       overlay.remove();
       resolve(accepted);
     };
@@ -414,7 +355,8 @@ export function confirmMediaDelete(host: HTMLElement): Promise<boolean> {
     panel.append(title, message, actions);
     overlay.appendChild(panel);
     host.appendChild(overlay);
-    cancel.focus();
+    releaseDialog = activateDialog(overlay, () => finish(false), cancel);
+    animateArrival(panel);
   });
 }
 
@@ -449,9 +391,11 @@ export function confirmAudioEnable(
     keepMuted.type = "button";
     enable.type = "button";
     let settled = false;
+    let releaseDialog: (() => void) | undefined;
     const finish = (choice: AudioEnableChoice) => {
       if (settled) return;
       settled = true;
+      releaseDialog?.();
       overlay.remove();
       resolve(choice);
     };
@@ -475,7 +419,8 @@ export function confirmAudioEnable(
     panel.append(title, message, actions);
     overlay.appendChild(panel);
     host.appendChild(overlay);
-    keepMuted.focus();
+    releaseDialog = activateDialog(overlay, () => finish("keep-muted"), keepMuted);
+    animateArrival(panel);
   });
 }
 
@@ -505,9 +450,10 @@ export function showGestureGuide(host: HTMLElement): Promise<void> {
 
 export function setControlsVisible(shell: Shell, visible: boolean): void {
   shell.root.classList.toggle("controls-visible", visible);
-  // Only transient overlays lose focus; navigation and center playback stay usable.
-  for (const container of shell.viewport.querySelectorAll<HTMLElement>(".topbar, .action-rail, .clip-info")) {
+  // Only opt-in media overlays auto-hide. Header, panel and unlock stay usable.
+  for (const container of shell.viewport.querySelectorAll<HTMLElement>(".media-overlay-controls")) {
     container.inert = !visible;
+    container.hidden = !visible;
   }
 }
 
@@ -518,6 +464,7 @@ export function hideIndicator(shell: Shell): void {
 
 export function setFavoriteButton(shell: Shell, active: boolean): void {
   shell.favoriteBtn.classList.toggle("selected", active);
+  shell.favoriteBtn.setAttribute("aria-pressed", String(active));
   const label = shell.favoriteBtn.querySelector(".action-label");
   if (label) label.textContent = active ? "已收藏" : "收藏";
   shell.favoriteBtn.setAttribute("aria-label", active ? "取消收藏" : "收藏");
@@ -525,12 +472,17 @@ export function setFavoriteButton(shell: Shell, active: boolean): void {
 
 export function setSoundButton(shell: Shell, muted: boolean): void {
   shell.soundBtn.classList.toggle("is-muted", muted);
+  shell.soundBtn.setAttribute("aria-pressed", String(!muted));
+  const label = shell.soundBtn.querySelector(".action-label");
+  if (label) label.textContent = muted ? "静音中" : "声音开启";
   shell.soundBtn.setAttribute("aria-label", muted ? "取消静音" : "静音");
 }
 
 export function setActiveNav(shell: Shell, action: string): void {
   for (const button of shell.navButtons) {
     button.classList.toggle("active", button.dataset.action === action);
+    if (button.dataset.action === action) button.setAttribute("aria-current", "page");
+    else button.removeAttribute("aria-current");
   }
 }
 
@@ -545,7 +497,15 @@ export function openSheet(shell: Shell, title: string, body: Node[]): void {
   shell.sheetTitle.textContent = title;
   shell.sheetBody.replaceChildren(...body);
   shell.sheetBody.scrollTop = 0;
+  const alreadyOpen = sheetDialogs.has(shell);
   shell.sheet.hidden = false;
+  const card = shell.sheet.querySelector<HTMLElement>(".sheet-card")!;
+  if (!alreadyOpen) {
+    sheetDialogs.set(shell, activateDialog(card, () => closeSheet(shell), shell.sheet.querySelector<HTMLElement>(".sheet-close")!));
+    animateArrival(card);
+  } else if (!card.contains(document.activeElement)) {
+    shell.sheet.querySelector<HTMLElement>(".sheet-close")?.focus();
+  }
 }
 
 export function sheetNote(text: string): HTMLElement {
@@ -624,6 +584,8 @@ export function sheetChoice(
 }
 
 export function closeSheet(shell: Shell): void {
+  sheetDialogs.get(shell)?.();
+  sheetDialogs.delete(shell);
   shell.sheet.hidden = true;
   shell.sheetBody.replaceChildren();
   shell.root.dispatchEvent(new Event("playersheetclose"));

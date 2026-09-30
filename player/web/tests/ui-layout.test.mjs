@@ -33,32 +33,32 @@ test("loading and buffering only restore the poster before a decoded frame", () 
   assert.match(body(feedCss, ".video-page:not(.is-active) .media-loading"), /visibility:\s*hidden/);
 });
 
-test("hidden overlay descendants cannot override pointer-events", () => {
-  for (const container of ["topbar", "action-rail", "clip-info"]) {
-    const selector = ".app-shell:not(.controls-visible) ." + container + " *";
-    assert.match(body(overlayCss, selector), /pointer-events:\s*none/);
+test("persistent header and transport are not hidden by inactivity controls", () => {
+  for (const css of [overlayCss, largeCss]) {
+    assert.doesNotMatch(css, /not\(\.controls-visible\)[^{]*\.(?:topbar|action-rail|clip-info|large-topbar|large-controls)/);
   }
-  for (const container of ["large-topbar", "large-controls"]) {
-    assert.match(body(largeCss, ".large-player:not(.controls-visible) ." + container + " *"), /pointer-events:\s*none/);
-  }
-});
-
-test("setControlsVisible toggles inert on overlays, not navigation or center playback", () => {
-  const fn = ui.match(/export function setControlsVisible\([^]*?\n\}/)?.[0] ?? "";
+  const fn = ui.slice(ui.indexOf("export function setControlsVisible"), ui.indexOf("export function hideIndicator"));
   assert.match(fn, /classList\.toggle\("controls-visible", visible\)/);
-  assert.match(fn, /querySelectorAll<HTMLElement>\("\.topbar, \.action-rail, \.clip-info"\)/);
-  assert.match(fn, /container\.inert\s*=\s*!visible/);
-  assert.doesNotMatch(fn, /(?:shell\.(?:root|viewport|feed)|gestureButton|retryButton)\.inert|bottom-nav|desktop-nav|gesture-play|playback-retry/);
+  assert.match(fn, /querySelectorAll<HTMLElement>\("\.media-overlay-controls"\)/);
+  assert.doesNotMatch(fn, /\.topbar|\.action-rail|\.clip-info/);
+});
+test("short and long seek are visible with dedicated 48px touch rows", () => {
+  for (const [css,selector] of [[overlayCss,".seek"],[largeCss,".large-progress"],[largeCss,".large-seek"]]) {
+    const height=Number(body(css,selector).match(/(?:^|;)\s*height:\s*(\d+)px/)?.[1]);
+    assert.ok(height>=48,selector+": height "+height);
+  }
+  assert.doesNotMatch(body(overlayCss,".progress-row"),/display:\s*none/);
+  assert.doesNotMatch(body(overlayCss,".clip-info .progress-row"),/display:\s*none/);
+  assert.match(body(largeCss,".large-controls"),/display:\s*grid/);
+  assert.match(body(largeCss,".large-action-row"),/flex-wrap:\s*wrap/);
 });
 
-test("long-video touch seek is at least 44px with a separate, spaced timeline", () => {
-  for (const selector of [".large-progress", ".large-seek"]) {
-    const height = Number(body(largeCss, selector).match(/(?:^|\n)\s*height:\s*(\d+)px/)?.[1]);
-    assert.ok(height >= 44, selector + ": height " + height);
-  }
-  assert.match(body(largeCss, ".large-controls"), /flex-wrap:\s*wrap/);
-  assert.match(body(largeCss, ".large-controls"), /gap:\s*8px 12px/);
-  assert.match(body(largeCss, ".large-timeline"), /flex:\s*1 1 100%/);
-  assert.match(body(largeCss, ".large-timeline"), /order:\s*-1/);
-  assert.match(body(overlayCss, ".clip-info .progress-row"), /display:\s*none/);
+test("privacy lock uses opaque cover rather than revealing a blurred frame", () => {
+  assert.match(body(feedCss, ".app-shell.privacy-locked .video-host"), /visibility:\s*hidden/);
+  assert.match(body(feedCss, ".app-shell.privacy-locked .media-stage::after"), /background:\s*#081722/);
+});
+
+test("long privacy lock also uses an opaque cover", () => {
+  assert.match(body(largeCss, ".large-player.privacy-locked .large-video"), /visibility:\s*hidden/);
+  assert.match(body(largeCss, ".large-player.privacy-locked .large-stage::after"), /background:\s*#081722/);
 });

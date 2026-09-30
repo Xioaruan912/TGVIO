@@ -13,9 +13,12 @@ import { attachGestures } from "./gestures";
 import { LargePlayer } from "./large";
 import { VideoLibraryPage } from "./library";
 import { StorageSettingsPage } from "./settings-page";
+import { buildSettingsView } from "./views/settings-view";
+import { ViewLifecycle } from "./views/view-lifecycle";
 import { LongVideoPage } from "./long";
 import { NetworkMeter } from "./net";
 import { VideoPool } from "./player";
+import { bindSeekControl } from "./seek-control";
 import { PreloadCoordinator } from "./preload";
 import { shouldRetryMediaError } from "./playback-error";
 import { PlaybackStateController, playbackUi, type PlaybackState } from "./playback-state";
@@ -82,6 +85,7 @@ let contextFeed: ContextFeed | null = null;
 let savedHomeIndex = 0;
 let pool: VideoPool | null = null;
 let libraryPage: VideoLibraryPage | null = null;
+const contentView = new ViewLifecycle();
 let activeIndex = 0;
 let paused = false;
 let privacyUnlocked = false;
@@ -108,6 +112,7 @@ let openSheetKind: string | null = null;
 let groupRequestController: AbortController | null = null;
 let groupRequestGeneration = 0;
 let userSeeking = false;
+let seekControl: ReturnType<typeof bindSeekControl> | null = null;
 let longVideosOpen = false;
 let debugAt = 0;
 let skipStreak = 0;
@@ -188,6 +193,10 @@ function applyPlaybackState(state: PlaybackState): void {
   const page = feedView?.pageAt(activeIndex) ?? null;
   page?.setAttribute("data-playback-state", state);
   shell?.root.setAttribute("data-playback-state", state);
+  shell?.root.classList.toggle("is-playing", state === "playing");
+  const transport = shell?.root.querySelector<HTMLButtonElement>(".transport-play");
+  if (transport) transport.setAttribute("aria-label", state === "playing" ? "暂停" : state === "privacy-locked" ? "播放并显示视频" : "播放");
+  if (shell) shell.seek.disabled = !privacyUnlocked || !(Number(shell.seek.max) > 0);
   const ui = playbackUi(state);
   const label = page?.querySelector<HTMLElement>(".media-loading-label");
   if (label) label.textContent = ui.label ?? "正在加载视频";
@@ -224,6 +233,7 @@ function applyActive(index: number): void {
     return;
   }
   if (lastActiveClipId !== current.id || lastActiveIndex !== index) {
+    seekControl?.cancel();
     muted = mutedForNextVideo(muted);
     rememberMuted(muted);
     pool.setMuted(muted);
@@ -285,7 +295,10 @@ function applyActive(index: number): void {
   syncPlaybackStateDom();
   updateOverlay(current);
   showControlsForActivity();
-  setFavoriteButton(shell!, favorites.has(current.id));
+  current.favorite = favoriteMutations.currentValue(current.id, current.favorite);
+  if (current.favorite) favorites.add(current.id);
+  else favorites.delete(current.id);
+  setFavoriteButton(shell!, current.favorite);
   shell!.groupBtn.hidden = contextFeed !== null || current.groups.length === 0;
   scheduleWarm();
   armStallGuard(current.id);
@@ -465,6 +478,7 @@ function updateOverlay(clip: Clip): void {
   const video = pool?.currentVideo() ?? null;
   const duration = video && Number.isFinite(video.duration) && video.duration > 0 ? video.duration : clip.duration;
   shell.seek.max = String(duration || 0);
+  shell.seek.disabled = !privacyUnlocked || !(duration > 0);
   shell.seek.value = String(video ? video.currentTime : 0);
   shell.timeCurrent.textContent = formatTime(video ? video.currentTime : 0);
   shell.timeTotal.textContent = formatTime(duration);
@@ -475,10 +489,13 @@ function updateProgress(): void {
   const video = pool?.currentVideo();
   if (!video || !shell) return;
   if (Number.isFinite(video.duration) && video.duration > 0) shell.seek.max = String(video.duration);
-  if (!userSeeking) shell.seek.value = String(video.currentTime);
-  shell.timeCurrent.textContent = formatTime(video.currentTime);
+  shell.seek.disabled = !privacyUnlocked || !(Number(shell.seek.max) > 0);
+  if (!userSeeking && !seekControl?.isSeeking()) {
+    shell.seek.value = String(video.currentTime);
+    shell.timeCurrent.textContent = formatTime(video.currentTime);
+    paintSeek(shell.seek);
+  }
   shell.timeTotal.textContent = formatTime(Number(shell.seek.max));
-  paintSeek(shell.seek);
   renderDebug();
 }
 
@@ -619,6 +636,7 @@ function toggleSound(): void {
 }
 
 function setQuality(selection: QualitySelection): void {
+  seekControl?.cancel();
   quality = selection;
   setPref("quality", selection);
   const clip = feedView?.clipAt(activeIndex);
@@ -678,6 +696,7 @@ function onDocumentVisibilityChange(): void {
 }
 
 function lockPrivacyForBackground(): void {
+  seekControl?.cancel();
   shortIdle.setEnabled(false);
   silenceFeed();
   userSeeking = false;
@@ -696,6 +715,7 @@ function lockPrivacyForBackground(): void {
 }
 
 function lockPrivacyScreen(): void {
+  seekControl?.cancel();
   shortIdle.setEnabled(false);
   silenceFeed();
   userSeeking = false;
@@ -1054,6 +1074,7 @@ function feedGestureOptions() {
 
 function openLongVideos(): void {
   if (!shell) return;
+  contentView.clear();
   // Do not leave the short feed playing under a list with its timer disabled.
   lockPrivacyScreen();
   longVideosOpen = true;
@@ -1065,6 +1086,8 @@ function openLongVideos(): void {
   const closePlayer = (): void => {
     largePlayer?.destroy();
     largePlayer = null;
+    if (shell) shell.root.inert = false;
+    if (page) page.root.inert = false;
     shortIdle.setEnabled(false);
     silenceFeed();
     privacyUnlocked = false;
@@ -1098,24 +1121,30 @@ function openLongVideos(): void {
           toast(shell!, `已永久删除视频（${result.deletedCopies} 份源文件）`);
         },
       });
+      shell!.root.inert = true;
+      if (page) page.root.inert = true;
       document.body.appendChild(largePlayer.root);
+      largePlayer.root.querySelector<HTMLButtonElement>(".large-back")?.focus({ preventScroll: true });
       if (!prefs.gestureGuideSeen) {
         setPref("gestureGuideSeen", true);
         void showGestureGuide(largePlayer.root);
       }
     },
-    () => {
-      closePlayer();
-      page?.destroy();
-      page = null;
-      longVideosOpen = false;
-      adaptiveCache.update({ playbackPressure: false });
-      preloader.setPressure(false);
-      playback?.update({ shouldPlay: !paused && privacyUnlocked, networkWaiting: false });
-      setActiveNav(shell!, "home");
-      scheduleWarm();
-    },
+    () => contentView.clear(),
   );
+  contentView.activate(() => {
+    closePlayer();
+    page?.destroy();
+    page = null;
+    if (shell) shell.viewport.inert = false;
+    longVideosOpen = false;
+    adaptiveCache.update({ playbackPressure: false });
+    preloader.setPressure(false);
+    playback?.update({ shouldPlay: !paused && privacyUnlocked, networkWaiting: false });
+    setActiveNav(shell!, "home");
+    scheduleWarm();
+  });
+  shell.viewport.inert = true;
   document.body.appendChild(page.root);
   setActiveNav(shell, "long");
 }
@@ -1346,184 +1375,32 @@ async function openGroupList(group: ArchiveGroup): Promise<void> {
 
 function openLibrary(): void {
   if (!shell) return;
+  contentView.clear();
   lockPrivacyScreen();
   closeSheet(shell);
   let page: VideoLibraryPage | null = null;
   page = new VideoLibraryPage(
-    (clip) => {
-      page?.destroy();
-      if (libraryPage === page) libraryPage = null;
-      page = null;
-      setActiveNav(shell!, "home");
-      openClip(clip);
-    },
-    () => {
-      page?.destroy();
-      if (libraryPage === page) libraryPage = null;
-      page = null;
-      setActiveNav(shell!, "home");
-    },
+    clip => { contentView.clear(); openClip(clip); },
+    () => contentView.clear(),
   );
   libraryPage = page;
+  contentView.activate(() => {
+    page?.destroy();
+    if (libraryPage === page) libraryPage = null;
+    page = null;
+    if (shell) shell.viewport.inert = false;
+    setActiveNav(shell!, "home");
+  });
+  shell.viewport.inert = true;
   document.body.appendChild(page.root);
   setActiveNav(shell, "library");
 }
 
 function openSettings(): void {
   if (!shell) return;
-  const body: Node[] = [];
-  body.push(sheetSection("播放设置"));
-  body.push(sheetToggle("声音", muted ? "已关闭" : "已开启", !muted, toggleSound));
-  body.push(
-    sheetRow({
-      title: "声音安全提示",
-      sub:
-        prefs.soundPromptFrequency === "continuous-sound"
-          ? "首次确认后，后续视频默认有声"
-          : prefs.soundPromptFrequency === "once-per-open"
-            ? "每次重新打开后提醒一次"
-            : "每次开启声音都提醒",
-      onPick: () => {
-        const next = {
-          "continuous-sound": "every-time",
-          "every-time": "once-per-open",
-          "once-per-open": "continuous-sound",
-        } as const;
-        setPref(
-          "soundPromptFrequency",
-          next[prefs.soundPromptFrequency],
-        );
-        openSettings();
-      },
-    }),
-  );
-  body.push(
-    sheetToggle(
-      "长按快进",
-      prefs.longPressFastForward ? "按住画面快进" : "已关闭",
-      prefs.longPressFastForward,
-      () => {
-        setPref("longPressFastForward", !prefs.longPressFastForward);
-        openSettings();
-      },
-    ),
-  );
-  body.push(
-    sheetRow({
-      title: "快进倍速",
-      sub: `${prefs.fastForwardSpeed} 倍`,
-      onPick: () => {
-        setPref("fastForwardSpeed", prefs.fastForwardSpeed === 2 ? 3 : 2);
-        openSettings();
-      },
-    }),
-  );
-  body.push(
-    sheetToggle(
-      "拖动调节进度",
-      prefs.dragSeek ? "左右拖动画面即可快进/快退" : "已关闭",
-      prefs.dragSeek,
-      () => {
-        setPref("dragSeek", !prefs.dragSeek);
-        openSettings();
-      },
-    ),
-  );
-  body.push(
-    sheetToggle(
-      "拖动显示缩略图",
-      prefs.dragThumbnail ? "显示到达点画面" : "已关闭",
-      prefs.dragThumbnail,
-      () => {
-        setPref("dragThumbnail", !prefs.dragThumbnail);
-        openSettings();
-      },
-    ),
-  );
-  const cacheLabels = { auto: "智能（推荐）", speed: "速度优先", "data-saving": "省流量", off: "关闭" } as const;
-  body.push(sheetRow({
-    title: "智能缓存",
-    sub: cacheLabels[prefs.cacheMode],
-    onPick: openCacheModeSettings,
-  }));
-  body.push(sheetToggle(
-    "长视频保持屏幕常亮",
-    prefs.keepScreenAwake ? "播放时防止屏幕自动熄灭" : "已关闭",
-    prefs.keepScreenAwake,
-    () => { setPref("keepScreenAwake", !prefs.keepScreenAwake); openSettings(); },
-  ));
-  body.push(sheetToggle(
-    "双击快进/后退",
-    prefs.doubleTapSeek ? "画面左右两侧双击跳转 10 秒" : "已关闭",
-    prefs.doubleTapSeek,
-    () => { setPref("doubleTapSeek", !prefs.doubleTapSeek); openSettings(); },
-  ));
-  body.push(sheetRow({ title: "查看手势说明", sub: "单击、双击、长按与拖动", onPick: openGestureGuide }));
-  body.push(
-    sheetToggle(
-      "显示网速",
-      prefs.netSpeed ? "右上角显示下载速率" : "已关闭",
-      prefs.netSpeed,
-      () => {
-        setPref("netSpeed", !prefs.netSpeed);
-        if (feedMeter) {
-          if (prefs.netSpeed) feedMeter.start();
-          else feedMeter.stop();
-        }
-        openSettings();
-      },
-    ),
-  );
-  body.push(sheetSection("清晰度"));
-  const currentClip = feedView?.clipAt(activeIndex) ?? null;
-  const qualityChoices = currentClip
-    ? qualityOptions(currentClip)
-    : [
-        { key: "480", label: "480p", selection: 480 as QualitySelection },
-        { key: "720", label: "720p", selection: 720 as QualitySelection },
-        { key: "original", label: "原画", selection: "original" as QualitySelection },
-      ];
-  for (const option of qualityChoices) {
-    const selected = option.selection === quality;
-    body.push(
-      sheetRow({
-        title: option.label,
-        sub: selected ? "当前清晰度" : undefined,
-        iconName: selected ? "play-small" : undefined,
-        onPick: () => setQuality(option.selection),
-      }),
-    );
-  }
-  body.push(sheetSection("安装播放器"));
-  const installState = installController.state();
-  if (installState === "available") {
-    body.push(sheetRow({ title: "安装 TGVIO", sub: "作为独立应用安装到此设备", onPick: () => void installController.prompt() }));
-  } else if (installState === "installed") {
-    body.push(sheetNote("已安装并在独立播放器模式中运行。"));
-  } else if (installState === "ios-manual") {
-    body.push(sheetNote("在 Safari 点“分享”→“添加到主屏幕”，然后从主屏幕打开。"));
-  } else {
-    body.push(sheetNote("浏览器支持安装时，这里会显示“安装 TGVIO”按钮；也可使用浏览器菜单中的安装功能。"));
-  }
-  body.push(sheetSection("账户"));
-  body.push(sheetRow({
-    title: "收藏与 WebDAV",
-    sub: "共享收藏、备份位置与新 VPS 恢复",
-    onPick: openStorageSettings,
-  }));
-  body.push(
-    sheetRow({
-      title: "退出当前访问",
-      sub: "退出后需要重新输入访问口令",
-      onPick: () => {
-        void api.logout().finally(() => window.location.reload());
-      },
-    }),
-  );
-  if (DEBUG) {
-    body.push(sheetSection("调试"));
-    body.push(sheetRow({ title: "调试信息", sub: "已在地址后加 ?debug=1 开启" }));
-  }
+  const body = buildSettingsView({ muted, quality, currentClip: feedView?.clipAt(activeIndex) ?? null,
+    feedMeter, DEBUG, toggleSound, openSettings, openCacheModeSettings, openGestureGuide,
+    openStorageSettings, setQuality, logout: () => api.logout().finally(() => window.location.reload()) });
   openSheetKind = "settings";
   openSheet(shell, "设置", body);
   setActiveNav(shell, "settings");
@@ -1563,6 +1440,7 @@ function openStorageSettings(): void {
 
 function onNav(action: string): void {
   if (!shell) return;
+  contentView.clear();
   if (contextFeed && !["home", "favorites"].includes(action)) leaveContext();
   if (action !== "home" && action !== "random") lockPrivacyScreen();
   if (action === "home") {
@@ -1594,8 +1472,9 @@ function onNav(action: string): void {
 
 function onSeek(value: number): void {
   const video = pool?.currentVideo();
-  if (!video || !Number.isFinite(value)) return;
-  video.currentTime = value;
+  if (!video || !privacyUnlocked || !Number.isFinite(value)) return;
+  const duration = Number.isFinite(video.duration) ? video.duration : Number(shell?.seek.max);
+  video.currentTime = Math.max(0, Math.min(duration || 0, value));
   if (shell) {
     shell.timeCurrent.textContent = formatTime(value);
     paintSeek(shell.seek);
@@ -1779,6 +1658,7 @@ function renderFeed(): void {
   shell.root.addEventListener("focusout", scheduleControlsHide);
   shell.root.addEventListener("playersheetclose", () => {
     openSheetKind = null;
+    if (shell) setActiveNav(shell, contextFeed?.mode === "favorites" ? "favorites" : "home");
     scheduleControlsHide();
   });
   document.addEventListener("keydown", (event) => {
@@ -1813,17 +1693,29 @@ function renderFeed(): void {
     updateConnectionSignals();
     if (!document.hidden) privacyCover?.classList.remove("visible");
   });
-  const seek = shell.seek;
-  seek.addEventListener("pointerdown", () => {
-    userSeeking = true;
+  seekControl?.destroy();
+  seekControl = bindSeekControl(shell.seek, {
+    getDuration: () => Number(shell?.seek.max),
+    getSourceId: () => { const clip = feedView?.clipAt(activeIndex); return clip ? `${clip.id}:${effectiveStreamUrl(clip)}` : null; },
+    isEnabled: () => privacyUnlocked && !longVideosOpen,
+    onStart: () => { userSeeking = true; showControlsForActivity(); },
+    onPreview: (time, clientX) => {
+      if (!shell) return;
+      shell.timeCurrent.textContent = formatTime(time);
+      paintSeek(shell.seek);
+      const clip = feedView?.clipAt(activeIndex);
+      if (clip && prefs.dragThumbnail) feedPreview?.show(clip, time, formatTime(time), clientX ?? shell.seek.getBoundingClientRect().x);
+    },
+    onCommit: time => {
+      userSeeking = false;
+      feedPreview?.hide();
+      onSeek(time);
+      const clip = feedView?.clipAt(activeIndex);
+      if (clip) warmTail(clip.id);
+      updateProgress();
+    },
+    onCancel: () => { userSeeking = false; feedPreview?.hide(); updateProgress(); },
   });
-  seek.addEventListener("pointerup", () => {
-    userSeeking = false;
-  });
-  const finishSeeking = () => { userSeeking = false; scheduleControlsHide(); };
-  seek.addEventListener("change", finishSeeking);
-  seek.addEventListener("pointercancel", finishSeeking);
-  seek.addEventListener("lostpointercapture", finishSeeking);
 }
 
 async function boot(): Promise<void> {

@@ -29,6 +29,12 @@
 
 ## 4. 交互与异步规则
 
+- SKY 信息结构固定为独立 header、media-stage、常驻 player-panel、独立 navigation；进度、播放和导航不得再次挂到自动隐藏浮层上。短/长 seek 共用 `seek-control.ts`，触摸区 48px。
+- UI 组件在 `web/src/components/`；设置在 `views/settings-view.ts`；二级页面由 `views/view-lifecycle.ts` 单一拥有，切导航先销毁旧页面并解除相应 inert。长播放器打开时隔离底层页面，关闭恢复，不重建三 video 池。
+- Sheet/Dialog 统一焦点陷阱、Escape/backdrop 关闭与原焦点恢复；动画遵守 reduced-motion；窄屏与低高度横屏必须可达全部功能。
+- 隐私锁必须用实色媒体遮罩并隐藏媒体可见性，禁止用半透明/blur 替代隐私隐藏；仅作用于锁定，不能让正常缓冲重新盖黑。
+- 收藏 UI 初始化采用服务端事实，存在本地未完成修改时以 `FavoriteMutations.currentValue()` 的最新意图为准；短/长视图同步 selected、aria-pressed 和可读标签。
+
 - 按钮、导航、进度条与画面手势互斥；纵向滑动确定后不能改判横向 seek。
 - 隐藏控件必须同时退出指针命中与键盘焦点，不能只设置 opacity。重新显示时恢复可操作性。
 - 进度条视觉轨道可细，长视频触摸区域至少 44px；与操作按钮独立排布，避免遮挡、重叠与小屏横向溢出。

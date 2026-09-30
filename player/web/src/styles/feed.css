@@ -50,16 +50,15 @@
 }
 
 .app-shell.privacy-locked .video-host {
-  filter: blur(24px);
-  transform: scale(1.06);
+  visibility: hidden;
 }
 
-.app-shell.privacy-locked .viewport::after {
+.app-shell.privacy-locked .media-stage::after {
   content: "";
   position: absolute;
   z-index: 14;
   inset: 0;
-  background: rgba(0, 0, 0, 0.42);
+  background: #081722;
   pointer-events: none;
 }
 
@@ -116,9 +115,9 @@
   height: 38px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-top-color: rgba(255, 255, 255, 0.92);
-  border-right-color: rgba(37, 244, 238, 0.7);
+  border-right-color: #7dd3fc;
   border-radius: 50%;
-  box-shadow: 0 0 22px rgba(37, 244, 238, 0.12);
+  box-shadow: 0 0 22px rgb(14 165 233 / 12%);
   animation: media-ring-turn 1s linear infinite;
 }
 

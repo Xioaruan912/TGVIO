@@ -53,3 +53,15 @@ test("successive views share pending writes; disposed listeners do not receive r
   assert.deepEqual(outcomes,[["new","a"]]);
   assert.deepEqual(changes.at(-1),["new","a",false]);
 });
+
+test("server snapshots initialize favorite state but cannot overwrite a pending intent", async () => {
+  const d=deferred();const store=new FavoriteMutations(()=>d.promise,()=>{},()=>{});
+  assert.equal(store.currentValue("remote",true),true);
+  assert.equal(store.currentValue("remote",false),false);
+  const task=store.toggle("remote",false);
+  assert.equal(store.currentValue("remote",false),true);
+  store.toggle("remote",true);
+  assert.equal(store.currentValue("remote",true),false);
+  d.resolve({favorite:false,syncStatus:"synced"});await task;
+  assert.equal(store.currentValue("remote",true),true);
+});

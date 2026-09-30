@@ -90,3 +90,32 @@ touch-drag, wheel, keyboard and input activity reset the deadline; media progres
 automatic snap and preload do not. Explicit playback unlocks the picture, but
 sound remains muted until enabled again. This is a web privacy lock, not an OS
 screen lock. Existing background privacy rules remain in force.
+
+### SKY mobile-first UI
+
+The header, media stage, persistent playback panel and navigation are separate
+regions. Short/long progress controls share a 48px pointer-captured seek binder:
+dragging previews, release commits once, cancel/background/source change does not
+seek. Time updates cannot replace a drag preview. Secondary screens have one
+lifecycle owner and switching tabs tears down the previous view.
+
+Light sky tokens, cards, grouped settings, accessible modal focus/Escape/backdrop
+handling and reduced-motion-aware animations use native TypeScript/CSS only.
+Privacy lock uses an opaque cover (not a blurred exposed frame); it does not
+rebuild video nodes or change normal buffering presentation.
+
+For browser-act acceptance with generated 120-second H.264 test files, existing
+FFmpeg and Chrome are required:
+
+```sh
+node tests/ui-acceptance.server.mjs
+# Loopback only: http://127.0.0.1:5179/
+# Login layout fixture (does not submit credentials):
+# http://127.0.0.1:5179/tests/fixtures/sky-login.html
+```
+
+This server uses mock API/storage and real local HTTP Range media, never live
+WebDAV, production login or Bot data. It removes generated files on normal exit.
+A Windows CJK font may be served locally for screenshot readability, but is not
+copied or included in the application. Chrome CDP touch emulation is not an
+Android/iOS hardware acceptance test.

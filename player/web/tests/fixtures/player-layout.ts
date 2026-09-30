@@ -25,19 +25,16 @@ async function run() {
   check(visible(page.querySelector(".media-loading")!), "buffering status still visible");
   shell.root.dataset.playbackState = "playing"; page.dataset.playbackState = "playing";
   setControlsVisible(shell, false); await pause();
-  for (const selector of [".topbar", ".action-rail", ".clip-info"]) {
+  for (const selector of [".topbar", ".clip-info", ".player-panel"]) {
     const container = shell.root.querySelector<HTMLElement>(selector)!;
-    check(container.inert, `${selector} inert when hidden`);
-    for (const button of container.querySelectorAll<HTMLElement>("button")) {
-      check(getComputedStyle(button).pointerEvents === "none", `${selector} descendant cannot receive pointer`);
-      const box = button.getBoundingClientRect();
-      const hit = document.elementFromPoint(box.x + box.width / 2, box.y + box.height / 2);
-      check(!button.contains(hit), `${selector} invisible button not hit-tested`);
-    }
+    check(!container.inert && visible(container), `${selector} stays visible and operable`);
   }
   check(!shell.root.querySelector<HTMLElement>(".bottom-nav")!.inert, "navigation stays available");
+  check(shell.seek.getBoundingClientRect().height >= 48, "short seek always has a 48px touch row");
+  const panel=shell.root.querySelector<HTMLElement>(".player-panel")!;
+  const nav=shell.root.querySelector<HTMLElement>(".bottom-nav")!;
+  if(visible(nav)) check(panel.getBoundingClientRect().bottom <= nav.getBoundingClientRect().top+1, "player panel and navigation never overlap");
   setControlsVisible(shell, true); await pause();
-  check(!shell.root.querySelector<HTMLElement>(".topbar")!.inert, "controls can be re-enabled");
   check(document.documentElement.scrollWidth <= innerWidth, "feed has no horizontal overflow");
   let now = 0;
   let timerId = 0;
@@ -59,7 +56,7 @@ async function run() {
   let privacyFeedback = 0;
   let large: LargePlayer;
   try {
-    large = new LargePlayer({...clip, category:"long"}, () => undefined,
+    large = new LargePlayer({...clip, category:"long", favorite:true}, () => undefined,
       {privacyLocked:true, idleClock:clock, onPrivacyLock: () => { privacyFeedback++; }});
   } finally { EventTarget.prototype.addEventListener = addListener; }
   const trustedInput = (type: string, extra: Record<string, unknown> = {}) => {
@@ -70,6 +67,10 @@ async function run() {
   check(idleTimers.size === 0, "locked constructor does not arm idle timer");
   document.body.append(large.root); await pause();
   check(large.root.querySelector<HTMLElement>(".large-controls")!.inert, "privacy-locked long controls are inert");
+  const favoriteButton = large.root.querySelector<HTMLButtonElement>('button[aria-pressed]')!;
+  check(Boolean(favoriteButton) && favoriteButton.classList.contains("selected") && favoriteButton.getAttribute("aria-pressed") === "true", "long favorite initializes server truth and accessible state");
+  check(getComputedStyle(large.currentVideo()).visibility === "hidden", "long privacy never reveals blurred video");
+  check(getComputedStyle(large.root.querySelector(".large-stage")!, "::after").backgroundColor === "rgb(8, 23, 34)", "long privacy has an opaque cover");
   check(!large.root.querySelector<HTMLElement>(".large-topbar")!.inert, "privacy-locked return navigation stays available");
   const seek = large.root.querySelector<HTMLElement>(".large-seek")!;
   check(seek.getBoundingClientRect().height >= 44, "long seek touch target at least 44px");
@@ -224,7 +225,7 @@ async function run() {
   seek.dispatchEvent(new Event("input", {bubbles:true}));
   check(activityCalls === previousActivity, "destroy removes idle activity helper listeners");
   check(idleTimers.size === 0, "destroy clears idle controller timer");
-  const unlocked = new LargePlayer({...clip, category:"long"}, () => undefined, {idleClock:clock});
+  const unlocked = new LargePlayer({...clip, category:"long", favorite:true}, () => undefined, {idleClock:clock});
   check(idleTimers.size === 1, "unlocked constructor arms idle even before actual playing");
   unlocked.destroy();
   check(idleTimers.size === 0, "unlocked constructor controller is cleaned up");

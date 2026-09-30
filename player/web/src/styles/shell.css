@@ -1,223 +1,43 @@
-.app-shell {
-  position: fixed;
-  inset: 0;
-  width: 100%;
-  height: 100vh;
-  height: 100dvh;
-  display: flex;
-  background: #000;
-  overflow: hidden;
-}
-
-.stage {
-  position: relative;
-  flex: 1 1 auto;
-  min-width: 0;
-  display: flex;
-  align-items: stretch;
-  justify-content: stretch;
-  /* The video fills the full dynamic viewport; the bottom navigation is a
-     fixed overlay on top of it (TikTok/Reels style), not a reserved strip. */
-  padding-bottom: 0;
-}
-
-.viewport {
-  position: relative;
-  flex: 1 1 auto;
-  width: 100%;
-  background: #000;
-  overflow: hidden;
-}
-
-.desktop-nav {
-  display: none;
-}
-
-.bottom-nav {
-  position: fixed;
-  left: 0;
-  right: 0;
-  bottom: 0;
-  z-index: 30;
-  height: calc(56px + var(--safe-bottom));
-  padding-bottom: var(--safe-bottom);
-  display: grid;
-  grid-template-columns: repeat(4, 1fr);
-  background: linear-gradient(to top, rgba(0, 0, 0, 0.94), rgba(0, 0, 0, 0.6) 72%, transparent);
-}
-
-.nav-btn {
-  display: grid;
-  justify-items: center;
-  align-content: center;
-  gap: 4px;
-  color: rgba(255, 255, 255, 0.55);
-  transition: color 0.15s ease;
-}
-
-.nav-label {
-  font-size: 10px;
-  letter-spacing: 0.02em;
-}
-
-.nav-btn.active {
-  color: #fff;
-}
-
-.login-shell {
-  position: fixed;
-  inset: 0;
-  display: grid;
-  place-items: center;
-  padding: 24px;
-  background: #000;
-}
-
-.login-panel {
-  width: min(340px, 100%);
-  display: grid;
-  gap: 12px;
-  text-align: center;
-}
-
-.login-brand {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 10px;
-  font-size: 20px;
-  letter-spacing: 0.06em;
-}
-
-.login-title {
-  margin: 16px 0 0;
-  font-size: 22px;
-  font-weight: 600;
-}
-
-.login-subtitle {
-  margin: 0;
-  font-size: 13px;
-  color: var(--muted);
-}
-
-.login-form {
-  display: grid;
-  gap: 12px;
-  margin-top: 16px;
-}
-
-.login-input {
-  width: 100%;
-  height: 50px;
-  padding: 0 14px;
-  border: 1px solid var(--line);
-  border-radius: 12px;
-  background: #0a0a0a;
-  color: var(--text);
-  font-size: 16px;
-  text-align: center;
-  letter-spacing: 0.14em;
-}
-
-.login-input::placeholder {
-  letter-spacing: 0.04em;
-  color: var(--faint);
-}
-
-.login-input:focus {
-  outline: none;
-  border-color: var(--cyan);
-}
-
-.login-submit {
-  height: 50px;
-  border-radius: 12px;
-  background: #fff;
-  color: #000;
-  font-size: 15px;
-  font-weight: 600;
-  transition: opacity 0.15s ease;
-}
-
-.login-submit:active {
-  opacity: 0.82;
-}
-
-.login-submit:disabled {
-  opacity: 0.55;
-}
-
-.login-error {
-  min-height: 18px;
-  margin: 0;
-  color: var(--favorite);
-  font-size: 12px;
-}
-
+/* Structural regions, never an overlay or simulated phone frame. */
+.app-shell { position: fixed; inset: 0; width: 100%; height: 100vh; height: 100dvh; display: grid; grid-template-rows: minmax(0,1fr) calc(72px + var(--safe-bottom)); background: var(--bg); overflow: hidden; padding-inline: var(--safe-left) var(--safe-right); }
+.stage { position: relative; min-width: 0; min-height: 0; display: flex; justify-content: center; }
+.viewport { position: relative; width: 100%; min-width: 0; min-height: 0; display: grid; grid-template-areas: "header" "media" "panel"; grid-template-rows: calc(64px + var(--safe-top)) minmax(0,1fr) auto; background: var(--bg); }
+.media-stage { grid-area: media; position: relative; min-height: 0; min-width: 0; overflow: hidden; background: #000; isolation: isolate; }
+.player-panel { grid-area: panel; position: relative; z-index: 20; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-areas: "info info" "progress progress" "transport actions"; gap: 2px 8px; padding: 10px 16px 12px; background: var(--surface); border-top: 1px solid var(--line); box-shadow: 0 -4px 20px rgb(32 92 130 / 4%); }
+.desktop-nav { display: none; }
+.bottom-nav { position: relative; z-index: 30; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); height: calc(72px + var(--safe-bottom)); padding: 6px 10px calc(6px + var(--safe-bottom)); gap: 4px; border-top: 1px solid var(--line); background: #fff; }
+.nav-btn { position: relative; min-width: 0; min-height: 48px; display: grid; justify-items: center; align-content: center; gap: 5px; border-radius: 16px; color: var(--muted); }
+.nav-label { font-size: 11px; font-weight: 600; }
+.nav-btn.active { color: var(--sky700); background: var(--sky50); }
+.nav-btn.active::after { content: ""; position: absolute; bottom: 3px; width: 16px; height: 3px; border-radius: 5px; background: var(--sky500); animation: sky-enter 180ms var(--ease); }
+.login-shell { position: fixed; inset: 0; display: grid; place-items: center; overflow-y: auto; padding: max(24px,var(--safe-top)) 20px max(24px,var(--safe-bottom)); background: radial-gradient(ellipse at 15% 10%,#c5eaff,transparent 55%),linear-gradient(145deg,var(--sky50),#fff 65%,var(--sky100)); }
+.sky-decoration { position: absolute; inset: 8% 12% auto auto; width: min(50vw,300px); aspect-ratio: 1; border: 1px solid rgb(14 165 233 / 12%); border-radius: 50%; pointer-events: none; box-shadow: 0 0 0 50px rgb(14 165 233 / 3%),0 0 0 100px rgb(14 165 233 / 2%); }
+.login-panel { position: relative; width: min(420px,100%); display: grid; gap: 14px; padding: clamp(24px,6vw,40px); background: #fff; border: 1px solid var(--line); border-radius: 28px; box-shadow: var(--shadow); animation: sky-enter 350ms var(--ease) both; }
+.login-brand { display: flex; align-items: center; gap: 12px; color: var(--sky700); font-size: 18px; letter-spacing: .08em; }
+.login-title { margin: 14px 0 0; font-size: clamp(24px,6vw,30px); font-weight: 750; letter-spacing: -.03em; }
+.login-subtitle { margin: 0; color: var(--muted); font-size: 14px; line-height: 1.6; }
+.login-form { display: grid; gap: 12px; margin-top: 12px; }
+.login-label { font-size: 13px; font-weight: 650; }
+.login-input { width: 100%; min-height: 52px; padding: 0 16px; border: 1px solid var(--line); border-radius: 14px; background: var(--sky50); color: var(--text); font-size: 16px; letter-spacing: .08em; }
+.login-input::placeholder { letter-spacing: 0; color: var(--faint); }
+.login-input:focus { border-color: var(--sky500); }
+.login-submit { min-height: 52px; padding: 12px 16px; border-radius: 14px; background: var(--sky700); color: #fff; font-weight: 650; box-shadow: 0 6px 16px rgb(3 105 161 / 18%); }
+.login-error { min-height: 18px; margin: 0; font-size: 13px; color: var(--danger); }
+.login-footnote { margin: 4px 0 0; font-size: 12px; color: var(--faint); line-height: 1.6; }
 @media (min-width: 900px) {
-  .app-shell {
-    padding: 0;
-    gap: 0;
-  }
-
-  .desktop-nav {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-    width: 88px;
-    flex: none;
-    padding: 22px 10px;
-    border-right: 1px solid var(--line);
-    background: #000;
-  }
-
-  .desktop-brand {
-    display: grid;
-    justify-items: center;
-    gap: 8px;
-    margin-bottom: 20px;
-    font-size: 11px;
-    letter-spacing: 0.18em;
-    color: rgba(255, 255, 255, 0.7);
-  }
-
-  .desktop-brand .logo {
-    width: 32px;
-    height: 32px;
-    border-radius: 10px;
-  }
-
-  .desktop-links {
-    display: flex;
-    flex-direction: column;
-    gap: 6px;
-  }
-
-  .desktop-nav .nav-btn {
-    padding: 11px 4px;
-    border-radius: 12px;
-  }
-
-  .desktop-nav .nav-btn.active {
-    background: rgba(255, 255, 255, 0.08);
-  }
-
-  .bottom-nav {
-    display: none;
-  }
-
-  .stage {
-    align-items: center;
-    justify-content: center;
-    padding-bottom: 0;
-  }
-
-  .viewport {
-    flex: 0 0 auto;
-    width: min(100%, 62dvh, 620px);
-    height: min(100dvh, 1000px);
-    border-radius: 16px;
-    outline: 1px solid rgba(255, 255, 255, 0.07);
-  }
+  .app-shell { grid-template-columns: 200px minmax(0,1fr); grid-template-rows: minmax(0,1fr); }
+  .desktop-nav { display: flex; flex-direction: column; gap: 24px; padding: calc(24px + var(--safe-top)) 16px 24px; background: #fff; border-right: 1px solid var(--line); }
+  .desktop-brand { display: flex; align-items: center; gap: 10px; color: var(--sky700); font-size: 16px; letter-spacing: .05em; }
+  .desktop-links { display: grid; gap: 8px; }
+  .desktop-nav .nav-btn { display: flex; justify-content: flex-start; gap: 14px; padding: 14px; border-radius: 14px; }
+  .desktop-nav .nav-label { font-size: 14px; }
+  .desktop-nav .nav-btn.active::after { left: 0; bottom: auto; width: 3px; height: 20px; }
+  .bottom-nav { display: none; }
+  .stage { padding-inline: 24px; }
+  .viewport { max-width: 900px; height: 100%; border-radius: 0; outline: none; }
+  .player-panel { padding-inline: 24px; }
+}
+@media (max-height: 560px) and (orientation: landscape) {
+  .viewport { grid-template-areas: "header header" "media panel"; grid-template-columns: minmax(0,1fr) minmax(240px,36%); grid-template-rows: calc(64px + var(--safe-top)) minmax(0,1fr); }
+  .player-panel { align-content: start; overflow-y: auto; border-left: 1px solid var(--line); }
 }

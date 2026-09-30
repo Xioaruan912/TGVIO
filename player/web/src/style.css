@@ -5,3 +5,15 @@
 @import "./styles/sheet.css";
 @import "./styles/large.css";
 @import "./styles/settings.css";
+
+/* Attribute semantics always win over component and playback-state selectors. */
+[hidden] { display: none !important; }
+
+/* Central motion policy includes future UI-agent components and pseudo-elements. */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation: none !important;
+    transition: none !important;
+    scroll-behavior: auto !important;
+  }
+}

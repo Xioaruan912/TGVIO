@@ -8,6 +8,7 @@ import { exitPrivacyPresentation } from "./privacy-presentation";
 import { icon } from "./icons";
 import { NetworkMeter } from "./net";
 import { ThumbnailPreview } from "./preview";
+import { bindSeekControl, type SeekControl } from "./seek-control";
 import { prefs, setPref } from "./settings";
 import { initialMutedState, rememberMuted } from "./sound-policy";
 import { ScreenWakeLockController } from "./wake-lock";
@@ -62,7 +63,7 @@ export class LargePlayer {
   private readonly idlePrivacy: IdlePrivacyController;
   private readonly detachIdleActivity: () => void;
   private audioGeneration = 0;
-  private controlsHideTimer = 0;
+  private readonly seekControl: SeekControl;
   private readonly loading: HTMLElement;
   private readonly retryButton: HTMLButtonElement;
   private readonly privacyPlayButton: HTMLButtonElement;
@@ -84,11 +85,12 @@ export class LargePlayer {
   private readonly detachFavorites = favoriteMutations.subscribe((id, enabled) => {
     if (id !== this.clip.id) return;
     this.clip.favorite = enabled;
-    if (!this.destroyed) this.favoriteButton.classList.toggle("selected", enabled);
+    if (!this.destroyed) this.syncFavoriteButton(enabled);
   });
   private readonly wakeLock = new ScreenWakeLockController();
   private readonly onVisibility = () => {
     if (document.hidden) {
+      this.seekControl.cancel();
       this.userSeeking = false;
       this.preview.hide();
     }
@@ -163,6 +165,7 @@ export class LargePlayer {
     this.retryButton.type = "button";
     this.retryButton.hidden = true;
     this.retryButton.addEventListener("click", () => {
+      this.seekControl.cancel();
       this.retryButton.hidden = true;
       this.mediaErrorRetries += 1;
       this.playback.update({ mediaErrored: false, autoplayBlocked: false, hasFrame: false });
@@ -217,33 +220,53 @@ export class LargePlayer {
     this.seek.step = "0.1";
     this.seek.value = "0";
     this.seek.setAttribute("aria-label", "播放进度");
-    this.seek.addEventListener("input", () => this.onSeekInput());
-    this.seek.addEventListener("pointerdown", () => {
-      this.userSeeking = true;
-    });
-    this.seek.addEventListener("pointerup", () => {
-      this.userSeeking = false;
-      this.scheduleControlsHide();
-    });
-    const finishSeeking = () => {
-      this.userSeeking = false;
-      this.updateProgress();
-      this.scheduleControlsHide();
-    };
-    this.seek.addEventListener("change", finishSeeking);
-    this.seek.addEventListener("pointercancel", finishSeeking);
-    this.seek.addEventListener("lostpointercapture", finishSeeking);
     this.progress.append(this.buffered, this.seek);
-    this.timeCurrent = element("span", undefined, "0:00");
-    this.timeTotal = element("span", undefined, formatTime(clip.duration || 0));
-    timeline.append(this.progress, this.timeCurrent, this.timeTotal);
+    this.timeCurrent = element("span", "large-time-current", "0:00");
+    this.timeTotal = element("span", "large-time-total", formatTime(clip.duration || 0));
+    const times = element("div", "large-time-row");
+    times.append(this.timeCurrent, this.timeTotal);
+    timeline.append(this.progress, times);
+    this.seekControl = bindSeekControl(this.seek, {
+      getDuration: () => this.video.duration,
+      getSourceId: () => this.clip.id + ":" + this.resolveUrl(),
+      isEnabled: () => !this.destroyed && !this.sourceRestore && !this.root.classList.contains("privacy-locked"),
+      onStart: () => {
+        this.userSeeking = true;
+        this.showControls();
+      },
+      onPreview: (time, clientX) => {
+        this.timeCurrent.textContent = formatTime(time);
+        this.progress.style.setProperty("--p", this.percent(time) + "%");
+        if (clientX !== undefined && prefs.dragThumbnail) {
+          this.preview.show(this.clip, time, formatTime(time), clientX);
+        }
+      },
+      onCommit: (time) => {
+        this.userSeeking = false;
+        this.preview.hide();
+        // Do not pause/play: a seek must preserve the current playback/privacy intent.
+        if (!this.destroyed && !this.root.classList.contains("privacy-locked") && !this.sourceRestore) {
+          this.video.currentTime = time;
+            this.updateProgress();
+          this.flushProgress();
+        }
+      },
+      onCancel: () => {
+        this.userSeeking = false;
+        this.preview.hide();
+        if (!this.destroyed) this.updateProgress();
+      },
+    });
 
     this.favoriteButton = element("button", "large-btn");
     this.favoriteButton.type = "button";
+    this.clip.favorite = favoriteMutations.currentValue(this.clip.id, this.clip.favorite);
+    this.syncFavoriteButton(this.clip.favorite);
     this.favoriteButton.appendChild(icon("heart", 24));
     this.favoriteButton.addEventListener("click", () => void this.toggleFavorite());
     this.soundButton = element("button", "large-btn");
     this.soundButton.type = "button";
+    this.soundButton.setAttribute("aria-label", "切换静音");
     this.soundButton.appendChild(icon(this.muted ? "sound-off" : "sound-on", 24));
     this.soundButton.addEventListener("click", () => this.toggleSound());
 
@@ -270,16 +293,17 @@ export class LargePlayer {
     this.qualityButton.setAttribute("aria-label", "切换清晰度");
     this.qualityButton.addEventListener("click", () => this.cycleQuality());
 
-    controls.append(
+    const actions = element("div", "large-action-row");
+    actions.append(
       this.playButton,
-      timeline,
       this.qualityButton,
       this.favoriteButton,
       this.soundButton,
-      this.deleteButton,
       this.pipButton,
       this.fullscreenButton,
+      this.deleteButton,
     );
+    controls.append(timeline, actions);
     this.root.append(topbar, stage, controls, this.preview.el);
 
     for (const event of ["pause", "ended", "waiting", "seeking", "loadstart", "error"]) {
@@ -354,7 +378,8 @@ export class LargePlayer {
       }
     });
     this.video.addEventListener("loadedmetadata", () => {
-      if (Number.isFinite(this.video.duration)) this.seek.max = String(this.video.duration);
+      if (Number.isFinite(this.video.duration) && this.video.duration > 0) this.seek.max = String(this.video.duration);
+      this.timeTotal.textContent = formatTime(Number.isFinite(this.video.duration) ? this.video.duration : 0);
       if (!this.didRestorePosition && this.startAt > 0 && Number.isFinite(this.video.duration)) {
         this.didRestorePosition = true;
         this.video.currentTime = Math.min(this.startAt, Math.max(0, this.video.duration - 1));
@@ -379,6 +404,8 @@ export class LargePlayer {
       },
       onScrubStart: () => {
         if (this.root.classList.contains("privacy-locked")) return;
+        this.seekControl.cancel();
+        this.userSeeking = true;
         const wasPlaying = !this.video.paused;
         this.playback.update({ pausedByUser: true });
         this.video.pause();
@@ -392,6 +419,7 @@ export class LargePlayer {
         if (prefs.dragThumbnail) this.preview.show(this.clip, time, formatTime(time), clientX);
       },
       onScrubEnd: (time, resumePlayback) => {
+        this.userSeeking = false;
         this.preview.hide();
         if (this.root.classList.contains("privacy-locked")) return;
         if (time !== null) this.video.currentTime = time;
@@ -424,13 +452,13 @@ export class LargePlayer {
 
   destroy(): void {
     this.destroyed = true;
+    this.seekControl.destroy();
     this.audioGeneration += 1;
     this.detachIdleActivity();
     this.idlePrivacy.destroy();
     this.detachFavorites();
     this.sourceRestore?.controller.abort();
     if (!this.deleted) this.flushProgress();
-    window.clearTimeout(this.controlsHideTimer);
     this.detach();
     this.detachFullscreen();
     this.meter.stop();
@@ -466,6 +494,7 @@ export class LargePlayer {
   }
 
   lockPrivacy(): void {
+    this.seekControl.cancel();
     // Mute before pause/PiP exit: neither asynchronous path may restore sound.
     this.audioGeneration += 1;
     this.muted = true;
@@ -565,36 +594,15 @@ export class LargePlayer {
   }
 
   private showControls(): void {
-    window.clearTimeout(this.controlsHideTimer);
     this.root.classList.add("controls-visible");
     this.root.querySelectorAll<HTMLElement>(".large-topbar, .large-controls").forEach((container) => {
       container.inert = container.classList.contains("large-controls") && this.root.classList.contains("privacy-locked");
     });
-    this.scheduleControlsHide();
   }
 
   private scheduleControlsHide(): void {
-    window.clearTimeout(this.controlsHideTimer);
-    const state = this.playback.state;
-    if (
-      state === "privacy-locked" ||
-      state === "error" ||
-      state === "autoplay-blocked" ||
-      state === "paused" ||
-      state === "buffering" ||
-      this.userSeeking
-    ) {
-      return;
-    }
-    if (this.root.contains(document.activeElement)) return;
-    this.controlsHideTimer = window.setTimeout(() => {
-      if (this.playback.state !== "playing" || this.userSeeking) return;
-      if (this.root.contains(document.activeElement)) return;
-      this.root.classList.remove("controls-visible");
-      this.root.querySelectorAll<HTMLElement>(".large-topbar, .large-controls").forEach((container) => {
-        container.inert = true;
-      });
-    }, 2200);
+    // Persistent, partitioned control panel. Never auto-hide or make it inert during playback.
+    this.showControls();
   }
 
   private percent(value: number): number {
@@ -615,6 +623,7 @@ export class LargePlayer {
       options.findIndex((option) => option.selection === this.quality),
     );
     const next = options[(currentIndex + 1) % options.length];
+    this.seekControl.cancel();
     this.quality = next.selection;
     setPref("quality", next.selection);
     this.qualityButton.textContent = qualityLabel(this.clip, this.quality);
@@ -662,20 +671,16 @@ export class LargePlayer {
 
   private setPlayIcon(playing: boolean): void {
     this.playButton.replaceChildren(icon(playing ? "pause" : "play", 26));
-  }
-
-  private onSeekInput(): void {
-    const value = Number(this.seek.value);
-    if (!Number.isFinite(value)) return;
-    this.video.currentTime = value;
-    this.timeCurrent.textContent = formatTime(value);
-    this.progress.style.setProperty("--p", `${this.percent(value)}%`);
+    this.playButton.setAttribute("aria-label", playing ? "暂停" : "播放");
   }
 
   private updateProgress(): void {
-    if (!this.userSeeking) this.seek.value = String(this.video.currentTime);
-    this.timeCurrent.textContent = formatTime(this.video.currentTime);
-    this.progress.style.setProperty("--p", `${this.percent(this.video.currentTime)}%`);
+    // Playback ticks may persist real position, but must never repaint a drag preview.
+    if (!this.userSeeking && !this.seekControl?.isSeeking()) {
+      this.seek.value = String(this.video.currentTime);
+      this.timeCurrent.textContent = formatTime(this.video.currentTime);
+      this.progress.style.setProperty("--p", this.percent(this.video.currentTime) + "%");
+    }
     paintBuffered(this.buffered, this.video);
     this.onProgress?.(this.video.currentTime, this.video.duration, false);
     playerMediaSession.sync(this.video);
@@ -687,12 +692,19 @@ export class LargePlayer {
     }
   }
 
+  private syncFavoriteButton(enabled: boolean): void {
+    this.favoriteButton.classList.toggle("selected", enabled);
+    this.favoriteButton.setAttribute("aria-pressed", String(enabled));
+    this.favoriteButton.setAttribute("aria-label", enabled ? "取消收藏视频" : "收藏视频");
+  }
+
   private async toggleFavorite(): Promise<void> {
     await favoriteMutations.toggle(this.clip.id, this.clip.favorite);
   }
 
   private async deleteMedia(): Promise<void> {
     if (!this.clip.deletable || !await confirmMediaDelete(this.root)) return;
+    this.seekControl.cancel();
     this.deleteButton.disabled = true;
     this.video.pause();
     this.video.removeAttribute("src");

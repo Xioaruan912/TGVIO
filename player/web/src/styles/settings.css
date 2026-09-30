@@ -1,38 +1,30 @@
-.storage-settings-page {
-  display: grid;
-  gap: 16px;
-  padding: 18px 16px 28px;
-  color: var(--text, #f4f5f8);
-}
+/* Domain groups are cards, with quiet row separators rather than nested boxes. */
+.settings-card { min-width: 0; display: grid; gap: 0; padding: 8px 14px; border: 1px solid var(--line); border-radius: 20px; background: #fff; box-shadow: 0 3px 12px rgb(32 92 130 / 4%); animation: sky-enter 200ms var(--ease) both; }
+.settings-card > .sheet-section { margin: 0; padding: 12px 2px 14px; font-size: 12px; font-weight: 750; color: var(--sky700); }
+.settings-card > .sheet-row { border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; padding: 14px 2px; background: transparent; }
+.settings-card > button.sheet-row:active { background: var(--sky50); }
+.settings-card > .sheet-note { margin: 0; padding: 4px 2px 14px; }
+.settings-card .sheet-row-title { font-weight: 600; }
+.settings-card .sheet-row-icon { background: var(--sky50); }
+@media (hover: hover) { .settings-card > button.sheet-row:hover { background: var(--sky50); border-color: var(--line); } }
 
+.storage-settings-page { display: grid; gap: 18px; padding: 4px 0 12px; color: var(--text); }
 .storage-settings-header { display: flex; align-items: center; gap: 12px; }
-.storage-settings-header h2 { margin: 0; font-size: 18px; }
-.storage-settings-header button,
-.storage-settings-actions button,
-.storage-recovery button {
-  border: 1px solid rgba(255,255,255,.14);
-  border-radius: 12px;
-  background: rgba(255,255,255,.08);
-  color: inherit;
-  min-height: 42px;
-  padding: 0 14px;
-  font: inherit;
-}
-.storage-settings-status { margin: 0; color: rgba(255,255,255,.72); font-size: 13px; line-height: 1.5; }
-.storage-settings-status.error { color: #ff9c9c; }
-.storage-settings-form { display: grid; gap: 12px; }
-.storage-field { display: grid; gap: 6px; color: rgba(255,255,255,.76); font-size: 13px; }
-.storage-field input {
-  width: 100%; min-height: 44px; box-sizing: border-box;
-  border: 1px solid rgba(255,255,255,.15); border-radius: 10px;
-  background: rgba(0,0,0,.28); color: white; padding: 0 12px; font: inherit;
-}
-.storage-field input::placeholder { color: rgba(255,255,255,.4); }
-.storage-settings-actions { display: flex; gap: 10px; }
-.storage-settings-actions button { flex: 1; }
-.storage-settings-actions button[type="submit"] { background: #397fba; border-color: #397fba; }
-.storage-settings-page button:disabled,
-.storage-settings-page input:disabled { opacity: .55; }
-.storage-recovery { border-top: 1px solid rgba(255,255,255,.12); padding-top: 14px; color: rgba(255,255,255,.8); }
-.storage-recovery summary { cursor: pointer; font-size: 14px; }
-.storage-recovery p { font-size: 12px; line-height: 1.6; }
+.storage-settings-header h2 { margin: 0; font-size: 18px; line-height: 1.4; }
+.storage-settings-header button, .storage-settings-actions button, .storage-recovery button { border: 1px solid var(--line); border-radius: 14px; background: #fff; color: var(--sky700); min-height: 48px; padding: 10px 14px; font-size: 13px; font-weight: 600; }
+.storage-settings-status { margin: 0; padding: 14px 16px; border: 1px solid #c4e3f5; border-radius: 16px; background: var(--sky50); color: var(--muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
+.storage-settings-status.error { color: var(--danger); background: #fff2f3; border-color: #f6cbd3; }
+.storage-settings-form { display: grid; gap: 16px; padding: 18px; border: 1px solid var(--line); border-radius: 20px; background: #fff; }
+.storage-field { display: grid; gap: 8px; color: var(--muted); font-size: 13px; font-weight: 550; }
+.storage-field input { width: 100%; min-height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--sky50); color: var(--text); padding: 0 12px; font-size: 16px; }
+.storage-field input::placeholder { color: var(--faint); }
+.storage-field input:focus { border-color: var(--sky500); }
+.storage-settings-actions { display: flex; flex-wrap: wrap; gap: 10px; margin-top: 4px; }
+.storage-settings-actions button { flex: 1 1 120px; }
+.storage-settings-actions button[type="submit"] { background: var(--sky700); border-color: var(--sky700); color: #fff; }
+.storage-settings-page button:disabled, .storage-settings-page input:disabled { opacity: .55; }
+.storage-recovery { border: 1px solid var(--line); border-radius: 18px; padding: 8px 16px 16px; background: #fff; color: var(--muted); }
+.storage-recovery summary { display: flex; align-items: center; min-height: 48px; cursor: pointer; font-size: 14px; font-weight: 600; color: var(--sky700); }
+.storage-recovery summary::after { content: '+'; margin-left: auto; font-size: 20px; }
+.storage-recovery[open] summary::after { content: '−'; }
+.storage-recovery p { font-size: 12px; line-height: 1.7; }

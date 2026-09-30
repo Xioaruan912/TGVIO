@@ -24,6 +24,10 @@ export class FavoriteMutations {
     private readonly onChange: (id: string, enabled: boolean) => void,
     private readonly onResult: (id: string, result: Result | null) => void,
   ) {}
+  /** Fresh server truth unless an in-flight local mutation owns this media. */
+  currentValue(id: string, serverValue: boolean): boolean {
+    return this.entries.get(id)?.desired ?? serverValue;
+  }
   toggle(id: string, initial: boolean): Promise<void> {
     let entry = this.entries.get(id);
     if (!entry) {
