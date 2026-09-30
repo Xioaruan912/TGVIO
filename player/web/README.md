@@ -80,3 +80,13 @@ Playback loading has one status layer; the poster is decorative and does not
 cover an existing frame during buffering. Feed refill is bounded, favorite
 mutations share one per-media queue across views, and cancelled gestures release
 seek/fast-forward state. See `../AGENTS.md` for the development contract.
+
+### Idle privacy lock
+
+Short Feed automatically hides, pauses and mutes after 60 seconds without user
+interaction, even while playing. Long videos are exempt during actual playback;
+paused/ended/loading/buffering states lock after a full idle minute. Pointer,
+touch-drag, wheel, keyboard and input activity reset the deadline; media progress,
+automatic snap and preload do not. Explicit playback unlocks the picture, but
+sound remains muted until enabled again. This is a web privacy lock, not an OS
+screen lock. Existing background privacy rules remain in force.

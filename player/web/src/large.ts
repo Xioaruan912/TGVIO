@@ -3,6 +3,8 @@ import { favoriteMutations } from "./favorite-service";
 import { requestAudioEnable } from "./audio-warning";
 import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
+import { IdlePrivacyController, attachIdleActivity } from "./idle-privacy";
+import { exitPrivacyPresentation } from "./privacy-presentation";
 import { icon } from "./icons";
 import { NetworkMeter } from "./net";
 import { ThumbnailPreview } from "./preview";
@@ -57,6 +59,9 @@ export class LargePlayer {
   private readonly playback = new PlaybackStateController();
   private readonly detach: () => void;
   private readonly detachFullscreen: () => void;
+  private readonly idlePrivacy: IdlePrivacyController;
+  private readonly detachIdleActivity: () => void;
+  private audioGeneration = 0;
   private controlsHideTimer = 0;
   private readonly loading: HTMLElement;
   private readonly retryButton: HTMLButtonElement;
@@ -87,6 +92,7 @@ export class LargePlayer {
       this.userSeeking = false;
       this.preview.hide();
     }
+    if (!document.hidden) this.idlePrivacy.check();
     void this.wakeLock.handleVisibilityChange();
   };
 
@@ -95,6 +101,7 @@ export class LargePlayer {
     onClose: () => void,
     options: {
       privacyLocked?: boolean;
+      idleClock?: ConstructorParameters<typeof IdlePrivacyController>[0]["clock"];
       onUnlock?: () => void;
       onPrivacyLock?: () => void;
       onProgress?: (position: number, duration: number, force: boolean) => void;
@@ -109,7 +116,17 @@ export class LargePlayer {
     this.onProgress = options.onProgress;
     this.onDeleted = options.onDeleted ?? (() => undefined);
     this.startAt = Math.max(0, options.startAt ?? 0);
+    this.idlePrivacy = new IdlePrivacyController({
+      mode: "long",
+      clock: options.idleClock,
+      onLock: () => {
+        if (this.destroyed) return;
+        this.lockPrivacy();
+        this.onPrivacyLock();
+      },
+    });
     this.root = element("section", "large-player");
+    this.detachIdleActivity = attachIdleActivity(this.root, this.idlePrivacy);
     this.root.dataset.wakeLock = this.wakeLock.supported ? "available" : "unsupported";
     this.root.dataset.mediaSession = playerMediaSession.supported
       ? options.privacyLocked ? "cleared" : "long"
@@ -130,7 +147,10 @@ export class LargePlayer {
     privacyLock.type = "button";
     privacyLock.setAttribute("aria-label", "立即遮住画面并暂停");
     privacyLock.append(icon("lock", 22));
-    privacyLock.addEventListener("click", this.onPrivacyLock);
+    privacyLock.addEventListener("click", () => {
+      this.lockPrivacy();
+      this.onPrivacyLock();
+    });
     topbar.append(back, title, netSpeed, privacyLock);
 
     const stage = element("div", "large-stage");
@@ -262,12 +282,26 @@ export class LargePlayer {
     );
     this.root.append(topbar, stage, controls, this.preview.el);
 
+    for (const event of ["pause", "ended", "waiting", "seeking", "loadstart", "error"]) {
+      this.video.addEventListener(event, () => this.idlePrivacy.setPlaying(false));
+    }
+    this.video.addEventListener("playing", () => {
+      if (!this.destroyed && !this.root.classList.contains("privacy-locked") && !this.video.paused && !this.video.ended && !this.sourceRestore) {
+        this.idlePrivacy.setPlaying(true);
+      }
+    });
     this.video.addEventListener("timeupdate", () => this.updateProgress());
     this.video.addEventListener("pause", () => this.flushProgress());
     this.video.addEventListener("ended", () => this.flushProgress());
     this.video.addEventListener("loadstart", () => this.playback.update({ hasFrame: false }));
     this.video.addEventListener("waiting", () => this.playback.update({ networkWaiting: true }));
-    this.video.addEventListener("stalled", () => this.playback.update({ networkWaiting: true }));
+    this.video.addEventListener("stalled", () => {
+      // Network fetch stalls do not necessarily interrupt buffered playback.
+      if (this.video.paused || this.video.ended || this.video.readyState < 3) {
+        this.idlePrivacy.setPlaying(false);
+        this.playback.update({ networkWaiting: true });
+      }
+    });
     this.video.addEventListener("loadeddata", () => {
       if (this.video.readyState >= 2) this.playback.update({ hasFrame: true, mediaErrored: false });
     });
@@ -286,6 +320,12 @@ export class LargePlayer {
     });
     this.video.addEventListener("progress", () => paintBuffered(this.buffered, this.video));
     this.video.addEventListener("play", () => {
+      if (this.destroyed || this.root.classList.contains("privacy-locked")) {
+        this.video.muted = true;
+        this.video.pause();
+        exitPrivacyPresentation(this.video);
+        return;
+      }
       this.setPlayIcon(true);
       void this.wakeLock.setDesired(prefs.keepScreenAwake && !this.root.classList.contains("privacy-locked"));
       this.root.dataset.wakeLock = prefs.keepScreenAwake && this.wakeLock.supported ? "requested" : "inactive";
@@ -298,13 +338,20 @@ export class LargePlayer {
       if (!this.sourceRestore) this.playback.update({ pausedByUser: true });
     });
     this.video.addEventListener("enterpictureinpicture", () => {
+      if (this.destroyed || this.root.classList.contains("privacy-locked")) {
+        void this.exitPictureInPicture();
+        return;
+      }
       this.root.dataset.pictureInPicture = "active";
       this.pipButton.classList.add("selected");
     });
     this.video.addEventListener("leavepictureinpicture", () => {
       this.root.dataset.pictureInPicture = "inactive";
       this.pipButton.classList.remove("selected");
-      if (document.hidden) this.onPrivacyLock();
+      if (document.hidden && !this.destroyed && !this.root.classList.contains("privacy-locked")) {
+        this.lockPrivacy();
+        this.onPrivacyLock();
+      }
     });
     this.video.addEventListener("loadedmetadata", () => {
       if (Number.isFinite(this.video.duration)) this.seek.max = String(this.video.duration);
@@ -365,6 +412,8 @@ export class LargePlayer {
     this.root.addEventListener("focusout", () => this.scheduleControlsHide());
     this.video.addEventListener("pause", () => this.showControls());
     this.video.addEventListener("play", () => this.scheduleControlsHide());
+    if (options.privacyLocked) this.lockPrivacy();
+    else this.idlePrivacy.setEnabled(true);
     this.video.src = this.resolveUrl();
     if (!options.privacyLocked) this.activateMediaSession();
     if (prefs.netSpeed) this.meter.start();
@@ -375,6 +424,9 @@ export class LargePlayer {
 
   destroy(): void {
     this.destroyed = true;
+    this.audioGeneration += 1;
+    this.detachIdleActivity();
+    this.idlePrivacy.destroy();
     this.detachFavorites();
     this.sourceRestore?.controller.abort();
     if (!this.deleted) this.flushProgress();
@@ -406,15 +458,31 @@ export class LargePlayer {
   }
 
   resume(): void {
-    void this.video.play().catch(() => undefined);
+    if (this.destroyed || this.root.classList.contains("privacy-locked")) return;
+    this.idlePrivacy.activity();
+    this.playback.update({ pausedByUser: false, shouldPlay: true });
+    if (this.sourceRestore) this.sourceRestore.resumeIntent = true;
+    else void this.video.play().catch(() => undefined);
   }
 
   lockPrivacy(): void {
+    // Mute before pause/PiP exit: neither asynchronous path may restore sound.
+    this.audioGeneration += 1;
+    this.muted = true;
+    this.video.defaultMuted = true;
+    this.video.setAttribute("muted", "");
+    this.video.muted = true;
+    rememberMuted(true);
+    this.soundButton.replaceChildren(icon("sound-off", 24));
+    this.idlePrivacy.setEnabled(false);
+    this.idlePrivacy.setPlaying(false);
     this.userSeeking = false;
     this.preview.hide();
     this.root.classList.add("privacy-locked");
-    this.video.pause();
     if (this.sourceRestore) this.sourceRestore.resumeIntent = false;
+    this.video.pause();
+    exitPrivacyPresentation(this.video);
+    void this.exitPictureInPicture();
     this.playback.update({ privacyUnlocked: false, pausedByUser: true, shouldPlay: false });
     void this.wakeLock.setDesired(false);
     playerMediaSession.clear();
@@ -423,6 +491,8 @@ export class LargePlayer {
   }
 
   unlockPrivacy(resumePlayback: boolean): void {
+    if (this.destroyed) return;
+    this.idlePrivacy.setEnabled(true);
     this.root.classList.remove("privacy-locked");
     this.onUnlock();
     if (this.sourceRestore) this.sourceRestore.resumeIntent = resumePlayback;
@@ -454,18 +524,20 @@ export class LargePlayer {
     this.root.dataset.mediaSession = playerMediaSession.supported ? "long" : "unsupported";
     playerMediaSession.activateLong(this.video, {
       play: () => {
+        this.idlePrivacy.activity();
         if (this.root.classList.contains("privacy-locked")) return;
         this.playback.update({ pausedByUser: false, shouldPlay: true, autoplayBlocked: false });
         if (this.sourceRestore) this.sourceRestore.resumeIntent = true;
         else void this.video.play().catch(() => this.playback.update({ autoplayBlocked: true }));
       },
       pause: () => {
+        this.idlePrivacy.activity();
         if (this.sourceRestore) this.sourceRestore.resumeIntent = false;
         this.playback.update({ pausedByUser: true });
         this.video.pause();
       },
-      seekBy: (seconds) => { this.video.currentTime = Math.min(this.video.duration || Infinity, Math.max(0, this.video.currentTime + seconds)); },
-      seekTo: (seconds) => { this.video.currentTime = Math.min(this.video.duration || Infinity, Math.max(0, seconds)); },
+      seekBy: (seconds) => { this.idlePrivacy.activity(); this.video.currentTime = Math.min(this.video.duration || Infinity, Math.max(0, this.video.currentTime + seconds)); },
+      seekTo: (seconds) => { this.idlePrivacy.activity(); this.video.currentTime = Math.min(this.video.duration || Infinity, Math.max(0, seconds)); },
       isPrivacyUnlocked: () => !this.root.classList.contains("privacy-locked"),
     });
   }
@@ -569,10 +641,7 @@ export class LargePlayer {
 
   private togglePlay(): void {
     if (this.root.classList.contains("privacy-locked")) {
-      this.onUnlock();
-      this.root.classList.remove("privacy-locked");
-      this.playback.update({ privacyUnlocked: true });
-      this.activateMediaSession();
+      this.unlockPrivacy(false);
     }
     const intendsPlaying = this.sourceRestore
       ? this.sourceRestore.resumeIntent && !this.playback.signals().pausedByUser
@@ -650,6 +719,8 @@ export class LargePlayer {
   }
 
   private toggleSound(): void {
+    if (this.destroyed || this.root.classList.contains("privacy-locked")) return;
+    const generation = ++this.audioGeneration;
     if (!this.muted) {
       this.muted = true;
       rememberMuted(true);
@@ -660,7 +731,7 @@ export class LargePlayer {
       return;
     }
     void requestAudioEnable(this.root).then((confirmed) => {
-      if (!confirmed) return;
+      if (!confirmed || this.destroyed || generation !== this.audioGeneration || this.root.classList.contains("privacy-locked")) return;
       this.muted = false;
       rememberMuted(false);
       this.video.defaultMuted = false;

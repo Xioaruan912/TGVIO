@@ -3,6 +3,8 @@ import { ApiError, api, beginPlaybackSession, MOCK_MODE, shortId } from "./api";
 import { AdaptiveCacheController } from "./adaptive-cache";
 import { requestAudioEnable } from "./audio-warning";
 import { FeedView } from "./feed";
+import { IdlePrivacyController, attachIdleActivity } from "./idle-privacy";
+import { exitPrivacyPresentation } from "./privacy-presentation";
 import { fillUniqueFeed } from "./feed-loading";
 import { favoriteMutations } from "./favorite-service";
 import { ContextFeed } from "./context-feed";
@@ -120,6 +122,20 @@ let playback: PlaybackStateController | null = null;
 const unplayable = new Set<string>();
 const seenIds = new Set<string>();
 const errorRetries = new Map<string, number>();
+const shortIdle = new IdlePrivacyController({ mode: "short", onLock: () => {
+  lockPrivacyScreen();
+  if (shell) toast(shell, "一分钟无操作，已锁定并静音");
+} });
+let soundRequestGeneration = 0;
+
+function silenceFeed(): void {
+  soundRequestGeneration++;
+  muted = true;
+  rememberMuted(true);
+  pool?.setMuted(true);
+  exitPrivacyPresentation(pool?.currentVideo() ?? null);
+  if (shell) setSoundButton(shell, true);
+}
 
 function activeClips(): Clip[] {
   return contextFeed?.clips ?? clips;
@@ -282,9 +298,9 @@ function applyActive(index: number): void {
     shell.root.dataset.mediaSession = playerMediaSession.supported ? "short" : "unsupported";
     playerMediaSession.activateShort({
       play: playGesture,
-      pause: () => { if (!paused) togglePlayback(); },
-      previous: () => feedView?.scrollToIndex(Math.max(0, activeIndex - 1), true),
-      next: () => goNext(),
+      pause: () => { shortIdle.activity(); if (!paused) togglePlayback(); },
+      previous: () => { shortIdle.activity(); feedView?.scrollToIndex(Math.max(0, activeIndex - 1), true); },
+      next: () => { shortIdle.activity(); goNext(); },
       isPrivacyUnlocked: () => privacyUnlocked,
     });
     const activeVideo = pool.currentVideo();
@@ -591,8 +607,9 @@ function toggleSound(): void {
   }
   const host = shell?.root;
   if (!host) return;
+  const generation = soundRequestGeneration;
   void requestAudioEnable(host).then((confirmed) => {
-    if (!confirmed || !pool) return;
+    if (!confirmed || !pool || !privacyUnlocked || generation !== soundRequestGeneration) return;
     muted = false;
     rememberMuted(false);
     pool.setMuted(false);
@@ -633,6 +650,8 @@ function togglePlayback(): void {
 
 function playGesture(): void {
   if (!pool || !shell) return;
+  shortIdle.setEnabled(!longVideosOpen);
+  shortIdle.activity();
   privacyUnlocked = true;
   autoplayBlocked = false;
   paused = false;
@@ -643,6 +662,7 @@ function playGesture(): void {
 }
 
 function onDocumentVisibilityChange(): void {
+  shortIdle.check();
   if (document.hidden) {
     if (largePlayer?.isPictureInPictureActive()) {
       privacyCover?.classList.add("visible");
@@ -658,6 +678,8 @@ function onDocumentVisibilityChange(): void {
 }
 
 function lockPrivacyForBackground(): void {
+  shortIdle.setEnabled(false);
+  silenceFeed();
   userSeeking = false;
   feedPreview?.hide();
   playerMediaSession.clear();
@@ -674,6 +696,12 @@ function lockPrivacyForBackground(): void {
 }
 
 function lockPrivacyScreen(): void {
+  shortIdle.setEnabled(false);
+  silenceFeed();
+  userSeeking = false;
+  feedPreview?.hide();
+  preloader.setPressure(true);
+  window.clearTimeout(warmTimer);
   playerMediaSession.clear();
   if (shell) shell.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
   privacyUnlocked = false;
@@ -681,11 +709,10 @@ function lockPrivacyScreen(): void {
   playback?.update({ privacyUnlocked: false, pausedByUser: true });
   libraryPage?.lockPrivacy();
   const video = largePlayer?.currentVideo() ?? pool?.currentVideo() ?? null;
+  shell?.root.classList.add("privacy-locked");
+  pool?.currentVideo()?.pause();
   if (largePlayer) largePlayer.lockPrivacy();
-  else {
-    shell?.root.classList.add("privacy-locked");
-    video?.pause();
-  }
+  else video?.pause();
 }
 
 function saveLongVideoProgress(mediaId: string, position: number, duration: number, force: boolean): void {
@@ -1027,7 +1054,10 @@ function feedGestureOptions() {
 
 function openLongVideos(): void {
   if (!shell) return;
+  // Do not leave the short feed playing under a list with its timer disabled.
+  lockPrivacyScreen();
   longVideosOpen = true;
+  shortIdle.setEnabled(false);
   window.clearTimeout(warmTimer);
   preloader.setPressure(true);
   playback?.update({ shouldPlay: false });
@@ -1035,6 +1065,8 @@ function openLongVideos(): void {
   const closePlayer = (): void => {
     largePlayer?.destroy();
     largePlayer = null;
+    shortIdle.setEnabled(false);
+    silenceFeed();
     privacyUnlocked = false;
     paused = true;
     shell?.root.classList.add("privacy-locked");
@@ -1627,6 +1659,7 @@ function renderFeed(): void {
     onNav,
   };
   shell = buildShell(handlers);
+  attachIdleActivity(document, shortIdle);
   shell.root.addEventListener("playersheetclose", () => {
     if (openSheetKind === "group-list" || openSheetKind === "group-chooser") {
       groupRequestGeneration += 1;
@@ -1775,6 +1808,7 @@ function renderFeed(): void {
   });
   window.addEventListener("pagehide", () => networkConnection?.removeEventListener("change", updateConnectionSignals));
   window.addEventListener("pageshow", () => {
+    shortIdle.check();
     networkConnection?.addEventListener("change", updateConnectionSignals);
     updateConnectionSignals();
     if (!document.hidden) privacyCover?.classList.remove("visible");
