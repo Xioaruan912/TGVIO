@@ -39,7 +39,7 @@ export function buildMediaActions(handlers: ShellHandlers) {
   );
   const deleteBtn = actionButton(iconStack([["trash", "icon-single"]], 29), "删除", "永久删除当前视频");
   deleteBtn.classList.add("delete-action");
-  const groupBtn = actionButton(iconStack([["library", "icon-single"]], 30), "同组视频", "查看同组视频");
+  const groupBtn = actionButton(iconStack([["library", "icon-single"]], 30), "所在文件夹", "浏览所在文件夹");
   groupBtn.hidden = true;
   groupBtn.addEventListener("click", handlers.onOpenGroup);
   const downloadBtn = actionButton(

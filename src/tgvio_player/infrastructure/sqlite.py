@@ -13,6 +13,7 @@ from typing import AsyncIterator
 from tgvio_player.domain.catalog import CatalogPackage
 from tgvio_player.infrastructure.migration import run_migrations
 from tgvio_player.infrastructure.sqlite_favorites import PlayerFavoriteRepositoryMixin
+from tgvio_player.infrastructure.sqlite_library import PlayerLibraryRepositoryMixin
 
 
 _GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -20,7 +21,7 @@ _MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin):
+class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin, PlayerLibraryRepositoryMixin):
     """Player-owned SQLite catalog. It never opens the Bot state database."""
 
     def __init__(self, path: Path, *, migrations_dir: Path | None = None) -> None:
@@ -321,6 +322,7 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin):
             JOIN media ON media.media_id=ml.media_id
             WHERE ml.media_id=? AND ml.active=1 AND cp.active=1
               AND media.active=1 AND media.kind='video'
+              AND media.media_id NOT IN (SELECT variant_media_id FROM media_variants)
             ORDER BY cp.remote_path
             """,
             (media_id,),
@@ -366,6 +368,7 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin):
             "cp.active=1",
             "media.active=1",
             "media.kind='video'",
+            "media.media_id NOT IN (SELECT variant_media_id FROM media_variants)",
         ]
         params: list[object] = package_ids
         if after_id is not None:

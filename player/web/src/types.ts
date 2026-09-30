@@ -82,3 +82,12 @@ export type PreloadLevel = "strong" | "light" | "random" | "metadata";
 
 /** User's explicit resolution preference. */
 export type QualitySelection = "original" | 480 | 720;
+
+export type LibraryCategory = "all" | "short" | "long";
+export type LibraryDateBasis = "directory_v2" | "directory_legacy_utc" | "unknown" | "mixed";
+export type LibraryDate = { date: string | null; basis: LibraryDateBasis; video_count: number; folder_count: number };
+export type LibraryFolder = { id: string; label: string; date: string | null; date_basis: LibraryDateBasis; video_count: number };
+export type LibraryDatesResponse = { items: LibraryDate[]; total_videos: number };
+export type LibraryFoldersResponse = { items: LibraryFolder[]; total: number };
+export type LibraryVideosResponse = PagedMediaResponse & { total: number; folder: LibraryFolder };
+export type LibraryVideosPage = { items: Clip[]; hasMore: boolean; nextCursor: string | null; total: number; folder: LibraryFolder };

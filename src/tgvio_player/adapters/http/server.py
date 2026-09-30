@@ -22,6 +22,7 @@ from .diagnostics import (
     log_event,
     playback_session,
 )
+from .library import PlayerLibraryHttpMixin
 from .streaming import PlayerHttpStreamingMixin
 from .storage_settings import PlayerStorageSettingsHttpMixin
 
@@ -65,7 +66,7 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin):
+class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin, PlayerLibraryHttpMixin):
     """Small authenticated HTTP boundary around Player-only services.
 
     This adapter intentionally accepts only Player repository IDs. It has no
@@ -111,13 +112,25 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
         self._storage_rate: dict[str, list[float]] = {}
         self._max_streams = max_streams
         self._stream_slots = asyncio.BoundedSemaphore(max_streams)
-        self._max_streams_per_client = max_streams_per_client
+        # A single client must never be able to reserve the whole global budget:
+        # with per-client == global, one browser's swipe storm denies playback to
+        # every other client and to itself. Keep a small headroom for others.
+        self._max_streams_per_client = (
+            min(max_streams_per_client, max(2, max_streams - max(1, max_streams // 5)))
+            if max_streams >= 3
+            else max_streams_per_client
+        )
         self._stream_clients: Counter[str] = Counter()
         self._stream_lock = asyncio.Lock()
         # Speculative preloads must never consume the playback budget. They use
         # a small bounded share of the global slots and are dropped first.
         self._max_preload = max(1, max_streams // 4)
         self._preload_active = 0
+        # Browsers send `Range: bytes=0-1` to discover range support before real
+        # playback. Those capability probes get their own tiny budget instead of a
+        # playback slot, so they can never starve (or amplify) playback capacity.
+        self._max_probe = max(2, max_streams // 4)
+        self._probe_active = 0
         self._foreground_waiters = 0
         self._max_header_size = max_header_size
         self._stream_chunk_size = stream_chunk_size
@@ -154,6 +167,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
         app.router.add_post("/api/v1/auth/logout", self._logout)
         app.router.add_get("/api/v1/feed", self._feed)
         app.router.add_get("/api/v1/random", self._random)
+        self._register_library_routes(app)
         app.router.add_get("/api/v1/videos", self._videos)
         app.router.add_get("/api/v1/groups/{group_id}/videos", self._group_videos)
         app.router.add_get("/api/v1/favorites", self._favorites)
@@ -310,6 +324,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin)
                     "limit": self._max_streams,
                     "active_playback": self.active_playback_streams,
                     "active_preload": self._preload_active,
+                    "active_probe": self._probe_active,
                     "foreground_waiters": self._foreground_waiters,
                     "available": max(0, self._max_streams - occupied),
                     "saturated": occupied >= self._max_streams,

@@ -949,6 +949,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
                     "limit": 2,
                     "active_playback": 2,
                     "active_preload": 0,
+                    "active_probe": 0,
                     "foreground_waiters": 0,
                     "available": 0,
                     "saturated": True,
@@ -1411,3 +1412,116 @@ class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class PlayerStreamCapacityFairnessTests(unittest.IsolatedAsyncioTestCase):
+    """Regression cover for the 2026-09-30 production incident.
+
+    One client held every global playback slot with its own streams, so its own
+    current video was refused (429, ``reason=client_limit``) after a 3s wait.
+    Browsers send ``Range: bytes=0-1`` to discover range support before real
+    playback; those capability probes must never compete for playback capacity.
+    """
+
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = PlayerCatalogRepositorySQLite(Path(self.tmp.name) / "player.sqlite3")
+        await self.repo.open()
+        self.media_id = "a" * 64
+        package = CatalogPackage(
+            "package", "TGVIO/2026-09-22/1", "b" * 64, '"manifest"', '"complete"',
+            (CatalogMedia(self.media_id, "video", 8, "video/mp4", 1080, 1920, 2.0),),
+            (CatalogLocation(self.media_id, "package", "video.mp4", '"etag"'),),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+        self.read_client = FakeReadClient()
+        self.server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            ReadOnlyWebDavAdapter(self.read_client),
+            deleter=FakeDeleteClient(),
+            max_streams=4,
+            max_streams_per_client=4,
+            startup_cache=StartupRangeCache(max_entries=2, max_bytes=8),
+            startup_range_bytes=1,
+        )
+        self.client = TestClient(TestServer(self.server.application()))
+        await self.client.start_server()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _login(self) -> str:
+        response = await self.client.post("/api/v1/auth/login", json={"secret": "s" * 32})
+        self.assertEqual(response.status, 200)
+        return response.cookies["tgvio_player_session"].value
+
+    async def _stream(self, cookie: str, range_header: str, preload: bool = False):
+        headers = {"Range": range_header}
+        if preload:
+            headers["X-TGVIO-Preload"] = "1"
+        return await self.client.get(
+            f"/api/v1/media/{self.media_id}/stream",
+            headers=headers,
+            cookies={"tgvio_player_session": cookie},
+        )
+
+    async def test_range_capability_probe_never_competes_with_playback(self) -> None:
+        cookie = await self._login()
+        held = [await self.server._acquire_stream(f"client-{index}") for index in range(4)]
+        self.assertTrue(all(held))
+        self.assertTrue(self.server.playback_saturated, "precondition: every playback slot is taken")
+        try:
+            response = await self._stream(cookie, "bytes=0-1")
+            self.assertEqual(
+                response.status, 206,
+                "a 2-byte range-support probe must not be refused by playback capacity",
+            )
+            self.assertEqual(await response.read(), b"ab")
+        finally:
+            for index in range(4):
+                await self.server._release_stream(f"client-{index}")
+        self.assertFalse(self.server.playback_saturated)
+
+    async def test_real_playback_still_waits_instead_of_being_mistaken_for_a_probe(self) -> None:
+        cookie = await self._login()
+        for index in range(4):
+            await self.server._acquire_stream(f"client-{index}")
+        try:
+            response = await self._stream(cookie, "bytes=0-3")
+            self.assertEqual(response.status, 429, "a real range still needs a playback slot")
+        finally:
+            for index in range(4):
+                await self.server._release_stream(f"client-{index}")
+
+    async def test_probe_budget_is_bounded_and_reports_its_own_reason(self) -> None:
+        acquired = 0
+        while await self.server._acquire_probe(diagnostics={}):
+            acquired += 1
+            if acquired > 64:
+                self.fail("probe budget is unbounded")
+        self.assertGreaterEqual(acquired, 1)
+        diagnostics: dict[str, object] = {}
+        self.assertFalse(await self.server._acquire_probe(diagnostics=diagnostics))
+        self.assertEqual(diagnostics["reason"], "probe_limit")
+        cookie = await self._login()
+        response = await self._stream(cookie, "bytes=0-1")
+        self.assertEqual(response.status, 429)
+        for _ in range(acquired):
+            await self.server._release_probe()
+
+    async def test_one_client_cannot_reserve_the_whole_global_budget(self) -> None:
+        self.assertLess(
+            self.server._max_streams_per_client, self.server._max_streams,
+            "a single client must not be able to consume every global slot",
+        )
+        for _ in range(self.server._max_streams_per_client):
+            self.assertTrue(await self.server._acquire_stream("monopolist"))
+        self.assertTrue(await self.server._acquire_stream("other-client"))
+        await self.server._release_stream("other-client")
+        for _ in range(self.server._max_streams_per_client):
+            await self.server._release_stream("monopolist")

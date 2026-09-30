@@ -2,6 +2,7 @@ import "../../src/style.css";
 import { buildShell, setControlsVisible, type ShellHandlers } from "../../src/ui";
 import { FeedView } from "../../src/feed";
 import { LargePlayer } from "../../src/large";
+import { LibraryPlayback } from "../../src/library-playback";
 import { IdlePrivacyController } from "../../src/idle-privacy";
 import { setPref } from "../../src/settings";
 import type { Clip } from "../../src/types";
@@ -229,6 +230,65 @@ async function run() {
   check(idleTimers.size === 1, "unlocked constructor arms idle even before actual playing");
   unlocked.destroy();
   check(idleTimers.size === 0, "unlocked constructor controller is cleaned up");
+  const shortSelection = new LargePlayer({...clip, category:"short"}, () => undefined, {idleClock:clock, idleMode:"short"});
+  document.body.append(shortSelection.root);
+  const shortVideo = shortSelection.currentVideo();
+  Object.defineProperty(shortVideo, "paused", { configurable:true, get:()=>false });
+  shortVideo.dispatchEvent(new Event("playing"));
+  now += 60_001;
+  (shortSelection as unknown as {idlePrivacy:IdlePrivacyController}).idlePrivacy.check();
+  check(shortSelection.root.classList.contains("privacy-locked"), "short library selection locks after a minute even when playing");
+  check(shortVideo.muted, "short library idle lock keeps audio muted");
+  shortSelection.destroy();
+  check(idleTimers.size === 0, "short selection cleans its idle timer");
+  // Real LargePlayer + real LibraryPlayback, fake clock/media facts only (not real playback).
+  let owned: LargePlayer | null = null;
+  const mediaFacts = new WeakMap<HTMLVideoElement, {paused:boolean; ended:boolean}>();
+  const capturePlayer = (player: LargePlayer | null) => {
+    owned = player; if (!player) return;
+    const video = player.currentVideo(); const facts = {paused:true, ended:false}; mediaFacts.set(video, facts);
+    Object.defineProperties(video, {
+      paused: {configurable:true, get:()=>facts.paused}, ended: {configurable:true, get:()=>facts.ended},
+      duration: {configurable:true, get:()=>20},
+    });
+    video.play = async () => { facts.paused=false; facts.ended=false; video.dispatchEvent(new Event("playing")); };
+    video.pause = () => { facts.paused=true; video.dispatchEvent(new Event("pause")); };
+  };
+  const current = () => owned!;
+  const endCurrent = () => {
+    const video=current().currentVideo();const facts=mediaFacts.get(video)!;
+    facts.ended=true;facts.paused=true;video.dispatchEvent(new Event("ended"));
+  };
+  const idleCheck = () => (current() as unknown as {idlePrivacy:IdlePrivacyController}).idlePrivacy.check();
+  const queue = new LibraryPlayback([0,1,2,3].map(i=>({...clip,id:String(i).repeat(64)})),
+    {onClose:()=>undefined,onPlayer:capturePlayer},{idleClock:clock});
+  document.body.append(queue.root);
+  await current().currentVideo().play();
+  const oldPlayer = current(); const oldNext = oldPlayer.root.querySelector<HTMLButtonElement>(".library-play-next")!;
+  now+=20_000;endCurrent();await current().currentVideo().play();
+  now+=20_000;endCurrent();await current().currentVideo().play();
+  check(current().root.dataset.playlistMedia===String(2).repeat(64), "natural ends advance only selected items");
+  oldNext.click();oldPlayer.currentVideo().dispatchEvent(new Event("ended"));
+  check(current().root.dataset.playlistMedia===String(2).repeat(64), "old end and navigation cannot advance current selection");
+  now+=20_001;idleCheck();
+  check(current().root.classList.contains("privacy-locked"), "continuous short clips lock across 60 seconds, not per player");
+  const lockedPlayer=current(); now+=60_000;
+  lockedPlayer.root.querySelector<HTMLButtonElement>(".large-privacy-play")!.click();
+  check(!lockedPlayer.root.classList.contains("privacy-locked"), "explicit unlock resets an inherited expired deadline before checking");
+  check(lockedPlayer.currentVideo().muted, "explicit library unlock remains muted");
+  now+=59_999;idleCheck();check(!lockedPlayer.root.classList.contains("privacy-locked"), "unlock grants a full fresh minute");
+  now+=1;idleCheck();check(lockedPlayer.root.classList.contains("privacy-locked"), "unlock minute still expires");
+  queue.destroy();check(idleTimers.size===0, "library destruction clears all idle timers");
+  oldNext.click();check(owned===null, "destroyed library cannot create another player");
+  const mixed = new LibraryPlayback(["short","long","short"].map((category,i)=>({...clip,id:String(i+4).repeat(64),category:category as "short"|"long"})),
+    {onClose:()=>undefined,onPlayer:capturePlayer},{idleClock:clock});
+  document.body.append(mixed.root);await current().currentVideo().play();
+  now+=20_000;endCurrent();await current().currentVideo().play();
+  now+=300_000;idleCheck();check(!current().root.classList.contains("privacy-locked"), "short-to-long actual playing facts preserve long exemption");
+  endCurrent();await current().currentVideo().play();
+  now+=59_999;idleCheck();check(!current().root.classList.contains("privacy-locked"), "long-to-short grants full stop grace");
+  now+=1;idleCheck();check(current().root.classList.contains("privacy-locked"), "long stop grace expires across a short swap");
+  mixed.destroy();check(idleTimers.size===0, "mixed queue leaves no idle timers");
   shell.root.remove();
 }
 run().then(() => finish(true)).catch(error => finish(false, String(error)));

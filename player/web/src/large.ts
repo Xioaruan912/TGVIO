@@ -3,7 +3,7 @@ import { favoriteMutations } from "./favorite-service";
 import { requestAudioEnable } from "./audio-warning";
 import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
-import { IdlePrivacyController, attachIdleActivity } from "./idle-privacy";
+import { IdlePrivacyController, attachIdleActivity, type Clock, type IdleActivityWindow } from "./idle-privacy";
 import { exitPrivacyPresentation } from "./privacy-presentation";
 import { icon } from "./icons";
 import { NetworkMeter } from "./net";
@@ -103,7 +103,13 @@ export class LargePlayer {
     onClose: () => void,
     options: {
       privacyLocked?: boolean;
-      idleClock?: ConstructorParameters<typeof IdlePrivacyController>[0]["clock"];
+      idleMode?: "short" | "long";
+      onEnded?: () => void;
+      idleClock?: Clock;
+      /** Share one user deadline across successive players (playlist auto-advance). */
+      idleWindow?: IdleActivityWindow;
+      /** false adopts the shared deadline instead of restarting the minute on construction. */
+      idleResetOnEnable?: boolean;
       onUnlock?: () => void;
       onPrivacyLock?: () => void;
       onProgress?: (position: number, duration: number, force: boolean) => void;
@@ -119,8 +125,10 @@ export class LargePlayer {
     this.onDeleted = options.onDeleted ?? (() => undefined);
     this.startAt = Math.max(0, options.startAt ?? 0);
     this.idlePrivacy = new IdlePrivacyController({
-      mode: "long",
+      mode: options.idleMode ?? "long",
       clock: options.idleClock,
+      activityWindow: options.idleWindow,
+      resetActivityOnEnable: options.idleResetOnEnable,
       onLock: () => {
         if (this.destroyed) return;
         this.lockPrivacy();
@@ -316,7 +324,10 @@ export class LargePlayer {
     });
     this.video.addEventListener("timeupdate", () => this.updateProgress());
     this.video.addEventListener("pause", () => this.flushProgress());
-    this.video.addEventListener("ended", () => this.flushProgress());
+    this.video.addEventListener("ended", () => {
+      this.flushProgress();
+      if (!this.destroyed && !this.sourceRestore && !this.root.classList.contains("privacy-locked") && this.video.ended) options.onEnded?.();
+    });
     this.video.addEventListener("loadstart", () => this.playback.update({ hasFrame: false }));
     this.video.addEventListener("waiting", () => this.playback.update({ networkWaiting: true }));
     this.video.addEventListener("stalled", () => {
@@ -443,9 +454,9 @@ export class LargePlayer {
     if (options.privacyLocked) this.lockPrivacy();
     else this.idlePrivacy.setEnabled(true);
     this.video.src = this.resolveUrl();
-    if (!options.privacyLocked) this.activateMediaSession();
+    if (!this.root.classList.contains("privacy-locked")) this.activateMediaSession();
     if (prefs.netSpeed) this.meter.start();
-    if (!options.privacyLocked) void this.video.play().catch(() => undefined);
+    if (!this.root.classList.contains("privacy-locked")) void this.video.play().catch(() => undefined);
     document.addEventListener("visibilitychange", this.onVisibility);
     this.showControls();
   }
@@ -521,7 +532,8 @@ export class LargePlayer {
 
   unlockPrivacy(resumePlayback: boolean): void {
     if (this.destroyed) return;
-    this.idlePrivacy.setEnabled(true);
+    // An explicit unlock is real user activity; reset before checking an inherited deadline.
+    this.idlePrivacy.unlock();
     this.root.classList.remove("privacy-locked");
     this.onUnlock();
     if (this.sourceRestore) this.sourceRestore.resumeIntent = resumePlayback;
@@ -716,12 +728,15 @@ export class LargePlayer {
         this.onDeleted(result);
         return;
       }
+      // A destroyed player must not resurrect its source or touch detached controls.
+      if (this.destroyed) return;
       this.retryButton.textContent = result.deletedCopies > 0
         ? `已删除 ${result.deletedCopies} 份，${result.failedCopies} 份失败，点此恢复播放`
         : "删除失败，点此恢复播放";
       this.retryButton.hidden = false;
       this.video.src = this.resolveUrl();
     } catch {
+      if (this.destroyed) return;
       this.retryButton.textContent = "删除失败，点此恢复播放";
       this.retryButton.hidden = false;
       this.video.src = this.resolveUrl();

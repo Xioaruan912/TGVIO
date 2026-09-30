@@ -19,6 +19,9 @@ _FASTSTART_WAIT_SECONDS = 2.0
 _FOREGROUND_STREAM_WAIT_SECONDS = 3.0
 _STREAM_SLOT_POLL_SECONDS = 0.025
 _PRELOAD_HEADER = "X-TGVIO-Preload"
+# Chromium (and several other players) ask for two bytes to discover range
+# support before real playback. Such a probe is a capability check, not playback.
+_CAPABILITY_PROBE_BYTES = 2
 _DOWNLOAD_FLAG_VALUES = frozenset({"1", "true", "yes", "on"})
 # Only whitelisted media types may contribute a filename extension. Anything
 # unrecognised falls back to ``.bin`` rather than echoing a client value.
@@ -143,18 +146,31 @@ class PlayerHttpStreamingMixin:
                     self._faststart.schedule(media_id, details)
         client = resolve_client(request)
         preload = request.headers.get(_PRELOAD_HEADER) == "1"
-        capacity = {}
-        if not await self._acquire_stream(client, preload=preload, diagnostics=capacity):
+        probe = (
+            not preload
+            and plan.byte_range is not None
+            and plan.byte_range.start == 0
+            and plan.byte_range.length <= _CAPABILITY_PROBE_BYTES
+        )
+        mode = "probe" if probe else "preload" if preload else "foreground"
+        capacity: dict[str, object] = {}
+        admitted = (
+            await self._acquire_probe(diagnostics=capacity)
+            if probe
+            else await self._acquire_stream(client, preload=preload, diagnostics=capacity)
+        )
+        if not admitted:
             log_event(
                 "stream_rejected",
                 request_id=request.get("player_request_id"),
                 media=fingerprint(media_id),
                 client=client_fingerprint(client),
-                mode="preload" if preload else "foreground",
+                mode=mode,
                 reason=capacity.get("reason", "capacity_timeout"),
                 wait_ms=capacity.get("wait_ms", 0),
                 active_playback=self.active_playback_streams,
                 active_preload=self._preload_active,
+                active_probe=self._probe_active,
                 foreground_waiters=self._foreground_waiters,
                 global_limit=self._max_streams,
                 client_limit=self._max_streams_per_client,
@@ -191,7 +207,10 @@ class PlayerHttpStreamingMixin:
                     return await self._stream_plain(request, media_id, location, details, plan, prefetch)
             return await self._stream_plain(request, media_id, location, details, plan, prefetch)
         finally:
-            await self._release_stream(client, preload=preload)
+            if probe:
+                await self._release_probe()
+            else:
+                await self._release_stream(client, preload=preload)
 
     async def _stream_plain(
         self,
@@ -533,6 +552,21 @@ class PlayerHttpStreamingMixin:
         finally:
             async with self._stream_lock:
                 self._foreground_waiters = max(0, self._foreground_waiters - 1)
+
+    async def _acquire_probe(self, *, diagnostics: dict[str, object] | None = None) -> bool:
+        """Capability probes use their own tiny budget, never a playback slot."""
+        async with self._stream_lock:
+            if self._probe_active >= self._max_probe:
+                if diagnostics is not None:
+                    diagnostics.update(reason="probe_limit", wait_ms=0)
+                return False
+            self._probe_active += 1
+            return True
+
+    async def _release_probe(self) -> None:
+        async with self._stream_lock:
+            if self._probe_active > 0:
+                self._probe_active -= 1
 
     async def _release_stream(self, client: str, *, preload: bool = False) -> None:
         async with self._stream_lock:

@@ -1,4 +1,4 @@
-import type { ArchiveGroup, Clip, FeedResponse, GroupVideosResponse, LongVideoProgressResponse, MediaDto, PagedMediaResponse, PreloadLevel, RandomVideoListResponse, VideoListResponse } from "./types";
+import type { LibraryCategory, LibraryDatesResponse, LibraryFoldersResponse, LibraryVideosResponse, LibraryVideosPage, ArchiveGroup, Clip, FeedResponse, GroupVideosResponse, LongVideoProgressResponse, MediaDto, PagedMediaResponse, PreloadLevel, RandomVideoListResponse, VideoListResponse } from "./types";
 
 export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
 
@@ -156,6 +156,26 @@ class PlayerApi {
       hasMore: payload.has_more,
       total: payload.total,
     };
+  }
+
+  async libraryDates(signal?: AbortSignal): Promise<LibraryDatesResponse> {
+    if (MOCK_MODE) return { items: [], total_videos: 0 };
+    return this.request<LibraryDatesResponse>("/api/v1/library/dates", { signal });
+  }
+
+  async libraryFolders(query: { date?: string; mediaId?: string }, signal?: AbortSignal): Promise<LibraryFoldersResponse> {
+    if (MOCK_MODE) return { items: [], total: 0 };
+    const params = new URLSearchParams();
+    if (query.mediaId) params.set("media_id", query.mediaId);
+    else if (query.date) params.set("date", query.date);
+    return this.request<LibraryFoldersResponse>(`/api/v1/library/folders?${params}`, { signal });
+  }
+
+  async libraryVideos(folderId: string, category: LibraryCategory, limit: number, cursor: string | null, signal?: AbortSignal): Promise<LibraryVideosPage> {
+    const params = new URLSearchParams({ folder_id: folderId, category, limit: String(limit) });
+    if (cursor) params.set("cursor", cursor);
+    const payload = await this.request<LibraryVideosResponse>(`/api/v1/library/videos?${params}`, { signal });
+    return { items: payload.items.map(clipFromMedia), hasMore: payload.has_more, nextCursor: payload.next_cursor, total: payload.total, folder: payload.folder };
   }
 
   async favorites(): Promise<Clip[]> {

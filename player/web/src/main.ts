@@ -12,6 +12,7 @@ import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
 import { LargePlayer } from "./large";
 import { VideoLibraryPage } from "./library";
+import { LibraryPlayback } from "./library-playback";
 import { StorageSettingsPage } from "./settings-page";
 import { buildSettingsView } from "./views/settings-view";
 import { ViewLifecycle } from "./views/view-lifecycle";
@@ -29,7 +30,7 @@ import { icon } from "./icons";
 import { installController } from "./install";
 import { playerMediaSession } from "./media-session";
 import { qualityLabel, qualityOptions, resolveStreamUrl } from "./quality";
-import type { ArchiveGroup, Clip, QualitySelection } from "./types";
+import type { Clip, QualitySelection } from "./types";
 import {
   buildError,
   buildLogin,
@@ -109,8 +110,6 @@ let lastActiveClipId = "";
 let lastActiveIndex = -1;
 let autoplayBlocked = false;
 let openSheetKind: string | null = null;
-let groupRequestController: AbortController | null = null;
-let groupRequestGeneration = 0;
 let userSeeking = false;
 let seekControl: ReturnType<typeof bindSeekControl> | null = null;
 let longVideosOpen = false;
@@ -299,7 +298,7 @@ function applyActive(index: number): void {
   if (current.favorite) favorites.add(current.id);
   else favorites.delete(current.id);
   setFavoriteButton(shell!, current.favorite);
-  shell!.groupBtn.hidden = contextFeed !== null || current.groups.length === 0;
+  shell!.groupBtn.hidden = false;
   scheduleWarm();
   armStallGuard(current.id);
   if (feedMeter) {
@@ -948,6 +947,9 @@ async function goRandom(): Promise<void> {
  * Transient failures never permanently blacklist a clip.
  */
 async function handleMediaError(clip: Clip): Promise<void> {
+  // The feed only owns playback while no library view or large player overlays it.
+  // A late retry must never resume the home feed underneath another owner.
+  const feedOwnsPlayback = (): boolean => !libraryPage && !longVideosOpen && !largePlayer;
     adaptiveCache.update({ playbackPressure: true });
     preloader.setPressure(true);
   const attempts = errorRetries.get(clip.id) ?? 0;
@@ -969,7 +971,7 @@ async function handleMediaError(clip: Clip): Promise<void> {
     retry: attempts,
     probeStatus: status,
   });
-  if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
+  if (!feedOwnsPlayback() || feedView?.clipAt(activeIndex)?.id !== clip.id) return;
   if (shouldRetryMediaError(status, attempts)) {
     errorRetries.set(clip.id, attempts + 1);
     playback?.update({ mediaErrored: false });
@@ -982,7 +984,7 @@ async function handleMediaError(clip: Clip): Promise<void> {
     });
     toast(shell!, "网络波动，正在重试");
     window.setTimeout(() => {
-      if (feedView?.clipAt(activeIndex)?.id !== clip.id) return;
+      if (!feedOwnsPlayback() || feedView?.clipAt(activeIndex)?.id !== clip.id) return;
       pool?.retryCurrent();
     }, 700 * (attempts + 1));
     return;
@@ -1149,22 +1151,6 @@ function openLongVideos(): void {
   setActiveNav(shell, "long");
 }
 
-function openClip(clip: Clip): void {
-  if (!feedView) return;
-  let index = feedView.indexOf(clip.id);
-  if (index < 0 && !seenIds.has(clip.id)) {
-    seenIds.add(clip.id);
-    clips.push(clip);
-    feedView.setClips(clips);
-    index = clips.length - 1;
-  }
-  if (index < 0) return;
-  closeSheet(shell!);
-  openSheetKind = null;
-  setActiveNav(shell!, "home");
-  feedView.scrollToIndex(index, false);
-  commitActive(index);
-}
 
 async function ensureContextPage(minimum: number): Promise<void> {
   const current = contextFeed;
@@ -1199,24 +1185,16 @@ async function ensureContextPage(minimum: number): Promise<void> {
     feedView.appendTerminalPage("这里还没有视频，点击返回", "feed-terminal", leaveContext);
     return;
   }
-  const label = current.mode === "group" ? "这组视频已看完，已返回短视频" : "收藏已刷完";
-  feedView.appendTerminalPage(label);
+  feedView.appendTerminalPage("收藏已刷完");
 }
 
-async function enterContext(mode: "group" | "favorites", group?: ArchiveGroup): Promise<void> {
+async function enterContext(mode: "favorites"): Promise<void> {
   if (!shell || !feedView || !pool) return;
   if (!contextFeed) savedHomeIndex = activeIndex;
   contextFeed?.dispose();
   const context = new ContextFeed(
     mode,
-    async (cursor, signal) => {
-      if (mode === "group" && group) {
-        const page = await api.groupVideos(group.id, FEED_BATCH, cursor, signal);
-        return page;
-      }
-      return api.favoritePage(FEED_BATCH, cursor, signal);
-    },
-    group?.id ?? null,
+    (cursor, signal) => api.favoritePage(FEED_BATCH, cursor, signal),
   );
   contextFeed = context;
   lockPrivacyScreen();
@@ -1228,8 +1206,8 @@ async function enterContext(mode: "group" | "favorites", group?: ArchiveGroup): 
   openSheetKind = null;
   setActiveNav(shell, mode === "favorites" ? "favorites" : "home");
   shell.contextBackBtn.hidden = false;
-  shell.contextBackBtn.textContent = mode === "favorites" ? "返回短视频" : `返回 ${group?.label ?? "短视频"}`;
-  shell.groupBtn.hidden = true;
+  shell.contextBackBtn.textContent = "返回短视频";
+  shell.groupBtn.hidden = false;
   shell.shuffleBtn.hidden = true;
   const loaded = await context.loadFirstPage();
   if (contextFeed !== context) return;
@@ -1261,138 +1239,84 @@ function leaveContext(): void {
   toast(shell!, "已返回短视频");
 }
 
-function openGroupChooser(): void {
+function openCurrentFolder(): void {
   const clip = feedView?.clipAt(activeIndex);
-  const groups = clip?.groups ?? [];
-  if (!shell || !groups.length) return;
-  if (groups.length === 1) {
-    void openGroupList(groups[0]);
-    return;
-  }
-  openSheetKind = "group-chooser";
-  openSheet(shell, "选择归属日期", groups.map((group) => sheetRow({
-    title: group.label,
-    sub: "查看并加入当前播放队列",
-    iconName: "play-small",
-    onPick: () => void openGroupList(group),
-  })));
+  if (clip) openLibrary({ mediaId: clip.id });
 }
 
-async function openGroupList(group: ArchiveGroup): Promise<void> {
-  if (!shell || !feedView || contextFeed) return;
-  groupRequestController?.abort();
-  const controller = new AbortController();
-  groupRequestController = controller;
-  const generation = ++groupRequestGeneration;
-  const items: Clip[] = [];
-  let cursor: string | null = null;
-  let hasMore = true;
-  let loading = false;
-  let failed = false;
-
-  const render = (): void => {
-    if (!shell || generation !== groupRequestGeneration || openSheetKind !== "group-list") return;
-    const scrollTop = shell.sheetBody.scrollTop;
-    const body: Node[] = [
-      sheetNote("点选视频后会把同组内容接到当前视频后面；上下滑动可继续观看或回到原位置。"),
-    ];
-    if (!items.length && loading) {
-      body.push(sheetRow({ title: "正在加载同组视频…" }));
-    } else if (!items.length && failed) {
-      body.push(sheetRow({ title: "加载失败，点击重试", onPick: () => void loadMore() }));
-    } else if (!items.length && hasMore) {
-      body.push(sheetRow({ title: "加载同组视频", onPick: () => void loadMore() }));
-    } else if (!items.length) {
-      body.push(sheetRow({ title: "这个分组里还没有可播放的视频" }));
-    }
-    for (const item of items) {
-      body.push(sheetRow({
-        title: `视频 #${shortId(item.id)}`,
-        sub: clipMeta(item),
-        note: (feedView?.indexOf(item.id) ?? -1) >= 0 ? "已在播放队列" : "接在当前视频后面",
-        iconName: "play-small",
-        onPick: () => selectGroupItem(item),
-      }));
-    }
-    if (loading && items.length) body.push(sheetRow({ title: "正在加载…" }));
-    else if (failed && items.length) {
-      body.push(sheetRow({ title: "加载失败，点击重试", onPick: () => void loadMore() }));
-    } else if (hasMore && items.length) {
-      body.push(sheetRow({ title: "加载更多同组视频", onPick: () => void loadMore() }));
-    }
-    openSheet(shell, `同组视频 · ${group.label}`, body);
-    shell.sheetBody.scrollTop = scrollTop;
-  };
-
-  const selectGroupItem = (selected: Clip): void => {
-    if (!shell || !feedView) return;
-    const ordered = [selected, ...items.filter((item) => item.id !== selected.id)];
-    let insertAfter = activeIndex;
-    for (const item of ordered) {
-      const existingIndex = feedView.indexOf(item.id);
-      if (existingIndex >= 0) continue;
-      insertAfter = feedView.insertAfter(insertAfter, item);
-      seenIds.add(item.id);
-    }
-    const target = feedView.indexOf(selected.id);
-    closeSheet(shell);
-    openSheetKind = null;
-    setActiveNav(shell, "home");
-    if (target >= 0 && target !== activeIndex) feedView.scrollToIndex(target, true);
-    else if (target === activeIndex) toast(shell, "当前播放的就是这条视频");
-  };
-
-  const loadMore = async (): Promise<void> => {
-    if (loading || !hasMore || controller.signal.aborted) return;
-    loading = true;
-    failed = false;
-    render();
-    try {
-      const page = await api.groupVideos(group.id, FEED_BATCH, cursor, controller.signal);
-      if (generation !== groupRequestGeneration || controller.signal.aborted) return;
-      const known = new Set(items.map((item) => item.id));
-      for (const item of page.items) {
-        if (!known.has(item.id)) {
-          known.add(item.id);
-          items.push(item);
-        }
-      }
-      cursor = page.nextCursor;
-      hasMore = page.hasMore;
-    } catch {
-      if (generation !== groupRequestGeneration || controller.signal.aborted) return;
-      failed = true;
-    } finally {
-      loading = false;
-      render();
-    }
-  };
-
-  openSheetKind = "group-list";
-  render();
-  await loadMore();
-}
-
-function openLibrary(): void {
+function openLibrary(options: { mediaId?: string } = {}): void {
   if (!shell) return;
   contentView.clear();
   lockPrivacyScreen();
   closeSheet(shell);
+  const originFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+  const header = shell.root.querySelector<HTMLElement>(".app-header");
+  const headerWasInert = header?.inert ?? false;
+  if (header) header.inert = true;
+  let restoreOriginFocus = false;
   let page: VideoLibraryPage | null = null;
+  let selectedPlayback: LibraryPlayback | null = null;
+  const closePlayback = (): void => {
+    const wasPlaying = selectedPlayback !== null;
+    selectedPlayback?.destroy();
+    selectedPlayback = null;
+    if (shell) {
+      shell.root.inert = false;
+      shell.viewport.inert = true;
+    }
+    if (wasPlaying) page?.setPlaybackActive(false);
+    silenceFeed();
+    privacyUnlocked = false;
+    paused = true;
+    shortIdle.setEnabled(false);
+    shell?.root.classList.add("privacy-locked");
+    playback?.update({ privacyUnlocked: false, pausedByUser: true, shouldPlay: false });
+    adaptiveCache.update({ playbackPressure: false });
+    preloader.setPressure(true);
+  };
   page = new VideoLibraryPage(
-    clip => { contentView.clear(); openClip(clip); },
-    () => contentView.clear(),
+    selected => {
+      if (!page || !selected.length) return;
+      closePlayback();
+      page.setPlaybackActive(true);
+      shell!.root.inert = true;
+      adaptiveCache.update({ playbackPressure: true });
+      selectedPlayback = new LibraryPlayback(selected, {
+        onClose: closePlayback,
+        onPlayer: player => { largePlayer = player; },
+        onProgress: (clip, position, duration, force) => {
+          if (clip.category === "long") saveLongVideoProgress(clip.id, position, duration, force);
+        },
+        onDeleted: clip => {
+          purgeClientMedia(clip.id);
+          page?.removeMedia(clip.id);
+          feedView?.replaceClips(activeClips());
+          activeIndex = Math.min(activeIndex, Math.max(0, activeClips().length - 1));
+          lastActiveClipId = "";
+        },
+      });
+      document.body.append(selectedPlayback.root);
+      selectedPlayback.root.querySelector<HTMLButtonElement>(".large-back")?.focus({ preventScroll: true });
+    },
+    () => { restoreOriginFocus = true; contentView.clear(); },
+    options,
   );
   libraryPage = page;
   contentView.activate(() => {
+    closePlayback();
     page?.destroy();
     if (libraryPage === page) libraryPage = null;
     page = null;
     if (shell) shell.viewport.inert = false;
-    setActiveNav(shell!, "home");
+    if (header) header.inert = headerWasInert;
+    preloader.setPressure(false);
+    setActiveNav(shell!, contextFeed?.mode === "favorites" ? "favorites" : "home");
+    if (activeClips().length) applyActive(activeIndex);
+    if (restoreOriginFocus && originFocus?.isConnected && !originFocus.closest("[inert]")) originFocus.focus({ preventScroll: true });
   });
   shell.viewport.inert = true;
   document.body.appendChild(page.root);
+  page.root.querySelector<HTMLButtonElement>(".library-header button")?.focus({ preventScroll: true });
   setActiveNav(shell, "library");
 }
 
@@ -1528,7 +1452,7 @@ function renderFeed(): void {
     onToggleSound: toggleSound,
     onShuffle: () => void goRandom(),
     onPrivacyLock: lockPrivacyScreen,
-    onOpenGroup: openGroupChooser,
+    onOpenGroup: openCurrentFolder,
     onBackFromContext: leaveContext,
     onRetryPlayback: () => {
       playback?.update({ mediaErrored: false, autoplayBlocked: false });
@@ -1540,12 +1464,8 @@ function renderFeed(): void {
   shell = buildShell(handlers);
   attachIdleActivity(document, shortIdle);
   shell.root.addEventListener("playersheetclose", () => {
-    if (openSheetKind === "group-list" || openSheetKind === "group-chooser") {
-      groupRequestGeneration += 1;
-      groupRequestController?.abort();
-      groupRequestController = null;
-      openSheetKind = null;
-    }
+    openSheetKind = null;
+    if (shell && !libraryPage && !longVideosOpen) setActiveNav(shell, contextFeed?.mode === "favorites" ? "favorites" : "home");
   });
   if (!privacyUnlocked) shell.root.classList.add("privacy-locked");
   app.replaceChildren(shell.root);
@@ -1629,10 +1549,6 @@ function renderFeed(): void {
   feedView.onSettle = (index) => {
     const current = contextFeed;
     if (current && index === feedView?.terminalIndex) {
-      if (current.mode === "group" && !current.hasMore && !current.error) {
-        leaveContext();
-        toast(shell!, "这组视频已看完，已返回短视频");
-      }
       return;
     }
     commitActive(index);

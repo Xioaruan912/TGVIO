@@ -86,3 +86,9 @@
 }
 @media (max-width: 359px) { .large-controls { padding-inline: 12px; } .large-action-row { gap: 6px; } .large-btn { width: 44px; min-width: 44px; height: 48px; } .large-title { font-size: 12px; } }
 @media (hover: hover) { .large-btn:hover, .long-row:hover { background: var(--sky100); } }
+
+.library-playback { display: contents; }
+.library-playback-nav { display: grid; grid-template-columns: auto minmax(24px,1fr) auto auto; gap: 6px; align-items: center; border-top: 1px solid var(--line); padding-top: 6px; }
+.library-playback-nav button { min-width: 44px; min-height: 44px; padding: 6px 10px; border-radius: 12px; color: var(--sky700); background: var(--sky50); font-size: 12px; }
+.library-playback-nav button:disabled { opacity: .45; }
+.library-play-position { min-width: 0; font-size: 11px; color: var(--muted); text-align: center; }

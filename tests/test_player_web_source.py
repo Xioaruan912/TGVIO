@@ -6,27 +6,58 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 class PlayerContextFeedSourceTests(unittest.TestCase):
-    def test_group_action_and_favorites_enter_swipe_contexts(self) -> None:
+    def test_folder_action_and_favorites_have_separate_owners(self) -> None:
         ui = (ROOT / "player/web/src/ui.ts").read_text(encoding="utf-8")
         main = (ROOT / "player/web/src/main.ts").read_text(encoding="utf-8")
         actions = (ROOT / "player/web/src/components/media-actions.ts").read_text(encoding="utf-8")
         self.assertIn("buildMediaActions(handlers)", ui)
-        self.assertIn('"查看同组视频"', actions)
-        self.assertIn('onOpenGroup: openGroupChooser', main)
+        self.assertIn('"浏览所在文件夹"', actions)
+        self.assertIn('onOpenGroup: openCurrentFolder', main)
         self.assertIn('void enterContext("favorites")', main)
         self.assertNotIn("async function openFavorites", main)
 
-    def test_group_completion_and_retry_are_separate_states(self) -> None:
+    def test_selected_playback_never_inserts_an_entire_group_into_home(self) -> None:
         main = (ROOT / "player/web/src/main.ts").read_text(encoding="utf-8")
-        self.assertIn("这组视频已看完，已返回短视频", main)
+        self.assertNotIn("function openGroupList", main)
+        self.assertNotIn("feedView.insertAfter", main)
+        self.assertIn("new LibraryPlayback", main)
         self.assertIn("加载失败，点击重试", main)
-        self.assertIn("current.hasMore && !current.error", main)
+        self.assertIn("page?.setPlaybackActive(false)", main)
 
     def test_context_requests_abort_and_deduplicate_old_pages(self) -> None:
         context = (ROOT / "player/web/src/context-feed.ts").read_text(encoding="utf-8")
         self.assertIn("this.controller.abort()", context)
         self.assertIn("requestGeneration !== this.generation", context)
         self.assertIn("if (!known.has(clip.id))", context)
+
+    def test_playback_owners_never_lose_or_resurrect_control(self) -> None:
+        main = (ROOT / "player/web/src/main.ts").read_text(encoding="utf-8")
+        large = (ROOT / "player/web/src/large.ts").read_text(encoding="utf-8")
+        playback = (ROOT / "player/web/src/library-playback.ts").read_text(encoding="utf-8")
+        # A late feed retry must respect the current library/large-player owner.
+        self.assertIn("const feedOwnsPlayback = (): boolean => !libraryPage && !longVideosOpen && !largePlayer;", main)
+        self.assertEqual(main.count("!feedOwnsPlayback()"), 2)
+        # A destroyed player must not resurrect its source after an awaited delete.
+        self.assertIn("if (this.destroyed) return;", large)
+        # Only the live playlist player may return to selection after a delete.
+        self.assertIn("if (this.closed || this.player !== player) return;", playback)
+
+
+class PlayerLibraryIdleDeadlineSourceTests(unittest.TestCase):
+    """Automatic playlist advances must not restart the 60s privacy minute."""
+
+    def test_players_share_one_real_deadline(self) -> None:
+        idle = (ROOT / "player/web/src/idle-privacy.ts").read_text(encoding="utf-8")
+        large = (ROOT / "player/web/src/large.ts").read_text(encoding="utf-8")
+        playback = (ROOT / "player/web/src/library-playback.ts").read_text(encoding="utf-8")
+        self.assertIn("export class IdleActivityWindow", idle)
+        self.assertIn("resetActivityOnEnable", idle)
+        self.assertIn("activityWindow: options.idleWindow", large)
+        self.assertIn("resetActivityOnEnable: options.idleResetOnEnable", large)
+        self.assertIn("idleWindow: this.idleWindow", playback)
+        self.assertIn("idleResetOnEnable: false", playback)
+        self.assertEqual(playback.count("this.idleWindow.touch()"), 2)
+        self.assertIn("this.idlePrivacy.activity()", large)
 
 
 class PlayerDownloadAndTailSourceTests(unittest.TestCase):
