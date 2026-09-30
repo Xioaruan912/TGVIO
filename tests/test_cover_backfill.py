@@ -10,6 +10,7 @@ from tgvio.application.cover_backfill import (
     build_covers_index,
     cover_relpath_for,
     parse_covers_index,
+    plan_sidecar_writes,
     targets_from_manifest,
 )
 
@@ -93,6 +94,39 @@ class CoverBackfillTests(unittest.IsolatedAsyncioTestCase):
         second = cover_relpath_for("media/dup.mov", taken)
         self.assertEqual(first, "cover/dup-cover.jpg")
         self.assertEqual(second, "cover/dup-cover-2.jpg")
+
+    async def test_the_index_is_written_last_and_only_for_uploaded_covers(self) -> None:
+        async def frame(_source: str) -> bytes | None:
+            return b"jpeg"
+
+        empty = await CoverBackfill(frame).run([])
+        self.assertEqual(plan_sidecar_writes("TGVIO/2026/09/22/pkg", empty), ())
+
+        result = await CoverBackfill(frame).run(self._targets(2))
+        writes = plan_sidecar_writes("TGVIO/2026/09/22/pkg/", result)
+        self.assertEqual([write.role for write in writes], ["cover", "cover", "index"])
+        self.assertEqual(
+            [write.relpath for write in writes],
+            [
+                "TGVIO/2026/09/22/pkg/cover/000__clip-cover.jpg",
+                "TGVIO/2026/09/22/pkg/cover/001__clip-cover.jpg",
+                "TGVIO/2026/09/22/pkg/covers.json",
+            ],
+        )
+        parsed = parse_covers_index(writes[-1].payload)
+        self.assertEqual(sorted(parsed), ["media/000__clip.mp4", "media/001__clip.mp4"])
+
+    async def test_a_resumed_run_produces_byte_identical_writes(self) -> None:
+        async def frame(_source: str) -> bytes | None:
+            return b"jpeg"
+
+        first = plan_sidecar_writes("pkg", await CoverBackfill(frame).run(self._targets(2)))
+        second = plan_sidecar_writes("pkg", await CoverBackfill(frame).run(self._targets(2)))
+        self.assertEqual(
+            [(write.relpath, write.payload) for write in first],
+            [(write.relpath, write.payload) for write in second],
+            "a resumed run must not rewrite the index differently",
+        )
 
     def test_targets_are_only_videos_without_an_archive_time_cover(self) -> None:
         manifest = {

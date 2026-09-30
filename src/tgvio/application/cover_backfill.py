@@ -151,6 +151,49 @@ def targets_from_manifest(manifest: Mapping[str, object]) -> tuple[BackfillTarge
     return tuple(targets)
 
 
+@dataclass(frozen=True)
+class SidecarWrite:
+    """One upload against an already committed package."""
+
+    relpath: str
+    payload: bytes
+    role: str  # "cover" | "index"
+
+
+def plan_sidecar_writes(
+    package_remote_path: str,
+    result: BackfillResult,
+) -> tuple[SidecarWrite, ...]:
+    """Order the sidecar uploads: every cover first, the index **last**.
+
+    A reader must never see an index that points at a cover the writer has not
+    uploaded yet, so the index is only ever the final write. The payload is
+    canonical JSON, so a resumed run rewrites it byte-identically instead of
+    changing key order.
+    """
+    if not result.covers:
+        return ()
+    root = package_remote_path.rstrip("/")
+    writes = [
+        SidecarWrite(
+            relpath=f"{root}/{cover.cover_relpath}",
+            payload=cover.payload,
+            role="cover",
+        )
+        for cover in sorted(result.covers, key=lambda item: item.cover_relpath)
+    ]
+    index = json.dumps(
+        build_covers_index(result.covers),
+        ensure_ascii=False,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode()
+    writes.append(
+        SidecarWrite(relpath=f"{root}/{COVERS_INDEX_NAME}", payload=index, role="index")
+    )
+    return tuple(writes)
+
+
 class CoverBackfill:
     """Sample at most one bounded frame per archived video, resumably."""
 
