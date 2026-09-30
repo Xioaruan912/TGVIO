@@ -28,6 +28,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
   let moved = false;
   let longActive = false;
   let scrubbing = false;
+  let direction: "horizontal" | "vertical" | null = null;
   let startX = 0;
   let startY = 0;
   let startAt = 0;
@@ -39,12 +40,13 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
   let tapTimer = 0;
   let lastTapAt = 0;
   let lastTapX = 0;
+  let lastTapDirection: "backward" | "forward" | null = null;
 
   const clearLong = () => {
     window.clearTimeout(longTimer);
     longTimer = 0;
   };
-  const clearTap = () => { window.clearTimeout(tapTimer); tapTimer = 0; lastTapAt = 0; };
+  const clearTap = () => { window.clearTimeout(tapTimer); tapTimer = 0; lastTapAt = 0; lastTapDirection = null; };
   const stopLong = () => {
     if (longActive) {
       longActive = false;
@@ -58,20 +60,18 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
   };
 
   const onDown = (event: PointerEvent) => {
+    if (active || event.isPrimary === false) return;
     if (event.button !== 0 && event.pointerType === "mouse") return;
-    if (event.target instanceof Element && event.target.closest("button, input, a, [role='button']")) return;
+    if (event.target instanceof Element && event.target.closest("button, input, select, textarea, a, [contenteditable], [role='button']")) return;
     active = true;
     moved = false;
     longActive = false;
     scrubbing = false;
+    direction = null;
     startX = event.clientX;
     startY = event.clientY;
     startAt = Date.now();
     pointerId = event.pointerId;
-    if (tapTimer) {
-      window.clearTimeout(tapTimer);
-      tapTimer = -1;
-    }
     if (opts.isLongPressEnabled()) {
       clearLong();
       longTimer = window.setTimeout(() => {
@@ -89,30 +89,32 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     const dx = event.clientX - startX;
     const dy = event.clientY - startY;
     if (Math.abs(dx) > 6 || Math.abs(dy) > 6) moved = true;
-    if (moved) clearTap();
-    if (longActive) {
-      if (Math.abs(dx) > 24) stopLong();
-      else return;
+    if (moved) {
+      clearTap();
+      clearLong();
+      stopLong();
     }
+    if (!direction) {
+      if (Math.abs(dy) > 12 && Math.abs(dy) >= Math.abs(dx)) direction = "vertical";
+      else if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) direction = "horizontal";
+    }
+    // Once native scrolling wins, this pointer cannot become a seek.
+    if (direction !== "horizontal") return;
     if (!scrubbing) {
       if (!opts.isDragSeekEnabled()) return;
-      if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) {
-        clearLong();
-        scrubbing = true;
-        moved = true;
-        // Capture only once a horizontal scrubbing gesture is confirmed, so
-        // vertical scrolling keeps the browser's native momentum.
-        try {
-          el.setPointerCapture(pointerId);
-        } catch {
-          /* ignore */
-        }
-        const duration = opts.duration();
-        baseFraction = duration > 0 ? Math.min(1, Math.max(0, opts.currentTime() / duration)) : 0;
-        resumeAfterScrub = opts.onScrubStart?.() !== false;
-      } else {
-        return;
+      clearLong();
+      scrubbing = true;
+      moved = true;
+      // Capture only once a horizontal scrubbing gesture is confirmed, so
+      // vertical scrolling keeps the browser's native momentum.
+      try {
+        el.setPointerCapture(pointerId);
+      } catch {
+        /* ignore */
       }
+      const duration = opts.duration();
+      baseFraction = duration > 0 ? Math.min(1, Math.max(0, opts.currentTime() / duration)) : 0;
+      resumeAfterScrub = opts.onScrubStart?.() !== false;
     }
     event.preventDefault();
     const rect = el.getBoundingClientRect();
@@ -124,7 +126,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
   };
 
   const onUp = (event: PointerEvent) => {
-    if (event.pointerId !== pointerId) return;
+    if (!active || event.pointerId !== pointerId) return;
     const wasLong = longActive;
     const wasScrub = scrubbing;
     const wasMoved = moved;
@@ -136,16 +138,26 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     else if (!wasLong && !wasMoved && elapsed < 600) {
       const rect = el.getBoundingClientRect();
       const fraction = rect.width > 0 ? (event.clientX - rect.left) / rect.width : 0.5;
-      const direction = fraction < 0.4 ? "backward" : fraction > 0.6 ? "forward" : null;
+      const tapDirection = fraction < 0.4 ? "backward" : fraction > 0.6 ? "forward" : null;
       const now = Date.now();
-      if (opts.isDoubleTapEnabled?.() && direction && tapTimer && now - lastTapAt <= DOUBLE_TAP_MS && Math.abs(event.clientX - lastTapX) <= DOUBLE_TAP_DISTANCE) {
-        clearTap();
-        opts.onDoubleTap?.(direction);
+      if (opts.isDoubleTapEnabled?.() && tapDirection) {
+        if (tapTimer && lastTapDirection === tapDirection && now - lastTapAt <= DOUBLE_TAP_MS && Math.abs(event.clientX - lastTapX) <= DOUBLE_TAP_DISTANCE) {
+          clearTap();
+          opts.onDoubleTap?.(tapDirection);
+        } else {
+          const pendingTap = !!tapTimer;
+          clearTap();
+          if (pendingTap) opts.onTap?.();
+          lastTapAt = now;
+          lastTapX = event.clientX;
+          lastTapDirection = tapDirection;
+          tapTimer = window.setTimeout(() => { clearTap(); opts.onTap?.(); }, DOUBLE_TAP_MS);
+        }
       } else {
+        const pendingTap = !!tapTimer;
         clearTap();
-        lastTapAt = now;
-        lastTapX = event.clientX;
-        tapTimer = window.setTimeout(() => { tapTimer = 0; lastTapAt = 0; opts.onTap?.(); }, DOUBLE_TAP_MS);
+        if (pendingTap) opts.onTap?.();
+        opts.onTap?.();
       }
     }
     if (el.hasPointerCapture?.(pointerId)) {
@@ -157,8 +169,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     }
   };
 
-  const onCancel = (event: PointerEvent) => {
-    if (event.pointerId !== pointerId) return;
+  const cancel = () => {
     active = false;
     clearLong();
     stopLong();
@@ -171,18 +182,29 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
         /* ignore */
       }
     }
+    pointerId = -1;
+  };
+  const onCancel = (event: PointerEvent) => {
+    if (!active || event.pointerId !== pointerId) return;
+    cancel();
+  };
+  const onVisibility = () => {
+    if (document.visibilityState === "hidden") cancel();
   };
 
   el.addEventListener("pointerdown", onDown);
   el.addEventListener("pointermove", onMove, { passive: false });
   el.addEventListener("pointerup", onUp);
   el.addEventListener("pointercancel", onCancel);
+  el.addEventListener("lostpointercapture", onCancel);
+  document.addEventListener("visibilitychange", onVisibility);
   return () => {
     el.removeEventListener("pointerdown", onDown);
     el.removeEventListener("pointermove", onMove);
     el.removeEventListener("pointerup", onUp);
     el.removeEventListener("pointercancel", onCancel);
-    clearLong();
-    clearTap();
+    el.removeEventListener("lostpointercapture", onCancel);
+    document.removeEventListener("visibilitychange", onVisibility);
+    cancel();
   };
 }

@@ -505,6 +505,10 @@ export function showGestureGuide(host: HTMLElement): Promise<void> {
 
 export function setControlsVisible(shell: Shell, visible: boolean): void {
   shell.root.classList.toggle("controls-visible", visible);
+  // Only transient overlays lose focus; navigation and center playback stay usable.
+  for (const container of shell.viewport.querySelectorAll<HTMLElement>(".topbar, .action-rail, .clip-info")) {
+    container.inert = !visible;
+  }
 }
 
 export function hideIndicator(shell: Shell): void {

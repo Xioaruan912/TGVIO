@@ -191,12 +191,8 @@ export class FeedView {
     host.className = "video-host";
     const poster = document.createElement("div");
     poster.className = "poster";
-    const spinner = document.createElement("span");
-    spinner.className = "poster-spinner";
-    const label = document.createElement("span");
-    label.className = "poster-label";
-    label.textContent = "加载中…";
-    poster.append(spinner, label);
+    // Decorative background only; media-loading owns the loading status.
+    poster.setAttribute("aria-hidden", "true");
     const loading = document.createElement("span");
     loading.className = "media-loading";
     loading.setAttribute("role", "status");

@@ -31,3 +31,6 @@ id_ed25519
 AGENTS.md
 todo.md
 docs/
+
+# Keep the Player-specific development contract under version control.
+!player/AGENTS.md

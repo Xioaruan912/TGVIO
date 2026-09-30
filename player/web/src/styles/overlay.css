@@ -312,6 +312,13 @@
   pointer-events: none;
 }
 
+/* Descendants with pointer-events: auto must not revive hidden controls. */
+.app-shell:not(.controls-visible) .topbar *,
+.app-shell:not(.controls-visible) .action-rail *,
+.app-shell:not(.controls-visible) .clip-info * {
+  pointer-events: none;
+}
+
 .app-shell[data-playback-state="autoplay-blocked"] .video-page.is-active .media-loading {
   /* The gesture button owns the center in this state (see the shared-hide rule
      above); keep this selector as a label position fallback only. */

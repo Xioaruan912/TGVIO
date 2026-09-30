@@ -428,11 +428,22 @@ class PlayerApi {
   }
 
   private async request<T>(path: string, init?: RequestInit): Promise<T> {
-    const response = await fetch(path, { ...init, credentials: "same-origin" });
-    if (!response.ok) {
-      throw new ApiError(response.status === 401 ? "unauthorized" : "unavailable");
+    const controller = new AbortController();
+    const callerSignal = init?.signal;
+    const cancel = () => controller.abort();
+    if (callerSignal?.aborted) cancel();
+    else callerSignal?.addEventListener("abort", cancel, { once: true });
+    const timer = window.setTimeout(cancel, 30_000);
+    try {
+      const response = await fetch(path, { ...init, signal: controller.signal, credentials: "same-origin" });
+      if (!response.ok) {
+        throw new ApiError(response.status === 401 ? "unauthorized" : "unavailable");
+      }
+      return await response.json() as T;
+    } finally {
+      window.clearTimeout(timer);
+      callerSignal?.removeEventListener("abort", cancel);
     }
-    return response.json() as Promise<T>;
   }
 }
 

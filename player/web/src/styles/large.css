@@ -461,8 +461,10 @@
 
 .large-controls {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
-  gap: 12px;
+  justify-content: center;
+  gap: 8px 12px;
   padding: 10px 14px calc(14px + var(--safe-bottom));
   transition: opacity 180ms ease, transform 180ms ease;
 }
@@ -475,6 +477,13 @@
 .large-player:not(.controls-visible) .large-controls {
   opacity: 0;
   transform: translateY(6px);
+  pointer-events: none;
+}
+
+/* Match the feed guard even when descendants opt back into pointer events. */
+.large-player:not(.controls-visible) .large-topbar *,
+.large-player:not(.controls-visible) .large-controls *,
+.large-player.privacy-locked .large-controls * {
   pointer-events: none;
 }
 
@@ -531,8 +540,10 @@
   letter-spacing: 0.02em;
 }
 
+/* A full-width seek row leaves room for 44px buttons on narrow screens. */
 .large-timeline {
-  flex: 1 1 auto;
+  flex: 1 1 100%;
+  order: -1;
   min-width: 0;
   display: grid;
   grid-template-columns: 1fr auto;
@@ -558,7 +569,7 @@
 
 .large-progress {
   position: relative;
-  height: 18px;
+  height: 44px;
   display: grid;
   align-items: center;
   --p: 0%;
@@ -576,6 +587,8 @@
 }
 
 .large-seek {
+  height: 44px;
+  min-height: 44px;
   position: relative;
   z-index: 1;
 }

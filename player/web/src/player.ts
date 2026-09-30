@@ -25,6 +25,7 @@ export class VideoPool {
   private readonly clips = new Map<HTMLVideoElement, Clip>();
   private readonly sources = new Map<HTMLVideoElement, string>();
   private readonly loadAbort = new Map<HTMLVideoElement, AbortController>();
+  private readonly pendingRestore = new Map<HTMLVideoElement, { time: number; resumeIntent: boolean }>();
   private loadToken = 0;
   private current: HTMLVideoElement | null = null;
 
@@ -121,8 +122,11 @@ export class VideoPool {
     if (options.muted) current.setAttribute("muted", "");
     else current.removeAttribute("muted");
     current.muted = options.muted;
-    if (options.paused) current.pause();
-    else this.tryPlay(current);
+    if (options.paused) {
+      const restore = this.pendingRestore.get(current);
+      if (restore) restore.resumeIntent = false;
+      current.pause();
+    } else this.tryPlay(current);
   }
 
   setMuted(muted: boolean): void {
@@ -149,12 +153,22 @@ export class VideoPool {
   }
 
   private tryPlay(video: HTMLVideoElement): void {
+    const restore = this.pendingRestore.get(video);
+    if (restore) {
+      // Explicit resume/sync intent must still wait for the new timeline.
+      restore.resumeIntent = true;
+      return;
+    }
+    const token = video.dataset.loadToken;
+    const isCurrentLoad = () => video === this.current && video.dataset.loadToken === token;
     const promise = video.play();
     if (!promise) return;
     promise
-      .then(() => this.onAutoplayBlocked?.(false))
+      .then(() => {
+        if (isCurrentLoad()) this.onAutoplayBlocked?.(false);
+      })
       .catch(() => {
-        if (video === this.current) this.onAutoplayBlocked?.(true);
+        if (isCurrentLoad()) this.onAutoplayBlocked?.(true);
       });
   }
 
@@ -173,11 +187,34 @@ export class VideoPool {
     const video = this.current;
     const clip = video ? this.clips.get(video) : null;
     if (!video || !clip) return;
-    const time = video.currentTime;
-    const wasPlaying = !video.paused;
+    // Before metadata, currentTime/paused describe the reset element, not
+    // the position and intent being carried across a chain of source swaps.
+    const restore = this.pendingRestore.get(video) ?? {
+      time: video.currentTime,
+      resumeIntent: !video.paused,
+    };
+    const muted = video.muted;
     this.load(video, clip, "auto", url);
-    video.currentTime = time;
-    if (wasPlaying) this.tryPlay(video);
+    this.pendingRestore.set(video, restore);
+    video.defaultMuted = muted;
+    if (muted) video.setAttribute("muted", "");
+    else video.removeAttribute("muted");
+    video.muted = muted;
+    const token = video.dataset.loadToken;
+    const controller = this.loadAbort.get(video)!;
+    // The new source has no usable timeline until metadata is available.
+    video.addEventListener("loadedmetadata", () => {
+      if (video.dataset.loadToken !== token || this.pendingRestore.get(video) !== restore) return;
+      this.pendingRestore.delete(video);
+      if (video !== this.current) return;
+      const time = Number.isFinite(restore.time) ? Math.max(0, restore.time) : 0;
+      video.currentTime = Number.isFinite(video.duration)
+        ? Math.min(time, Math.max(0, video.duration))
+        : time;
+      // A pause, privacy lock or background transition may have occurred
+      // since the swap. Without a callback, retain the saved play intent.
+      if (restore.resumeIntent && (this.shouldContinue?.() ?? true)) this.tryPlay(video);
+    }, { once: true, signal: controller.signal });
   }
 
   currentClip(): Clip | null {
@@ -190,6 +227,7 @@ export class VideoPool {
     preload: HTMLMediaElement["preload"],
     url?: string,
   ): void {
+    this.pendingRestore.delete(video);
     const index = this.videos.indexOf(video);
     if (index >= 0) this.assigned[index] = clip.id;
     this.clips.set(video, clip);
@@ -203,6 +241,9 @@ export class VideoPool {
     // for the clip that is now bound to this element.
     this.loadAbort.get(video)?.abort();
     video.pause();
+    // A slot may have been fast-forwarded while displaying the previous clip.
+    video.defaultPlaybackRate = 1;
+    video.playbackRate = 1;
     video.removeAttribute("src");
     video.load();
     const controller = new AbortController();
@@ -231,7 +272,7 @@ export class VideoPool {
         this.onReady?.(clip.id);
         this.onPressure?.(false);
       },
-      { once: true, signal: controller.signal },
+      { signal: controller.signal },
     );
     video.addEventListener(
       "playing",
@@ -243,15 +284,15 @@ export class VideoPool {
         if (video.dataset.playbackReportedToken !== token) {
           video.dataset.playbackReportedToken = token;
           this.onPlaybackStarted?.(clip);
+          const frameTimer = window.setTimeout(() => {
+            if (isCurrentLoad() && video.readyState >= 2 && video.currentTime > 0.5 && video.videoWidth === 0) {
+              this.onUnusableFrame?.(clip.id);
+            }
+          }, 2500);
+          controller.signal.addEventListener("abort", () => window.clearTimeout(frameTimer), { once: true });
         }
-        const frameTimer = window.setTimeout(() => {
-          if (isCurrentLoad() && video.readyState >= 2 && video.currentTime > 0.5 && video.videoWidth === 0) {
-            this.onUnusableFrame?.(clip.id);
-          }
-        }, 2500);
-        controller.signal.addEventListener("abort", () => window.clearTimeout(frameTimer), { once: true });
       },
-      { once: true, signal: controller.signal },
+      { signal: controller.signal },
     );
     const markWaiting = () => {
       if (!isCurrentLoad()) return;
@@ -274,6 +315,7 @@ export class VideoPool {
   }
 
   private release(video: HTMLVideoElement): void {
+    this.pendingRestore.delete(video);
     const index = this.videos.indexOf(video);
     if (index >= 0) this.assigned[index] = "";
     video.closest<HTMLElement>(".video-page")?.classList.remove("frame-ready");
@@ -293,7 +335,12 @@ export class VideoPool {
   private scheduleReady(video: HTMLVideoElement): void {
     const page = video.closest<HTMLElement>(".video-page");
     if (!page) return;
-    const mark = () => page.classList.add("frame-ready");
+    const token = video.dataset.loadToken;
+    const mark = () => {
+      if (video.dataset.loadToken === token && video.closest<HTMLElement>(".video-page") === page) {
+        page.classList.add("frame-ready");
+      }
+    };
     const request = (video as RVFCVideo).requestVideoFrameCallback;
     if (typeof request === "function") request.call(video, mark);
     else mark();

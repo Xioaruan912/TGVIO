@@ -59,3 +59,24 @@ classify outcomes such as `not_found`, `capacity_limited`, `server_error`,
 `client_disconnected`, and `stream_ok`. `frontend_playback` events report
 confirmed playback, media errors, probe status, retries, and skipped clips.
 The media value is a stable fingerprint rather than the raw catalog ID.
+
+### Local regression checks
+
+```sh
+npm test
+npm run build
+# Requires an already installed Google Chrome (or CHROME_BIN).
+npm run test:browser
+```
+
+The browser check starts a temporary loopback-only Vite fixture and an isolated,
+temporary Chrome profile; both are closed afterwards. It never uses production
+login state, real WebDAV, or Bot configuration. It verifies computed styles,
+hit-testing, control focus isolation and long-player source-change intent at
+390/430/768/1440 widths. Media events in the fixture are simulated: this is not
+an Android/iOS touch or real Range-stream playback acceptance test.
+
+Playback loading has one status layer; the poster is decorative and does not
+cover an existing frame during buffering. Feed refill is bounded, favorite
+mutations share one per-media queue across views, and cancelled gestures release
+seek/fast-forward state. See `../AGENTS.md` for the development contract.

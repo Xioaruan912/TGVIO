@@ -77,44 +77,18 @@
   position: absolute;
   inset: 0;
   z-index: 1;
-  display: flex;
-  flex-direction: column;
-  align-items: center;
-  justify-content: center;
-  gap: 12px;
+  pointer-events: none;
   background: #0a0a0a;
   transition: opacity 0.28s ease;
 }
 
-.poster-spinner {
-  width: 26px;
-  height: 26px;
-  border-radius: 50%;
-  border: 2px solid rgba(255, 255, 255, 0.16);
-  border-top-color: rgba(255, 255, 255, 0.85);
-  animation: poster-spin 0.9s linear infinite;
-}
-
-.poster-label {
-  font-size: 12px;
-  letter-spacing: 0.08em;
-  color: rgba(255, 255, 255, 0.45);
-}
-
-@keyframes poster-spin {
-  to {
-    transform: rotate(360deg);
-  }
-}
-
 .video-page.frame-ready .poster {
   opacity: 0;
+  visibility: hidden;
 }
 
 /* Feed pages outside the active/adjacent video pool are placeholders, not
    downloads in progress. Keep their loading indicators out of the swipe UI. */
-.video-page:not(.is-active) .poster-spinner,
-.video-page:not(.is-active) .poster-label,
 .video-page:not(.is-active) .media-loading {
   visibility: hidden;
 }
@@ -160,8 +134,8 @@
 
 /* Keep the poster only while the first frame is still missing. Only the active
    page carries a state attribute; placeholder pages keep their dark poster. */
-.video-page[data-playback-state="loading"] .poster,
-.video-page[data-playback-state="buffering"] .poster {
+.video-page:not(.frame-ready)[data-playback-state="loading"] .poster,
+.video-page:not(.frame-ready)[data-playback-state="buffering"] .poster {
   opacity: 1;
   visibility: visible;
 }
@@ -179,8 +153,7 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .media-loading-ring,
-  .poster-spinner { animation: none; }
+  .media-loading-ring { animation: none; }
   .media-loading,
   .video-page .poster { transition: none; }
 }

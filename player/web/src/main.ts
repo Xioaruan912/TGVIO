@@ -3,6 +3,8 @@ import { ApiError, api, beginPlaybackSession, MOCK_MODE, shortId } from "./api";
 import { AdaptiveCacheController } from "./adaptive-cache";
 import { requestAudioEnable } from "./audio-warning";
 import { FeedView } from "./feed";
+import { fillUniqueFeed } from "./feed-loading";
+import { favoriteMutations } from "./favorite-service";
 import { ContextFeed } from "./context-feed";
 import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
@@ -132,23 +134,17 @@ async function ensureFeed(minimum: number): Promise<void> {
   if (clips.length >= minimum || clips.length >= MAX_FEED) {
     return;
   }
-  const task = (async () => {
-    while (clips.length < minimum && clips.length < MAX_FEED) {
-      const batch = await api.feed(FEED_BATCH, prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving");
-      if (!batch.length) break;
-      for (const clip of batch) {
-        if (seenIds.has(clip.id)) continue;
-        seenIds.add(clip.id);
-        clips.push(clip);
-        if (clip.favorite) favorites.add(clip.id);
-      }
-    }
-  })();
+  const task = fillUniqueFeed({
+    items: clips, seen: seenIds, target: minimum, maxItems: MAX_FEED,
+    fetchBatch: () => api.feed(FEED_BATCH, prefs.cacheMode !== "off" && prefs.cacheMode !== "data-saving"),
+    onAdd: (clip) => { if (clip.favorite) favorites.add(clip.id); },
+  }).then(() => undefined);
   refill = task;
-  void task.finally(() => {
+  try {
+    await task;
+  } finally {
     if (refill === task) refill = null;
-  });
-  return task;
+  }
 }
 
 function clipMeta(clip: Clip): string {
@@ -230,6 +226,7 @@ function applyActive(index: number): void {
   const previous = index > 0 ? feedView.clipAt(index - 1) : null;
   const currentClips = activeClips();
   const next = index + 1 < currentClips.length ? feedView.clipAt(index + 1) : null;
+  shell?.feed.querySelectorAll(".video-page.is-active").forEach((page) => page.classList.remove("is-active"));
   feedView.pageAt(index - 1)?.classList.remove("is-active");
   feedView.pageAt(index)?.classList.add("is-active");
   feedView.pageAt(index + 1)?.classList.remove("is-active");
@@ -264,6 +261,7 @@ function applyActive(index: number): void {
     pausedByUser: false,
     hasFrame: currentReady,
     mediaErrored: false,
+    autoplayBlocked: false,
     // Not-yet-buffered media is initial loading; waiting after a first frame is
     // buffering. ``paused`` already short-circuits before this is consulted.
     networkWaiting: false,
@@ -430,9 +428,16 @@ function commitActive(index: number): void {
   if (!feedView) return;
   const currentClips = activeClips();
   if (index < 0 || index >= currentClips.length) return;
+  if (activeIndex === index && lastActiveClipId === currentClips[index]?.id) return;
   activeIndex = index;
   if (contextFeed) void ensureContextPage(index + FEED_AHEAD);
-  else void ensureFeed(index + FEED_AHEAD).then(() => feedView?.setClips(clips)).catch(() => undefined);
+  else {
+    const generation = homeFeedGeneration;
+    const view = feedView;
+    void ensureFeed(index + FEED_AHEAD).then(() => {
+      if (!contextFeed && feedView === view && generation === homeFeedGeneration) view.setClips(clips);
+    }).catch(() => undefined);
+  }
   applyActive(index);
 }
 
@@ -483,26 +488,26 @@ function downloadCurrent(): void {
   toast(shell!, "开始下载原片");
 }
 
+favoriteMutations.subscribe(
+  (id, enabled) => {
+    if (enabled) favorites.add(id);
+    else favorites.delete(id);
+    for (const clip of [...clips, ...(contextFeed?.clips ?? [])]) {
+      if (clip.id === id) clip.favorite = enabled;
+    }
+    if (shell && feedView?.clipAt(activeIndex)?.id === id) setFavoriteButton(shell, enabled);
+  },
+  (id, result) => {
+    if (!shell || feedView?.clipAt(activeIndex)?.id !== id) return;
+    if (!result) { toast(shell, "操作失败，请稍后重试"); return; }
+    const syncText = ({ pending: "待同步", syncing: "同步中", synced: "已同步", failed: "同步失败" } as const)[result.syncStatus];
+    toast(shell, `${result.favorite ? "已收藏" : "已取消收藏"} · ${syncText}`);
+  },
+);
+
 async function toggleFavorite(): Promise<void> {
   const clip = feedView?.clipAt(activeIndex);
-  if (!clip) return;
-  const enabled = !favorites.has(clip.id);
-  if (enabled) favorites.add(clip.id);
-  else favorites.delete(clip.id);
-  clip.favorite = enabled;
-  setFavoriteButton(shell!, enabled);
-  try {
-    const result = await api.setFavorite(clip.id, enabled);
-    const syncText = ({ pending: "待上传", syncing: "同步中", synced: "已同步", failed: "同步失败" } as const)[result.syncStatus];
-    const removalText = ({ pending: "待同步", syncing: "同步中", synced: "已同步", failed: "同步失败" } as const)[result.syncStatus];
-    toast(shell!, enabled ? `已收藏 · ${syncText}` : `已取消收藏 · ${removalText}`);
-  } catch {
-    if (enabled) favorites.delete(clip.id);
-    else favorites.add(clip.id);
-    clip.favorite = !enabled;
-    setFavoriteButton(shell!, !enabled);
-    toast(shell!, "操作失败，请稍后重试");
-  }
+  if (clip) await favoriteMutations.toggle(clip.id, favorites.has(clip.id));
 }
 
 function removeClipById(items: Clip[], mediaId: string): number {
@@ -653,6 +658,8 @@ function onDocumentVisibilityChange(): void {
 }
 
 function lockPrivacyForBackground(): void {
+  userSeeking = false;
+  feedPreview?.hide();
   playerMediaSession.clear();
   if (shell) shell.root.dataset.mediaSession = playerMediaSession.supported ? "cleared" : "unsupported";
   privacyUnlocked = false;
@@ -724,13 +731,23 @@ function enqueueProgressWrite(mediaId: string, write: () => Promise<void>): void
 function goNext(instant = false): void {
   if (homeRefresh) return;
   const generation = homeFeedGeneration;
+  const context = contextFeed;
+  const fromIndex = activeIndex;
   const next = activeIndex + 1;
+  // Existing neighbours must not wait for a slow metadata refill.
+  if (next < activeClips().length) {
+    feedView?.scrollToIndex(next, !instant);
+    return;
+  }
   const load = contextFeed ? ensureContextPage(next + FEED_AHEAD) : ensureFeed(next + FEED_AHEAD);
   void load.then(() => {
-    if (generation !== homeFeedGeneration) return;
+    if (generation !== homeFeedGeneration || context !== contextFeed || activeIndex !== fromIndex) return;
     if (!contextFeed) feedView?.setClips(clips);
     if (next < activeClips().length) feedView?.scrollToIndex(next, !instant);
-  }).catch(() => toast(shell!, "暂时加载失败"));
+    else if (!contextFeed && shell) toast(shell, "暂时没有新的可播放视频");
+  }).catch(() => {
+    if (context === contextFeed && activeIndex === fromIndex && shell) toast(shell, "暂时加载失败");
+  });
 }
 
 async function refreshHome(): Promise<void> {
@@ -954,6 +971,15 @@ function feedGestureOptions() {
     fastForwardSpeed: () => prefs.fastForwardSpeed,
     currentTime: () => pool?.currentVideo()?.currentTime ?? 0,
     duration: () => pool?.currentVideo()?.duration ?? 0,
+    isDoubleTapEnabled: () => prefs.doubleTapSeek,
+    onDoubleTap: (direction: "backward" | "forward") => {
+      if (!privacyUnlocked) return;
+      const video = pool?.currentVideo();
+      if (!video || !Number.isFinite(video.duration)) return;
+      video.currentTime = Math.min(video.duration, Math.max(0, video.currentTime + (direction === "forward" ? 10 : -10)));
+      updateProgress();
+      if (shell) toast(shell, direction === "forward" ? "前进 10 秒" : "后退 10 秒");
+    },
     onTap: () => {
       if (autoplayBlocked) playGesture();
       else togglePlayback();
@@ -979,7 +1005,7 @@ function feedGestureOptions() {
       if (Number.isFinite(video.duration) && video.duration > 0 && time >= video.duration * 0.7) {
         warmTail(clip.id);
       }
-      video.currentTime = time;
+      // Preview only while dragging; commit one seek on release.
       shell.seek.value = String(time);
       shell.timeCurrent.textContent = formatTime(time);
       paintSeek(shell.seek);
@@ -1082,7 +1108,8 @@ function openClip(clip: Clip): void {
 async function ensureContextPage(minimum: number): Promise<void> {
   const current = contextFeed;
   if (!current || !feedView) return;
-  while (contextFeed === current && current.hasMore && current.clips.length < minimum) {
+  let pages = 0;
+  while (contextFeed === current && current.hasMore && current.clips.length < minimum && pages++ < 5) {
     const loaded = await current.loadMore();
     if (contextFeed !== current) return;
     feedView.removeTerminalPage();
@@ -1099,7 +1126,14 @@ async function ensureContextPage(minimum: number): Promise<void> {
       return;
     }
   }
-  if (contextFeed !== current || current.hasMore) return;
+  if (contextFeed !== current) return;
+  if (current.hasMore) {
+    feedView.appendTerminalPage("继续加载视频", "feed-terminal feed-retry", () => {
+      feedView?.removeTerminalPage();
+      void ensureContextPage(Math.max(minimum, current.clips.length + FEED_AHEAD));
+    });
+    return;
+  }
   if (!current.clips.length) {
     feedView.appendTerminalPage("这里还没有视频，点击返回", "feed-terminal", leaveContext);
     return;
@@ -1752,9 +1786,10 @@ function renderFeed(): void {
   seek.addEventListener("pointerup", () => {
     userSeeking = false;
   });
-  seek.addEventListener("change", () => {
-    userSeeking = false;
-  });
+  const finishSeeking = () => { userSeeking = false; scheduleControlsHide(); };
+  seek.addEventListener("change", finishSeeking);
+  seek.addEventListener("pointercancel", finishSeeking);
+  seek.addEventListener("lostpointercapture", finishSeeking);
 }
 
 async function boot(): Promise<void> {

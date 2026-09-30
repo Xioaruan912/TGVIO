@@ -56,6 +56,10 @@ export class ContextFeed {
           this.clips.push(clip);
         }
       }
+      if (page.hasMore && (page.nextCursor === null || page.nextCursor === this.nextCursor)) {
+        this.error = new Error("Pagination did not advance");
+        return false;
+      }
       this.nextCursor = page.nextCursor;
       this.hasMore = page.hasMore;
       this.group = page.group ?? this.group;
