@@ -280,6 +280,19 @@ export class VideoLibraryPage {
     }); checkLabel.append(check);
     const preview = this.button("预览", () => this.showPreview(clip, preview));
     preview.classList.add("library-poster"); preview.setAttribute("aria-label", `按需预览视频 #${shortId(clip.id)}`);
+    // Optional archive cover. Without one the on-demand preview stays the only
+    // affordance, so a missing or broken cover never blocks the list.
+    if (clip.coverUrl) {
+      const cover = document.createElement("img");
+      cover.className = "library-cover";
+      cover.alt = "";
+      cover.loading = "lazy";
+      cover.decoding = "async";
+      cover.setAttribute("src", clip.coverUrl);
+      cover.addEventListener("error", () => cover.remove(), { once: true });
+      preview.classList.add("library-poster-cover");
+      preview.append(cover);
+    }
     const text = element("div", "library-row-text");
     text.append(element("strong", "library-row-title", `#${shortId(clip.id)}`),
       element("span", "library-row-meta", `${formatTime(clip.duration)} · ${clip.category === "long" ? "长视频" : "短视频"}`));

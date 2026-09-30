@@ -83,3 +83,7 @@
 }
 
 @media (min-width: 900px) { .library-page { padding-inline: 0; } }
+
+/* Optional versioned archive cover. Absent means the preview label stays visible. */
+.library-page .library-poster-cover { color: transparent; }
+.library-page .library-cover { position: absolute; inset: 4px; width: auto; height: auto; object-fit: cover; border-radius: 4px; }

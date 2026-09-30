@@ -252,3 +252,32 @@ test("pagination protocol failures show retry, no auto retry storm or false comp
   assert.equal(byClass(page.root,"library-row").length,40);
  } finally {page?.destroy();api.libraryVideos=original;}
 });
+test("rows without an archive cover render no image", async () => {
+ const page = mount(new VideoLibraryPage(() => {}, () => {}, {mediaId: fixture.testClipId})); await flush();
+ assert.equal(byClass(page.root, "library-row").length, 20);
+ assert.equal(all(page.root).filter(node => node.tagName === "img").length, 0, "no cover field means no image");
+ page.destroy();
+});
+test("a provided archive cover is lazy, single and falls back when broken", async () => {
+ const original = api.libraryVideos;
+ try {
+  api.libraryVideos = async (...args) => {
+   const page = await original(...args);
+   return { ...page, items: page.items.map((clip, index) => index === 0 ? { ...clip, coverUrl: "/api/v1/media/cover-1" } : clip) };
+  };
+  const page = mount(new VideoLibraryPage(() => {}, () => {}, {mediaId: fixture.testClipId})); await flush();
+  assert.equal(byClass(page.root, "library-row").length, 20);
+  const images = all(page.root).filter(node => node.tagName === "img");
+  assert.equal(images.length, 1, "only the row that reported a cover renders one");
+  assert.equal(images[0].className, "library-cover");
+  assert.equal(images[0].loading, "lazy", "a cover never loads eagerly for a long list");
+  assert.equal(images[0].decoding, "async");
+  assert.equal(images[0].alt, "");
+  assert.equal(images[0].attributes.src, "/api/v1/media/cover-1");
+  assert.ok(images[0].parent.className.includes("library-poster-cover"), "the preview control owns the cover");
+  images[0].dispatch("error");
+  assert.equal(all(page.root).filter(node => node.tagName === "img").length, 0, "a broken cover falls back to the placeholder");
+  assert.equal(byClass(page.root, "library-row").length, 20);
+  page.destroy();
+ } finally { api.libraryVideos = original; }
+});

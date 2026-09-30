@@ -76,6 +76,8 @@ export type Clip = {
   category: "short" | "long";
   groups: ArchiveGroup[];
   variants: MediaVariant[];
+  /** Optional versioned archive cover. Null means the on-demand preview stays the only affordance. */
+  coverUrl: string | null;
 };
 
 export type PreloadLevel = "strong" | "light" | "random" | "metadata";

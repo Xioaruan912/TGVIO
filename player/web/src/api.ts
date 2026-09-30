@@ -94,6 +94,9 @@ export function clipFromMedia(media: MediaDto): Clip {
     duration: Math.max(0, Math.round(media.duration_seconds ?? 0)),
     sizeBytes: Math.max(0, Math.round(media.size_bytes ?? 0)),
     streamUrl: media.stream_url,
+    // Forward-compatible: the archive only starts emitting cover_url once its
+    // packages carry a bounded, versioned cover. Absent stays null.
+    coverUrl: (media as { cover_url?: string | null }).cover_url ?? null,
     favorite: media.favorite,
     deletable: media.deletable ?? false,
     mimeType: media.mime_type ?? null,

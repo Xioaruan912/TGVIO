@@ -9,10 +9,11 @@ const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES20
 const {api}=await import("data:text/javascript;base64,"+Buffer.from(js).toString("base64"));
 test("library API uses only authenticated metadata GETs, keyset and contract field names",async()=>{
  const calls=[];const folder={id:"opaque",label:"批次",date:null,date_basis:"unknown",video_count:1};
- globalThis.fetch=async(path,init)=>{calls.push({path,init});return {ok:true,json:async()=>path.includes("/videos?")?{items:[{id:"a",duration_seconds:120,stream_url:"/local.mp4",favorite:false,category:"long"}],has_more:true,next_cursor:"a",total:1,folder}:path.includes("/dates")?{items:[],total_videos:900}:{items:[folder],total:1}};};
+ globalThis.fetch=async(path,init)=>{calls.push({path,init});return {ok:true,json:async()=>path.includes("/videos?")?{items:[{id:"a",duration_seconds:120,stream_url:"/local.mp4",favorite:false,category:"long",cover_url:"/api/v1/media/a/cover"}],has_more:true,next_cursor:"a",total:1,folder}:path.includes("/dates")?{items:[],total_videos:900}:{items:[folder],total:1}};};
  await api.libraryDates();await api.libraryFolders({date:"unknown"});await api.libraryFolders({mediaId:"abc"});
  const page=await api.libraryVideos("opaque","long",20,"before");
  assert.equal(page.items[0].duration,120);assert.equal(page.hasMore,true);assert.equal(page.nextCursor,"a");assert.equal(page.folder,folder);
+ assert.equal(page.items[0].coverUrl,"/api/v1/media/a/cover","an optional archive cover passes through unchanged");
  assert.equal(calls[0].path,"/api/v1/library/dates");
  assert.match(calls[1].path,/date=unknown/);assert.match(calls[2].path,/media_id=abc/);
  const params=new URL(calls[3].path,"http://local").searchParams;
