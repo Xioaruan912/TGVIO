@@ -121,6 +121,36 @@ def parse_covers_index(payload: bytes | str | Mapping[str, object]) -> dict[str,
     return parsed
 
 
+def targets_from_manifest(manifest: Mapping[str, object]) -> tuple[BackfillTarget, ...]:
+    """Every archived video that could still receive a cover, in manifest order.
+
+    Non-video entries and entries that already carry an archive-time cover are
+    skipped, so a package produced after A2 is never backfilled twice.
+    """
+    media = manifest.get("media") if isinstance(manifest, Mapping) else None
+    if not isinstance(media, (list, tuple)):
+        return ()
+    targets: list[BackfillTarget] = []
+    for entry in media:
+        if not isinstance(entry, Mapping):
+            continue
+        if str(entry.get("kind") or "") != "video":
+            continue
+        media_path = entry.get("path")
+        if not isinstance(media_path, str) or not media_path:
+            continue
+        if entry.get("cover"):
+            continue
+        try:
+            index = int(entry.get("index") or 0) - 1
+        except (TypeError, ValueError):
+            index = -1
+        targets.append(
+            BackfillTarget(media_path=media_path, source_path=media_path, item_index=index)
+        )
+    return tuple(targets)
+
+
 class CoverBackfill:
     """Sample at most one bounded frame per archived video, resumably."""
 

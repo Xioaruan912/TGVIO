@@ -10,6 +10,7 @@ from tgvio.application.cover_backfill import (
     build_covers_index,
     cover_relpath_for,
     parse_covers_index,
+    targets_from_manifest,
 )
 
 
@@ -92,6 +93,25 @@ class CoverBackfillTests(unittest.IsolatedAsyncioTestCase):
         second = cover_relpath_for("media/dup.mov", taken)
         self.assertEqual(first, "cover/dup-cover.jpg")
         self.assertEqual(second, "cover/dup-cover-2.jpg")
+
+    def test_targets_are_only_videos_without_an_archive_time_cover(self) -> None:
+        manifest = {
+            "media": [
+                {"index": 1, "kind": "photo", "path": "media/a.jpg"},
+                {"index": 2, "kind": "video", "path": "media/b.mp4"},
+                {"index": 3, "kind": "video", "path": "media/c.mp4", "cover": {"path": "cover/c-cover.jpg"}},
+                {"index": 4, "kind": "document", "path": "media/d.pdf"},
+                {"index": 5, "kind": "video"},
+                "not-a-mapping",
+                {"index": 6, "kind": "video", "path": "media/e.mp4"},
+            ]
+        }
+        targets = targets_from_manifest(manifest)
+        self.assertEqual([t.media_path for t in targets], ["media/b.mp4", "media/e.mp4"])
+        self.assertEqual(targets[0].item_index, 1, "manifest indexes are one-based")
+        self.assertEqual(targets[0].source_path, "media/b.mp4")
+        self.assertEqual(targets_from_manifest({}), ())
+        self.assertEqual(targets_from_manifest({"media": "nope"}), ())
 
     async def test_index_round_trips_and_refuses_junk(self) -> None:
         async def frame(_source: str) -> bytes | None:
