@@ -14,6 +14,15 @@ class CatalogValidationError(ValueError):
     """A remote Archive package does not satisfy the Player catalog contract."""
 
 
+# A cover is a small still the archive may ship next to a video. The numbers and
+# algorithm names below mirror the archive writer (``tgvio.archive*``); the
+# manifest is the contract, so an unknown algorithm is treated as "no cover"
+# rather than as a reason to hide the video.
+MAX_COVER_BYTES = 1_000_000
+COVER_ALGORITHMS = frozenset({"reuse-publish-thumbnail-v1"})
+COVER_MIME_TYPES = frozenset({"image/jpeg", "image/png", "image/webp"})
+
+
 @dataclass(frozen=True, slots=True)
 class ArchivePackageCandidate:
     remote_path: str
@@ -50,6 +59,18 @@ class CatalogMedia:
 
 
 @dataclass(frozen=True, slots=True)
+class CatalogCover:
+    """One bounded, versioned still that belongs to a catalog video."""
+
+    media_id: str
+    package_id: str
+    remote_relpath: str
+    size_bytes: int
+    mime_type: str
+    algorithm: str
+
+
+@dataclass(frozen=True, slots=True)
 class CatalogLocation:
     media_id: str
     package_id: str
@@ -66,6 +87,7 @@ class CatalogPackage:
     complete_etag: str | None
     media: tuple[CatalogMedia, ...]
     locations: tuple[CatalogLocation, ...]
+    covers: tuple[CatalogCover, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)

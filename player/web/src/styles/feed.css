@@ -7,7 +7,7 @@
   overscroll-behavior-y: contain;
   -webkit-overflow-scrolling: touch;
   scrollbar-width: none;
-  background: #000;
+  background: var(--media-bg);
 }
 
 .feed::-webkit-scrollbar {
@@ -20,7 +20,7 @@
   height: 100%;
   scroll-snap-align: start;
   overflow: hidden;
-  background: #000;
+  background: var(--media-bg);
 }
 
 .video-page.random-transition .media-slot {
@@ -68,7 +68,7 @@
   width: 100%;
   height: 100%;
   object-fit: contain;
-  background: #000;
+  background: var(--media-bg);
   pointer-events: none;
 }
 

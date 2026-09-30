@@ -3,60 +3,53 @@ import assert from "node:assert/strict";
 import { readFile } from "node:fs/promises";
 import ts from "typescript";
 import { createLibraryFixture } from "./library-fixture.mjs";
+import { installDom } from "./dom-stub.mjs";
 
-class Node {
- constructor(tag, className = "", text = "") {
-  this.tagName = tag; this.className = className; this.text = text; this.children = []; this.events = new Map(); this.attributes = {}; this.scrollTop = 0; this.checked = false; this.disabled = false;
-  this.classList = { add: (...names) => this.className += " " + names.join(" "), remove: (...names) => this.className = this.className.split(" ").filter(n => !names.includes(n)).join(" ") };
- }
- get textContent() { return this.text + this.children.map(c => c.textContent).join(""); }
- set textContent(text) { this.text = text; this.replaceChildren(); }
- append(...children) { children.forEach(child => { child.remove(); child.parent = this; this.children.push(child); }); }
- replaceChildren(...children) { this.children.forEach(c => c.parent = null); this.children = []; this.append(...children); }
- remove() { if(this.contains(globalThis.document?.activeElement)) document.activeElement = document.body; if(this.parent) this.parent.children = this.parent.children.filter(c => c !== this); this.parent = null; }
- get parentElement() { return this.parent ?? null; }
- get isConnected() { return this === globalThis.document || !!this.parent?.isConnected; }
- getClientRects() { return this.isConnected && !this.hidden && !this.parentElement?.hidden ? [{}] : []; }
- closest(selector) { if(selector === "[hidden], [inert]" && (this.hidden || this.inert)) return this; return this.parentElement?.closest(selector) ?? null; }
- matches(selector) { return selector === ":disabled" && this.disabled; }
- setAttribute(key, value) { this.attributes[key] = value; }
- removeAttribute(key) { delete this.attributes[key]; if(key === "src") delete this.src; }
- addEventListener(name, listener) { const listeners = this.events.get(name) ?? []; listeners.push(listener); this.events.set(name, listeners); }
- removeEventListener(name, listener) { this.events.set(name, (this.events.get(name) ?? []).filter(fn => fn !== listener)); }
- dispatch(name, data = {}) { if(this.disabled) return; (this.events.get(name) ?? []).slice().forEach(listener => listener({ target: this, type: name, ...data })); }
- contains(node) { return node === this || this.children.some(c => c.contains(node)); }
- querySelectorAll(selector) { return all(this).filter(c => selector === "input[type=checkbox]" && c.tagName === "input" && c.type === "checkbox"); }
- focus(options) { if(!this.getClientRects().length || this.closest("[hidden], [inert]") || this.disabled) return; document.activeElement = this; this.focused = true; this.focusOptions = options; }
- pause() { this.pauses = (this.pauses ?? 0) + 1; } load() { this.loads = (this.loads ?? 0) + 1; } play() { return Promise.resolve(); }
-}
-const all = node => node.children.flatMap(c => [c, ...all(c)]);
-const byClass = (node, className) => all(node).filter(c => c.className.split(" ").includes(className));
-const clickText = (node, text) => { const button = all(node).find(c => c.tagName === "button" && c.textContent === text); assert.ok(button, "Missing button " + text); button.dispatch("click"); };
-const flush = async () => { for(let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)); };
-const fixture = createLibraryFixture(); const calls = [];
-const clipFrom = m => ({ id:m.id, category:m.category, duration:m.duration_seconds, streamUrl:m.stream_url });
+const { all, byClass, clickText, flush, videos } = installDom();
+const fixture = createLibraryFixture();
+const calls = [];
+const clipFrom = m => ({
+  id: m.id, category: m.category, duration: m.duration_seconds, streamUrl: m.stream_url,
+  coverUrl: m.cover_url ?? null, favorite: Boolean(m.favorite),
+});
 const api = {
- libraryDates: async () => { calls.push("dates"); return fixture.result(new URL("http://local/api/v1/library/dates")); },
- libraryFolders: async q => { calls.push(q); return fixture.result(new URL("http://local/api/v1/library/folders?" + new URLSearchParams(q.mediaId ? {media_id:q.mediaId} : {date:q.date}))); },
- libraryVideos: async (id, category, limit, cursor) => {
-  calls.push({ id, category, limit, cursor });
-  const p = await fixture.result(new URL("http://local/api/v1/library/videos?" + new URLSearchParams({folder_id:id, category, limit:String(limit), ...(cursor ? {cursor} : {})})));
-  return { items:p.items.map(clipFrom), hasMore:p.has_more, nextCursor:p.next_cursor, folder:p.folder, total:p.total };
- }
+  libraryDates: async () => { calls.push("dates"); return fixture.result(new URL("http://local/api/v1/library/dates")); },
+  libraryFolders: async q => { calls.push(q); return fixture.result(new URL("http://local/api/v1/library/folders?" + new URLSearchParams(q.mediaId ? { media_id: q.mediaId } : { date: q.date }))); },
+  libraryVideos: async (id, category, limit, cursor) => {
+    calls.push({ id, category, limit, cursor });
+    const p = await fixture.result(new URL("http://local/api/v1/library/videos?" + new URLSearchParams({ folder_id: id, category, limit: String(limit), ...(cursor ? { cursor } : {}) })));
+    return { items: p.items.map(clipFrom), hasMore: p.has_more, nextCursor: p.next_cursor, folder: p.folder, total: p.total };
+  },
 };
-let videosCreated = 0;
-globalThis.window = { setTimeout, clearTimeout };
-globalThis.document = Object.assign(new Node("document"), { hidden: false, createElement: tag => { if(tag === "video") videosCreated++; return new Node(tag); } });
-document.body = new Node("body"); document.append(document.body); document.activeElement = document.body;
-const mount = page => { document.body.append(page.root); return page; };
-const leaveForPlayback = page => { page.setPlaybackActive(true); document.activeElement = document.body; assert.equal(page.root.inert, true); }; 
-const idleSource = await readFile(new URL("../src/idle-privacy.ts", import.meta.url), "utf8");
-const idleJs = ts.transpileModule(idleSource, { compilerOptions: { target:ts.ScriptTarget.ES2022, module:ts.ModuleKind.ESNext } }).outputText;
+
+async function transpile(source) {
+  return ts.transpileModule(await readFile(new URL("../src/" + source, import.meta.url), "utf8"),
+    { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
+    .replace(/^import .* from .*;$/gm, "");
+}
+const element = (tag, className, text) => {
+  const node = document.createElement(tag);
+  if (className) node.className = className;
+  if (text !== undefined) node.textContent = text;
+  return node;
+};
+const iconsJs = await transpile("icons.ts");
+const { icon } = await import("data:text/javascript;base64," + Buffer.from(iconsJs).toString("base64"));
+const coverJs = await transpile("components/cover-tile.ts");
+globalThis.__coverDeps = { element, icon };
+const { buildCoverTile } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, icon } = globalThis.__coverDeps;\n" + coverJs).toString("base64"));
+const idleJs = await transpile("idle-privacy.ts");
 const { IdlePrivacyController, attachIdleActivity } = await import("data:text/javascript;base64," + Buffer.from(idleJs).toString("base64"));
-globalThis.__libraryDeps = { IdlePrivacyController, attachIdleActivity, api, element: (tag, name, text) => new Node(tag, name, text), shortId: id => id.slice(0,8), formatTime: duration => String(duration) };
-const source = await readFile(new URL("../src/library.ts", import.meta.url), "utf8");
-const js = ts.transpileModule(source, { compilerOptions: { target:ts.ScriptTarget.ES2022, module:ts.ModuleKind.ESNext } }).outputText.replace(/^import .* from .*;$/gm, "");
-const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from("const { api, element, shortId, formatTime, IdlePrivacyController, attachIdleActivity } = globalThis.__libraryDeps;\n" + js).toString("base64"));
+globalThis.__libraryDeps = { IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile };
+const libraryJs = await transpile("library.ts");
+const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+
+const mount = page => { document.body.append(page.root); return page; };
+const tiles = page => byClass(page.root, "cover-tile");
+const leaveForPlayback = page => { page.setPlaybackActive(true); document.activeElement = document.body; assert.equal(page.root.inert, true); };
+const enterSelectMode = page => { clickText(page.root, "选择"); assert.equal(byClass(page.root, "library-select-toggle")[0].getAttribute("aria-pressed"), "true"); };
 
 test("date index jump, multi-package picker, unknown dates and visible selection clear", async () => {
  const page = new VideoLibraryPage(() => {}, () => {}); await flush();
@@ -66,7 +59,9 @@ test("date index jump, multi-package picker, unknown dates and visible selection
  assert.deepEqual(calls.find(c => c?.date), {date:"2026-06-01"});
  assert.equal(byClass(page.root, "library-index-row").length, 2);
  byClass(page.root, "library-index-row")[0].dispatch("click"); await flush();
- const check = byClass(page.root, "library-checkbox")[0]; check.checked = true; check.dispatch("change");
+ enterSelectMode(page);
+ tiles(page)[0].querySelector(".cover-tile-select").dispatch("click");
+ assert.match(page.root.textContent, /播放选中 \(1\/100\)/);
  clickText(page.root, "返回");
  assert.match(byClass(page.root, "library-notice")[0].textContent, /选择已清空/);
  clickText(page.root, "返回");
@@ -76,41 +71,62 @@ test("date index jump, multi-package picker, unknown dates and visible selection
  assert.equal(byClass(page.root, "library-index-row").length, 2);
  page.destroy();
 });
+
 test("current media auto-opens exactly one folder, multiple memberships keep picker", async () => {
  const single = new VideoLibraryPage(() => {}, () => {}, {mediaId:fixture.testClipId}); await flush();
- assert.equal(byClass(single.root, "library-row").length, 20); single.destroy();
+ assert.equal(tiles(single).length, 20); single.destroy();
  const multi = new VideoLibraryPage(() => {}, () => {}, {mediaId:fixture.multiMediaId}); await flush();
- assert.equal(byClass(multi.root, "library-row").length, 0);
+ assert.equal(tiles(multi).length, 0);
  assert.equal(byClass(multi.root, "library-index-row").length, 2); multi.destroy();
 });
+
 test("metadata rendering creates zero videos; preview is lazy and never more than one", async () => {
- videosCreated = 0;
+ videos.created = 0;
  const page = new VideoLibraryPage(() => {}, () => {}, {mediaId:fixture.testClipId}); await flush();
  for(let i=0;i<29;i++) { clickText(page.root, "加载更多"); await flush(); }
- assert.equal(byClass(page.root, "library-row").length, 600); assert.equal(videosCreated, 0);
- const previews = byClass(page.root, "library-poster"); previews[0].dispatch("click");
+ assert.equal(tiles(page).length, 600);
+ assert.equal(videos.created, 0);
+ assert.equal(all(page.root).filter(node => node.tagName === "video").length, 0, "browsing never builds a video element");
+ const previews = byClass(page.root, "cover-tile-preview"); previews[0].dispatch("click");
  assert.equal(all(page.root).filter(c => c.tagName === "video").length, 1);
  previews[1].dispatch("click"); assert.equal(all(page.root).filter(c => c.tagName === "video").length, 1);
  page.lockPrivacy(); assert.equal(all(page.root).filter(c => c.tagName === "video").length, 0);
  page.destroy();
 });
-test("single/selected play retain rows and scroll, root-only inert, removeMedia removes selected row", async () => {
+
+test("single/selected play retain tiles and scroll, root-only inert, removeMedia removes the tile", async () => {
  const played = [];
  const page = mount(new VideoLibraryPage(clips => played.push(clips), () => {}, {mediaId:fixture.testClipId})); await flush();
  const list = byClass(page.root, "library-list")[0]; list.scrollTop = 333;
- const checks = byClass(page.root, "library-checkbox");
- for(const i of [2,0]) { checks[i].checked = true; checks[i].dispatch("change"); }
+ enterSelectMode(page);
+ for(const i of [2,0]) byClass(page.root, "cover-tile-select")[i].dispatch("click");
  clickText(page.root, "播放选中 (2/100)");
  const expected = [fixture.originals.find(m => m.id === played[0][0].id), fixture.originals.find(m => m.id === played[0][1].id)];
  assert.equal(played[0].length, 2); assert.notEqual(expected[0].id, expected[1].id);
- const row = byClass(page.root, "library-row")[0]; row.children.at(-1).dispatch("click");
+ // Leaving select mode keeps the selection but restores browsing: a cover tap plays again.
+ clickText(page.root, "退出多选");
+ byClass(page.root, "cover-tile-play")[0].dispatch("click");
  assert.equal(played[1].length, 1); assert.equal(played[1][0].id, expected[1].id);
  page.setPlaybackActive(true); assert.equal(page.root.inert, true);
  page.setPlaybackActive(false); assert.equal(page.root.inert, false); assert.equal(list.scrollTop,333);
- assert.equal(document.activeElement, row.children.at(-1)); assert.equal(byClass(page.root, "library-row").length,20);
- page.removeMedia(expected[1].id); assert.equal(byClass(page.root, "library-row").length,19);
+ assert.equal(byClass(page.root, "cover-tile-play")[0], document.activeElement);
+ assert.equal(tiles(page).length,20);
+ page.removeMedia(expected[1].id); assert.equal(tiles(page).length,19);
  assert.equal(list.scrollTop,333); assert.match(byClass(page.root, "library-title")[0].textContent, /19\/599/);
  assert.ok(page.root.textContent.includes("播放选中 (1/100)")); page.destroy();
+});
+
+test("select mode is explicit: browsing shows no check control and only a mode switch enables selection", async () => {
+ const page = mount(new VideoLibraryPage(() => {}, () => {}, {mediaId:fixture.testClipId})); await flush();
+ assert.equal(byClass(page.root, "cover-tile-select").every(node => node.hidden), true, "browsing does not look like an asset manager");
+ assert.equal(byClass(page.root, "library-selection")[0].hidden, true);
+ const tile = tiles(page)[0];
+ tile.querySelector(".cover-tile-play").dispatch("click");
+ assert.match(page.root.textContent, /播放选中 \(0\/100\)/);
+ enterSelectMode(page);
+ assert.equal(byClass(page.root, "cover-tile-select").every(node => !node.hidden), true);
+ assert.equal(byClass(page.root, "library-selection")[0].hidden, false);
+ page.destroy();
 });
 
 test("single play returns to its visible launch control without selecting or restarting preview", async () => {
@@ -119,16 +135,16 @@ test("single play returns to its visible launch control without selecting or res
   const played=[];
   page=mount(new VideoLibraryPage(clips=>{played.push(clips);leaveForPlayback(page);},()=>{}, {mediaId:fixture.testClipId}));await flush();
   const list=byClass(page.root,"library-list")[0];list.scrollTop=333;
-  const rows=byClass(page.root,"library-row"), launch=rows[3].children.at(-1);
-  byClass(page.root,"library-poster")[3].dispatch("click");
+  const rows=tiles(page), launch=rows[3].querySelector(".cover-tile-play");
+  byClass(page.root,"cover-tile-preview")[3].dispatch("click");
   const preview=all(page.root).find(node=>node.tagName==="video");
   launch.dispatch("click");assert.equal(played[0].length,1);
   assert.equal(preview.parent,null);assert.equal(preview.src,undefined);
   page.setPlaybackActive(false);
   assert.equal(document.activeElement,launch);assert.deepEqual(launch.focusOptions,{preventScroll:true});
   assert.equal(page.root.inert,false);assert.equal(list.scrollTop,333);
-  assert.deepEqual(byClass(page.root,"library-row"),rows);
-  assert.ok(byClass(page.root,"library-checkbox").every(check=>!check.checked));
+  assert.deepEqual(tiles(page),rows);
+  assert.ok(byClass(page.root,"cover-tile-select").every(node=>node.getAttribute("aria-checked")==="false"));
   assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);
  } finally {page?.destroy();}
 });
@@ -137,38 +153,42 @@ test("short selection survives long filter and selected playback returns to visi
  try {
   const played=[];
   page=mount(new VideoLibraryPage(clips=>{played.push(clips);leaveForPlayback(page);},()=>{}, {mediaId:fixture.testClipId}));await flush();
+  enterSelectMode(page);
   clickText(page.root,"短视频");await flush();
-  const shortRow=byClass(page.root,"library-row")[0], check=byClass(page.root,"library-checkbox")[0];
-  check.checked=true;check.dispatch("change");
+  const shortTile=tiles(page)[0];
+  shortTile.querySelector(".cover-tile-select").dispatch("click");
   clickText(page.root,"长视频");await flush();
-  assert.equal(page.root.contains(shortRow),false);
+  assert.equal(page.root.contains(shortTile),false);
   const list=byClass(page.root,"library-list")[0];list.scrollTop=222;
-  const rows=byClass(page.root,"library-row"), launch=byClass(page.root,"library-selection")[0].children[0];
+  const rows=tiles(page), launch=byClass(page.root,"library-selection")[0].children[0];
   launch.dispatch("click");assert.equal(played[0][0].category,"short");
   page.setPlaybackActive(false);
   assert.equal(document.activeElement,launch);assert.equal(page.root.inert,false);assert.equal(list.scrollTop,222);
-  assert.deepEqual(byClass(page.root,"library-row"),rows);
-  assert.ok(byClass(page.root,"library-checkbox").every(input=>!input.checked));
+  assert.deepEqual(tiles(page),rows);
+  assert.ok(byClass(page.root,"cover-tile-select").every(node=>node.getAttribute("aria-checked")==="false"));
   assert.match(launch.textContent,/1\/100/);
-  clickText(page.root,"短视频");await flush();assert.equal(byClass(page.root,"library-checkbox")[0].checked,true);
+  clickText(page.root,"短视频");await flush();
+  assert.equal(tiles(page)[0].querySelector(".cover-tile-select").getAttribute("aria-checked"),"true");
  } finally {page?.destroy();}
 });
-test("removed launch control falls back to a visible selected row, then visible back without selecting", async () => {
+test("removed launch control falls back to a visible selected tile, then visible back without selecting", async () => {
  for(const keepSelected of [true,false]) {
   let page;
   try {
    const played=[];
    page=mount(new VideoLibraryPage(clips=>{played.push(clips);leaveForPlayback(page);},()=>{}, {mediaId:fixture.testClipId}));await flush();
-   const checks=byClass(page.root,"library-checkbox");checks[1].checked=true;checks[1].dispatch("change");
-   const rows=byClass(page.root,"library-row"), launch=rows[0].children.at(-1);
+   enterSelectMode(page);
+   byClass(page.root,"cover-tile-select")[1].dispatch("click");
+   clickText(page.root,"退出多选");
+   const rows=tiles(page), launch=rows[0].querySelector(".cover-tile-play");
    const list=byClass(page.root,"library-list")[0];list.scrollTop=321;
    launch.dispatch("click");page.removeMedia(played[0][0].id);
    if(!keepSelected) clickText(page.root,"清空选择");
    page.setPlaybackActive(false);
-   const expected=keepSelected?rows[1]:all(page.root).find(node=>node.tagName==="button"&&node.textContent==="返回");
+   const expected=keepSelected?rows[1].querySelector(".cover-tile-play"):all(page.root).find(node=>node.tagName==="button"&&node.textContent==="返回");
    assert.equal(document.activeElement,expected);assert.deepEqual(expected.focusOptions,{preventScroll:true});
    assert.equal(page.root.contains(document.activeElement),true);assert.equal(page.root.inert,false);assert.equal(list.scrollTop,321);
-   assert.equal(byClass(page.root,"library-checkbox").filter(input=>input.checked).length,keepSelected?1:0);
+   assert.equal(byClass(page.root,"cover-tile-select").filter(node=>node.getAttribute("aria-checked")==="true").length,keepSelected?1:0);
   } finally {page?.destroy();}
  }
 });
@@ -177,7 +197,7 @@ function fakeTime() {
  const originalNow = Date.now, originalWindow = globalThis.window;
  let now = 0, id = 0; const timers = new Map();
  Date.now = () => now;
- globalThis.window = { setTimeout(fn, ms) { const key = ++id; timers.set(key, { fn, at: now+ms }); return key; }, clearTimeout(key) { timers.delete(key); } };
+ globalThis.window = { setTimeout(fn, ms) { const key = ++id; timers.set(key, { fn, at: now+ms }); return key; }, clearTimeout(key) { timers.delete(key); }, matchMedia: () => ({ matches: false }) };
  return { timers, advance(ms) { now+=ms; for(const [key,timer] of [...timers]) if(timer.at<=now){timers.delete(key);timer.fn();} },
   restore() { Date.now = originalNow; globalThis.window = originalWindow; document.hidden = false; } };
 }
@@ -186,7 +206,7 @@ test("paused preview frame hides at 60s; media/hover/synthetic events do not cou
  try {
   page=new VideoLibraryPage(()=>{},()=>{}, {mediaId:fixture.testClipId});await flush();
   assert.equal(time.timers.size,0);
-  byClass(page.root,"library-poster")[0].dispatch("click");
+  byClass(page.root,"cover-tile-preview")[0].dispatch("click");
   assert.equal(time.timers.size,1);
   const video=all(page.root).find(node=>node.tagName==="video");video.dispatch("loadeddata");
   time.advance(59999);
@@ -199,7 +219,7 @@ test("paused preview frame hides at 60s; media/hover/synthetic events do not cou
   page.root.dispatch("pointerdown",{isTrusted:true});time.advance(60000);
   assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);assert.equal(time.timers.size,0);
   // Only an explicit new preview unlocks it and starts a fresh deadline.
-  byClass(page.root,"library-poster")[0].dispatch("click");time.advance(59999);
+  byClass(page.root,"cover-tile-preview")[0].dispatch("click");time.advance(59999);
   assert.equal(all(page.root).filter(node=>node.tagName==="video").length,1);time.advance(1);
   assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);
  } finally {page?.destroy();time.restore();}
@@ -210,7 +230,7 @@ test("trusted preview activity resets deadline; stop/switch/overlay/destroy clea
  const initialListeners=visibilityListeners();
  try {
   page=new VideoLibraryPage(()=>{},()=>{}, {mediaId:fixture.testClipId});await flush();
-  const previews=byClass(page.root,"library-poster");previews[0].dispatch("click");
+  const previews=byClass(page.root,"cover-tile-preview");previews[0].dispatch("click");
   time.advance(59000);page.root.dispatch("wheel",{isTrusted:true});time.advance(59000);
   assert.equal(all(page.root).filter(node=>node.tagName==="video").length,1);time.advance(1000);
   assert.equal(time.timers.size,0);
@@ -230,7 +250,7 @@ test("trusted preview activity resets deadline; stop/switch/overlay/destroy clea
 test("visibility resume checks elapsed time when timers were throttled", async () => {
  const time=fakeTime();let page;
  try {
-  page=new VideoLibraryPage(()=>{},()=>{}, {mediaId:fixture.testClipId});await flush();byClass(page.root,"library-poster")[0].dispatch("click");
+  page=new VideoLibraryPage(()=>{},()=>{}, {mediaId:fixture.testClipId});await flush();byClass(page.root,"cover-tile-preview")[0].dispatch("click");
   time.timers.clear();time.advance(61000);document.dispatch("visibilitychange");
   assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);assert.equal(time.timers.size,0);
  } finally {page?.destroy();time.restore();}
@@ -244,21 +264,23 @@ test("pagination protocol failures show retry, no auto retry storm or false comp
   };
   page=new VideoLibraryPage(()=>{},()=>{}, {mediaId:fixture.testClipId});await flush();
   clickText(page.root,"加载更多");await flush();
-  assert.equal(byClass(page.root,"library-row").length,20);
+  assert.equal(tiles(page).length,20);
   assert.match(page.root.textContent,/加载失败，重试/);assert.doesNotMatch(page.root.textContent,/已加载全部/);
   const list=byClass(page.root,"library-list")[0];list.scrollTop=999;list.clientHeight=300;list.scrollHeight=1000;
   for(let i=0;i<10;i++)list.dispatch("scroll");await flush();assert.equal(count,2);
   clickText(page.root,"加载失败，重试");await flush();assert.equal(count,3);
-  assert.equal(byClass(page.root,"library-row").length,40);
+  assert.equal(tiles(page).length,40);
  } finally {page?.destroy();api.libraryVideos=original;}
 });
-test("rows without an archive cover render no image", async () => {
+test("tiles without an archive cover render the missing state instead of an image", async () => {
  const page = mount(new VideoLibraryPage(() => {}, () => {}, {mediaId: fixture.testClipId})); await flush();
- assert.equal(byClass(page.root, "library-row").length, 20);
+ assert.equal(tiles(page).length, 20);
  assert.equal(all(page.root).filter(node => node.tagName === "img").length, 0, "no cover field means no image");
+ assert.equal(tiles(page)[0].dataset.coverState, "missing");
+ assert.match(tiles(page)[0].textContent, /暂无封面/);
  page.destroy();
 });
-test("a provided archive cover is lazy, single and falls back when broken", async () => {
+test("a provided archive cover is lazy, single, ready on load and degrades on error", async () => {
  const original = api.libraryVideos;
  try {
   api.libraryVideos = async (...args) => {
@@ -266,18 +288,21 @@ test("a provided archive cover is lazy, single and falls back when broken", asyn
    return { ...page, items: page.items.map((clip, index) => index === 0 ? { ...clip, coverUrl: "/api/v1/media/cover-1" } : clip) };
   };
   const page = mount(new VideoLibraryPage(() => {}, () => {}, {mediaId: fixture.testClipId})); await flush();
-  assert.equal(byClass(page.root, "library-row").length, 20);
+  assert.equal(tiles(page).length, 20);
   const images = all(page.root).filter(node => node.tagName === "img");
-  assert.equal(images.length, 1, "only the row that reported a cover renders one");
-  assert.equal(images[0].className, "library-cover");
+  assert.equal(images.length, 1, "only the tile that reported a cover renders one");
+  assert.equal(images[0].className, "cover-tile-image");
   assert.equal(images[0].loading, "lazy", "a cover never loads eagerly for a long list");
   assert.equal(images[0].decoding, "async");
   assert.equal(images[0].alt, "");
   assert.equal(images[0].attributes.src, "/api/v1/media/cover-1");
-  assert.ok(images[0].parent.className.includes("library-poster-cover"), "the preview control owns the cover");
-  images[0].dispatch("error");
-  assert.equal(all(page.root).filter(node => node.tagName === "img").length, 0, "a broken cover falls back to the placeholder");
-  assert.equal(byClass(page.root, "library-row").length, 20);
+  assert.equal(tiles(page)[0].dataset.coverState, "loading");
+  images[0].dispatch("load");
+  assert.equal(tiles(page)[0].dataset.coverState, "ready");
+  images[0].dispatch("error"); images[0].dispatch("error");
+  assert.equal(tiles(page)[0].dataset.coverState, "failed", "a broken cover degrades instead of retrying forever");
+  assert.equal(tiles(page)[0].querySelector(".cover-tile-retry").hidden, false);
+  assert.equal(tiles(page).length, 20);
   page.destroy();
  } finally { api.libraryVideos = original; }
 });

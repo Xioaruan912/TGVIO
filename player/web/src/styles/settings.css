@@ -38,54 +38,41 @@
 .library-button { min-height: 44px; min-width: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--sky700); font: inherit; font-size: 14px; cursor: pointer; touch-action: manipulation; }
 .library-button[aria-pressed="true"] { background: var(--sky700); color: #fff; border-color: var(--sky700); }
 .library-button:disabled { opacity: .5; cursor: default; }
-.library-page button:focus-visible, .library-date-input:focus-visible, .library-row:focus-visible, .library-checkbox:focus-visible { outline: 3px solid var(--sky500); outline-offset: 2px; }
+.library-page button:focus-visible, .library-date-input:focus-visible { outline: 3px solid var(--sky500); outline-offset: 2px; }
 .library-date-label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 13px; min-width: 0; }
 .library-date-input { min-width: 0; max-width: 100%; min-height: 44px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--text); font-size: 16px; }
 .library-notice { margin: 0; padding: 0 16px 8px; font-size: 12px; line-height: 1.5; color: var(--muted); flex-shrink: 0; overflow-wrap: anywhere; }
 .library-selection { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 16px 8px; flex-shrink: 0; }
 .library-selection:empty { display: none; }
-.library-list { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overflow-x: hidden; overscroll-behavior: contain; padding: 0 16px max(16px, env(safe-area-inset-bottom)); scrollbar-gutter: stable; }
-/* Videos render as cover tiles; index/folder stages stay a list. */
-.library-list.library-grid { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 8px; align-content: start; }
-.library-grid > :not(.library-row) { grid-column: 1 / -1; }
+.library-list { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px max(16px, env(safe-area-inset-bottom)); scrollbar-gutter: stable; }
+/* Videos render as cover tiles; index/folder stages stay a plain list. */
+.library-list.cover-grid { align-content: start; }
 .library-index-row { display: flex; flex-direction: column; text-align: left; align-items: flex-start; width: 100%; gap: 4px; padding: 12px 14px; margin-bottom: 8px; }
-.library-row { position: relative; display: block; min-height: 0; padding: 0; margin: 0; border-bottom: 0; aspect-ratio: 3 / 4; }
-.library-row-text { position: absolute; left: 6px; right: 6px; bottom: 6px; z-index: 2; display: grid; gap: 2px; pointer-events: none; }
-.library-row-title { font-size: 12px; line-height: 1.3; color: #fff; text-shadow: 0 1px 3px rgba(0, 0, 0, .7); overflow-wrap: anywhere; }
-.library-row-meta { font-size: 11px; line-height: 1.3; color: #fff; opacity: .92; text-shadow: 0 1px 3px rgba(0, 0, 0, .7); overflow-wrap: anywhere; }
-.library-check { position: absolute; top: 0; left: 0; z-index: 4; width: 44px; min-height: 44px; display: grid; place-items: center; cursor: pointer; background: linear-gradient(135deg, rgba(0, 0, 0, .4), transparent 65%); border-radius: 8px 0 10px 0; }
-.library-checkbox { width: 22px; height: 22px; accent-color: var(--sky700); cursor: pointer; }
-.library-poster { position: absolute; inset: 0; width: 100%; height: 100%; overflow: hidden; background: var(--sky50); padding: 0; font-size: 12px; border-radius: 8px; display: grid; place-items: center; color: var(--muted); }
-.library-row > .library-button:last-child { position: absolute; right: 0; bottom: 0; z-index: 4; min-height: 44px; padding: 0 12px; margin: 0; border-radius: 10px 0 8px 0; background: rgba(0, 0, 0, .45); color: #fff; }
-.library-page .library-preview-video { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; opacity: 0; filter: blur(9px); pointer-events: none; }
-.library-page .library-preview-revealed .library-preview-video { opacity: 1; filter: none; }
+.library-index-title { font-size: 14px; font-weight: 650; color: var(--text); }
+.library-index-meta { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
+.library-page .library-preview-video { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; object-fit: cover; opacity: 0; filter: blur(9px); pointer-events: none; transition: opacity 180ms ease, filter 180ms ease; }
+.cover-tile.is-previewing .library-preview-video { opacity: 1; filter: none; }
 .library-empty { color: var(--muted); padding: 16px 0; font-size: 14px; }
 .library-list > .library-button:not(.library-index-row) { margin-top: 12px; }
+.library-selection { position: relative; z-index: 3; align-items: center; }
+.library-select-toggle[aria-pressed="true"] { background: var(--primary); color: #fff; border-color: var(--primary); }
 @media (hover: hover) { .library-button:not(:disabled):hover { background: var(--sky50); color: var(--sky700); } }
 @media (max-width: 360px) {
  .library-header { padding: max(8px, var(--safe-top)) 8px 8px; gap: 8px; }
  .library-page .library-toolbar, .library-selection { padding-left: 8px; padding-right: 8px; }
  .library-notice { padding-left: 8px; padding-right: 8px; }
  .library-list { padding-left: 8px; padding-right: 8px; scrollbar-gutter: auto; }
- .library-list.library-grid { grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px; }
- .library-row > .library-button:last-child { padding: 0 8px; }
 }
 @media (orientation: landscape) and (max-height: 500px) {
  .library-header { padding-top: max(4px, var(--safe-top)); padding-bottom: 4px; }
  .library-page .library-toolbar { padding-top: 4px; padding-bottom: 4px; }
  .library-selection { padding-bottom: 4px; }
  .library-notice { padding-bottom: 4px; }
- .library-row { min-height: 0; padding: 0; }
 }
 @media (min-width: 1000px) {
  .library-header, .library-page .library-toolbar, .library-selection, .library-notice { padding-left: 28px; padding-right: 28px; }
  .library-list { padding-left: 28px; padding-right: 28px; }
  .library-index-row { max-width: 1040px; }
- .library-list.library-grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 12px; }
 }
 
 @media (min-width: 900px) { .library-page { padding-inline: 0; } }
-
-/* Optional versioned archive cover. Absent means the preview label stays visible. */
-.library-page .library-poster-cover { color: transparent; }
-.library-page .library-cover { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; border-radius: 8px; }

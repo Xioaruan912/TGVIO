@@ -5,7 +5,7 @@ import base64
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
-from unittest.mock import AsyncMock, Mock
+from unittest.mock import AsyncMock, Mock, patch
 
 from aiohttp.test_utils import TestClient, TestServer
 
@@ -18,7 +18,7 @@ from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.playback import StartupRangeCache
 from tgvio_player.application.player_recovery import PlayerRecoveryService
 from tgvio_player.application.ports import WebDavWriteError
-from tgvio_player.domain.catalog import CatalogLocation, CatalogMedia, CatalogPackage
+from tgvio_player.domain.catalog import CatalogCover, CatalogLocation, CatalogMedia, CatalogPackage
 from tgvio_player.domain.auth import token_digest
 from tgvio_player.domain.ranges import ByteRange
 from tgvio_player.domain.storage_settings import PlayerStorageSettings
@@ -950,6 +950,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
                     "active_playback": 2,
                     "active_preload": 0,
                     "active_probe": 0,
+                    "active_cover": 0,
                     "foreground_waiters": 0,
                     "available": 0,
                     "saturated": True,
@@ -1011,6 +1012,273 @@ class ClientIdentityTests(unittest.TestCase):
         )
         self.assertEqual(resolve_client(FakeRequest("172.20.0.1", {})), "172.20.0.1")
         self.assertEqual(resolve_client(FakeRequest(None, {})), "unknown")
+
+
+class PlayerCoverRouteTests(unittest.IsolatedAsyncioTestCase):
+    """Archive covers are served from their own tiny budget, never a playback slot.
+
+    A cover grid must be able to render while every playback slot is busy: one
+    client's browsing can never be the reason another client cannot watch.
+    """
+
+    JPEG = b"\xff\xd8\xff\xe0cover-bytes"
+
+    class FakeCoverReader:
+        def __init__(self, payload: bytes, status: int = 206) -> None:
+            self.payload = payload
+            self.status = status
+            self.calls: list[tuple[str, ByteRange | None]] = []
+
+        async def open_range(self, remote_path: str, byte_range: ByteRange | None) -> WebDavRangeResponse:
+            self.calls.append((remote_path, byte_range))
+            length = len(self.payload) if byte_range is None else byte_range.length
+            return WebDavRangeResponse(
+                self.status, "image/jpeg", length, None, '"cover"', ClosableBody([self.payload])
+            )
+
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = PlayerCatalogRepositorySQLite(Path(self.tmp.name) / "player.sqlite3")
+        await self.repo.open()
+        self.media_id = "a" * 64
+        self.plain_id = "9" * 64
+        package = CatalogPackage(
+            "package", "TGVIO/2026-09-22/1", "b" * 64, '"manifest"', '"complete"',
+            (
+                CatalogMedia(self.media_id, "video", 8, "video/mp4", 1080, 1920, 2.0),
+                CatalogMedia(self.plain_id, "video", 8, "video/mp4", 1080, 1920, 2.0),
+            ),
+            (
+                CatalogLocation(self.media_id, "package", "video.mp4", '"etag"'),
+                CatalogLocation(self.plain_id, "package", "plain.mp4", '"etag"'),
+            ),
+            (
+                CatalogCover(
+                    media_id=self.media_id, package_id="package",
+                    remote_relpath="cover/video-cover.jpg", size_bytes=len(self.JPEG),
+                    mime_type="image/jpeg", algorithm="reuse-publish-thumbnail-v1",
+                ),
+            ),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+        self.reader = self.FakeCoverReader(self.JPEG)
+        self.server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            # The production shape: the read-only adapter assembles and validates
+            # the catalog-owned path before the transport sees it.
+            ReadOnlyWebDavAdapter(self.reader),
+            max_streams=4,
+            max_streams_per_client=4,
+        )
+        self.client = TestClient(TestServer(self.server.application()))
+        await self.client.start_server()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _login(self) -> str:
+        response = await self.client.post("/api/v1/auth/login", json={"secret": "s" * 32})
+        self.assertEqual(response.status, 200)
+        return response.cookies["tgvio_player_session"].value
+
+    async def _cover(self, cookie: str | None, media_id: str | None = None):
+        kwargs = {} if cookie is None else {"cookies": {"tgvio_player_session": cookie}}
+        return await self.client.get(f"/api/v1/media/{media_id or self.media_id}/cover", **kwargs)
+
+    async def test_cover_requires_the_player_session(self) -> None:
+        response = await self._cover(None)
+        self.assertEqual(response.status, 401)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    async def test_cover_is_served_as_a_bounded_private_image(self) -> None:
+        cookie = await self._login()
+        cover = await self.repo.active_cover(self.media_id)
+        response = await self.client.get(f"/api/v1/media/{self.media_id}/cover?v={cover['version']}",
+                                         cookies={"tgvio_player_session": cookie})
+        self.assertEqual(response.status, 200)
+        self.assertEqual(response.headers["Content-Type"], "image/jpeg")
+        self.assertEqual(response.headers["Cache-Control"], "private, max-age=3600")
+        self.assertIn("Cookie", response.headers["Vary"])
+        self.assertEqual(await response.read(), self.JPEG)
+        self.assertEqual(
+            self.reader.calls, [("TGVIO/2026-09-22/1/cover/video-cover.jpg", ByteRange(0, len(self.JPEG) - 1))]
+        )
+
+    async def test_cover_errors_and_unversioned_images_are_never_cached(self) -> None:
+        cookie = await self._login()
+        response = await self._cover(cookie)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        for status in (404, 503):
+            self.reader.status = status
+            response = await self._cover(cookie)
+            self.assertEqual(response.headers["Cache-Control"], "no-store")
+
+    async def test_cover_stops_reading_as_soon_as_the_declared_image_is_sent(self) -> None:
+        cookie = await self._login()
+        body = ClosableBody([self.JPEG, b"unbounded-tail", b"must-not-read"])
+        self.reader.open_range = AsyncMock(return_value=WebDavRangeResponse(
+            200, "image/jpeg", None, None, None, body,
+        ))
+        response = await self._cover(cookie)
+        self.assertEqual(await response.read(), self.JPEG)
+        await asyncio.wait_for(body.closed.wait(), timeout=1)
+        self.assertEqual(len(body._chunks), 2, "close the upstream at the cap, do not drain its tail")
+        self.assertEqual(self.server._cover_active, 0)
+
+    async def test_cover_prepare_failure_closes_upstream_and_releases_budget(self) -> None:
+        body = ClosableBody([self.JPEG])
+        self.reader.open_range = AsyncMock(return_value=WebDavRangeResponse(
+            206, "image/jpeg", len(self.JPEG), None, None, body,
+        ))
+        self.server._authenticate = AsyncMock(return_value="test-session")
+        request = type("CoverRequest", (dict,), {})(player_request_id="test")
+        request.match_info = {"media_id": self.media_id}
+        request.query = {}
+        with patch("aiohttp.web.StreamResponse.prepare", side_effect=ConnectionResetError):
+            with self.assertRaises(ConnectionResetError):
+                await self.server._cover(request)
+        self.assertTrue(body.closed.is_set(), "prepare failure must not leak the upstream")
+        self.assertEqual(self.server._cover_active, 0)
+
+    async def test_cover_bytes_are_capped_by_the_catalog_declaration(self) -> None:
+        cookie = await self._login()
+        await self.repo.apply_package(CatalogPackage(
+            "package", "TGVIO/2026-09-22/1", "b" * 64, '"manifest"', '"complete"',
+            (
+                CatalogMedia(self.media_id, "video", 8, "video/mp4", 1080, 1920, 2.0),
+                CatalogMedia(self.plain_id, "video", 8, "video/mp4", 1080, 1920, 2.0),
+            ),
+            (
+                CatalogLocation(self.media_id, "package", "video.mp4", '"etag"'),
+                CatalogLocation(self.plain_id, "package", "plain.mp4", '"etag"'),
+            ),
+            (
+                CatalogCover(
+                    media_id=self.media_id, package_id="package",
+                    remote_relpath="cover/video-cover.jpg", size_bytes=6,
+                    mime_type="image/jpeg", algorithm="reuse-publish-thumbnail-v1",
+                ),
+            ),
+        ))
+        response = await self._cover(cookie)
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), self.JPEG[:6], "a cover can never stream past its declared size")
+
+    async def test_unknown_media_or_missing_cover_is_not_found(self) -> None:
+        cookie = await self._login()
+        self.assertEqual((await self._cover(cookie, "f" * 64)).status, 404)
+        self.assertEqual((await self._cover(cookie, self.plain_id)).status, 404)
+        self.assertEqual(self.reader.calls, [], "no upstream read without a catalog cover row")
+
+    async def test_cover_never_consumes_a_playback_slot(self) -> None:
+        cookie = await self._login()
+        held = [await self.server._acquire_stream(f"client-{index}") for index in range(4)]
+        self.assertTrue(all(held))
+        self.assertTrue(self.server.playback_saturated, "precondition: every playback slot is taken")
+        try:
+            response = await self._cover(cookie)
+            self.assertEqual(response.status, 200, "covers must never compete with playback")
+            self.assertEqual(await response.read(), self.JPEG)
+            self.assertEqual(self.server.active_playback_streams, 4)
+            self.assertTrue(self.server.playback_saturated, "a cover must not release a playback slot")
+        finally:
+            for index in range(4):
+                await self.server._release_stream(f"client-{index}")
+
+    async def test_cover_budget_is_bounded_and_fails_fast(self) -> None:
+        cookie = await self._login()
+        acquired = 0
+        while await self.server._acquire_cover(diagnostics={}):
+            acquired += 1
+            if acquired > 64:
+                self.fail("cover budget is unbounded")
+        self.assertGreaterEqual(acquired, 1)
+        try:
+            response = await self._cover(cookie)
+            self.assertEqual(response.status, 503, "a saturated cover budget must fail fast, not queue")
+        finally:
+            for _ in range(acquired):
+                await self.server._release_cover()
+        self.assertEqual((await self._cover(cookie)).status, 200)
+
+    async def test_upstream_failures_map_to_clear_status_codes(self) -> None:
+        cookie = await self._login()
+        self.reader.status = 404
+        self.assertEqual((await self._cover(cookie)).status, 404)
+        self.reader.status = 503
+        self.assertEqual((await self._cover(cookie)).status, 502)
+
+    async def test_short_upstream_cover_fails_instead_of_stalling_the_client(self) -> None:
+        cookie = await self._login()
+        self.reader.payload = b""
+        response = await self._cover(cookie)
+        with self.assertRaises(Exception) as caught:
+            await asyncio.wait_for(response.read(), timeout=3)
+        self.assertNotIsInstance(
+            caught.exception, asyncio.TimeoutError,
+            "a short cover upstream stalled the client instead of failing the response",
+        )
+
+    async def test_cover_open_failure_is_a_clean_upstream_error(self) -> None:
+        cookie = await self._login()
+        self.reader.open_range = AsyncMock(side_effect=ConnectionError("fixture unavailable"))
+        response = await self._cover(cookie)
+        self.assertEqual(response.status, 502)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(self.server._cover_active, 0)
+
+    async def test_stale_cover_version_is_rejected_without_reading_archive(self) -> None:
+        cookie = await self._login()
+        response = await self.client.get(f"/api/v1/media/{self.media_id}/cover?v=stale",
+                                         cookies={"tgvio_player_session": cookie})
+        self.assertEqual(response.status, 404)
+        self.assertEqual(response.headers["Cache-Control"], "no-store")
+        self.assertEqual(self.reader.calls, [])
+
+    async def test_new_cover_package_has_a_new_url_without_rewriting_old_manifest(self) -> None:
+        cookie = await self._login()
+        before = await self.repo.active_cover(self.media_id)
+        await self.repo.apply_package(CatalogPackage(
+            "a-new-cover-package", "TGVIO/2026-09-23/2", "c" * 64, None, None,
+            (CatalogMedia(self.media_id, "video", 8, "video/mp4"),),
+            (CatalogLocation(self.media_id, "a-new-cover-package", "video.mp4"),),
+            (CatalogCover(self.media_id, "a-new-cover-package", "cover/new.jpg", len(self.JPEG),
+                          "image/jpeg", "reuse-publish-thumbnail-v1"),),
+        ))
+        after = await self.repo.active_cover(self.media_id)
+        self.assertNotEqual(before["version"], after["version"])
+        response = await self.client.get(f"/api/v1/media/{self.media_id}/cover?v={before['version']}",
+                                         cookies={"tgvio_player_session": cookie})
+        self.assertEqual(response.status, 404)
+        self.assertEqual(self.reader.calls, [])
+
+    async def test_media_dto_advertises_a_cover_only_when_one_exists(self) -> None:
+        cookie = await self._login()
+        cover = await self.repo.active_cover(self.media_id)
+        cover_url = f"/api/v1/media/{self.media_id}/cover?v={cover['version']}"
+        with_cover = await self.client.get(
+            f"/api/v1/media/{self.media_id}", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertEqual((await with_cover.json())["cover_url"], cover_url)
+        without_cover = await self.client.get(
+            f"/api/v1/media/{self.plain_id}", cookies={"tgvio_player_session": cookie}
+        )
+        self.assertIsNone((await without_cover.json())["cover_url"])
+        listing = await self.client.get("/api/v1/videos?category=all&limit=5&offset=0", cookies={"tgvio_player_session": cookie})
+        self.assertEqual(
+            {item["id"]: item["cover_url"] for item in (await listing.json())["items"]},
+            {self.media_id: cover_url, self.plain_id: None},
+        )
+
+    async def test_health_reports_the_cover_budget(self) -> None:
+        response = await self.client.get("/healthz")
+        self.assertEqual(response.status, 200)
+        self.assertEqual((await response.json())["stream_capacity"]["active_cover"], 0)
 
 
 class VideoCategoryTests(unittest.IsolatedAsyncioTestCase):

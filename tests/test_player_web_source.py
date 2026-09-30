@@ -22,7 +22,19 @@ class PlayerContextFeedSourceTests(unittest.TestCase):
         self.assertNotIn("feedView.insertAfter", main)
         self.assertIn("new LibraryPlayback", main)
         self.assertIn("加载失败，点击重试", main)
-        self.assertIn("page?.setPlaybackActive(false)", main)
+        # One shared owner hands playback back to whichever grid started it.
+        self.assertIn("const playback = createCollectionPlayback(active => page?.setPlaybackActive(active));", main)
+        self.assertIn("if (wasPlaying) syncPage(false);", main)
+
+    def test_favorites_browse_uses_the_cover_grid_and_an_explicit_player(self) -> None:
+        main = (ROOT / "player/web/src/main.ts").read_text(encoding="utf-8")
+        favorites = (ROOT / "player/web/src/favorites.ts").read_text(encoding="utf-8")
+        self.assertIn("new FavoritesPage(", main)
+        self.assertIn("openFavorites();", main)
+        self.assertIn("buildCoverTile", favorites)
+        # Browsing favorites never builds a player; playback stays explicit.
+        self.assertNotIn("createElement(\"video\")", favorites)
+        self.assertIn("播放已加载 (", favorites)
 
     def test_context_requests_abort_and_deduplicate_old_pages(self) -> None:
         context = (ROOT / "player/web/src/context-feed.ts").read_text(encoding="utf-8")
@@ -35,7 +47,7 @@ class PlayerContextFeedSourceTests(unittest.TestCase):
         large = (ROOT / "player/web/src/large.ts").read_text(encoding="utf-8")
         playback = (ROOT / "player/web/src/library-playback.ts").read_text(encoding="utf-8")
         # A late feed retry must respect the current library/large-player owner.
-        self.assertIn("const feedOwnsPlayback = (): boolean => !libraryPage && !longVideosOpen && !largePlayer;", main)
+        self.assertIn("const feedOwnsPlayback = (): boolean => !libraryPage && !favoritesPage && !longVideosOpen && !largePlayer;", main)
         self.assertEqual(main.count("!feedOwnsPlayback()"), 2)
         # A destroyed player must not resurrect its source after an awaited delete.
         self.assertIn("if (this.destroyed) return;", large)
@@ -83,6 +95,31 @@ class PlayerDownloadAndTailSourceTests(unittest.TestCase):
         self.assertIn("time >= video.duration * 0.7", main)
         self.assertIn("async prepareTail(mediaId: string)", api)
         self.assertIn("/prepare?tail=1", api)
+
+
+class PlayerCoverTileSourceTests(unittest.TestCase):
+    """Browsing stays metadata-only, covers stay honest and select stays explicit."""
+
+    def test_one_cover_unit_is_shared_by_every_browse_surface(self) -> None:
+        tile = (ROOT / "player/web/src/components/cover-tile.ts").read_text(encoding="utf-8")
+        self.assertIn('export type CoverState = "loading" | "ready" | "missing" | "failed";', tile)
+        # An unknown duration is never rendered as 0:00.
+        self.assertIn('return "时长未知";', tile)
+        # Selection is its own control: a button must never nest another button.
+        self.assertIn('element("button", "cover-tile-select")', tile)
+        self.assertIn('element("button", "cover-tile-preview")', tile)
+        for module in ("library.ts", "favorites.ts", "long.ts"):
+            source = (ROOT / "player/web/src" / module).read_text(encoding="utf-8")
+            self.assertIn("buildCoverTile", source, f"{module} must reuse the shared cover unit")
+
+    def test_library_grid_starts_no_media_and_gates_selection_behind_a_mode(self) -> None:
+        library = (ROOT / "player/web/src/library.ts").read_text(encoding="utf-8")
+        self.assertIn('this.list.classList.add("cover-grid")', library)
+        self.assertIn("setSelectMode", library)
+        self.assertIn('this.selectionBar.hidden = !this.selectMode;', library)
+        # The on-demand preview is the only video the list may create.
+        self.assertEqual(library.count('createElement("video")'), 1)
+        self.assertIn('video.preload = "none"', library)
 
 
 if __name__ == "__main__":

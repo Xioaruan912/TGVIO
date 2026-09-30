@@ -8,6 +8,7 @@ from aiohttp import web
 
 from tgvio_player.application.playback import StartupCacheKey
 from tgvio_player.application.streaming import StreamRequest, prepare_stream_request
+from tgvio_player.domain.catalog import MAX_COVER_BYTES
 from tgvio_player.domain.ranges import ByteRange, RangeNotSatisfiable
 from tgvio_player.infrastructure.webdav_read import WebDavRangeResponse
 
@@ -19,6 +20,10 @@ _FASTSTART_WAIT_SECONDS = 2.0
 _FOREGROUND_STREAM_WAIT_SECONDS = 3.0
 _STREAM_SLOT_POLL_SECONDS = 0.025
 _PRELOAD_HEADER = "X-TGVIO-Preload"
+# A cover is a small still declared by the catalog; the cap here is the same one
+# the archive writer enforces, so a malformed manifest can never make the Player
+# read an unbounded amount of upstream data for a thumbnail.
+_MAX_COVER_BYTES = MAX_COVER_BYTES
 # Chromium (and several other players) ask for two bytes to discover range
 # support before real playback. Such a probe is a capability check, not playback.
 _CAPABILITY_PROBE_BYTES = 2
@@ -220,6 +225,87 @@ class PlayerHttpStreamingMixin:
                 await self._release_probe()
             else:
                 await self._release_stream(client, preload=preload)
+
+    async def _cover(self, request: web.Request) -> web.StreamResponse:
+        """Serve one small, private still from its own budget.
+
+        A cover is decorative: it never takes a playback slot, never waits for
+        capacity, and is bounded by what the catalog declared. Whatever the
+        upstream does, the reader gets either the whole declared image or an
+        explicit failure - never a half image that looks like a broken video.
+        """
+        await self._authenticate(request)
+        media_id = request.match_info["media_id"]
+        await self._media_details(media_id)
+        cover = await self._repository.active_cover(media_id)
+        if cover is None:
+            raise web.HTTPNotFound(text="cover not found")
+        version = request.query.get("v")
+        if version is not None and version != cover["version"]:
+            raise web.HTTPNotFound(text="cover not found")
+        try:
+            declared = int(cover["size_bytes"])
+        except (TypeError, ValueError):
+            declared = 0
+        length = min(declared, _MAX_COVER_BYTES)
+        if length <= 0:
+            raise web.HTTPNotFound(text="cover not found")
+        capacity: dict[str, object] = {}
+        if not await self._acquire_cover(diagnostics=capacity):
+            log_event(
+                "cover_rejected",
+                request_id=request.get("player_request_id"),
+                media=fingerprint(media_id),
+                reason=capacity.get("reason", "cover_limit"),
+                active_cover=self._cover_active,
+                cover_limit=self._max_cover,
+            )
+            raise web.HTTPServiceUnavailable(text="cover capacity reached")
+        try:
+            try:
+                upstream = await self._reader.open_range(
+                    str(cover["remote_path"]), str(cover["remote_relpath"]), ByteRange(0, length - 1)
+                )
+            except Exception as exc:
+                raise web.HTTPBadGateway(text="cover upstream unavailable") from exc
+            # Own the upstream before status validation or response preparation.
+            # Even an unread error body or a cancelled prepare must be closed.
+            try:
+                if upstream.status not in {200, 206}:
+                    if upstream.status == 404:
+                        raise web.HTTPNotFound(text="cover not found")
+                    raise web.HTTPBadGateway(text="cover upstream unavailable")
+                response = web.StreamResponse(
+                    status=200,
+                    headers={
+                        "Content-Type": str(cover["mime_type"]),
+                        "Content-Length": str(length),
+                        "Content-Disposition": _content_disposition(request, media_id, cover["mime_type"]),
+                    },
+                )
+                request["player_cover_cacheable"] = version is not None
+                await response.prepare(request)
+                written = 0
+                try:
+                    async for chunk in upstream.body:
+                        if not chunk:
+                            continue
+                        piece = chunk[: length - written]
+                        written += len(piece)
+                        await response.write(piece)
+                        if written >= length:
+                            break  # Never drain an ignored Range or infinite tail.
+                    if written < length:
+                        request["player_cover_incomplete"] = f"{written}/{length}"
+                        raise IncompleteUpstreamBody(f"{written} of {length} cover bytes")
+                    await response.write_eof()
+                except (BrokenPipeError, ConnectionError, ConnectionResetError) as exc:
+                    request["player_stream_disconnect"] = type(exc).__name__
+                return response
+            finally:
+                await self._close_body(upstream.body)
+        finally:
+            await self._release_cover()
 
     async def _stream_plain(
         self,
@@ -582,6 +668,21 @@ class PlayerHttpStreamingMixin:
         async with self._stream_lock:
             if self._probe_active > 0:
                 self._probe_active -= 1
+
+    async def _acquire_cover(self, *, diagnostics: dict[str, object] | None = None) -> bool:
+        """Covers are separate, tiny and fail fast: browsing never waits on playback."""
+        async with self._stream_lock:
+            if self._cover_active >= self._max_cover:
+                if diagnostics is not None:
+                    diagnostics.update(reason="cover_limit", wait_ms=0)
+                return False
+            self._cover_active += 1
+            return True
+
+    async def _release_cover(self) -> None:
+        async with self._stream_lock:
+            if self._cover_active > 0:
+                self._cover_active -= 1
 
     async def _release_stream(self, client: str, *, preload: bool = False) -> None:
         async with self._stream_lock:

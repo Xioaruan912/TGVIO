@@ -4,6 +4,8 @@ import asyncio
 import base64
 from contextlib import asynccontextmanager
 from datetime import date
+import hashlib
+import json
 from pathlib import Path, PurePosixPath
 import re
 import sqlite3
@@ -208,6 +210,72 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin, PlayerLibrary
                             "DELETE FROM media_variants WHERE variant_media_id=?",
                             (media.media_id,),
                         )
+
+            has_covers = conn.execute(
+                "SELECT 1 FROM sqlite_master WHERE type='table' AND name='media_covers'"
+            ).fetchone() is not None
+            if has_covers:
+                # Covers are optional metadata. A package that no longer carries
+                # one simply loses its row; the video itself stays playable.
+                conn.execute(
+                    "UPDATE media_covers SET active=0 WHERE package_id=?",
+                    (package.package_id,),
+                )
+                for cover in package.covers:
+                    conn.execute(
+                        """
+                        INSERT INTO media_covers(
+                            package_id, media_id, remote_relpath, size_bytes,
+                            mime_type, algorithm, active, last_seen_at
+                        )
+                        VALUES(?,?,?,?,?,?,1,CURRENT_TIMESTAMP)
+                        ON CONFLICT(package_id, media_id) DO UPDATE SET
+                            remote_relpath=excluded.remote_relpath,
+                            size_bytes=excluded.size_bytes,
+                            mime_type=excluded.mime_type,
+                            algorithm=excluded.algorithm,
+                            active=1,
+                            last_seen_at=CURRENT_TIMESTAMP
+                        """,
+                        (
+                            cover.package_id,
+                            cover.media_id,
+                            cover.remote_relpath,
+                            cover.size_bytes,
+                            cover.mime_type,
+                            cover.algorithm,
+                        ),
+                    )
+                for media_item in package.media:
+                    if media_item.kind != "video":
+                        conn.execute(
+                            "DELETE FROM media_covers WHERE package_id=? AND media_id=?",
+                            (package.package_id, media_item.media_id),
+                        )
+
+    async def active_cover(self, media_id: str) -> dict[str, object] | None:
+        """Return one catalog-owned cover, never a caller-supplied path."""
+        row = self._require().execute(
+            """
+            SELECT cp.package_id, cp.manifest_sha256, cp.remote_path,
+                   mc.remote_relpath, mc.size_bytes, mc.mime_type, mc.algorithm
+            FROM media_covers mc
+            JOIN catalog_packages cp ON cp.package_id=mc.package_id
+            JOIN media ON media.media_id=mc.media_id
+            WHERE mc.media_id=? AND mc.active=1 AND cp.active=1 AND media.active=1
+            ORDER BY mc.package_id, mc.remote_relpath
+            LIMIT 1
+            """,
+            (media_id,),
+        ).fetchone()
+        if row is None:
+            return None
+        cover = dict(row)
+        # An opaque metadata revision, not a claimed hash of the image bytes.
+        # Package selection or committed cover metadata changes invalidate URLs.
+        revision = json.dumps(cover, sort_keys=True, separators=(",", ":")).encode("utf-8")
+        cover["version"] = hashlib.sha256(revision).hexdigest()
+        return cover
 
     async def deactivate_packages_not_seen(self, package_ids: set[str]) -> int:
         async with self._write_transaction() as conn:

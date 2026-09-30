@@ -104,6 +104,75 @@ handling and reduced-motion-aware animations use native TypeScript/CSS only.
 Privacy lock uses an opaque cover (not a blurred exposed frame); it does not
 rebuild video nodes or change normal buffering presentation.
 
+### Cover grid (library / favorites / long videos)
+
+`src/components/cover-tile.ts` is the single cover unit for every browse surface.
+The picture fills the media box, only a bounded bottom scrim carries white text,
+and the type label is shown only in a mixed short/long grid. Cover states are
+explicit and never faked:
+
+- `loading` — a same-size neutral placeholder while the lazy `<img>` resolves.
+- `missing` — the API returned no cover; a neutral placeholder with “暂无封面”.
+- `failed` — the image failed twice; “封面加载失败” plus a bounded retry. A broken
+  cover never claims the video itself is unplayable.
+- `ready` — the decoded picture.
+
+Browsing is metadata-only: the lists create zero `<video>` elements, one preview
+video at most runs at a time, and a preview is always an explicit action. The
+library video stage is a two-column cover grid on phones (`auto-fill` from
+150/190px on wider screens); long videos use the 16:9 `cover-grid-wide` variant.
+
+Multi-select is an explicit mode entered from the toolbar (“选择” / “退出多选”).
+While browsing, tapping a cover plays that clip; in select mode the same tap
+toggles selection and never starts playback. The selection bar reports the real
+count (`播放选中 (n/100)`), selection survives paging and category filters, and
+leaving a folder clears it with an explicit notice. Playback of a single cover or
+of the selection runs through one `LibraryPlayback` queue (owned by
+`createCollectionPlayback` in `main.ts`) so the library and favorites grids share
+the same idle/privacy contract.
+
+The favorites page (`src/favorites.ts`) is a metadata-only grid over
+`GET /api/v1/favorites`; its scope label says `播放已加载 (n)` because only the
+loaded page is queued, and it keeps local favorite truth separate from the WebDAV
+backup status shown in settings. The immersive favorites feed stays reachable
+through “沉浸播放”. Automatic follow-ups are limited to three; “加载更多”
+remains available after that up to an explicitly labelled 1000-row budget.
+Requests have a 15-second abort deadline; opaque cursor repeats/cycles and pages
+with no new items stay retryable from the last good cursor. Deletion or confirmed
+unfavorite aborts stale pages; failed favorite mutations can restore the badge
+without losing the tile. A delayed home-feed retry never takes playback ownership
+from this grid.
+
+**Where the covers come from.** The Player serves `GET /api/v1/media/:id/cover`
+for a media item whose committed Archive package carries a cover entry in
+`manifest.json` (`media[i].cover = {path, size_bytes, mime_type, algorithm}` plus
+the package-level `cover_algorithm`). The catalog records that entry in
+`media_covers` (migration `0010_media_covers`) and the media DTO exposes
+`cover_url` only when the row exists. URLs include an opaque `?v=` metadata
+revision derived from the selected package and its committed cover declaration
+(not a claimed hash of the image bytes). A changed selection gets a new URL;
+a stale version returns `404` before any Archive read. The route:
+
+- requires the Player session cookie and returns `404` when a media item has no
+  cover, so a missing still is never confused with a broken one;
+- reads only the declared, capped number of bytes (`MAX_COVER_BYTES`, the same
+  one-megabyte budget the archive writer enforces) from the read-only WebDAV
+  adapter, streams with backpressure, and fails loudly instead of sending a half
+  image;
+- uses its own tiny, fail-fast cover budget and **never** a playback slot
+  (`/healthz` `stream_capacity.active_cover`); closes the upstream immediately
+  after the byte cap, on disconnect, and even when response preparation fails;
+- caches only successful, version-matched images (`private, max-age=3600`,
+  `Vary: Cookie`). Errors, unversioned cover requests, and every other API
+  response stay `no-store`.
+
+An unusable cover entry (unknown algorithm, traversal path, oversized still,
+non-image type) is dropped by the catalog instead of rejecting the package: a
+playable video is never hidden because its thumbnail is odd. Packages archived
+before the cover rollout simply have no entry, so those tiles legitimately render
+the explicit “暂无封面” state - that is an honest placeholder, not a finished
+thumbnail.
+
 For browser-act acceptance with generated 120-second H.264 test files, existing
 FFmpeg and Chrome are required:
 

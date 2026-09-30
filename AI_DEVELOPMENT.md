@@ -173,6 +173,7 @@ R2-19 是基于 WebDAV Archive 的私有短视频 Web 播放服务，完整设�
 - **真正流式**：HTTP Range 必须边读边写并尊重 backpressure；不得 `response.read()` 整文件入内存。浏览器断开后关闭上游 WebDAV response。
 - **秘密隔离**：WebDAV 凭据只在服务端环境变量；Player 不拥有 `BOT_TOKEN`、Telethon session/API 凭据，不挂载 Bot `session/`、`downloads/` 或主数据卷写权限。
 - **Web 安全**：生产 HTTPS；session 用 HttpOnly/Secure/SameSite Cookie；禁止 query token；接口只返回最小播放 DTO，不返回 remote path、Telegram id 或本地路径。
+- **归档封面（可选）**：归档包可在 `manifest.json` 的每个视频条目上附带 `cover = {path, size_bytes, mime_type, algorithm}`（并带包级 `cover_algorithm`，当前 `reuse-publish-thumbnail-v1`，≤1MB，由 Bot 归档侧复用已上传缩略图生成，不做二次解码）。Player 在 catalog 里作为**可选元数据**读取（`media_covers` 表，migration `0010`），媒体 DTO 仅在存在时给出 `cover_url = /api/v1/media/{id}/cover?v=<opaque-revision>`（版本来自选中包与已提交封面元数据，不冒称图片内容哈希；过期版本在读取上游前返回 404）；该路由只用**独立的小并发预算**做有界读取（永不占播放槽位，`/healthz` 暴露 `active_cover`），字节数受 manifest 声明与 `MAX_COVER_BYTES` 双重约束，上游少给字节显式失败而不是送出半张图，达到字节上限立即关闭上游（不消费多余尾部），包括响应准备失败时也释放连接。只有成功且版本匹配的封面允许 `Cache-Control: private, max-age=3600` + `Vary: Cookie`，错误与未带版本的封面和其余 API 均为 `no-store`。无法解析/算法未知/路径越界/超预算的封面一律**丢弃封面而不否决包**，另有封面缺失时才显示占位，绝不用渐变或随机图冒充真实封面。
 - **Feed 资源预算**：前端最多 previous/current/next 3 个真实 `<video>`；current 才播放，next 只预加载 metadata；随机播放一个 cycle 内不能重复。
 - **部署隔离**：未来 Compose 必须支持 Player-only deploy/restart/rollback。除非 owner 明确授权 R2-19D，不得开放公网 listener 或修改生产反向代理。
 - **测试优先**：Catalog、Range 200/206/416、client disconnect、auth、shuffle cycle、并发上限都使用 fake WebDAV/fake HTTP 做 network-disabled 自动测试，再做 iOS Safari / Android Chromium 真机 smoke。

@@ -87,6 +87,8 @@ class PlayerCatalogRepository(Protocol):
 
     async def apply_package(self, package: CatalogPackage) -> None: ...
 
+    async def active_cover(self, media_id: str) -> dict[str, object] | None: ...
+
     async def deactivate_packages_not_seen(
         self,
         package_ids: set[str],

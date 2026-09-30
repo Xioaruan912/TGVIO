@@ -8,15 +8,40 @@ import path from "node:path";
 // Local fixture only: temporary independent Chrome profile; never the user's browser.
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const root=fileURLToPath(new URL("../",import.meta.url));
-const library=createLibraryFixture();let mediaRequests=0;
+const library=createLibraryFixture();let mediaRequests=0,coverRequests=0;const brokenCovers=new Set();
+// A one-pixel local GIF proves a real decoded cover; one media id answers 404 to
+// prove a broken cover degrades to an explicit placeholder instead of a fake
+// image. The URL shape is the production route, not a fixture-only path.
+const COVER_GIF=Buffer.from("R0lGODlhAQABAIAAAP///wAAACH5BAEAAAAALAAAAAABAAEAAAICRAEAOw==","base64");
+const coverUrl=id=>`/api/v1/media/${id}/cover?v=${id}`;
+const withCovers=payload=>{if(!payload||!Array.isArray(payload.items))return payload;
+ return {...payload,items:payload.items.map((item,index)=>{if(index%4===3)return item;
+  if(index===1)brokenCovers.add(item.id);
+  return {...item,cover_url:coverUrl(item.id)};})};};
 const server=await createServer({configFile:false,root,server:{host:"127.0.0.1",port:0},
  define:{"import.meta.env.VITE_PLAYER_MOCK":JSON.stringify("false")},
  plugins:[{name:"library-local-metadata",configureServer(vite){vite.middlewares.use(async(req,res,next)=>{
   const url=new URL(req.url,"http://127.0.0.1");
   const send=value=>{res.setHeader("Content-Type","application/json");res.end(JSON.stringify(value));};
-  if(url.pathname==="/__acceptance__/status")return send({localOnly:true,libraryOriginals:900,testClipId:library.testClipId,requests:mediaRequests});
+  if(url.pathname==="/__acceptance__/status")return send({localOnly:true,libraryOriginals:900,testClipId:library.testClipId,requests:mediaRequests,coverRequests});
+  if(url.pathname.startsWith("/__acceptance__/cover/")){coverRequests++;res.setHeader("Content-Type","image/gif");res.setHeader("Cache-Control","no-store");return res.end(COVER_GIF);}
+  if(/^\/api\/v1\/media\/[0-9a-f]{64}\/cover$/.test(url.pathname)){
+   coverRequests++;
+   const id=url.pathname.split("/")[4];
+   if(brokenCovers.has(id)){res.statusCode=404;return res.end();}
+   res.setHeader("Content-Type","image/gif");res.setHeader("Cache-Control","private, max-age=3600");res.setHeader("Vary","Cookie");return res.end(COVER_GIF);
+  }
   if(url.pathname.startsWith("/__acceptance__/media/")){mediaRequests++;res.statusCode=404;return res.end();}
-  if(url.pathname.startsWith("/api/v1/library/")){try{return send(await library.result(url));}catch(error){res.statusCode=error.status??400;return send({error:"invalid_library_input"});}}
+  if(url.pathname==="/api/v1/favorites"){
+   const limit=Number(url.searchParams.get("limit")??20);
+   const favorites=library.originals.slice(0,120);
+   const cursor=url.searchParams.get("cursor");
+   const start=cursor?favorites.findIndex(item=>item.id===cursor)+1:0;
+   const items=favorites.slice(start,start+Math.max(1,Math.min(20,limit))).map((item,index)=>index%3===2?item:{...item,favorite:true,cover_url:coverUrl(item.id)});
+   const has_more=start+items.length<favorites.length;
+   return send({items,has_more,next_cursor:has_more?items.at(-1).id:null});
+  }
+  if(url.pathname.startsWith("/api/v1/library/")){try{return send(withCovers(await library.result(url)));}catch(error){res.statusCode=error.status??400;return send({error:"invalid_library_input"});}}
   next();
  });}}]});
 const profile=await mkdtemp(path.join(tmpdir(),"tgvio-player-layout-"));

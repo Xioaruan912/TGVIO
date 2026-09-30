@@ -7,7 +7,7 @@ from aiohttp.test_utils import TestClient, TestServer
 from tgvio_player.adapters.http import PlayerHttpServer
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.feed import ShuffleDeckService
-from tgvio_player.domain.catalog import CatalogLocation, CatalogMedia, CatalogPackage
+from tgvio_player.domain.catalog import CatalogCover, CatalogLocation, CatalogMedia, CatalogPackage
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 
 
@@ -96,6 +96,26 @@ class LibraryTests(unittest.IsolatedAsyncioTestCase):
         unknown = await self.get('folders?media_id=' + mid(909))
         self.assertEqual(unknown['items'][0]['date'], None)
         self.assertEqual((await self.get('folders?media_id=' + mid(911)))['total'], 0)
+
+    async def test_items_advertise_an_archive_cover_without_reading_the_archive(self):
+        digest = mid(920)
+        await self.repo.apply_package(CatalogPackage(
+            'covers', 'Private/2026-09-26/1', 'b' * 64, None, None,
+            (CatalogMedia(digest, 'video', 1000, 'video/mp4', 1080, 1920, 12.0),),
+            (CatalogLocation(digest, 'covers', 'private-920.mp4'),),
+            (CatalogCover(digest, 'covers', 'cover/private-920-cover.jpg', 4096,
+                          'image/jpeg', 'reuse-publish-thumbnail-v1'),),
+        ))
+        await self.repo.refresh_media_activity()
+        folders = (await self.get('folders?date=2026-09-26'))['items']
+        page = await self.get('videos?folder_id=' + folders[0]['id'])
+        cover = await self.repo.active_cover(digest)
+        self.assertEqual(
+            {item['id']: item['cover_url'] for item in page['items']},
+            {digest: f"/api/v1/media/{digest}/cover?v={cover['version']}"},
+        )
+        # The DTO only states where a cover would come from; browsing reads nothing.
+        self.reader.open_range.assert_not_awaited()
 
     async def test_full_catalog_filter_before_keyset_and_count_consistency(self):
         folder = await self.folder()

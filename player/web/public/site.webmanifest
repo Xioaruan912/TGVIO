@@ -8,8 +8,8 @@
   "display": "standalone",
   "prefer_related_applications": false,
   "orientation": "any",
-  "background_color": "#000000",
-  "theme_color": "#000000",
+  "background_color": "#f2f6fb",
+  "theme_color": "#f2f6fb",
   "icons": [
     { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
     { "src": "/player-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },

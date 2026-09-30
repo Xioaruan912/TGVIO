@@ -11,6 +11,7 @@ import { ContextFeed } from "./context-feed";
 import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
 import { LargePlayer } from "./large";
+import { FavoritesPage } from "./favorites";
 import { VideoLibraryPage } from "./library";
 import { LibraryPlayback } from "./library-playback";
 import { StorageSettingsPage } from "./settings-page";
@@ -86,6 +87,7 @@ let contextFeed: ContextFeed | null = null;
 let savedHomeIndex = 0;
 let pool: VideoPool | null = null;
 let libraryPage: VideoLibraryPage | null = null;
+let favoritesPage: FavoritesPage | null = null;
 const contentView = new ViewLifecycle();
 let activeIndex = 0;
 let paused = false;
@@ -527,9 +529,11 @@ favoriteMutations.subscribe(
     for (const clip of [...clips, ...(contextFeed?.clips ?? [])]) {
       if (clip.id === id) clip.favorite = enabled;
     }
+    favoritesPage?.setFavorite(id, enabled);
     if (shell && feedView?.clipAt(activeIndex)?.id === id) setFavoriteButton(shell, enabled);
   },
   (id, result) => {
+    if (result && !result.favorite) favoritesPage?.removeMedia(id);
     if (!shell || feedView?.clipAt(activeIndex)?.id !== id) return;
     if (!result) { toast(shell, "操作失败，请稍后重试"); return; }
     const syncText = ({ pending: "待同步", syncing: "同步中", synced: "已同步", failed: "同步失败" } as const)[result.syncStatus];
@@ -949,7 +953,7 @@ async function goRandom(): Promise<void> {
 async function handleMediaError(clip: Clip): Promise<void> {
   // The feed only owns playback while no library view or large player overlays it.
   // A late retry must never resume the home feed underneath another owner.
-  const feedOwnsPlayback = (): boolean => !libraryPage && !longVideosOpen && !largePlayer;
+  const feedOwnsPlayback = (): boolean => !libraryPage && !favoritesPage && !longVideosOpen && !largePlayer;
     adaptiveCache.update({ playbackPressure: true });
     preloader.setPressure(true);
   const attempts = errorRetries.get(clip.id) ?? 0;
@@ -1255,55 +1259,22 @@ function openLibrary(options: { mediaId?: string } = {}): void {
   if (header) header.inert = true;
   let restoreOriginFocus = false;
   let page: VideoLibraryPage | null = null;
-  let selectedPlayback: LibraryPlayback | null = null;
-  const closePlayback = (): void => {
-    const wasPlaying = selectedPlayback !== null;
-    selectedPlayback?.destroy();
-    selectedPlayback = null;
-    if (shell) {
-      shell.root.inert = false;
-      shell.viewport.inert = true;
-    }
-    if (wasPlaying) page?.setPlaybackActive(false);
-    silenceFeed();
-    privacyUnlocked = false;
-    paused = true;
-    shortIdle.setEnabled(false);
-    shell?.root.classList.add("privacy-locked");
-    playback?.update({ privacyUnlocked: false, pausedByUser: true, shouldPlay: false });
-    adaptiveCache.update({ playbackPressure: false });
-    preloader.setPressure(true);
-  };
+  const playback = createCollectionPlayback(active => page?.setPlaybackActive(active));
   page = new VideoLibraryPage(
     selected => {
-      if (!page || !selected.length) return;
-      closePlayback();
-      page.setPlaybackActive(true);
-      shell!.root.inert = true;
-      adaptiveCache.update({ playbackPressure: true });
-      selectedPlayback = new LibraryPlayback(selected, {
-        onClose: closePlayback,
-        onPlayer: player => { largePlayer = player; },
-        onProgress: (clip, position, duration, force) => {
-          if (clip.category === "long") saveLongVideoProgress(clip.id, position, duration, force);
-        },
-        onDeleted: clip => {
-          purgeClientMedia(clip.id);
-          page?.removeMedia(clip.id);
-          feedView?.replaceClips(activeClips());
-          activeIndex = Math.min(activeIndex, Math.max(0, activeClips().length - 1));
-          lastActiveClipId = "";
-        },
+      playback.start(selected, clip => {
+        page?.removeMedia(clip.id);
+        feedView?.replaceClips(activeClips());
+        activeIndex = Math.min(activeIndex, Math.max(0, activeClips().length - 1));
+        lastActiveClipId = "";
       });
-      document.body.append(selectedPlayback.root);
-      selectedPlayback.root.querySelector<HTMLButtonElement>(".large-back")?.focus({ preventScroll: true });
     },
     () => { restoreOriginFocus = true; contentView.clear(); },
     options,
   );
   libraryPage = page;
   contentView.activate(() => {
-    closePlayback();
+    playback.stop();
     page?.destroy();
     if (libraryPage === page) libraryPage = null;
     page = null;
@@ -1318,6 +1289,91 @@ function openLibrary(options: { mediaId?: string } = {}): void {
   document.body.appendChild(page.root);
   page.root.querySelector<HTMLButtonElement>(".library-header button")?.focus({ preventScroll: true });
   setActiveNav(shell, "library");
+}
+
+/**
+ * One selected-clip player for every browse surface. It owns the single
+ * LibraryPlayback instance, the privacy lock and the preload/adaptive pressure
+ * signals so the library and favorites grids cannot drift apart.
+ */
+function createCollectionPlayback(syncPage: (active: boolean) => void): {
+  start(clips: Clip[], onDeleted?: (clip: Clip) => void): void;
+  stop(): void;
+} {
+  let player: LibraryPlayback | null = null;
+  const stop = (): void => {
+    const wasPlaying = player !== null;
+    player?.destroy();
+    player = null;
+    largePlayer = null;
+    if (shell) {
+      shell.root.inert = false;
+      shell.viewport.inert = true;
+    }
+    if (wasPlaying) syncPage(false);
+    silenceFeed();
+    privacyUnlocked = false;
+    paused = true;
+    shortIdle.setEnabled(false);
+    shell?.root.classList.add("privacy-locked");
+    playback?.update({ privacyUnlocked: false, pausedByUser: true, shouldPlay: false });
+    adaptiveCache.update({ playbackPressure: false });
+    preloader.setPressure(true);
+  };
+  const start = (clips: Clip[], onDeleted?: (clip: Clip) => void): void => {
+    stop();
+    if (!clips.length || !shell) return;
+    syncPage(true);
+    shell.root.inert = true;
+    adaptiveCache.update({ playbackPressure: true });
+    player = new LibraryPlayback(clips, {
+      onClose: () => stop(),
+      onPlayer: instance => { largePlayer = instance; },
+      onProgress: (clip, position, duration, force) => {
+        if (clip.category === "long") saveLongVideoProgress(clip.id, position, duration, force);
+      },
+      onDeleted: clip => {
+        purgeClientMedia(clip.id);
+        onDeleted?.(clip);
+      },
+    });
+    document.body.append(player.root);
+    player.root.querySelector<HTMLButtonElement>(".large-back")?.focus({ preventScroll: true });
+  };
+  return { start, stop };
+}
+
+function openFavorites(): void {
+  if (!shell) return;
+  contentView.clear();
+  lockPrivacyScreen();
+  closeSheet(shell);
+  const header = shell.root.querySelector<HTMLElement>(".app-header");
+  const headerWasInert = header?.inert ?? false;
+  if (header) header.inert = true;
+  let page: FavoritesPage | null = null;
+  const playback = createCollectionPlayback(active => page?.setPlaybackActive(active));
+  page = new FavoritesPage(
+    selected => playback.start(selected, clip => page?.removeMedia(clip.id)),
+    () => contentView.clear(),
+    () => { contentView.clear(); void enterContext("favorites"); },
+  );
+  favoritesPage = page;
+  contentView.activate(() => {
+    playback.stop();
+    page?.destroy();
+    if (favoritesPage === page) favoritesPage = null;
+    page = null;
+    if (shell) shell.viewport.inert = false;
+    if (header) header.inert = headerWasInert;
+    preloader.setPressure(false);
+    setActiveNav(shell!, contextFeed?.mode === "favorites" ? "favorites" : "home");
+    if (activeClips().length) applyActive(activeIndex);
+  });
+  shell.viewport.inert = true;
+  document.body.appendChild(page.root);
+  page.root.querySelector<HTMLButtonElement>(".library-header button")?.focus({ preventScroll: true });
+  setActiveNav(shell, "favorites");
 }
 
 function openSettings(): void {
@@ -1386,7 +1442,7 @@ function onNav(action: string): void {
     openSheetKind = null;
     openLongVideos();
   } else if (action === "favorites") {
-    void enterContext("favorites");
+    openFavorites();
   } else if (action === "library") {
     openLibrary();
   } else if (action === "settings") {

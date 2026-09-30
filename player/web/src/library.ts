@@ -1,5 +1,6 @@
 import { api, shortId } from "./api";
-import { element, formatTime } from "./ui";
+import { element } from "./ui";
+import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { IdlePrivacyController, attachIdleActivity } from "./idle-privacy";
 import type { Clip, LibraryCategory, LibraryDate, LibraryFolder, LibraryVideosPage } from "./types";
 
@@ -108,11 +109,14 @@ export class VideoLibraryPage {
   private generation = 0;
   private destroyed = false;
   private playbackActive = false;
+  /** Browsing plays; multi-select only starts from an explicit mode switch. */
+  private selectMode = false;
   /** The visible control that last started playback; focus returns here when the player closes. */
   private launchControl: HTMLElement | null = null;
   private readonly backButton: HTMLButtonElement;
   private preview: HTMLVideoElement | null = null;
   private previewButton: HTMLButtonElement | null = null;
+  private previewTile: CoverTileHandle | null = null;
   private readonly previewIdle = new IdlePrivacyController({ mode: "short", onLock: () => this.stopPreview() });
   private readonly detachPreviewActivity: () => void;
   private readonly onPreviewVisibility = () => {
@@ -122,7 +126,7 @@ export class VideoLibraryPage {
   private focusedRow: string | null = null;
   private datesScroll = 0;
   private foldersScroll = 0;
-  private readonly rowElements = new Map<string, HTMLElement>();
+  private readonly tiles = new Map<string, CoverTileHandle>();
   private readonly loadButton = this.button("加载更多", () => void this.loadMore());
   private automaticPages = 0;
 
@@ -136,6 +140,7 @@ export class VideoLibraryPage {
     header.append(this.backButton, this.title);
     this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
     this.list.tabIndex = -1;
+    this.selectionBar.hidden = true;
     this.root.append(header, this.toolbar, this.notice, this.selectionBar, this.list);
     this.list.addEventListener("scroll", () => {
       if (this.stage === "videos" && !this.playbackActive && !this.controller.error && this.automaticPages < 3 &&
@@ -156,7 +161,10 @@ export class VideoLibraryPage {
     return { signal: this.indexRequest.signal, generation: ++this.generation };
   }
   private isCurrent(generation: number): boolean { return !this.destroyed && generation === this.generation; }
-  private resetList(): void { this.list.replaceChildren(); this.list.scrollTop = 0; this.rowElements.clear(); this.list.classList.remove("library-grid"); }
+  private resetList(): void {
+    this.list.replaceChildren(); this.list.scrollTop = 0; this.tiles.clear();
+    this.list.classList.remove("cover-grid");
+  }
   private async loadDates(): Promise<void> {
     this.stage = "dates"; this.membership = false;
     const request = this.beginIndex(); this.resetList(); this.toolbar.replaceChildren(); this.selectionBar.replaceChildren();
@@ -182,8 +190,8 @@ export class VideoLibraryPage {
     for (const date of this.dates) {
       const button = this.button("", () => { this.datesScroll = this.list.scrollTop; void this.loadFolders({ date: date.date ?? "unknown" }); });
       button.classList.add("library-index-row");
-      button.append(element("strong", "library-row-title", date.date ?? "未知日期"),
-        element("span", "library-row-meta", `${date.folder_count} 个文件夹 · ${date.video_count} 个视频 · ${basisLabel(date.basis)}`));
+      button.append(element("strong", "library-index-title", date.date ?? "未知日期"),
+        element("span", "library-index-meta", `${date.folder_count} 个文件夹 · ${date.video_count} 个视频 · ${basisLabel(date.basis)}`));
       this.list.append(button);
     }
     if (!this.dates.length) this.list.append(element("p", "library-empty", "暂无可播放的归档目录"));
@@ -211,7 +219,7 @@ export class VideoLibraryPage {
       const button = this.button("", () => { this.foldersScroll = this.list.scrollTop; this.openFolder(folder); });
       button.classList.add("library-index-row");
       // Only sanitized server label and metadata are visible; opaque IDs/paths stay out of UI.
-      button.append(element("strong", "library-row-title", folder.label), element("span", "library-row-meta",
+      button.append(element("strong", "library-index-title", folder.label), element("span", "library-index-meta",
         `${folder.video_count} 个视频 · ${folder.date ?? "未知日期"} · ${basisLabel(folder.date_basis)}`));
       this.list.append(button);
     }
@@ -220,7 +228,8 @@ export class VideoLibraryPage {
   }
   private openFolder(folder: LibraryFolder): void {
     this.indexRequest?.abort(); this.generation++; this.stopPreview(); this.controller.open(folder);
-    this.stage = "videos"; this.automaticPages = 0; this.resetList(); this.renderVideoToolbar();
+    this.stage = "videos"; this.automaticPages = 0; this.selectMode = false;
+    this.resetList(); this.list.classList.add("cover-grid"); this.renderVideoToolbar();
     this.notice.textContent = `${folder.date ?? "未知日期"} · ${basisLabel(folder.date_basis)} · 仅加载视频信息`;
     void this.loadMore();
   }
@@ -230,22 +239,36 @@ export class VideoLibraryPage {
       const button = this.button(label, () => {
         if (category === this.controller.category) return;
         this.generation++; this.stopPreview(); this.controller.setCategory(category); this.automaticPages = 0;
-        this.resetList(); this.renderVideoToolbar(); void this.loadMore();
+        this.resetList(); this.list.classList.add("cover-grid"); this.renderVideoToolbar(); void this.loadMore();
       });
       button.setAttribute("aria-pressed", String(category === this.controller.category));
       this.toolbar.append(button);
     }
+    const toggle = this.button(this.selectMode ? "退出多选" : "选择", () => this.setSelectMode(!this.selectMode));
+    toggle.classList.add("library-select-toggle");
+    toggle.setAttribute("aria-pressed", String(this.selectMode));
+    this.toolbar.append(toggle);
+    this.renderSelection();
+  }
+  private setSelectMode(enabled: boolean): void {
+    this.selectMode = enabled;
+    this.selectionBar.hidden = !enabled;
+    for (const tile of this.tiles.values()) tile.setSelectMode(enabled);
+    this.renderVideoToolbar();
+    if (enabled) this.notice.textContent = "多选模式：点击封面选中，可跨页与跨类型累计选择";
+  }
+  private clearSelection(): void {
+    this.controller.clearSelection();
+    for (const tile of this.tiles.values()) tile.setSelected(false);
     this.renderSelection();
   }
   private renderSelection(): void {
+    this.selectionBar.hidden = !this.selectMode;
     const clips = this.controller.selectedClips;
     const play = this.button(`播放选中 (${clips.length}/${MAX_SELECTED})`, () => this.play(this.controller.selectedClips, play));
     play.disabled = !clips.length;
-    const clear = this.button("清空选择", () => {
-      this.controller.clearSelection();
-      this.list.querySelectorAll<HTMLInputElement>("input[type=checkbox]").forEach(input => input.checked = false);
-      this.renderSelection();
-    }); clear.disabled = !clips.length;
+    const clear = this.button("清空选择", () => this.clearSelection());
+    clear.disabled = !clips.length;
     this.selectionBar.replaceChildren(play, clear);
   }
   private async loadMore(): Promise<void> {
@@ -257,8 +280,8 @@ export class VideoLibraryPage {
     if (!this.isCurrent(generation) || this.stage !== "videos") return;
     this.loadButton.remove();
     for (const clip of this.controller.rows) {
-      if (this.rowElements.has(clip.id)) continue;
-      const row = this.row(clip); this.rowElements.set(clip.id, row); this.list.append(row);
+      if (this.tiles.has(clip.id)) continue;
+      const tile = this.tile(clip); this.tiles.set(clip.id, tile); this.list.append(tile.root);
     }
     this.title.textContent = `${this.controller.folder?.label ?? "文件夹"} · ${this.controller.rows.length}/${this.controller.total}`;
     this.loadButton.disabled = false;
@@ -269,50 +292,44 @@ export class VideoLibraryPage {
     else if (!this.controller.hasMore) this.notice.textContent = `${this.controller.folder?.date ?? "未知日期"} · ${basisLabel(this.controller.folder!.date_basis)} · ${this.controller.rows.length ? "已加载全部" : "该类型暂无视频"}`;
     else this.notice.textContent = `${this.controller.folder?.date ?? "未知日期"} · ${basisLabel(this.controller.folder!.date_basis)} · 仅加载视频信息`;
   }
-  private row(clip: Clip): HTMLElement {
-    // Video lists render as a cover grid; the index/folder stages stay a list.
-    this.list.classList.add("library-grid");
-    const row = element("article", "library-row"); row.tabIndex = -1;
-    const checkLabel = element("label", "library-check");
-    const check = element("input", "library-checkbox"); check.type = "checkbox";
-    check.checked = this.controller.isSelected(clip.id); check.setAttribute("aria-label", `选择视频 #${shortId(clip.id)}`);
-    check.addEventListener("change", () => {
-      if (!this.controller.select(clip, check.checked)) { check.checked = false; this.notice.textContent = "最多选择 100 个视频"; }
-      this.focusedRow = clip.id; this.renderSelection();
-    }); checkLabel.append(check);
-    const preview = this.button("预览", () => this.showPreview(clip, preview));
-    preview.classList.add("library-poster"); preview.setAttribute("aria-label", `按需预览视频 #${shortId(clip.id)}`);
-    // Optional archive cover. Without one the on-demand preview stays the only
-    // affordance, so a missing or broken cover never blocks the list.
-    if (clip.coverUrl) {
-      const cover = document.createElement("img");
-      cover.className = "library-cover";
-      cover.alt = "";
-      cover.loading = "lazy";
-      cover.decoding = "async";
-      cover.setAttribute("src", clip.coverUrl);
-      cover.addEventListener("error", () => cover.remove(), { once: true });
-      preview.classList.add("library-poster-cover");
-      preview.append(cover);
+  private tile(clip: Clip): CoverTileHandle {
+    const handle = buildCoverTile({
+      media: { id: clip.id, duration: clip.duration, category: clip.category, coverUrl: clip.coverUrl, favorite: clip.favorite },
+      title: `视频 #${shortId(clip.id)}`,
+      // Only a mixed short/long grid needs the type label on the cover.
+      showCategory: this.controller.category === "all",
+      selected: this.controller.isSelected(clip.id),
+      selectMode: this.selectMode,
+      onPlay: () => { this.focusedRow = clip.id; this.play([clip], handle.playButton); },
+      onPreview: () => this.showPreview(clip, handle),
+      onSelect: (selected) => this.setSelected(clip, selected),
+    });
+    return handle;
+  }
+  private setSelected(clip: Clip, selected: boolean): void {
+    const accepted = this.controller.select(clip, selected);
+    const tile = this.tiles.get(clip.id);
+    if (!accepted) {
+      tile?.setSelected(false);
+      this.notice.textContent = "最多选择 100 个视频";
+      return;
     }
-    const text = element("div", "library-row-text");
-    text.append(element("strong", "library-row-title", `#${shortId(clip.id)}`),
-      element("span", "library-row-meta", `${formatTime(clip.duration)} · ${clip.category === "long" ? "长视频" : "短视频"}`));
-    const play = this.button("播放", () => { this.focusedRow = clip.id; this.play([clip], play); });
-    play.setAttribute("aria-label", `播放视频 #${shortId(clip.id)}`);
-    row.append(checkLabel, preview, text, play); return row;
+    tile?.setSelected(this.controller.isSelected(clip.id));
+    this.focusedRow = clip.id;
+    this.renderSelection();
   }
   private play(clips: Clip[], control?: HTMLElement): void {
     if (!clips.length || this.playbackActive || this.destroyed) return;
     this.launchControl = control ?? null;
     this.stopPreview(); this.onPlay([...clips]); // Parent retains this page and owns player lifetime.
   }
-  private showPreview(clip: Clip, button: HTMLButtonElement): void {
-    if (this.playbackActive || this.destroyed || document.hidden) return;
-    if (button === this.previewButton) { this.stopPreview(); return; }
+  private showPreview(clip: Clip, handle: CoverTileHandle): void {
+    const button = handle.previewButton;
+    if (!button || this.playbackActive || this.destroyed || document.hidden) return;
+    if (handle === this.previewTile) { this.stopPreview(); return; }
     this.stopPreview();
     const video = document.createElement("video"); // Never constructed during metadata rendering.
-    this.preview = video; this.previewButton = button;
+    this.preview = video; this.previewTile = handle; this.previewButton = button;
     // Only this explicit preview gesture unlocks a fresh short-idle deadline.
     // Pause/loadeddata/playing never extend it: even a still frame disappears.
     this.previewIdle.setEnabled(true);
@@ -320,10 +337,13 @@ export class VideoLibraryPage {
     video.playsInline = true; video.preload = "none"; video.setAttribute("aria-hidden", "true");
     video.addEventListener("loadeddata", () => {
       if (this.preview !== video) return;
-      video.pause(); button.classList.add("library-preview-revealed");
+      video.pause(); handle.root.classList.add("is-previewing");
     }, { once: true });
-    video.addEventListener("error", () => { if (this.preview === video) { this.stopPreview(); this.notice.textContent = "预览暂不可用，可尝试播放"; } }, { once: true });
-    button.append(video); video.src = clip.streamUrl; video.load();
+    video.addEventListener("error", () => {
+      if (this.preview !== video) return;
+      this.stopPreview(); this.notice.textContent = "预览暂不可用，可尝试播放";
+    }, { once: true });
+    handle.mediaBox.append(video); video.src = clip.streamUrl; video.load();
     void video.play().catch(() => undefined);
   }
   private stopPreview(): void {
@@ -331,28 +351,31 @@ export class VideoLibraryPage {
     if (!this.preview) return;
     const video = this.preview; this.preview = null;
     video.pause(); video.removeAttribute("src"); video.load(); video.remove();
-    this.previewButton?.classList.remove("library-preview-revealed"); this.previewButton = null;
+    this.previewTile?.root.classList.remove("is-previewing");
+    this.previewButton = null;
+    this.previewTile = null;
   }
   setPlaybackActive(active: boolean): void {
     this.playbackActive = active; this.root.inert = active;
     if (active) this.stopPreview();
     else {
       // Restore focus to the control that started playback, then to a visible
-      // selected row, then to the visible back control. Never focus <body>.
+      // selected tile, then to the visible back control. Never focus <body>.
       const launch = this.launchControl; this.launchControl = null;
-      const selectedRow = this.controller.selectedClips
-        .map(clip => this.rowElements.get(clip.id))
-        .find((row): row is HTMLElement => Boolean(row));
-      const target = (launch?.isConnected ? launch : undefined) ?? selectedRow ?? this.backButton;
+      const selectedTile = this.controller.selectedClips
+        .map(clip => this.tiles.get(clip.id))
+        .map(tile => tile?.playButton)
+        .find((button): button is HTMLButtonElement => Boolean(button));
+      const target = (launch?.isConnected ? launch : undefined) ?? selectedTile ?? this.backButton;
       target.focus({ preventScroll: true });
     }
   }
   public removeMedia(mediaId: string): void {
     this.controller.removeMedia(mediaId);
-    const row = this.rowElements.get(mediaId);
-    if (this.previewButton && row?.contains(this.previewButton)) this.stopPreview();
+    const tile = this.tiles.get(mediaId);
+    if (this.previewButton && tile?.root.contains(this.previewButton)) this.stopPreview();
     const scroll = this.list.scrollTop;
-    row?.remove(); this.rowElements.delete(mediaId);
+    tile?.root.remove(); this.tiles.delete(mediaId);
     if (this.focusedRow === mediaId) this.focusedRow = null;
     if (this.stage === "videos") {
       this.title.textContent = `${this.controller.folder?.label ?? "文件夹"} · ${this.controller.rows.length}/${this.controller.total}`;
@@ -369,7 +392,8 @@ export class VideoLibraryPage {
   private back(): void {
     if (this.stage === "videos") {
       const hadSelection = this.controller.selectedClips.length > 0;
-      this.beginIndex(); this.controller.clearSelection(); this.renderFolders();
+      this.beginIndex(); this.controller.clearSelection(); this.selectMode = false;
+      this.selectionBar.hidden = true; this.renderFolders(); this.renderVideoToolbarClear();
       if (hadSelection) this.notice.textContent = "已离开文件夹，选择已清空";
     } else if (this.stage === "folders") {
       this.beginIndex();
@@ -377,6 +401,8 @@ export class VideoLibraryPage {
       else void this.loadDates();
     } else this.onClose();
   }
+  /** Leaving the video stage drops the toolbar back to the index stages. */
+  private renderVideoToolbarClear(): void { this.toolbar.replaceChildren(); }
   private indexError(retry: () => void): void {
     this.notice.textContent = "目录暂时加载失败"; this.list.append(this.button("重试", retry));
   }

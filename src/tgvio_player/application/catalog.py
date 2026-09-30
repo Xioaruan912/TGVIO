@@ -7,11 +7,15 @@ from typing import Any
 from tgvio_player.application.ports import ArchiveCatalogSource, PlayerCatalogRepository
 from tgvio_player.domain.catalog import (
     ArchivePackageCandidate,
+    CatalogCover,
     CatalogLocation,
     CatalogMedia,
     CatalogPackage,
     CatalogSyncResult,
     CatalogValidationError,
+    COVER_ALGORITHMS,
+    COVER_MIME_TYPES,
+    MAX_COVER_BYTES,
     require_sha256,
     safe_remote_path,
 )
@@ -113,6 +117,8 @@ class CatalogSyncService:
         media_items = manifest.get("media")
         if not isinstance(media_items, list):
             raise CatalogValidationError("archive manifest media must be a list")
+        # Optional, and never a reason to reject the package itself.
+        manifest_algorithm = str(manifest.get("cover_algorithm") or "").strip()
         if int(manifest.get("media_count", -1)) != len(media_items):
             raise CatalogValidationError("archive manifest media_count mismatch")
         if int(complete.get("media_count", -1)) != len(media_items):
@@ -120,6 +126,7 @@ class CatalogSyncService:
 
         media: list[CatalogMedia] = []
         locations: list[CatalogLocation] = []
+        covers: list[CatalogCover] = []
         total_bytes = 0
         for raw in media_items:
             if not isinstance(raw, dict):
@@ -156,6 +163,15 @@ class CatalogSyncService:
                     remote_relpath=relpath,
                 )
             )
+            cover = cls._cover_entry(
+                raw,
+                media_id=digest,
+                kind=kind,
+                package_id=package_id,
+                manifest_algorithm=manifest_algorithm,
+            )
+            if cover is not None:
+                covers.append(cover)
 
         if int(complete.get("total_bytes", -1)) != total_bytes:
             raise CatalogValidationError("archive complete total_bytes mismatch")
@@ -168,6 +184,58 @@ class CatalogSyncService:
             complete_etag=candidate.complete_etag,
             media=tuple(media),
             locations=tuple(locations),
+            covers=tuple(covers),
+        )
+
+    @classmethod
+    def _cover_entry(
+        cls,
+        raw: dict[str, Any],
+        *,
+        media_id: str,
+        kind: str,
+        package_id: str,
+        manifest_algorithm: str,
+    ) -> CatalogCover | None:
+        """Read one optional cover entry, or ``None`` when it is not usable.
+
+        A cover is decorative metadata, so anything that does not satisfy the
+        contract - an unknown algorithm, a traversal path, an oversized still,
+        a non-image type - is dropped instead of rejecting the package. Hiding a
+        playable video because its thumbnail is odd would be a much worse
+        failure than showing a placeholder.
+        """
+        if kind != "video":
+            return None
+        payload = raw.get("cover")
+        if not isinstance(payload, dict):
+            return None
+        algorithm = str(payload.get("algorithm") or "").strip()
+        if algorithm not in COVER_ALGORITHMS:
+            return None
+        if manifest_algorithm and manifest_algorithm != algorithm:
+            return None
+        mime_type = str(payload.get("mime_type") or "").split(";", 1)[0].strip().lower()
+        if mime_type not in COVER_MIME_TYPES:
+            return None
+        size_bytes = payload.get("size_bytes")
+        # JSON booleans, floats and strings are not byte counts. Strict typing
+        # also avoids int(infinity) aborting a sync for decorative metadata.
+        if isinstance(size_bytes, bool) or not isinstance(size_bytes, int):
+            return None
+        if size_bytes <= 0 or size_bytes > MAX_COVER_BYTES:
+            return None
+        try:
+            relpath = safe_remote_path(payload.get("path"), relative=True)
+        except CatalogValidationError:
+            return None
+        return CatalogCover(
+            media_id=media_id,
+            package_id=package_id,
+            remote_relpath=relpath,
+            size_bytes=size_bytes,
+            mime_type=mime_type,
+            algorithm=algorithm,
         )
 
     @staticmethod

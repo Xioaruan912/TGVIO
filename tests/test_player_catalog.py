@@ -383,6 +383,127 @@ class FakeWebDavClient:
         return self.json.get(remote_path)
 
 
+def with_cover(item, *, cover=None, **manifest_patch):
+    """Add a per-media cover entry and re-sign the complete marker."""
+    manifest = dict(item.manifest)
+    entries = [dict(entry) for entry in manifest["media"]]
+    entries[0]["cover"] = {
+        "path": "cover/video-cover.jpg",
+        "size_bytes": 4096,
+        "mime_type": "image/jpeg",
+        "algorithm": "reuse-publish-thumbnail-v1",
+    } if cover is None else cover
+    manifest["media"] = entries
+    manifest.update(manifest_patch)
+    complete = dict(item.complete)
+    complete["manifest_sha256"] = canonical_sha(manifest)
+    return replace(item, manifest=manifest, complete=complete)
+
+
+class PlayerCatalogCoverTests(unittest.IsolatedAsyncioTestCase):
+    """Archive covers are optional, versioned metadata - never a playback gate."""
+
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = PlayerCatalogRepositorySQLite(Path(self.tmp.name) / "player.sqlite3")
+        await self.repo.open()
+
+    async def asyncTearDown(self) -> None:
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _sync(self, item):
+        return await CatalogSyncService(
+            FakeArchiveCatalogSource(packages=[item]), self.repo
+        ).sync_once()
+
+    async def test_catalog_cover_budget_matches_the_archive_contract(self) -> None:
+        from tgvio.application.archive_planner import (
+            COVER_ALGORITHM,
+            MAX_COVER_BYTES as ARCHIVE_MAX_COVER_BYTES,
+        )
+        from tgvio_player.domain.catalog import COVER_ALGORITHMS, MAX_COVER_BYTES
+
+        self.assertEqual(MAX_COVER_BYTES, ARCHIVE_MAX_COVER_BYTES)
+        self.assertIn(COVER_ALGORITHM, COVER_ALGORITHMS)
+
+    async def test_committed_cover_is_recorded_as_metadata_only(self) -> None:
+        digest = "a" * 64
+        result = await self._sync(with_cover(candidate("arc_cover", digest)))
+        self.assertEqual((result.committed, result.rejected, result.active_videos), (1, 0, 1))
+        cover = await self.repo.active_cover(digest)
+        self.assertIsNotNone(cover)
+        self.assertEqual(cover["remote_path"], "TGVIO/2026-09-22/1")
+        self.assertEqual(cover["remote_relpath"], "cover/video-cover.jpg")
+        self.assertEqual(cover["size_bytes"], 4096)
+        self.assertEqual(cover["mime_type"], "image/jpeg")
+        self.assertEqual(cover["algorithm"], "reuse-publish-thumbnail-v1")
+
+    async def test_package_without_a_cover_stays_playable_with_no_cover_row(self) -> None:
+        digest = "b" * 64
+        result = await self._sync(candidate("arc_plain", digest))
+        self.assertEqual((result.committed, result.active_videos), (1, 1))
+        self.assertIsNone(await self.repo.active_cover(digest))
+
+    async def test_an_unusable_cover_is_ignored_and_never_hides_the_video(self) -> None:
+        valid = {"path": "cover/video-cover.jpg", "size_bytes": 4096,
+                 "mime_type": "image/jpeg", "algorithm": "reuse-publish-thumbnail-v1"}
+        cases = {
+            "traversal": {"cover": {**valid, "path": "../escape.jpg"}},
+            "absolute": {"cover": {**valid, "path": "/etc/passwd"}},
+            "windows": {"cover": {**valid, "path": "cover\\evil.jpg"}},
+            "boolean-size": {"cover": {**valid, "size_bytes": True}},
+            "fractional-size": {"cover": {**valid, "size_bytes": 1.5}},
+            "infinite-size": {"cover": {**valid, "size_bytes": float("inf")}},
+            "string-size": {"cover": {**valid, "size_bytes": "4096"}},
+            "unknown-algorithm": {"cover": {
+                "path": "cover/video-cover.jpg", "size_bytes": 4096,
+                "mime_type": "image/jpeg", "algorithm": "future-cover-v9",
+            }},
+            "mismatched-manifest-algorithm": {
+                "cover_algorithm": "some-other-algorithm",
+            },
+            "over-budget": {"cover": {
+                "path": "cover/video-cover.jpg", "size_bytes": 2_000_000,
+                "mime_type": "image/jpeg", "algorithm": "reuse-publish-thumbnail-v1",
+            }},
+            "empty-size": {"cover": {
+                "path": "cover/video-cover.jpg", "size_bytes": 0,
+                "mime_type": "image/jpeg", "algorithm": "reuse-publish-thumbnail-v1",
+            }},
+            "markup-mime": {"cover": {
+                "path": "cover/video-cover.jpg", "size_bytes": 4096,
+                "mime_type": "text/html", "algorithm": "reuse-publish-thumbnail-v1",
+            }},
+            "not-an-object": {"cover": "nope"},
+        }
+        for index, (label, patch) in enumerate(cases.items()):
+            with self.subTest(case=label):
+                digest = f"{index + 1:064x}"
+                result = await self._sync(with_cover(candidate(
+                    f"arc_bad_cover_{index}", digest,
+                    remote_path=f"TGVIO/2026-09-22/{index + 2}",
+                ), **patch))
+                self.assertEqual(result.committed, 1, "a bad cover must not reject the package")
+                self.assertEqual(result.active_videos, 1, "a bad cover must not hide the video")
+                self.assertIsNone(await self.repo.active_cover(digest))
+                self.assertEqual(await self.repo.list_active_video_ids(), [digest])
+
+    async def test_a_cover_is_never_planned_for_a_non_video_entry(self) -> None:
+        digest = "c" * 64
+        result = await self._sync(with_cover(candidate("arc_photo", digest, kind="photo")))
+        self.assertEqual(result.committed, 1)
+        self.assertIsNone(await self.repo.active_cover(digest))
+
+    async def test_refreshing_a_package_without_the_cover_deactivates_it(self) -> None:
+        digest = "d" * 64
+        await self._sync(with_cover(candidate("arc_refresh", digest)))
+        self.assertIsNotNone(await self.repo.active_cover(digest))
+        await self._sync(candidate("arc_refresh", digest))
+        self.assertIsNone(await self.repo.active_cover(digest), "a re-committed package must drop a withdrawn cover")
+        self.assertEqual(await self.repo.list_active_video_ids(), [digest])
+
+
 class WebDavCatalogSourceTests(unittest.IsolatedAsyncioTestCase):
     async def test_discovers_only_complete_package_metadata(self) -> None:
         source = FakeWebDavClient()

@@ -58,6 +58,36 @@ class WebDavClientSettings:
     read_timeout_seconds: float = 30.0
 
 
+class _ResponseBody(AsyncIterator[bytes]):
+    """Own the HTTP response even before the first chunk is requested.
+
+    Closing an unstarted async generator skips its finally block. An explicit
+    owner ensures error-status and prepare-failure paths release the socket.
+    """
+
+    def __init__(self, response) -> None:
+        self._response = response
+        self._chunks = response.content.iter_chunked(64 * 1024).__aiter__()
+        self._closed = False
+
+    def __aiter__(self) -> AsyncIterator[bytes]:
+        return self
+
+    async def __anext__(self) -> bytes:
+        if self._closed:
+            raise StopAsyncIteration
+        try:
+            return await anext(self._chunks)
+        except BaseException:
+            await self.aclose()
+            raise
+
+    async def aclose(self) -> None:
+        if not self._closed:
+            self._closed = True
+            self._response.release()
+
+
 class AioHttpReadOnlyWebDavClient:
     """Bounded Player WebDAV transport with opt-in single-file deletion."""
 
@@ -136,13 +166,6 @@ class AioHttpReadOnlyWebDavClient:
         headers = {} if byte_range is None else {"Range": f"bytes={byte_range.start}-{byte_range.end}"}
         response = await self._request("GET", remote_path, headers=headers)
 
-        async def body() -> AsyncIterator[bytes]:
-            try:
-                async for chunk in response.content.iter_chunked(64 * 1024):
-                    yield chunk
-            finally:
-                response.release()
-
         content_length = response.headers.get("Content-Length")
         try:
             length = int(content_length) if content_length is not None else None
@@ -154,7 +177,7 @@ class AioHttpReadOnlyWebDavClient:
             length,
             response.headers.get("Content-Range"),
             response.headers.get("ETag"),
-            body(),
+            _ResponseBody(response),
         )
 
     async def delete(self, remote_path: str) -> bool:

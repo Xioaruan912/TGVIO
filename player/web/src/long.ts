@@ -1,5 +1,6 @@
 import { api } from "./api";
 import { icon } from "./icons";
+import { buildCoverTile } from "./components/cover-tile";
 import { prefs } from "./settings";
 import { element, formatTime } from "./ui";
 import type { Clip } from "./types";
@@ -9,7 +10,7 @@ const BATCH = 20;
 const EMPTY_PROGRESS = { positions: new Map<string, number>(), recent: [] as Array<{ clip: Clip; position: number }> };
 type ProgressState = Awaited<ReturnType<typeof api.longVideoProgress>>;
 
-/** Full-screen library of large videos; tapping a row opens the dedicated player. */
+/** Full-screen library of large videos; tapping a cover opens the dedicated player. */
 export class LongVideoPage {
   readonly root: HTMLElement;
   private readonly list: HTMLElement;
@@ -101,9 +102,7 @@ export class LongVideoPage {
       const section = element("section", "long-library-section");
       section.setAttribute("aria-label", "全部长视频");
       section.appendChild(element("h2", "long-library-heading", "全部长视频"));
-      for (const clip of library) {
-        section.appendChild(this.row(clip, this.progressState.positions.get(clip.id)));
-      }
+      section.appendChild(this.grid(library, (clip) => this.progressState.positions.get(clip.id)));
       this.list.appendChild(section);
     }
     if (!this.clips.length && !this.hasMore && !resumable.length) {
@@ -117,40 +116,32 @@ export class LongVideoPage {
     const section = element("section", "long-resume-section");
     section.setAttribute("aria-label", "继续观看");
     section.appendChild(element("h2", "long-resume-heading", "继续观看"));
-    const rows = element("div", "long-resume-items");
-    for (const { clip, position } of items) {
-      rows.appendChild(this.row(clip, position, true));
-    }
-    section.appendChild(rows);
+    section.appendChild(this.grid(items.map(({ clip }) => clip), (clip) =>
+      items.find((item) => item.clip.id === clip.id)?.position));
     this.list.appendChild(section);
   }
 
-  private row(clip: Clip, position: number | undefined, resumeCard = false): HTMLElement {
-    const row = element("button", resumeCard ? "long-row long-resume-row" : "long-row");
-    row.type = "button";
-    const thumb = element("span", "long-thumb");
-    thumb.appendChild(icon("film", 22));
-    const text = element("span", "long-row-text");
-    const dimensions = clip.width && clip.height ? ` · ${clip.width}×${clip.height}` : "";
-    text.append(
-      element("strong", "long-row-title", `视频 #${clip.id.slice(0, 8)}`),
-      element(
-        "small",
-        position !== undefined && position > 10 && position < clip.duration - 30
-          ? "long-row-sub long-row-resume"
-          : "long-row-sub",
-        position !== undefined && position > 10 && position < clip.duration - 30
-          ? `继续观看 ${formatTime(position)} / ${formatTime(clip.duration)}${dimensions}`
-          : `${formatTime(clip.duration)}${dimensions}`,
-      ),
-    );
-    row.append(thumb, text);
-    row.addEventListener("click", () => {
-      const resumeAt = position !== undefined && position > 10 && position < clip.duration - 30
-        ? position
-        : 0;
-      this.onOpen(clip, resumeAt);
-    });
-    return row;
+  /** Cover cards with a real resume bar; browsing never starts a video. */
+  private grid(clips: Clip[], positionOf: (clip: Clip) => number | undefined): HTMLElement {
+    const grid = element("div", "cover-grid cover-grid-wide");
+    for (const clip of clips) {
+      const position = positionOf(clip);
+      const resumable = position !== undefined && position > 10 && position < clip.duration - 30;
+      const tile = buildCoverTile({
+        media: {
+          id: clip.id,
+          duration: clip.duration,
+          category: clip.category,
+          coverUrl: clip.coverUrl,
+          favorite: clip.favorite,
+        },
+        variant: "wide",
+        subtitle: resumable ? `继续观看 ${formatTime(position)} / ${formatTime(clip.duration)}` : undefined,
+        progress: resumable && clip.duration > 0 ? position / clip.duration : null,
+        onPlay: () => this.onOpen(clip, resumable ? position : 0),
+      });
+      grid.appendChild(tile.root);
+    }
+    return grid;
   }
 }

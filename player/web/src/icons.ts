@@ -23,7 +23,9 @@ export type IconName =
   | "back"
   | "lock"
   | "download"
-  | "trash";
+  | "trash"
+  | "preview"
+  | "check";
 
 type IconSpec = {
   paths: string[];
@@ -120,6 +122,13 @@ const SPECS: Record<IconName, IconSpec> = {
   },
   download: {
     paths: ["M12 4v10.2", "M7.7 10 12 14.3 16.3 10", "M5 19h14"],
+  },
+  preview: {
+    paths: ["M2.8 12S6.9 6.6 12 6.6 21.2 12 21.2 12 17.1 17.4 12 17.4 2.8 12 2.8 12Z"],
+    circles: [[12, 12, 2.4]],
+  },
+  check: {
+    paths: ["M5.5 12.6 10 17l8.5-9.4"],
   },
 };
 

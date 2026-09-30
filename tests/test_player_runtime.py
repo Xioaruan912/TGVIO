@@ -2,6 +2,9 @@ from __future__ import annotations
 
 import base64
 import unittest
+from unittest.mock import AsyncMock, Mock
+
+from tgvio_player.domain.ranges import ByteRange
 
 from tgvio_player.infrastructure.webdav_aiohttp import (
     AioHttpReadOnlyWebDavClient,
@@ -91,6 +94,40 @@ class PlayerWebDavTransportTests(unittest.TestCase):
                 "/dav/TGVIO/2026-09-22/nested/file", "TGVIO/2026-09-22"
             )
         )
+
+
+class PlayerWebDavBodyOwnershipTests(unittest.IsolatedAsyncioTestCase):
+    async def response_body(self, chunks):
+        async def content():
+            for chunk in chunks:
+                yield chunk
+        response = Mock(status=503, headers={})
+        response.content.iter_chunked.return_value = content()
+        client = AioHttpReadOnlyWebDavClient(
+            WebDavClientSettings("https://dav.example.invalid/archive", "user", "pass")
+        )
+        client._request = AsyncMock(return_value=response)
+        upstream = await client.open_range("TGVIO/clip.jpg", ByteRange(0, 3))
+        return response, upstream.body
+
+    async def test_unread_body_close_releases_the_response(self):
+        response, body = await self.response_body([b"error"])
+        await body.aclose()
+        response.release.assert_called_once()
+        await body.aclose()
+        response.release.assert_called_once()
+        self.assertEqual([chunk async for chunk in body], [])
+
+    async def test_started_and_exhausted_bodies_release_exactly_once(self):
+        response, body = await self.response_body([b"first", b"last"])
+        self.assertEqual(await anext(body), b"first")
+        await body.aclose()
+        response.release.assert_called_once()
+        response, body = await self.response_body([b"whole"])
+        self.assertEqual([chunk async for chunk in body], [b"whole"])
+        response.release.assert_called_once()
+        await body.aclose()
+        response.release.assert_called_once()
 
 
 if __name__ == "__main__":

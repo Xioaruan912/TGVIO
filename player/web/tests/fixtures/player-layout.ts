@@ -1,10 +1,11 @@
 import "../../src/style.css";
-import { buildShell, setControlsVisible, type ShellHandlers } from "../../src/ui";
+import { buildShell, setControlsVisible, openSheet, type ShellHandlers } from "../../src/ui";
 import { FeedView } from "../../src/feed";
 import { LargePlayer } from "../../src/large";
 import { LibraryPlayback } from "../../src/library-playback";
 import { IdlePrivacyController } from "../../src/idle-privacy";
 import { setPref } from "../../src/settings";
+import { buildSettingsView, SETTINGS_GROUP_ACCESS, SETTINGS_GROUP_DEVICE, SETTINGS_GROUP_NETWORK, SETTINGS_GROUP_PLAYBACK, SETTINGS_GROUP_STORAGE } from "../../src/views/settings-view";
 import type { Clip } from "../../src/types";
 const pause = () => new Promise(resolve => setTimeout(resolve, 260));
 const checks: string[] = [];
@@ -289,6 +290,26 @@ async function run() {
   now+=59_999;idleCheck();check(!current().root.classList.contains("privacy-locked"), "long-to-short grants full stop grace");
   now+=1;idleCheck();check(current().root.classList.contains("privacy-locked"), "long stop grace expires across a short swap");
   mixed.destroy();check(idleTimers.size===0, "mixed queue leaves no idle timers");
+  // Settings are grouped by task, not one undifferentiated list.
+  openSheet(shell, "设置", buildSettingsView({
+    muted: true, quality: "original", currentClip: clip, feedMeter: null, DEBUG: false,
+    toggleSound: () => undefined, openSettings: () => undefined, openCacheModeSettings: () => undefined,
+    openGestureGuide: () => undefined, openStorageSettings: () => undefined,
+    setQuality: () => undefined, logout: async () => undefined,
+  }));
+  await pause();
+  const cards = [...shell.root.querySelectorAll<HTMLElement>(".settings-card")];
+  check(cards.length === 5, "settings render five task groups");
+  for (const group of [SETTINGS_GROUP_PLAYBACK, SETTINGS_GROUP_NETWORK, SETTINGS_GROUP_DEVICE, SETTINGS_GROUP_STORAGE, SETTINGS_GROUP_ACCESS]) {
+    check(cards.some(card => card.textContent?.includes(group)), "settings group present: " + group);
+  }
+  const sheet = shell.root.querySelector<HTMLElement>(".sheet")!;
+  check(sheet.getBoundingClientRect().right <= innerWidth + 1, "settings sheet fits the viewport");
+  for (const row of shell.root.querySelectorAll<HTMLElement>(".settings-card .sheet-row")) {
+    const box = row.getBoundingClientRect();
+    if (box.width === 0) continue;
+    check(box.height >= 43.9, "settings row keeps a 44px target: " + Math.round(box.height));
+  }
   shell.root.remove();
 }
 run().then(() => finish(true)).catch(error => finish(false, String(error)));
