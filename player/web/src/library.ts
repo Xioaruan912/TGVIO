@@ -156,7 +156,7 @@ export class VideoLibraryPage {
     return { signal: this.indexRequest.signal, generation: ++this.generation };
   }
   private isCurrent(generation: number): boolean { return !this.destroyed && generation === this.generation; }
-  private resetList(): void { this.list.replaceChildren(); this.list.scrollTop = 0; this.rowElements.clear(); }
+  private resetList(): void { this.list.replaceChildren(); this.list.scrollTop = 0; this.rowElements.clear(); this.list.classList.remove("library-grid"); }
   private async loadDates(): Promise<void> {
     this.stage = "dates"; this.membership = false;
     const request = this.beginIndex(); this.resetList(); this.toolbar.replaceChildren(); this.selectionBar.replaceChildren();
@@ -270,6 +270,8 @@ export class VideoLibraryPage {
     else this.notice.textContent = `${this.controller.folder?.date ?? "未知日期"} · ${basisLabel(this.controller.folder!.date_basis)} · 仅加载视频信息`;
   }
   private row(clip: Clip): HTMLElement {
+    // Video lists render as a cover grid; the index/folder stages stay a list.
+    this.list.classList.add("library-grid");
     const row = element("article", "library-row"); row.tabIndex = -1;
     const checkLabel = element("label", "library-check");
     const check = element("input", "library-checkbox"); check.type = "checkbox";

@@ -21,6 +21,14 @@ try {
   const rect=row.getBoundingClientRect();assert(rect.right<=innerWidth+1&&rect.left>=-1,"Row overflows viewport");
  }
  assert(page.root.scrollWidth<=page.root.clientWidth+1,"Horizontal overflow");
+ const gridStyle=getComputedStyle(document.querySelector(".library-list"));
+ assert(gridStyle.display==="grid","video list must render as a cover grid");
+ const gridColumns=gridStyle.gridTemplateColumns.split(" ").filter(Boolean).length;
+ if(innerWidth<700)assert(gridColumns===3,"phone grid must show three cover columns, got "+gridColumns);
+ else assert(gridColumns>=3,"wide grid must show at least three cover columns, got "+gridColumns);
+ const tile=page.root.querySelector(".library-row").getBoundingClientRect();
+ assert(tile.height>tile.width,"a cover tile must be taller than it is wide");
+ assert(tile.width>=90,"a cover tile must be wide enough to read, got "+Math.round(tile.width));
  list.scrollTop=100; const scroll=list.scrollTop;
  const checks=[...page.root.querySelectorAll(".library-checkbox")];for(const index of [2,0])checks[index].click();
  page.root.querySelector(".library-selection button").click();
