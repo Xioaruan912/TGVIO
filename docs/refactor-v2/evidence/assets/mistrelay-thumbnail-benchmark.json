@@ -1,0 +1,411 @@
+{
+  "machine": "Linux-6.18.33.2-microsoft-standard-WSL2-x86_64-with-glibc2.41",
+  "cpu": "AMD Ryzen 7 5800H with Radeon Graphics",
+  "logical_cpu": 16,
+  "ffmpeg": "ffmpeg version 7.1.5-0+deb13u1 Copyright (c) 2000-2026 the FFmpeg developers",
+  "media": {
+    "size_bytes": 11304230,
+    "width": 1280,
+    "height": 720,
+    "duration_s": 12,
+    "fps": 30,
+    "codec": "H264",
+    "gop": 60,
+    "moov": "faststart"
+  },
+  "commands": {
+    "MistRelay_WebP400": [
+      "ffmpeg",
+      "-ss",
+      "00:00:01",
+      "-i",
+      "/tmp/mistrelay-research/synthetic.mp4",
+      "-vframes",
+      "1",
+      "-vf",
+      "scale=400:-1",
+      "-c:v",
+      "libwebp",
+      "-quality",
+      "85",
+      "-y",
+      "/tmp/mistrelay-research/bench-mist.webp"
+    ],
+    "TGVIO_fragment_JPEG320": [
+      "ffmpeg",
+      "-y",
+      "-hide_banner",
+      "-loglevel",
+      "error",
+      "-i",
+      "/tmp/mistrelay-research/synthetic.mp4",
+      "-frames:v",
+      "1",
+      "-vf",
+      "scale=320:-2",
+      "-q:v",
+      "4",
+      "-update",
+      "1",
+      "/tmp/mistrelay-research/bench-frame.jpg"
+    ],
+    "TGVIO_thumbnail_first_attempt": [
+      "ffmpeg",
+      "-y",
+      "-v",
+      "error",
+      "-ss",
+      "0.600",
+      "-i",
+      "/tmp/mistrelay-research/synthetic.mp4",
+      "-frames:v",
+      "1",
+      "-vf",
+      "scale=320:320:force_original_aspect_ratio=decrease",
+      "-q:v",
+      "5",
+      "/tmp/mistrelay-research/bench-thumb.jpg"
+    ]
+  },
+  "rows": [
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "cold_advisory",
+      "rep": 0,
+      "ms": 218.8224469864508,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "cold_advisory",
+      "rep": 0,
+      "ms": 195.93677599914372,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "cold_advisory",
+      "rep": 0,
+      "ms": 193.6155220028013,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "warm",
+      "rep": 0,
+      "ms": 195.43993400293402,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "warm",
+      "rep": 0,
+      "ms": 187.6738699938869,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "warm",
+      "rep": 0,
+      "ms": 196.89308499800973,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "cold_advisory",
+      "rep": 1,
+      "ms": 192.6464179996401,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "cold_advisory",
+      "rep": 1,
+      "ms": 190.58075500652194,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "cold_advisory",
+      "rep": 1,
+      "ms": 191.55210700409953,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "warm",
+      "rep": 1,
+      "ms": 199.44586198835168,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "warm",
+      "rep": 1,
+      "ms": 187.35963400104083,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "warm",
+      "rep": 1,
+      "ms": 193.47424400621094,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "cold_advisory",
+      "rep": 2,
+      "ms": 194.90982800198253,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "cold_advisory",
+      "rep": 2,
+      "ms": 184.2036510061007,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "cold_advisory",
+      "rep": 2,
+      "ms": 188.54733199987095,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "warm",
+      "rep": 2,
+      "ms": 197.83882399497088,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "warm",
+      "rep": 2,
+      "ms": 182.76051800057758,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "warm",
+      "rep": 2,
+      "ms": 191.66778201179113,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "cold_advisory",
+      "rep": 3,
+      "ms": 200.8010189892957,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "cold_advisory",
+      "rep": 3,
+      "ms": 183.61110299883876,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "cold_advisory",
+      "rep": 3,
+      "ms": 190.34385499253403,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "warm",
+      "rep": 3,
+      "ms": 200.27122400642838,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "warm",
+      "rep": 3,
+      "ms": 186.33000500267372,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "warm",
+      "rep": 3,
+      "ms": 191.27012600074522,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "cold_advisory",
+      "rep": 4,
+      "ms": 194.03642599354498,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "cold_advisory",
+      "rep": 4,
+      "ms": 189.631137996912,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "cold_advisory",
+      "rep": 4,
+      "ms": 181.71720999816898,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "warm",
+      "rep": 4,
+      "ms": 190.71291599539109,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "warm",
+      "rep": 4,
+      "ms": 181.4490660035517,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "warm",
+      "rep": 4,
+      "ms": 199.13610100047663,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "cold_advisory",
+      "rep": 5,
+      "ms": 196.02128100814298,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "cold_advisory",
+      "rep": 5,
+      "ms": 179.47258600906935,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "cold_advisory",
+      "rep": 5,
+      "ms": 184.82264599879272,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "warm",
+      "rep": 5,
+      "ms": 193.02312399668153,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "warm",
+      "rep": 5,
+      "ms": 188.2418930035783,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "warm",
+      "rep": 5,
+      "ms": 192.0593950053444,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "cold_advisory",
+      "rep": 6,
+      "ms": 201.20743999723345,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "cold_advisory",
+      "rep": 6,
+      "ms": 183.52288000460248,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "cold_advisory",
+      "rep": 6,
+      "ms": 188.6809449933935,
+      "output_bytes": 5909
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "warm",
+      "rep": 6,
+      "ms": 195.79307798994705,
+      "output_bytes": 5748
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "warm",
+      "rep": 6,
+      "ms": 186.9883449980989,
+      "output_bytes": 6070
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "warm",
+      "rep": 6,
+      "ms": 184.56207099370658,
+      "output_bytes": 5909
+    }
+  ],
+  "summary": [
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "cold_advisory",
+      "n": 7,
+      "p50_ms": 196.02128100814298,
+      "p95_ms": 218.8224469864508
+    },
+    {
+      "name": "MistRelay_WebP400",
+      "mode": "warm",
+      "n": 7,
+      "p50_ms": 195.79307798994705,
+      "p95_ms": 200.27122400642838
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "cold_advisory",
+      "n": 7,
+      "p50_ms": 184.2036510061007,
+      "p95_ms": 195.93677599914372
+    },
+    {
+      "name": "TGVIO_fragment_JPEG320",
+      "mode": "warm",
+      "n": 7,
+      "p50_ms": 186.9883449980989,
+      "p95_ms": 188.2418930035783
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "cold_advisory",
+      "n": 7,
+      "p50_ms": 188.6809449933935,
+      "p95_ms": 193.6155220028013
+    },
+    {
+      "name": "TGVIO_thumbnail_first_attempt",
+      "mode": "warm",
+      "n": 7,
+      "p50_ms": 192.0593950053444,
+      "p95_ms": 199.13610100047663
+    }
+  ],
+  "limitations": "Independent local ffmpeg processes only; not project execution, cache-hit latency, blank-frame checks or remote E2E. Cold uses per-file POSIX_FADV_DONTNEED advisory only; binaries/libraries not flushed. Warm reads only our synthetic file. No production files or global drop_caches touched."
+}
