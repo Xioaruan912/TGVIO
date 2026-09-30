@@ -28,3 +28,8 @@ id_ed25519
 AGENTS.md
 todo.md
 docs
+
+# Development-only governance and local AI traces never enter images.
+**/AGENTS.md
+.github
+.superpowers

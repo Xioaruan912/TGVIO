@@ -14,6 +14,20 @@ export PYTHONPATH="$repo_root/src:/opt/tgvio/site-packages"
 # The foundation probe is deliberately isolated from any caller environment.
 # It creates a throw-away SQLite database and can never connect to Telegram.
 check_root=$(mktemp -d "${TMPDIR:-/tmp}/tgvio-foundation.XXXXXX")
+# This root is created by mktemp above; remove only that private workspace.
+cleanup_check_root() {
+  "$python_bin" - "$check_root" "${TMPDIR:-/tmp}" <<'PY_CLEANUP'
+from pathlib import Path
+import shutil
+import sys
+target = Path(sys.argv[1])
+parent = Path(sys.argv[2]).resolve()
+if target.is_symlink() or target.resolve().parent != parent or not target.name.startswith("tgvio-foundation."):
+    raise RuntimeError("refusing unsafe foundation cleanup")
+shutil.rmtree(target)
+PY_CLEANUP
+}
+trap cleanup_check_root EXIT
 export TGVIO_ENV=test
 export TGVIO_RUN_BOT=false
 export TGVIO_PUBLISH_ENABLED=false

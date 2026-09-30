@@ -8,6 +8,10 @@
 - 发布成功后有结果卡片，可以收藏、分享、撤销。
 - 可选把原文件备份到 WebDAV。
 
+开发与 AI 修改请从 [AGENTS.md](AGENTS.md) 和 [当前文档](docs/README.md) 进入。
+Player 是独立的私有 Web 播放服务，前端位于 [player/web](player/web/README.md)，与 Bot 隔离。
+已有生产实例的更新遵守 [运维规程](docs/operations/README.md)，不要把新装菜单当作生产发布入口。
+
 ---
 
 ## 一、开始前要准备什么

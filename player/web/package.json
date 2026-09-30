@@ -6,12 +6,17 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "test": "tsc --target ES2022 --module ESNext --moduleResolution Bundler --types vite/client --skipLibCheck src/long-video-list.ts src/net.ts src/playback-error.ts src/playback-state.ts src/settings-page.ts src/feed-loading.ts src/favorite-mutations.ts src/context-feed.ts src/idle-privacy.ts src/privacy-presentation.ts src/seek-control.ts src/views/view-lifecycle.ts src/library-playlist.ts --outDir .test-dist && node --test tests/*.test.mjs",
-    "test:browser": "node tests/browser-layout.smoke.mjs",
-    "preview": "vite preview"
+    "test": "node scripts/test.mjs",
+    "test:browser": "node --experimental-websocket tests/browser-layout.smoke.mjs",
+    "preview": "vite preview",
+    "typecheck": "tsc --noEmit",
+    "check": "npm run test && npm run build"
   },
   "devDependencies": {
     "typescript": "^5.7.3",
     "vite": "^6.1.0"
+  },
+  "engines": {
+    "node": ">=20.19.0 <21 || >=22.12.0"
   }
 }

@@ -2,8 +2,8 @@
 set -Eeuo pipefail
 
 # Build a local Player-only candidate. This command never starts or restarts
-# containers and is not a production release until R2-19B/C provides an HTTP
-# composition root and the owner authorizes production deployment.
+# containers. An uploaded/built candidate becomes a production release only
+# after an authorized cutover and verification of the actual running image.
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
 

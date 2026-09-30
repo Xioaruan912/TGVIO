@@ -2,7 +2,7 @@
 
 ## 1. 适用范围与入口
 
-- 本文件约束 `player/` 及其子目录；同时遵守仓库根 `AGENTS.md` 与 `AI_DEVELOPMENT.md`。历史发布记录不代表当前线上版本。
+- 本文件约束 `player/` 及其子目录；继承仓库根 `AGENTS.md`；`AI_DEVELOPMENT.md` 只做导航。历史发布记录不代表当前线上版本。
 - WSL 发行版：`Debian`；仓库：`/root/TGVIO`；前端：`/root/TGVIO/player/web`。
 - Player 后端在 `src/tgvio_player/`，Python 回归在 `tests/test_player*.py`；这些目录不在本文件的自动作用域内，修改时仍遵守各自的仓库约定。
 - 前端采用 Vite + TypeScript；入口 `web/src/main.ts`。播放相关入口为 `player.ts`、`large.ts`、`playback-state.ts`、`feed.ts`、`preload.ts`、`gestures.ts`。
@@ -29,7 +29,7 @@
 
 ## 4. 交互与异步规则
 
-- SKY 信息结构固定为独立 header、media-stage、常驻 player-panel、独立 navigation；进度、播放和导航不得再次挂到自动隐藏浮层上。短/长 seek 共用 `seek-control.ts`，触摸区 48px。
+- 当前信息结构为独立 header、media-stage、常驻 player-panel、独立 navigation；用户明确要求新设计后可调整结构，仍保持资源与可访问性合同。进度、播放和导航不得再次挂到自动隐藏浮层上。短/长 seek 共用 `seek-control.ts`，触摸区 48px。
 - UI 组件在 `web/src/components/`；设置在 `views/settings-view.ts`；二级页面由 `views/view-lifecycle.ts` 单一拥有，切导航先销毁旧页面并解除相应 inert。长播放器打开时隔离底层页面，关闭恢复，不重建三 video 池。
 - Sheet/Dialog 统一焦点陷阱、Escape/backdrop 关闭与原焦点恢复；动画遵守 reduced-motion；窄屏与低高度横屏必须可达全部功能。
 - 隐私锁必须用实色媒体遮罩并隐藏媒体可见性，禁止用半透明/blur 替代隐私隐藏；仅作用于锁定，不能让正常缓冲重新盖黑。
@@ -50,6 +50,8 @@
 
 ## 5. 修改与测试
 
+- 根规范是全仓规则唯一入口；本文件只维护 Player 专项合同，不追加历史日志或运行版本。
+- 前端视觉和交互重构以用户设计为准；等待设计时仅整理开发工具和边界，任务状态放独立交接。
 - 先补能复现缺陷的测试，再实现修复；优先渐进抽离播放核心、队列和交互控制，不做无证据的一次性全前端重写。
 - 不引入无必要的新框架或依赖。每阶段可独立审查与回滚。
 - 自动测试使用本地 fake、隔离媒体或 mock API，不连接生产 Telegram/WebDAV，不复用生产登录状态。
@@ -57,8 +59,7 @@
 
 ```sh
 cd /root/TGVIO/player/web
-npm test
-npm run build
+npm run check
 # 已安装 Google Chrome 时：临时独立 profile + loopback fixture，非生产浏览器
 npm run test:browser
 
@@ -66,6 +67,8 @@ cd /root/TGVIO
 PYTHONPATH=src .venv/bin/python -m unittest discover -s tests -p 'test_player*.py'
 .venv/bin/python scripts/release_guard.py architecture .
 git diff --check
+# 全量交付入口（仓库根）：
+bash scripts/check.sh --browser
 ```
 
 - 单元测试负责事件与竞态；浏览器测试负责真实 CSS、命中区域、布局和焦点。静态源码断言不能替代媒体事件或真机验收。

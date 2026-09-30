@@ -1,4 +1,11 @@
-# TGVIO Player Web
+# Player Web 开发入口
+
+统一验证：`npm run check`；浏览器：`npm run test:browser`。
+Node 20.19+ / 22.12+；严格 TS 测试编译到临时 .test-dist，退出自动清理。
+完整说明见 [当前开发文档](../../docs/development/README.md) 与 [Player 约定](../AGENTS.md)。
+以下为既有功能说明；视觉/交互重构等待本轮用户设计提示词。
+
+## 既有 Player Web
 
 R2-19C Vite/TypeScript frontend. In normal builds it uses the authenticated,
 same-origin Player API only:

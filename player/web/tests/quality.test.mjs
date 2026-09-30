@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import test from "node:test";
 
-import { qualityLabel, qualityOptions, resolveStreamUrl } from "../src/quality.ts";
+import { qualityLabel, qualityOptions, resolveStreamUrl } from "../.test-dist/quality.js";
 
 const clip = {
   id: "media-1",

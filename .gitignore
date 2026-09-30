@@ -27,10 +27,16 @@ deployment-ledger.json
 id_rsa
 id_ed25519
 
-# 仅供本地 / AI 使用，不发布到 GitHub
-AGENTS.md
+# Local historical material is retained, but not current authority.
 todo.md
-docs/
+.superpowers/
+docs/ARCHITECTURE.md
+docs/R0_BASELINE.md
+docs/REFACTORING.md
+docs/refactor-v2/*
+!docs/refactor-v2/README.md
+# Already tracked historical evidence stays versioned.
 
-# Keep the Player-specific development contract under version control.
-!player/AGENTS.md
+# Local historical drafts; existing tracked documents remain versioned.
+docs/superpowers/
+docs/product/
