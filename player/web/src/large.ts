@@ -17,7 +17,6 @@ import { confirmMediaDelete, element, formatTime } from "./ui";
 import { qualityLabel, qualityOptions, resolveStreamUrl } from "./quality";
 import { PlaybackStateController, playbackUi, type PlaybackState } from "./playback-state";
 import type { Clip, QualitySelection } from "./types";
-
 function paintBuffered(fill: HTMLElement, video: HTMLVideoElement): void {
   const duration = video.duration;
   if (!Number.isFinite(duration) || duration <= 0) {
@@ -34,7 +33,6 @@ function paintBuffered(fill: HTMLElement, video: HTMLVideoElement): void {
   }
   fill.style.width = `${Math.min(100, (end / duration) * 100)}%`;
 }
-
 /**
  * Dedicated full-screen player for large videos: playback controls, buffered
  * indicator, long-press fast-forward and horizontal drag-scrub with a frame
@@ -97,7 +95,6 @@ export class LargePlayer {
     if (!document.hidden) this.idlePrivacy.check();
     void this.wakeLock.handleVisibilityChange();
   };
-
   constructor(
     clip: Clip,
     onClose: () => void,
@@ -143,7 +140,6 @@ export class LargePlayer {
       : "unsupported";
     if (options.privacyLocked) this.root.classList.add("privacy-locked");
     this.playback.onTransition = (state) => this.applyState(state);
-
     const topbar = element("header", "large-topbar");
     const back = element("button", "large-back");
     back.type = "button";
@@ -162,7 +158,6 @@ export class LargePlayer {
       this.onPrivacyLock();
     });
     topbar.append(back, title, netSpeed, privacyLock);
-
     const stage = element("div", "large-stage");
     this.loading = element("span", "media-loading");
     this.loading.setAttribute("role", "status");
@@ -274,8 +269,7 @@ export class LargePlayer {
     this.favoriteButton.addEventListener("click", () => void this.toggleFavorite());
     this.soundButton = element("button", "large-btn");
     this.soundButton.type = "button";
-    this.soundButton.setAttribute("aria-label", "切换静音");
-    this.soundButton.appendChild(icon(this.muted ? "sound-off" : "sound-on", 24));
+    this.syncSoundButton();
     this.soundButton.addEventListener("click", () => this.toggleSound());
 
     this.deleteButton = element("button", "large-btn large-delete");
@@ -513,7 +507,7 @@ export class LargePlayer {
     this.video.setAttribute("muted", "");
     this.video.muted = true;
     rememberMuted(true);
-    this.soundButton.replaceChildren(icon("sound-off", 24));
+    this.syncSoundButton();
     this.idlePrivacy.setEnabled(false);
     this.idlePrivacy.setPlaying(false);
     this.userSeeking = false;
@@ -704,6 +698,12 @@ export class LargePlayer {
     }
   }
 
+  private syncSoundButton(): void {
+    this.soundButton.replaceChildren(icon(this.muted ? "sound-off" : "sound-on", 24));
+    this.soundButton.setAttribute("aria-label", this.muted ? "开启声音（当前静音）" : "关闭声音（当前有声）");
+    this.soundButton.setAttribute("aria-pressed", String(!this.muted));
+  }
+
   private syncFavoriteButton(enabled: boolean): void {
     this.favoriteButton.classList.toggle("selected", enabled);
     this.favoriteButton.setAttribute("aria-pressed", String(enabled));
@@ -754,7 +754,7 @@ export class LargePlayer {
       this.video.defaultMuted = true;
       this.video.setAttribute("muted", "");
       this.video.muted = true;
-      this.soundButton.replaceChildren(icon("sound-off", 24));
+      this.syncSoundButton();
       return;
     }
     void requestAudioEnable(this.root).then((confirmed) => {
@@ -764,7 +764,7 @@ export class LargePlayer {
       this.video.defaultMuted = false;
       this.video.removeAttribute("muted");
       this.video.muted = false;
-      this.soundButton.replaceChildren(icon("sound-on", 24));
+      this.syncSoundButton();
     });
   }
 }

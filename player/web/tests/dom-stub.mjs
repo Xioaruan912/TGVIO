@@ -72,7 +72,7 @@ export function installDom() {
   };
   const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)); };
   const videos = { created: 0 };
-  globalThis.window = { setTimeout, clearTimeout, matchMedia: () => ({ matches: false }) };
+  globalThis.window = { setTimeout: (...args) => { const timer = setTimeout(...args); timer.unref(); return timer; }, clearTimeout, matchMedia: () => ({ matches: false }) };
   globalThis.document = Object.assign(new Node("document"), {
     hidden: false,
     createElement: tag => { if (tag === "video") videos.created++; return new Node(tag); },

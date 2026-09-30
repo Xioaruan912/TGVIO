@@ -120,14 +120,25 @@ explicit and never faked:
 
 - `loading` — a same-size neutral placeholder while the lazy `<img>` resolves.
 - `missing` — the API returned no cover; a neutral placeholder with “暂无封面”.
-- `failed` — the image failed twice; “封面加载失败” plus a bounded retry. A broken
+- `failed` — two image errors or a 20-second request deadline; “封面加载失败” plus a bounded retry. A broken
   cover never claims the video itself is unplayable.
 - `ready` — the decoded picture.
 
 Browsing is metadata-only: the lists create zero `<video>` elements, one preview
 video at most runs at a time, and a preview is always an explicit action. The
-library video stage is a two-column cover grid on phones (`auto-fill` from
-150/190px on wider screens); long videos use the 16:9 `cover-grid-wide` variant.
+library video stage is a two-column cover grid on phones (container-aware
+180/200px minima on wider content areas); long videos use the 16:9 `cover-grid-wide` variant.
+
+Image requests enter one shared two-slot queue only near the viewport. Leaving
+the viewport cancels waiting jobs; page disposal cancels active jobs, observers
+and deadlines. A single automatic retry is allowed; manual retry never starts
+playback. Title and metadata occupy separate overlay rows, and failed-image
+retry sits away from title/duration. Call CoverTileHandle.destroy() whenever a
+page replaces or removes its cards.
+
+The privacy lock is directly reachable alongside play, mute and favorite.
+Low-height landscape splits media and controls into columns; lists retain their
+own scroll area. Quality/device settings expose supported capabilities only.
 
 Multi-select is an explicit mode entered from the toolbar (“选择” / “退出多选”).
 While browsing, tapping a cover plays that clip; in select mode the same tap
@@ -180,15 +191,29 @@ before the cover rollout simply have no entry, so those tiles legitimately rende
 the explicit “暂无封面” state - that is an honest placeholder, not a finished
 thumbnail.
 
-For browser-act acceptance with generated 120-second H.264 test files, existing
-FFmpeg and Chrome are required:
+Long lists share the 1000-row budget and three automatic follow-ups; an explicit
+load/retry control remains reachable. Requests abort on close, duplicate-only
+pages stop refill, and returning restores list scroll and launched-cover focus.
+
+For browser acceptance with generated H.264 test videos and decoded static PNG
+frames, existing FFmpeg and Chrome are required:
 
 ```sh
+npm run test:browser
+# Optional persistent evidence directory (screenshots + report.json):
+TGVIO_SCREENSHOTS=/tmp/tgvio-preview npm run test:browser
+
 node tests/ui-acceptance.server.mjs
 # Loopback only: http://127.0.0.1:5179/
 # Login layout fixture (does not submit credentials):
 # http://127.0.0.1:5179/tests/fixtures/sky-login.html
 ```
+
+The automated runner selects an ephemeral loopback port and a temporary Chrome
+profile. It checks 360/390/430/768/1440 and 844x390, state fallbacks, 150% text,
+keyboard, pointer hit-testing, privacy, previews, sound confirmation and login
+resize. Screenshots are synthetic test-video frames, not production catalog
+content. The fixture includes deliberately missing/broken covers.
 
 This server uses mock API/storage and real local HTTP Range media, never live
 WebDAV, production login or Bot data. It removes generated files on normal exit.

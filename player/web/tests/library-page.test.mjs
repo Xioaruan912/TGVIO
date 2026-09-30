@@ -38,7 +38,7 @@ const { icon } = await import("data:text/javascript;base64," + Buffer.from(icons
 const coverJs = await transpile("components/cover-tile.ts");
 globalThis.__coverDeps = { element, icon };
 const { buildCoverTile } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { element, icon } = globalThis.__coverDeps;\n" + coverJs).toString("base64"));
+  "const { element, icon } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + coverJs).toString("base64"));
 const idleJs = await transpile("idle-privacy.ts");
 const { IdlePrivacyController, attachIdleActivity } = await import("data:text/javascript;base64," + Buffer.from(idleJs).toString("base64"));
 globalThis.__libraryDeps = { IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile };
@@ -299,9 +299,16 @@ test("a provided archive cover is lazy, single, ready on load and degrades on er
   assert.equal(tiles(page)[0].dataset.coverState, "loading");
   images[0].dispatch("load");
   assert.equal(tiles(page)[0].dataset.coverState, "ready");
-  images[0].dispatch("error"); images[0].dispatch("error");
-  assert.equal(tiles(page)[0].dataset.coverState, "failed", "a broken cover degrades instead of retrying forever");
-  assert.equal(tiles(page)[0].querySelector(".cover-tile-retry").hidden, false);
+  // A stale event after a decoded image must not discard the good cover.
+  images[0].dispatch("error");
+  assert.equal(tiles(page)[0].dataset.coverState, "ready");
+  page.destroy();
+  const failedPage = mount(new VideoLibraryPage(() => {}, () => {}, {mediaId: fixture.testClipId})); await flush();
+  const brokenImage = all(failedPage.root).find(node => node.tagName === "img");
+  brokenImage.dispatch("error"); brokenImage.dispatch("error");
+  assert.equal(tiles(failedPage)[0].dataset.coverState, "failed", "a broken cover degrades instead of retrying forever");
+  assert.equal(tiles(failedPage)[0].querySelector(".cover-tile-retry").hidden, false);
+  failedPage.destroy();
   assert.equal(tiles(page).length, 20);
   page.destroy();
  } finally { api.libraryVideos = original; }

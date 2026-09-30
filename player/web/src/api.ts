@@ -96,7 +96,7 @@ export function clipFromMedia(media: MediaDto): Clip {
     streamUrl: media.stream_url,
     // Forward-compatible: the archive only starts emitting cover_url once its
     // packages carry a bounded, versioned cover. Absent stays null.
-    coverUrl: (media as { cover_url?: string | null }).cover_url ?? null,
+    coverUrl: media.cover_url ?? null,
     favorite: media.favorite,
     deletable: media.deletable ?? false,
     mimeType: media.mime_type ?? null,
@@ -146,13 +146,14 @@ class PlayerApi {
     offset: number,
     cache = false,
     search = "",
+    signal?: AbortSignal,
   ): Promise<{ items: Clip[]; hasMore: boolean; total: number | null }> {
     if (MOCK_MODE) return { items: [], hasMore: false, total: 0 };
     const params = new URLSearchParams({ category, limit: String(limit), offset: String(offset) });
     if (cache) params.set("cache", "1");
     if (search) params.set("search", search);
     const payload = await this.request<VideoListResponse>(
-      `/api/v1/videos?${params}`,
+      `/api/v1/videos?${params}`, { signal },
     );
     return {
       items: payload.items.map(clipFromMedia),

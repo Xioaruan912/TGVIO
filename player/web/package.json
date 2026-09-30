@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "test": "node scripts/test.mjs",
-    "test:browser": "node --experimental-websocket tests/browser-layout.smoke.mjs",
+    "test:browser": "node --experimental-websocket tests/browser-layout.smoke.mjs && node --experimental-websocket tests/cover-browser.smoke.mjs",
     "preview": "vite preview",
     "typecheck": "tsc --noEmit",
     "check": "npm run test && npm run build"

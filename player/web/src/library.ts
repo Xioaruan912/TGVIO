@@ -162,7 +162,7 @@ export class VideoLibraryPage {
   }
   private isCurrent(generation: number): boolean { return !this.destroyed && generation === this.generation; }
   private resetList(): void {
-    this.list.replaceChildren(); this.list.scrollTop = 0; this.tiles.clear();
+    this.list.replaceChildren(); this.list.scrollTop = 0; for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
     this.list.classList.remove("cover-grid");
   }
   private async loadDates(): Promise<void> {
@@ -283,6 +283,8 @@ export class VideoLibraryPage {
       if (this.tiles.has(clip.id)) continue;
       const tile = this.tile(clip); this.tiles.set(clip.id, tile); this.list.append(tile.root);
     }
+    this.list.querySelector(".library-empty")?.remove();
+    if (!this.controller.rows.length && !this.controller.hasMore && !this.controller.error) this.list.append(element("p", "library-empty", "该类型暂无视频，可切换筛选或返回文件夹"));
     this.title.textContent = `${this.controller.folder?.label ?? "文件夹"} · ${this.controller.rows.length}/${this.controller.total}`;
     this.loadButton.disabled = false;
     this.loadButton.textContent = this.controller.error ? "加载失败，重试" : "加载更多";
@@ -337,7 +339,7 @@ export class VideoLibraryPage {
     video.playsInline = true; video.preload = "none"; video.setAttribute("aria-hidden", "true");
     video.addEventListener("loadeddata", () => {
       if (this.preview !== video) return;
-      video.pause(); handle.root.classList.add("is-previewing");
+      video.pause(); handle.setPreviewing(true);
     }, { once: true });
     video.addEventListener("error", () => {
       if (this.preview !== video) return;
@@ -351,7 +353,7 @@ export class VideoLibraryPage {
     if (!this.preview) return;
     const video = this.preview; this.preview = null;
     video.pause(); video.removeAttribute("src"); video.load(); video.remove();
-    this.previewTile?.root.classList.remove("is-previewing");
+    this.previewTile?.setPreviewing(false);
     this.previewButton = null;
     this.previewTile = null;
   }
@@ -375,7 +377,7 @@ export class VideoLibraryPage {
     const tile = this.tiles.get(mediaId);
     if (this.previewButton && tile?.root.contains(this.previewButton)) this.stopPreview();
     const scroll = this.list.scrollTop;
-    tile?.root.remove(); this.tiles.delete(mediaId);
+    tile?.destroy(); tile?.root.remove(); this.tiles.delete(mediaId);
     if (this.focusedRow === mediaId) this.focusedRow = null;
     if (this.stage === "videos") {
       this.title.textContent = `${this.controller.folder?.label ?? "文件夹"} · ${this.controller.rows.length}/${this.controller.total}`;
@@ -386,6 +388,7 @@ export class VideoLibraryPage {
   destroy(): void {
     this.destroyed = true; this.generation++; this.indexRequest?.abort(); this.controller.dispose();
     this.stopPreview(); this.detachPreviewActivity(); this.previewIdle.destroy();
+    for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
     document.removeEventListener("visibilitychange", this.onPreviewVisibility);
     this.root.remove();
   }

@@ -6,7 +6,6 @@ import { navButton, MOBILE_NAV, DESKTOP_NAV } from "./components/navigation";
 import { buildAppHeader } from "./components/app-header";
 import { buildMediaActions } from "./components/media-actions";
 import { activateDialog, animateArrival } from "./components/dialog";
-
 export type ShellHandlers = {
   onTogglePlayback: () => void;
   onPlayGesture: () => void;
@@ -76,8 +75,8 @@ export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLEle
   const panel = element("section", "login-panel sky-login-card");
   const brand = element("div", "login-brand");
   brand.append(brandMark(), element("strong", undefined, "SKY TGVIO"));
-  const title = element("h1", "login-title", "把时光，交给天空");
-  const subtitle = element("p", "login-subtitle", "轻盈进入，只属于你的视频空间。");
+  const title = element("h1", "login-title", "进入私人视频空间");
+  const subtitle = element("p", "login-subtitle", "输入访问口令，继续观看与收藏。");
   const form = element("form", "login-form");
   const label = element("label", "login-label", "访问口令");
   const input = element("input", "login-input");
@@ -92,7 +91,7 @@ export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLEle
   input.placeholder = "输入访问口令";
   input.setAttribute("aria-label", "访问口令");
   input.required = true;
-  const submit = element("button", "login-submit", "进入天空影院");
+  const submit = element("button", "login-submit", "进入播放器");
   submit.type = "submit";
   const error = element("p", "login-error", "");
   error.setAttribute("role", "alert");
@@ -106,13 +105,14 @@ export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLEle
   form.addEventListener("submit", (event) => {
     event.preventDefault();
     error.textContent = "";
-    submit.disabled = true;
+    if (submit.disabled) return;
+    submit.disabled = true; submit.textContent = "正在验证…"; form.setAttribute("aria-busy", "true");
     void onSubmit(input.value)
       .catch((reason: unknown) => {
         error.textContent = humanizeError(reason, "暂时无法登录，请稍后重试");
       })
       .finally(() => {
-        submit.disabled = false;
+        submit.disabled = false; submit.textContent = "进入播放器"; form.removeAttribute("aria-busy");
       });
   });
   return shell;
@@ -221,7 +221,7 @@ export function buildShell(handlers: ShellHandlers): Shell {
   // State comes from PlaybackStateController via the parent's root attributes.
   new MutationObserver(syncPlay).observe(root, { attributes: true, attributeFilter: ["class", "data-playback-state"] });
   syncPlay();
-  transport.append(playBtn, soundBtn, favoriteBtn);
+  transport.append(playBtn, soundBtn, favoriteBtn, privacyLockBtn);
   const moreActions = element("details", "media-actions");
   const moreSummary = element("summary", "media-actions-toggle", "更多操作");
   moreActions.append(moreSummary, actionRail);

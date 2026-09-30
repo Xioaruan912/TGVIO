@@ -20,7 +20,7 @@ const element = (tag, className, text) => {
 const { icon } = await import("data:text/javascript;base64," + Buffer.from(await transpile("icons.ts")).toString("base64"));
 globalThis.__coverDeps = { element, icon };
 const { buildCoverTile } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { element, icon } = globalThis.__coverDeps;\n" + await transpile("components/cover-tile.ts")).toString("base64"));
+  "const { element, icon } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + await transpile("components/cover-tile.ts")).toString("base64"));
 const { resumableItems, omitResumableDuplicates } = await import(
   "data:text/javascript;base64," + Buffer.from(await transpile("long-video-list.ts")).toString("base64"));
 
@@ -81,7 +81,7 @@ test("continue watching only shows a real, meaningful position", async () => {
   assert.equal(byClass(page.root, "long-resume-section").length, 1);
   const resumeTiles = byClass(byClass(page.root, "long-resume-section")[0], "cover-tile");
   assert.equal(resumeTiles.length, 1, "a 5s position or an almost finished clip is not resumable");
-  assert.equal(byClass(resumeTiles[0], "cover-tile-subtitle")[0].textContent, "继续观看 10:00 / 60:00");
+  assert.equal(byClass(resumeTiles[0], "cover-tile-subtitle")[0].textContent, "播放至 10:00");
   assert.equal(byClass(resumeTiles[0], "cover-tile-progress-fill")[0].style.width, `${(600 / 3600) * 100}%`);
   resumeTiles[0].querySelector(".cover-tile-play").dispatch("click");
   assert.deepEqual(opened[0], [clips[3].id, 600]);
@@ -104,4 +104,96 @@ test("refreshProgress re-renders real positions and remove drops one clip", asyn
   assert.equal(tiles(page).length, before - 1);
   assert.equal(byClass(page.root, "long-resume-section").length, 0, "a deleted clip leaves continue-watching");
   page.destroy();
+});
+
+test("destroy aborts an in-flight page and ignores its late response", async () => {
+  const original = api.videos;
+  let resolve, signal;
+  api.videos = (...args) => { signal = args[5]; return new Promise(done => { resolve = done; }); };
+  progress = { positions: new Map(), recent: [] };
+  try {
+    const page = new LongVideoPage(() => {}, () => {});
+    document.body.append(page.root);
+    await flush(); page.destroy();
+    assert.equal(signal.aborted, true);
+    resolve({items: clips.slice(0,20), hasMore: true, total: 25});
+    await flush();
+    assert.equal(tiles(page).length, 0, "old page never mounts images after destruction");
+  } finally { api.videos = original; }
+});
+
+test("a failed long page has an explicit retry which keeps the same offset", async () => {
+  const original = api.videos, offsets = [];
+  let fail = true;
+  api.videos = async (_category, _limit, offset) => {
+    offsets.push(offset);
+    if (fail) throw new Error("isolated network failure");
+    return {items: clips.slice(0,3), hasMore: false, total: 3};
+  };
+  progress = { positions: new Map(), recent: [] };
+  try {
+    const page = new LongVideoPage(() => {}, () => {}); document.body.append(page.root);
+    await flush();
+    assert.match(page.root.textContent, /暂时加载失败/);
+    const retry = byClass(page.root, "long-retry")[0];
+    assert.equal(retry.textContent, "重试");
+    fail = false; retry.dispatch("click"); await flush();
+    assert.equal(tiles(page).length, 3);
+    assert.deepEqual(offsets, [0,0], "failed page doesn't skip a batch");
+    assert.doesNotMatch(page.root.textContent, /暂时加载失败/);
+    page.destroy();
+  } finally { api.videos = original; }
+});
+
+test("automatic long paging is bounded and a duplicate-only page stops refill", async () => {
+  const original = api.videos;
+  let calls = 0, duplicate = false;
+  api.videos = async (_category, _limit, offset) => {
+    calls++;
+    return {items: Array.from({length:20},(_,index)=>clip(duplicate ? index : offset+index)), hasMore: true, total: null};
+  };
+  progress = { positions: new Map(), recent: [] };
+  try {
+    const page = new LongVideoPage(() => {}, () => {}); document.body.append(page.root); await flush();
+    const list = byClass(page.root,"long-list")[0];
+    list.clientHeight=400; list.scrollHeight=500; list.scrollTop=450;
+    for(let count=0;count<8;count++){list.dispatch("scroll");await flush();}
+    assert.equal(calls,4,"initial batch plus three automatic pages");
+    assert.equal(tiles(page).length,80);
+    duplicate = true;
+    byClass(page.root,"long-retry")[0].dispatch("click"); await flush();
+    assert.equal(calls,5);
+    assert.equal(tiles(page).length,80,"duplicates don't create another cover");
+    assert.equal(byClass(page.root,"long-retry").length,0,"no-new-data ends refill");
+    page.destroy();
+  } finally { api.videos = original; }
+});
+
+test("returning from a long player preserves the list position and restores the launched cover focus", async () => {
+  progress = {positions:new Map(),recent:[]};
+  const page = new LongVideoPage(() => {}, () => {}); document.body.append(page.root); await flush();
+  const list = byClass(page.root,"long-list")[0]; list.scrollTop=300;
+  const launched = tiles(page)[3];
+  launched.querySelector(".cover-tile-play").dispatch("click");
+  await page.refreshProgress();
+  assert.equal(list.scrollTop,300);
+  assert.equal(document.activeElement.parentElement.dataset.mediaId, launched.dataset.mediaId);
+  page.destroy();
+});
+
+test("a late resume response cannot restore a removed video's cover", async () => {
+  progress = {positions:new Map(),recent:[]};
+  const page = new LongVideoPage(() => {}, () => {}); document.body.append(page.root); await flush();
+  const original = api.longVideoProgress;
+  let resolve;
+  api.longVideoProgress = () => new Promise(done => {resolve=done;});
+  try {
+    const refresh = page.refreshProgress();
+    page.remove(clips[1].id);
+    resolve({positions:new Map([[clips[1].id,600]]),recent:[{clip:clips[1],position:600}]});
+    await refresh;
+    assert.equal(tiles(page).some(tile => tile.dataset.mediaId===clips[1].id),false);
+    assert.equal(byClass(page.root,"long-resume-section").length,0);
+    page.destroy();
+  } finally {api.longVideoProgress=original;}
 });

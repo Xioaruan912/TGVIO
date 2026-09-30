@@ -29,15 +29,15 @@ export function buildMediaActions(handlers: ShellHandlers) {
   );
   const shuffleBtn = actionButton(
     iconStack([["shuffle", "icon-single"]], 30),
-    "换一个",
+    "随机播放",
     "随机切换短视频",
   );
   const privacyLockBtn = actionButton(
     iconStack([["lock", "icon-single"]], 30),
-    "隐私遮罩",
+    "隐私锁",
     "立即遮住并暂停",
   );
-  const deleteBtn = actionButton(iconStack([["trash", "icon-single"]], 29), "删除", "永久删除当前视频");
+  const deleteBtn = actionButton(iconStack([["trash", "icon-single"]], 29), "永久删除", "永久删除当前视频");
   deleteBtn.classList.add("delete-action");
   const groupBtn = actionButton(iconStack([["library", "icon-single"]], 30), "所在文件夹", "浏览所在文件夹");
   groupBtn.hidden = true;
@@ -47,7 +47,7 @@ export function buildMediaActions(handlers: ShellHandlers) {
     "下载原片",
     "下载原片",
   );
-  actionRail.append(shuffleBtn, groupBtn, downloadBtn, privacyLockBtn, deleteBtn);
+  actionRail.append(shuffleBtn, groupBtn, downloadBtn, deleteBtn);
   favoriteBtn.addEventListener("click", handlers.onToggleFavorite);
   downloadBtn.addEventListener("click", handlers.onDownload);
   soundBtn.addEventListener("click", handlers.onToggleSound);

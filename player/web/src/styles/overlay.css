@@ -15,7 +15,7 @@
 .context-back { min-height: 44px; padding: 0 10px; flex: none; border-radius: 12px; color: var(--sky700); background: var(--sky50); font-size: 12px; }
 .clip-info { grid-area: info; min-width: 0; color: var(--text); }
 .clip-title { margin: 0; font-size: 15px; line-height: 22px; font-weight: 700; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
-.clip-meta { margin: 2px 0 0; font-size: 11px; line-height: 16px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
+.clip-meta { margin: 2px 0 0; font-size: 12px; line-height: 16px; color: var(--muted); overflow: hidden; white-space: nowrap; text-overflow: ellipsis; }
 .progress-row { grid-area: progress; min-width: 0; min-height: 64px; display: grid; align-content: center; }
 .seek { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 48px; min-height: 48px; margin: 0; background: transparent; touch-action: none; --p: 0%; cursor: pointer; }
 .seek::-webkit-slider-runnable-track { height: 4px; border-radius: 999px; background: linear-gradient(to right,var(--sky500) var(--p),var(--sky100) var(--p)); }
@@ -24,7 +24,7 @@
 .seek::-moz-range-track { height: 4px; border-radius: 999px; background: var(--sky100); }
 .seek::-moz-range-progress { height: 4px; border-radius: 999px; background: var(--sky500); }
 .seek::-moz-range-thumb { width: 12px; height: 12px; border: 3px solid #fff; border-radius: 50%; background: var(--sky700); box-shadow: 0 1px 6px rgb(3 105 161 / 25%); }
-.timeline { display: flex; justify-content: space-between; gap: 12px; font-size: 11px; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 16px; }
+.timeline { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; line-height: 16px; }
 .transport-row { grid-area: transport; display: flex; align-items: center; gap: 8px; min-width: 0; }
 .transport-play { width: 48px; height: 48px; flex: none; display: grid; place-items: center; border-radius: 16px; color: #fff; background: var(--sky700); box-shadow: 0 4px 12px rgb(3 105 161 / 18%); }
 .transport-play .icon-pause { display: none; }
@@ -33,11 +33,12 @@
 .transport-label { position: absolute; width: 1px; height: 1px; padding: 0; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }
 .action-btn { min-width: 48px; min-height: 48px; display: grid; justify-items: center; align-content: center; gap: 3px; padding: 6px 8px; border-radius: 14px; color: var(--sky700); background: var(--sky50); }
 .action-btn .icon { width: 22px; height: 22px; }
-.action-label { font-size: 10px; line-height: 14px; }
+.action-label { font-size: 12px; line-height: 14px; }
 .action-btn.selected { color: var(--favorite); background: #fff0f5; }
 .action-btn.selected .icon-outline, .action-btn.is-muted .icon-unmuted { display: none; }
 .action-btn.selected .icon-filled, .action-btn.is-muted .icon-muted { display: block; }
 .delete-action { color: var(--danger); }
+.action-menu .delete-action { grid-column: 1 / -1; border-top: 1px solid var(--border); border-radius: 0 0 var(--radius) var(--radius); margin-top: 4px; }
 .media-actions { grid-area: actions; position: relative; align-self: center; }
 .media-actions-toggle { min-width: 48px; min-height: 48px; display: flex; align-items: center; justify-content: center; gap: 5px; padding: 0 12px; border-radius: 14px; color: var(--sky700); background: var(--sky50); cursor: pointer; list-style: none; font-size: 12px; }
 .media-actions-toggle::-webkit-details-marker { display: none; }
@@ -96,4 +97,11 @@
 @media (max-width: 359px) {
   .context-back:not([hidden]) + .topbar-brand { display: none; }
   .context-back:not([hidden]) ~ .net-speed { overflow: hidden; text-overflow: ellipsis; }
+}
+
+@media (max-width: 380px) { .media-actions-toggle { padding: 0 8px; } .player-panel { padding-inline: 12px; } }
+@media (max-height: 560px) and (orientation: landscape) {
+  .clip-meta, .topbar-brand .brand-tagline { display: none; }
+  .media-actions-toggle { min-height: 48px; }
+  .action-menu { position: fixed; right: max(12px,var(--safe-right)); bottom: calc(80px + var(--safe-bottom)); max-height: calc(100dvh - 96px); }
 }

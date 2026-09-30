@@ -15,6 +15,8 @@ export type MediaDto = {
   duration_seconds: number | null;
   size_bytes?: number | null;
   stream_url: string;
+  /** Authenticated static frame, absent when the server has no generated cover. */
+  cover_url?: string | null;
   favorite: boolean;
   deletable?: boolean;
   mime_type?: string | null;

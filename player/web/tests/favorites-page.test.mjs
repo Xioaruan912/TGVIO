@@ -20,7 +20,7 @@ const element = (tag, className, text) => {
 const { icon } = await import("data:text/javascript;base64," + Buffer.from(await transpile("icons.ts")).toString("base64"));
 globalThis.__coverDeps = { element, icon };
 const { buildCoverTile } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { element, icon } = globalThis.__coverDeps;\n" + await transpile("components/cover-tile.ts")).toString("base64"));
+  "const { element, icon } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + await transpile("components/cover-tile.ts")).toString("base64"));
 
 const clip = (index, overrides = {}) => ({
   id: String(index).padStart(8, "0") + "f".repeat(56),

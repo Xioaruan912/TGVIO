@@ -125,6 +125,7 @@ export class FavoritesPage {
   }
 
   private renderNotice(): void {
+    this.list.querySelector(".library-empty")?.remove();
     this.loadButton.remove();
     this.loadButton.disabled = this.loading;
     this.loadButton.textContent = this.loading ? "正在加载…" : this.error ? "重试" : "加载更多";
@@ -138,12 +139,13 @@ export class FavoritesPage {
       return;
     }
     if (!this.clips.length) {
-      this.notice.textContent = "还没有收藏。在播放页点击收藏后会出现在这里。";
+      this.list.append(element("p", "library-empty", "还没有收藏。在播放页点击收藏后会出现在这里。"));
+      this.notice.textContent = "收藏与备份状态分别记录";
       return;
     }
     const scope = this.hasMore ? `已加载 ${this.clips.length} 个` : `共 ${this.clips.length} 个`;
     const budget = this.hasMore && this.seen.size >= MAX_ROWS ? " · 本次浏览已达 1000 条信息预算" : "";
-    this.notice.textContent = `${scope}收藏${budget} · 收藏保存在 Player 本地库，WebDAV 备份状态见「设置 → 收藏与 WebDAV」`;
+    this.notice.textContent = `${scope}收藏${budget} · WebDAV 备份状态见「设置 → 收藏与 WebDAV」`;
   }
 
   private renderToolbar(): void {
@@ -260,6 +262,7 @@ export class FavoritesPage {
     this.loading = false;
     this.clips = this.clips.filter((clip) => clip.id !== mediaId);
     this.selected.delete(mediaId);
+    this.tiles.get(mediaId)?.destroy();
     this.tiles.get(mediaId)?.root.remove();
     this.tiles.delete(mediaId);
     this.syncScopeLabel();
@@ -271,6 +274,7 @@ export class FavoritesPage {
     this.destroyed = true;
     this.generation += 1;
     this.request?.abort();
+    for (const tile of this.tiles.values()) tile.destroy();
     this.tiles.clear();
     this.root.remove();
   }

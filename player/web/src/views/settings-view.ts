@@ -112,11 +112,7 @@ export function buildSettingsView(actions: SettingsViewActions): Node[] {
   // Only qualities the current media and the real strategy support are offered.
   const qualityChoices = currentClip
     ? qualityOptions(currentClip)
-    : [
-        { key: "480", label: "480p", selection: 480 as QualitySelection },
-        { key: "720", label: "720p", selection: 720 as QualitySelection },
-        { key: "original", label: "原画", selection: "original" as QualitySelection },
-      ];
+    : [];
   if (!currentClip) body.push(sheetNote("打开一个视频后，这里只列出该视频实际支持的清晰度。"));
   for (const option of qualityChoices) {
     const selected = option.selection === quality;
@@ -152,12 +148,13 @@ export function buildSettingsView(actions: SettingsViewActions): Node[] {
   );
 
   body.push(sheetSection(SETTINGS_GROUP_DEVICE));
-  body.push(sheetToggle(
+  if (typeof navigator !== "undefined" && "wakeLock" in navigator) body.push(sheetToggle(
     "长视频保持屏幕常亮",
     prefs.keepScreenAwake ? "播放时防止屏幕自动熄灭" : "已关闭，浏览器或系统可能自动熄屏",
     prefs.keepScreenAwake,
     () => { setPref("keepScreenAwake", !prefs.keepScreenAwake); openSettings(); },
   ));
+  else body.push(sheetNote("当前浏览器不支持屏幕常亮，播放不受影响。"));
   const installState = installController.state();
   if (installState === "available") {
     body.push(sheetRow({ title: "安装 TGVIO", sub: "作为独立应用安装到此设备", onPick: () => void installController.prompt() }));

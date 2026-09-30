@@ -3,6 +3,7 @@ import { readFileSync } from "node:fs";
 import test from "node:test";
 
 const source = (path) => readFileSync(new URL("../src/" + path, import.meta.url), "utf8");
+const baseCss = source("styles/base.css");
 const feed = source("feed.ts");
 const ui = source("ui.ts");
 const feedCss = source("styles/feed.css");
@@ -54,11 +55,12 @@ test("short and long seek are visible with dedicated 48px touch rows", () => {
 });
 
 test("privacy lock uses opaque cover rather than revealing a blurred frame", () => {
+  assert.match(baseCss, /--privacy-cover:\s*#[0-9a-f]{6};/);
   assert.match(body(feedCss, ".app-shell.privacy-locked .video-host"), /visibility:\s*hidden/);
-  assert.match(body(feedCss, ".app-shell.privacy-locked .media-stage::after"), /background:\s*#081722/);
+  assert.match(body(feedCss, ".app-shell.privacy-locked .media-stage::after"), /background:\s*var\(--privacy-cover\)/);
 });
 
 test("long privacy lock also uses an opaque cover", () => {
   assert.match(body(largeCss, ".large-player.privacy-locked .large-video"), /visibility:\s*hidden/);
-  assert.match(body(largeCss, ".large-player.privacy-locked .large-stage::after"), /background:\s*#081722/);
+  assert.match(body(largeCss, ".large-player.privacy-locked .large-stage::after"), /background:\s*var\(--privacy-cover\)/);
 });

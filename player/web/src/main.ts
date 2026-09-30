@@ -917,7 +917,7 @@ async function goRandom(): Promise<void> {
       return;
     }
     if (activeIndex !== sourceIndex || activeClips()[sourceIndex]?.id !== sourceId) {
-      toast(shell, "当前视频已改变，请重新点换一个");
+      toast(shell, "当前视频已改变，请重新点随机播放");
       return;
     }
     if (!feedView.replaceClipAt(sourceIndex, clip)) {
@@ -938,7 +938,7 @@ async function goRandom(): Promise<void> {
       shell.shuffleBtn.disabled = false;
       shell.shuffleBtn.removeAttribute("aria-busy");
       const currentLabel = shell.shuffleBtn.querySelector<HTMLElement>(".action-label");
-      if (currentLabel) currentLabel.textContent = "换一个";
+      if (currentLabel) currentLabel.textContent = "随机播放";
     }
   }
 }

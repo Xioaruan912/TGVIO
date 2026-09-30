@@ -40,7 +40,7 @@ try {
     const key=++id;const timer=setTimeout(()=>{pending.delete(key);reject(new Error("CDP timeout: "+method));},10000);
     pending.set(key,{resolve,reject,timer});socket.send(JSON.stringify({id:key,method,params}));
   });
-  for(const [width,height] of [[390,844],[430,932],[768,1024],[1440,1000]]) {
+  for(const [width,height] of [[360,800],[390,844],[430,932],[768,1024],[1440,1000],[844,390]]) {
     await cdp("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:width<900});
     await cdp("Page.navigate",{url:`http://127.0.0.1:${port}/tests/fixtures/player-layout.html?size=${width}`});
     let result;

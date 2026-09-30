@@ -44,15 +44,15 @@
 .library-notice { margin: 0; padding: 0 16px 8px; font-size: 12px; line-height: 1.5; color: var(--muted); flex-shrink: 0; overflow-wrap: anywhere; }
 .library-selection { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 16px 8px; flex-shrink: 0; }
 .library-selection:empty { display: none; }
-.library-list { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px max(16px, env(safe-area-inset-bottom)); scrollbar-gutter: stable; }
+.library-list { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 20px; scrollbar-gutter: stable; }
 /* Videos render as cover tiles; index/folder stages stay a plain list. */
 .library-list.cover-grid { align-content: start; }
 .library-index-row { display: flex; flex-direction: column; text-align: left; align-items: flex-start; width: 100%; gap: 4px; padding: 12px 14px; margin-bottom: 8px; }
 .library-index-title { font-size: 14px; font-weight: 650; color: var(--text); }
 .library-index-meta { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
-.library-page .library-preview-video { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; object-fit: cover; opacity: 0; filter: blur(9px); pointer-events: none; transition: opacity 180ms ease, filter 180ms ease; }
-.cover-tile.is-previewing .library-preview-video { opacity: 1; filter: none; }
-.library-empty { color: var(--muted); padding: 16px 0; font-size: 14px; }
+.library-page .library-preview-video { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; object-fit: cover; opacity: 0; pointer-events: none; transition: opacity 180ms ease; }
+.cover-tile.is-previewing .library-preview-video { opacity: 1; }
+.library-empty { color: var(--muted); padding: 32px 20px; background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius-lg); text-align: center; font-size: 14px; }
 .library-list > .library-button:not(.library-index-row) { margin-top: 12px; }
 .library-selection { position: relative; z-index: 3; align-items: center; }
 .library-select-toggle[aria-pressed="true"] { background: var(--primary); color: #fff; border-color: var(--primary); }
@@ -75,4 +75,4 @@
  .library-index-row { max-width: 1040px; }
 }
 
-@media (min-width: 900px) { .library-page { padding-inline: 0; } }
+@media (min-width: 900px) { .library-page { padding-inline: 0; max-width: var(--library-max); margin-inline: auto; } }

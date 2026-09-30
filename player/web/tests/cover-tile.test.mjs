@@ -28,7 +28,7 @@ globalThis.__coverDeps.icon = icon;
 const coverJs = await load("components/cover-tile.ts");
 const { buildCoverTile, formatCoverDuration, coverTitle } = await import(
   "data:text/javascript;base64," + Buffer.from(
-    "const { element, icon } = globalThis.__coverDeps;\n" + coverJs,
+    "const { element, icon } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + coverJs,
   ).toString("base64")
 );
 
@@ -151,4 +151,70 @@ test("favorite mark, mixed-grid type tag, resume subtitle and watched bar are al
   tile.setFavorite(false);
   assert.equal(byClass(tile.root, "cover-tile-favorite")[0].hidden, true);
   assert.doesNotMatch(tile.playButton.getAttribute("aria-label"), /已收藏/);
+});
+
+test("the title has its own row, with duration and mixed type sharing a separate metadata row", () => {
+  const tile = buildCoverTile({ media: media({duration: 0}), title: "很长的视频标题".repeat(12), showCategory: true, onPlay() {} });
+  const info = byClass(tile.root, "cover-tile-info")[0];
+  const title = byClass(tile.root, "cover-tile-title")[0];
+  const metadata = byClass(tile.root, "cover-tile-metadata")[0];
+  assert.equal(title.parentElement, info);
+  assert.equal(metadata.parentElement, info);
+  assert.equal(byClass(tile.root, "cover-tile-duration")[0].parentElement, metadata);
+  assert.equal(byClass(tile.root, "cover-tile-tag")[0].parentElement, metadata);
+  tile.destroy();
+});
+
+test("a loading deadline starts near the viewport, and disposal cancels observation and late events", () => {
+  const oldObserver = globalThis.IntersectionObserver;
+  const oldSet = window.setTimeout, oldClear = window.clearTimeout;
+  let intersect, disconnected = 0, deadline, canceled = 0;
+  globalThis.IntersectionObserver = class {
+    constructor(callback) { intersect = callback; }
+    observe() {}
+    disconnect() { disconnected++; }
+  };
+  window.setTimeout = callback => { deadline = callback; return 1; };
+  window.clearTimeout = id => { if (id) canceled++; };
+  try {
+    const tile = buildCoverTile({ media: media({coverUrl: "/private-cover"}), onPlay() {} });
+    const image = all(tile.root).find(node => node.tagName === "img");
+    assert.equal(image.getAttribute("src"), null, "offscreen metadata doesn't request an image");
+    assert.match(tile.root.textContent, /封面加载中/);
+    assert.equal(deadline, undefined);
+    intersect([{isIntersecting: false}]);
+    assert.equal(deadline, undefined);
+    intersect([{isIntersecting: true}]);
+    assert.equal(image.getAttribute("src"), "/private-cover");
+    const staleLoad = image.events.get("load")[0];
+    deadline();
+    assert.equal(tile.coverState(), "failed", "a hanging image reaches a stable failure");
+    image.dispatch("load");
+    assert.equal(tile.coverState(), "failed");
+    byClass(tile.root, "cover-tile-retry")[0].dispatch("click");
+    assert.equal(tile.coverState(), "loading");
+    staleLoad();
+    assert.equal(tile.coverState(), "loading", "obsolete attempt doesn't mark a retry ready");
+    tile.destroy();
+    image.dispatch("load"); deadline();
+    assert.equal(tile.coverState(), "loading", "destroyed tile is never updated again");
+    assert.equal(image.getAttribute("src"), null);
+    assert.ok(canceled > 0 && disconnected > 0);
+  } finally {
+    window.setTimeout = oldSet; window.clearTimeout = oldClear;
+    if (oldObserver) globalThis.IntersectionObserver = oldObserver; else delete globalThis.IntersectionObserver;
+  }
+});
+
+test("explicit preview state is discoverable and destroyed controls cannot start playback", () => {
+  let played = 0, previewed = 0;
+  const tile = buildCoverTile({media: media(), onPlay() {played++;}, onPreview() {previewed++;}});
+  tile.setPreviewing(true);
+  assert.equal(tile.previewButton.getAttribute("aria-pressed"), "true");
+  assert.match(tile.previewButton.getAttribute("aria-label"), /结束预览/);
+  tile.setPreviewing(false);
+  assert.equal(tile.previewButton.getAttribute("aria-pressed"), "false");
+  tile.destroy();
+  tile.playButton.dispatch("click"); tile.previewButton.dispatch("click");
+  assert.equal(played + previewed, 0);
 });
