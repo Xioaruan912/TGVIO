@@ -157,3 +157,29 @@ class CoverRangeTests(unittest.IsolatedAsyncioTestCase):
         with patch.object(port,"_connect",return_value=conn):
             with self.assertRaises(ValueError):
                 await port.read_range("TGVIO/clip.mp4",2,5,100)
+
+    async def test_image_uses_real_transport_signature_and_verifies_remote_hash(self):
+        from unittest.mock import AsyncMock
+        port = CoverArchivePort("https://fixture.invalid", "fixture", "fixture")
+        image = b"\xff\xd8fixture\xff\xd9"
+        path = "TGVIO/fixture/cover/backfill/" + hashlib.sha256(image).hexdigest() + ".jpg"
+        stored = {}
+        def put(payload, remote_path, content_type):
+            self.assertEqual(content_type, "image/jpeg")
+            stored[remote_path] = payload
+        async def exists(remote_path, size):
+            return len(stored.get(remote_path, b"")) == size
+        async def read(remote_path, max_bytes):
+            return stored.get(remote_path)
+        with patch.object(port, "ensure_collection", new=AsyncMock()), \
+             patch.object(port, "_put_bytes_sync", side_effect=put), \
+             patch.object(port, "exists", side_effect=exists), \
+             patch.object(port, "get_bytes", side_effect=read):
+            await port.write_cover(path, image)
+        self.assertEqual(stored[path], image)
+        with patch.object(port, "ensure_collection", new=AsyncMock()), \
+             patch.object(port, "_put_bytes_sync", side_effect=put), \
+             patch.object(port, "exists", side_effect=exists), \
+             patch.object(port, "get_bytes", new=AsyncMock(return_value=b"corrupt")):
+            with self.assertRaisesRegex(ValueError, "hash verification"):
+                await port.write_cover(path, image)

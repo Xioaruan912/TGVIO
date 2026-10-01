@@ -67,7 +67,7 @@ class CoverArchivePort(RenditionArchivePort):
         if not 0 < len(payload) <= 1_000_000:
             raise ValueError("cover exceeds byte budget")
         await self.ensure_collection(str(Path(path).parent))
-        await self.put_bytes(path, payload, content_type="image/jpeg")
+        await self.put_bytes(payload, path, content_type="image/jpeg")
         if not await self.exists(path, len(payload)):
             raise ValueError("cover upload size verification failed")
         actual = await self.get_bytes(path, max_bytes=1_000_000)
