@@ -188,3 +188,11 @@ source-diagnostic-remote.py 位于 completion-cover-diagnostics，针对旧 a5fd
 九个 inactive/404 来源不复活；同摘要照片的旧取消包不重播；
 download_failed 原冻结 max3/count6/exhausted 继续单列、不重置、不重发 Telegram。
 维护与 tgvio 跟进继续，完成前须当前逐项与鉴权读取证据。
+
+## 02:22 北京时间目录确认
+
+18:22:56 UTC 正常 catalog 已确认上述四张新封面，
+实际封面 904/910（缺 6）、480p 100/871（缺 771）、720p 95/729（缺 634），
+收藏仍 36/36。不要再将这四张标为待同步；剩余六个缺封面来源待原冷却重试与逐项原因核对。
+Bot/Player 健康、所有容器零重启/无 OOM，实际封面 64fdf44、副本 668fcd7 不变。
+本轮文档只做 clean/pushed 源码快照同步，维护及每小时跟进继续，尚未全覆盖。
