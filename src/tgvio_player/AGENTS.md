@@ -11,3 +11,4 @@
 - HTTP/存储测试用fake或loopback fixture，不读生产Cookie/秘密/Archive。
 - 根scripts/check.sh负责交付验证；Player发布/回滚仅操作tgvio-player并核实Bot容器未变。
 - 前端联动改动同时阅读player/AGENTS.md。运维交接放docs/handoffs，不追加到本规范。
+- 可选 renditions.json 必须绑定 package_id 与原清单摘要；验证父视频、相对路径、实际尺寸、时长和码率后才投影。副本不进入独立 Feed；永久删除须涵盖已登记副本并保留 tombstone，失败不得宣称完全删除。

@@ -21,3 +21,5 @@
 归档多清晰度与旧代码差异见 [核查交接](handoffs/2026-10-01-archive-quality-audit.md)。
 
 低清副本合同与维护入口见 [归档副本补齐](operations/RENDITION_BACKFILL.md)。
+
+当前副本补齐发布与进度见 [工作交接](handoffs/2026-10-01-rendition-backfill.md)。

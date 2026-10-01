@@ -14,7 +14,7 @@ manifest.json 和 _COMPLETE.json 保持字节不变。副本写入包内 renditi
 
 480p / 720p 指输出画面实际高度，保持比例、H.264/AAC、faststart。
 源高度不大于目标时不放大：480p 原片不需要额外 480p、720p；720p 原片只生成 480p。
-原画完整保留。上限分别约 1.2 / 2.5 Mbps 视频码率，加 96 kbps 音频，
+原画完整保留。副本元数据绑定源摘要，避免不同原文件因画面相同共用一个副本身份。上限分别约 1.2 / 2.5 Mbps 视频码率，加 96 kbps 音频，
 30fps；原画保留原始帧率和质量。文件实际码率/大小以 ffprobe 与文件摘要为准。
 删除主视频时先删除登记的副本；失败保留原画并报告失败，删除 tombstone 防止重新投影。
 
@@ -40,7 +40,7 @@ env 必须 root 600，仅包含 TGVIO_ARCHIVE_WEBDAV_URL / USER / PASSWORD 和 R
 失败冷却 600 秒，最多 5 次；失败不会标完成。先停止 worker，再用同一镜像、
 同一维护目录 --retry-failed --watch 可显式重试已核实的失败。
 --dry-run 只计划，不下载、不转码、不写 Archive；会登记维护任务。
---limit 限制本轮处理数；--watch 可持续自动发现。不要与另一个 writer 同时执行。
+--limit 限制本轮处理数；--watch 默认每处理 10 条重新扫描，持续发现新归档并检查重试。不要与另一个 writer 同时执行。
 停止 worker 不影响 Bot/Player，已验证并登记的副本仍可使用。
 
 维护 checkpoint 不是播放器副本数量：低分辨率原片可能无需新副本，

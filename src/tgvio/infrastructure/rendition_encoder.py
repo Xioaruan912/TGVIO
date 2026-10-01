@@ -10,7 +10,8 @@ from pathlib import Path
 
 async def run_process(*args: str, timeout: float) -> str:
     proc = await asyncio.create_subprocess_exec(
-        *args, stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
+        *args, stdin=asyncio.subprocess.DEVNULL,
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
     try:
         out, _err = await asyncio.wait_for(proc.communicate(), timeout)
         if proc.returncode:
@@ -50,6 +51,7 @@ async def encode(source: Path, target: Path, height: int) -> dict:
         raise ValueError("unknown or excessive duration")
     if int(streams[0]["height"]) <= height:
         raise ValueError("refusing rendition upscale")
+    source_digest = await asyncio.to_thread(file_hash, source)
     limit = "1200k" if height == 480 else "2500k"
     buffer = "2400k" if height == 480 else "5000k"
     temporary = target.with_suffix(".part.mp4")
@@ -61,7 +63,8 @@ async def encode(source: Path, target: Path, height: int) -> dict:
             "-c:v", "libx264", "-threads", "2", "-preset", "veryfast", "-crf", "24",
             "-maxrate", limit, "-bufsize", buffer, "-pix_fmt", "yuv420p",
             "-c:a", "aac", "-b:a", "96k", "-movflags", "+faststart",
-            "-map_metadata", "-1", "-fs", str(4 * 1024**3), str(temporary),
+            "-map_metadata", "-1", "-metadata", f"comment=tgvio.source_sha256:{source_digest}",
+            "-fs", str(4 * 1024**3), str(temporary),
             timeout=min(24 * 3600, max(600, duration * 8 + 300)))
         result = await probe(temporary)
         video = next(s for s in result["streams"] if s.get("codec_type") == "video")

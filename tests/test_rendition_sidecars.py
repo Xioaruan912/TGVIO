@@ -9,6 +9,8 @@ import shutil
 import sqlite3
 import tempfile
 import unittest
+from unittest.mock import AsyncMock, Mock, patch
+from types import SimpleNamespace
 
 from tgvio.application.rendition_backfill import RenditionBackfill, canonical
 from tgvio.domain.renditions import ALGORITHM, SCHEMA, RenditionTask, safe_path
@@ -132,6 +134,40 @@ class BackfillTests(unittest.IsolatedAsyncioTestCase):
                 await RenditionBackfill(port).run(port.task, Path(tmp))
         self.assertEqual(port.calls, [])
 
+    async def test_watch_rescans_after_ten_tasks_and_keeps_completed_checkpoints(self):
+        from tgvio.interfaces.backfill_renditions import work
+        original, task = fixture()
+        tasks = [replace(task, package_id=f"package-{i}") for i in range(30)]
+        discovery = SimpleNamespace(tasks=AsyncMock(return_value=tasks))
+        runner = SimpleNamespace(run=AsyncMock(return_value=0))
+        scans = 0
+        async def sleep(seconds):
+            nonlocal scans
+            if seconds == 60:
+                scans += 1
+                if scans == 2:
+                    raise asyncio.CancelledError()
+        with tempfile.TemporaryDirectory() as tmp:
+            args = SimpleNamespace(work_dir=tmp, status=False, retry_failed=False,
+                                   dry_run=False, watch=True, limit=0)
+            with patch.dict("os.environ", {
+                "TGVIO_ARCHIVE_WEBDAV_URL": "https://fixture.invalid",
+                "TGVIO_ARCHIVE_WEBDAV_USER": "fixture",
+                "TGVIO_ARCHIVE_WEBDAV_PASSWORD": "fixture",
+            }), patch("tgvio.interfaces.backfill_renditions.RenditionArchivePort"), \
+                 patch("tgvio.interfaces.backfill_renditions.RenditionDiscovery", return_value=discovery), \
+                 patch("tgvio.interfaces.backfill_renditions.RenditionBackfill", return_value=runner), \
+                 patch("tgvio.interfaces.backfill_renditions.report"), \
+                 patch("tgvio.interfaces.backfill_renditions.shutil.disk_usage",
+                       return_value=SimpleNamespace(free=10 * 1024**3)), \
+                 patch("tgvio.interfaces.backfill_renditions.asyncio.sleep", side_effect=sleep):
+                with self.assertRaises(asyncio.CancelledError):
+                    await work(args)
+            self.assertEqual(discovery.tasks.await_count, 2)
+            self.assertEqual(runner.run.await_count, 20)
+            called = [call.args[0].key for call in runner.run.await_args_list]
+            self.assertEqual(len(set(called)), 20)
+
     def test_no_upscale_and_traversal(self):
         _, task = fixture()
         self.assertEqual(replace(task, media={**task.media, "height": 480}).required, ())
@@ -249,6 +285,23 @@ class ActualEncoderTests(unittest.IsolatedAsyncioTestCase):
                 self.assertEqual(spec["sha256"], hashlib.sha256(target.read_bytes()).hexdigest())
                 data = target.read_bytes()
                 self.assertLess(data.index(b"moov"), data.index(b"mdat"))
+
+    async def test_distinct_source_hashes_cannot_alias_one_variant_identity(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            source = root / "fixture.mp4"
+            other = root / "other.mp4"
+            await run_process("ffmpeg", "-y", "-v", "error", "-f", "lavfi", "-i",
+                              "testsrc2=size=640x960:rate=30", "-t", "0.5",
+                              "-c:v", "libx264", "-threads", "2", str(source), timeout=60)
+            await run_process("ffmpeg", "-y", "-v", "error", "-i", str(source),
+                              "-c", "copy", "-metadata", "comment=fixture-other-source",
+                              str(other), timeout=60)
+            a = await encode(source, root / "a.mp4", 480)
+            b = await encode(other, root / "b.mp4", 480)
+            self.assertNotEqual(a["sha256"], b["sha256"])
+            self.assertEqual(a["width"], b["width"])
+            self.assertEqual(a["duration_seconds"], b["duration_seconds"])
 
     async def test_cancelled_process_is_reaped(self):
         with self.assertRaises(asyncio.TimeoutError):
