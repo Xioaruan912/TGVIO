@@ -348,3 +348,30 @@ logout成功、catalog_sync_pending=false；只读每档bytes0-1，不等于完�
 运行ddedb1c/eaa83cd与Bot/Player身份不变，OOM0，副本峰值496.46MB，
 实际编码/写入持续，磁盘21.38GB。只同步文档源码，不重建进程。
 下一轮先monitor和真实进展，必要时安全核查405，自动跟进继续至逐项全覆盖。
+
+## 2026-10-02 06:55 北京时间补齐与恢复后验
+
+最新 [上传巡查](../operations/2026-10-02-maintenance-upload-audit.md)新增06:55续查。
+22:55:13 UTC封面907/908，480p173/870、720p162/729，
+比上一轮两档各增加12，仍缺1/697/567；36收藏再次鉴权JPEG/完整哈希/尺寸通过。
+副本done185/failed42/pending790；有效失败22任务/22唯一来源，
+全局ValueError20但当前有效精确键匹配0，仍有upload/metadata PUT405。
+不重复既有四来源OPTIONS，不把正常恢复或OPTIONS200当405解决。
+
+最新真实complete/written2/recovered1来源的原清单/_COMPLETE/原画大小、
+绑定索引和Player原画/两档副本行/DTO均核验；
+480p、720p各bytes0-1鉴权206通过，匿名401、退出成功、
+catalog_sync_pending=false；不是完整远端MP4读取/哈希或全覆盖。
+私有completion-retry-fairness/recovered-current-range-remote.py及JSON保存证据，
+本轮不可变recovered-20261001-2251-ref.json，脚本已执行，
+之后最近成功任务会变化，不照旧重复或覆盖first-retry私有引用。
+
+最后HEVC缺图binding有效、无副本、副本pending0、封面attempt7自然冷却；
+不再取帧/包读，继续正常完整源验证或现有安全恢复。
+冻结Job本轮仍enabled/max3/count6/exhausted，保持不重发；
+原九个、两个用户删除、同哈希照片取消包保持既有边界。
+
+运行ddedb1c/eaa83cd及Bot/Player身份/健康不变，重启0、OOM0，
+副本峰值576.85MB，临时写入近期5秒；磁盘21.52GB，quick_check通过。
+本轮只读审计/文档推送/独立源码同步，不重建任一工作器；
+未全覆盖，tgvio自动跟进继续。下一轮先实时覆盖、真实恢复、上传阶段和资源。

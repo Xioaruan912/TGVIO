@@ -72,3 +72,42 @@ completion-cover-late 的 missing-cover-state、missing-bound-status、favorites
 
 尚未全覆盖，保留 tgvio 自动跟进。后续继续检查真实恢复、405 阶段、
 最后 HEVC 来源的正常副本验证，以及当前新增/删除媒体；完成须逐项绑定与鉴权可读。
+
+## 2026-10-02 06:55 北京时间续查
+
+2026-10-01 22:55:13 UTC：当前有效原画仍908，封面907/908；
+480p173/870、缺697，720p162/729、缺567，相比05:58两档各增加12。
+36当前收藏又逐张完成鉴权JPEG、完整SHA256和尺寸验证，匿名401、退出成功。
+这仍不是全库原画或副本完整读取验收。
+
+副本检查点done185/failed42/pending790，有效失败22任务/22唯一来源；
+全局ValueError20，精确当前有效任务键匹配仍0。
+近期新进程仍有文件PUT405及metadata PUT405，不能将正常恢复或OPTIONS证据
+写成405根因已消除。本轮不重复上一轮四来源OPTIONS样本或扩展写入尝试。
+
+本轮选新进程日志中最近的真实 complete/written2/recovered1 来源，
+精确核对原清单摘要、_COMPLETE提交绑定、原画远端大小、该来源副本索引，
+并匹配Player当前原画/两档副本行及DTO。
+480p和720p鉴权Range206、bytes0-1、Content-Range和两字节长度全部通过，
+匿名媒体401、验收后退出，catalog_sync_pending=false。
+本轮只读每档两字节，不等于完整远端MP4哈希/解码；
+既有受控恢复的完整候选验证合同保持，不因这个抽样声称全覆盖。
+
+最后HEVC来源仍缺封面，原绑定有效、无绑定副本、副本pending/attempt0、
+封面failed/attempt7自然冷却。未重复取帧/包表，不扩大预算、弱化严格解码或伪造。
+历史九个与两个用户删除来源不复活，取消照片包不重播；
+本轮冻结Job再次只读确认enabled/max3/count6/exhausted，保留原次数，不发Telegram。
+
+Bot/Player健康及身份不变；封面eaa83cd、副本ddedb1c保持，
+四容器重启0、两个维护cgroup OOM/OOM-kill0，副本峰值约576.85MB。
+封面仍768MiB、输入/输出单线程；副本按原2GiB/1.5CPU预算。
+资源采样时副本临时写入距观察约5秒，阶段没有FFmpeg进程；
+这与上传/验证阶段一致，不能据此宣称停滞或完成。
+22:55磁盘21,522,735,104字节，Player/两检查点quick_check通过。
+
+私有completion-retry-fairness/recovered-current-range-remote.py及JSON保存匿名后验。
+recovered-20261001-2251-ref.json是本次不可变私有引用；不要盲目重复此脚本，
+其“最近恢复”可能变化，引用不符会拒绝；不覆盖first-retry-ref.json。
+monitor/expected-workers、memory/telemetry、实时missing-bound、favorites及
+valueerror-metadata/frozen-job保存本轮证据，未发布应用代码或重启进程。
+检查点调度、累计失败、冷却保持，自动跟进继续至逐项真实覆盖和鉴权可读。
