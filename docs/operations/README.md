@@ -45,3 +45,5 @@ docs/refactor-v2的旧部署协议与版本只用于追溯，不表示当前runt
 归档媒体持续重试与补齐的运行证据见 [2026-10-01 维护发布回执](2026-10-01-maintenance-completion-release.md)。
 
 持续数量与失败核查见 [2026-10-01 补齐巡查](2026-10-01-maintenance-progress.md)。
+
+副本诊断更新及不同工作器版本见 [2026-10-02 副本诊断发布回执](2026-10-02-rendition-diagnostics-release.md)。

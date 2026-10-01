@@ -75,3 +75,15 @@ completion-cover-memory 保留封面后续切换及隔离 4K 验证。不要按 
 三项隔离回归覆盖未知错误隐私、HTTP 状态校验、真实 CLI 失败累计次数和冷却。
 完整 scripts/check.sh 通过，准备从 clean 已推送候选只更新副本工作器。
 封面保持 a5fd3e0；Bot/Player 不变。候选和后验留在独立 completion-rendition-diagnostics 私有证据目录。
+
+## 2026-10-02 00:08 北京时间后验
+
+副本诊断 7e3c35b 已部署，只切换 tgvio-renditions；封面仍 a5fd3e0，Bot/Player 未改变。
+原检查点全部行在预演前后逐项相同，保留备份和 763a1f6 回滚容器；无重启/OOM。
+当前封面 736/910、480p 85/871、720p 78/729；实时 36 条收藏封面本轮再次逐张鉴权 JPEG/SHA256 验收通过。
+完整检查 Python 1043 / Node 215 / TS/Vite 等通过。新副本任务已开始，尚无新的分类失败事件。
+最新 [诊断发布回执](../operations/2026-10-02-rendition-diagnostics-release.md) 与私有 completion-rendition-diagnostics
+保存 candidate/deployment、检查点备份和 telemetry；completion-release/expected-workers.json 已只更新副本身份。
+后续继续读取 monitor，使用 completion-rendition-diagnostics/call-remote.py telemetry-remote.py
+核对精确 failure_code/http_status，定位写入/验证瓶颈；不盲目重建其他工作器。
+补齐和自动重试继续，最终完成仍需当前有效视频逐项及鉴权可读验收。

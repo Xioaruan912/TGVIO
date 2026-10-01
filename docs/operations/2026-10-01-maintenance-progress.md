@@ -109,3 +109,12 @@ download_failed 自动恢复仍 exhausted、累计次数 6，不自动重发 Tel
 私有证据为时间戳进度、heartbeat-priority-range-latest.json、
 heartbeat-cover-binding-latest.json、heartbeat-resource-first-1443.json 及后续资源结果。
 全库尚未补齐，后台持续补齐与自动重试、每小时跟进继续。
+
+## 16:08 UTC / 2026-10-02 00:08 北京时间
+
+覆盖封面 736/910、480p 85/871、720p 78/729，实时收藏封面 36/36；
+相比 23:32 用户回报新增 40/1/0，仍未全库完成。
+副本失败阶段抽查、只更新副本诊断工作器及新的逐张收藏鉴权验收，
+见 [诊断发布回执](2026-10-02-rendition-diagnostics-release.md)。
+副本现在运行 7e3c35b，封面仍 a5fd3e0；Bot/Player 未切换。
+两个工作器各自检查点和原重试预算保持。下一轮须读取新的 telemetry，不只重复 HEAD。
