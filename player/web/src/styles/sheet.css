@@ -1,15 +1,15 @@
 /* Favorites, settings and choices share an accessible card sheet. */
-.sheet { position: fixed; inset: 0; z-index: 70; display: flex; align-items: flex-end; justify-content: center; background: rgb(18 51 77 / 35%); backdrop-filter: blur(6px); }
-.sheet-card { width: 100%; max-height: 85dvh; display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 28px 28px 0 0; overflow: hidden; box-shadow: 0 -12px 60px rgb(18 51 77 / 15%); animation: sheet-up 260ms var(--ease); }
+.sheet { position: fixed; inset: 0; z-index: 70; display: flex; align-items: flex-end; justify-content: center; background: rgb(18 51 77 / 35%); backdrop-filter: blur(3px); }
+.sheet-card { width: 100%; max-height: 90dvh; display: flex; flex-direction: column; background: #fff; border: 1px solid var(--line); border-radius: 20px 20px 0 0; overflow: hidden; box-shadow: 0 -12px 60px rgb(18 51 77 / 15%); animation: sheet-up 260ms var(--ease); }
 @keyframes sheet-up { from { transform: translateY(24px); opacity: .5; } to { transform: none; opacity: 1; } }
 .sheet-handle { width: 36px; height: 4px; flex: none; margin: 10px auto 0; border-radius: 3px; background: #c9dce9; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px 12px; border-bottom: 1px solid var(--line); }
-.sheet-title { margin: 0; font-size: 19px; font-weight: 700; }
-.sheet-close { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border-radius: 14px; color: var(--sky700); background: var(--sky50); }
-.sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 16px 16px calc(24px + var(--safe-bottom)); display: grid; gap: 10px; align-content: start; background: var(--bg); }
+.sheet-title { margin: 0; font-size: 22px; font-weight: 700; }
+.sheet-close { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border-radius: 14px; color: var(--text-secondary); background: var(--surface-soft); }
+.sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 20px calc(24px + var(--safe-bottom)); display: grid; gap: 10px; align-content: start; background: var(--bg); }
 .sheet-section { margin: 12px 4px 2px; font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--sky700); }
 .sheet-note { margin: 4px; font-size: 12px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
-.sheet-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: #fff; color: var(--text); text-align: left; box-shadow: 0 2px 6px rgb(32 92 130 / 3%); }
+.sheet-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 14px; border: 1px solid var(--line); border-radius: 16px; background: #fff; color: var(--text); text-align: left;  }
 button.sheet-row:active { background: var(--sky50); }
 .sheet-row-text { display: grid; gap: 4px; min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
 .sheet-row-title { font-size: 14px; font-weight: 650; line-height: 1.5; }
@@ -27,5 +27,7 @@ button.sheet-row:active { background: var(--sky50); }
 .switch-knob { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: #fff; box-shadow: 0 1px 4px rgb(18 51 77 / 15%); transition: transform 180ms var(--ease); }
 .sheet-row-toggle[aria-checked="true"] .switch { background: var(--sky700); }
 .sheet-row-toggle[aria-checked="true"] .switch-knob { transform: translateX(18px); }
-@media (min-width: 600px) { .sheet { align-items: center; padding: 24px; } .sheet-card { width: min(560px,100%); max-height: 86dvh; border-radius: 24px; } }
+@media (min-width: 900px) { .sheet { align-items: stretch; justify-content: flex-end; padding: 16px; } .sheet-card { width: min(600px,100%); max-height: none; border-radius: var(--radius-panel); } .sheet-handle { display: none; } .sheet-head { padding: 20px 24px; } }
 @media (hover: hover) { button.sheet-row:hover { border-color: #7dd3fc; background: var(--sky50); } }
+
+.sheet-row-arrow { flex: none; font-size: 22px; line-height: 24px; color: var(--text-muted); }

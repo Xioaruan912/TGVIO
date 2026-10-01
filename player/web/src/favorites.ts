@@ -1,3 +1,4 @@
+import { buildBrowseFrame, browseButton } from "./components/browse-frame";
 import { api, shortId } from "./api";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { element } from "./ui";
@@ -46,18 +47,12 @@ export class FavoritesPage {
     private readonly onClose: () => void,
     private readonly onImmersive?: () => void,
   ) {
-    this.root = element("section", "long-page library-page favorites-page");
-    this.root.setAttribute("aria-label", "收藏");
-    const header = element("header", "library-header");
-    this.backButton = element("button", "library-button", "返回");
-    this.backButton.type = "button";
-    this.backButton.addEventListener("click", () => this.onClose());
-    header.append(this.backButton, this.title);
-    this.notice.setAttribute("role", "status");
-    this.notice.setAttribute("aria-live", "polite");
+    const frame = buildBrowseFrame({ title: this.title, subtitle: "留住想再看的画面",
+      kind: "favorites", onBack: () => this.onClose(), toolbar: this.toolbar, notice: this.notice,
+      selection: this.selectionBar, list: this.list });
+    this.root = frame.root; this.backButton = frame.back;
+    this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
     this.selectionBar.hidden = true;
-    this.list.tabIndex = -1;
-    this.root.append(header, this.toolbar, this.notice, this.selectionBar, this.list);
     this.list.addEventListener("scroll", () => {
       if (!this.playbackActive && !this.loading && !this.error && this.hasMore &&
           this.seen.size < MAX_ROWS && this.automaticPages < 3 &&
@@ -72,10 +67,7 @@ export class FavoritesPage {
   }
 
   private button(text: string, action: () => void): HTMLButtonElement {
-    const button = element("button", "library-button", text);
-    button.type = "button";
-    button.addEventListener("click", action);
-    return button;
+    return browseButton(text, action);
   }
 
   private async loadMore(): Promise<void> {

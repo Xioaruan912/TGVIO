@@ -1,6 +1,6 @@
 /* Domain groups are cards, with quiet row separators rather than nested boxes. */
-.settings-card { min-width: 0; display: grid; gap: 0; padding: 8px 14px; border: 1px solid var(--line); border-radius: 20px; background: #fff; box-shadow: 0 3px 12px rgb(32 92 130 / 4%); animation: sky-enter 200ms var(--ease) both; }
-.settings-card > .sheet-section { margin: 0; padding: 12px 2px 14px; font-size: 12px; font-weight: 750; color: var(--sky700); }
+.settings-card { min-width: 0; display: grid; gap: 0; padding: 0 18px 4px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff;  animation: sky-enter 200ms var(--ease) both; }
+.settings-card > .sheet-section { margin: 0; padding: 16px 2px; font-size: 14px; font-weight: 650; color: var(--sky700); }
 .settings-card > .sheet-row { border: 0; border-top: 1px solid var(--line); border-radius: 0; box-shadow: none; padding: 14px 2px; background: transparent; }
 .settings-card > button.sheet-row:active { background: var(--sky50); }
 .settings-card > .sheet-note { margin: 0; padding: 4px 2px 14px; }
@@ -14,7 +14,7 @@
 .storage-settings-header button, .storage-settings-actions button, .storage-recovery button { border: 1px solid var(--line); border-radius: 14px; background: #fff; color: var(--sky700); min-height: 48px; padding: 10px 14px; font-size: 13px; font-weight: 600; }
 .storage-settings-status { margin: 0; padding: 14px 16px; border: 1px solid #c4e3f5; border-radius: 16px; background: var(--sky50); color: var(--muted); font-size: 13px; line-height: 1.7; overflow-wrap: anywhere; }
 .storage-settings-status.error { color: var(--danger); background: #fff2f3; border-color: #f6cbd3; }
-.storage-settings-form { display: grid; gap: 16px; padding: 18px; border: 1px solid var(--line); border-radius: 20px; background: #fff; }
+.storage-settings-form { display: grid; gap: 16px; padding: 18px; border: 1px solid var(--line); border-radius: var(--radius-lg); background: #fff; }
 .storage-field { display: grid; gap: 8px; color: var(--muted); font-size: 13px; font-weight: 550; }
 .storage-field input { width: 100%; min-height: 48px; border: 1px solid var(--line); border-radius: 12px; background: var(--sky50); color: var(--text); padding: 0 12px; font-size: 16px; }
 .storage-field input::placeholder { color: var(--faint); }
@@ -28,51 +28,3 @@
 .storage-recovery summary::after { content: '+'; margin-left: auto; font-size: 20px; }
 .storage-recovery[open] summary::after { content: '−'; }
 .storage-recovery p { font-size: 12px; line-height: 1.7; }
-
-/* File library: scoped ThemeSky controls; compact metadata rows, no eagerly loaded media. */
-.library-page { background: var(--bg, #f3f9fd); color: var(--text); display: flex; flex-direction: column; min-width: 0; overflow: hidden; }
-.library-page * { box-sizing: border-box; }
-.library-header { display: flex; align-items: center; gap: 12px; padding: max(12px, var(--safe-top)) 16px 12px; background: #fff; border-bottom: 1px solid var(--line); flex-shrink: 0; }
-.library-title { min-width: 0; margin: 0; font-size: 16px; line-height: 1.5; overflow-wrap: anywhere; }
-.library-page .library-toolbar { display: flex; flex-wrap: wrap; gap: 8px; padding: 8px 16px; background: transparent; flex-shrink: 0; }
-.library-button { min-height: 44px; min-width: 44px; padding: 8px 12px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--sky700); font: inherit; font-size: 14px; cursor: pointer; touch-action: manipulation; }
-.library-button[aria-pressed="true"] { background: var(--sky700); color: #fff; border-color: var(--sky700); }
-.library-button:disabled { opacity: .5; cursor: default; }
-.library-page button:focus-visible, .library-date-input:focus-visible { outline: 3px solid var(--sky500); outline-offset: 2px; }
-.library-date-label { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 13px; min-width: 0; }
-.library-date-input { min-width: 0; max-width: 100%; min-height: 44px; padding: 6px 10px; border: 1px solid var(--line); border-radius: 12px; background: #fff; color: var(--text); font-size: 16px; }
-.library-notice { margin: 0; padding: 0 16px 8px; font-size: 12px; line-height: 1.5; color: var(--muted); flex-shrink: 0; overflow-wrap: anywhere; }
-.library-selection { display: flex; gap: 8px; flex-wrap: wrap; padding: 0 16px 8px; flex-shrink: 0; }
-.library-selection:empty { display: none; }
-.library-list { flex: 1; min-height: 0; min-width: 0; overflow-y: auto; overscroll-behavior: contain; padding: 0 16px 20px; scrollbar-gutter: stable; }
-/* Videos render as cover tiles; index/folder stages stay a plain list. */
-.library-list.cover-grid { align-content: start; }
-.library-index-row { display: flex; flex-direction: column; text-align: left; align-items: flex-start; width: 100%; gap: 4px; padding: 12px 14px; margin-bottom: 8px; }
-.library-index-title { font-size: 14px; font-weight: 650; color: var(--text); }
-.library-index-meta { font-size: 12px; color: var(--text-secondary); overflow-wrap: anywhere; }
-.library-page .library-preview-video { position: absolute; inset: 0; z-index: 2; width: 100%; height: 100%; object-fit: cover; opacity: 0; pointer-events: none; transition: opacity 180ms ease; }
-.cover-tile.is-previewing .library-preview-video { opacity: 1; }
-.library-empty { color: var(--muted); padding: 32px 20px; background: var(--surface); border: 1px dashed var(--border); border-radius: var(--radius-lg); text-align: center; font-size: 14px; }
-.library-list > .library-button:not(.library-index-row) { margin-top: 12px; }
-.library-selection { position: relative; z-index: 3; align-items: center; }
-.library-select-toggle[aria-pressed="true"] { background: var(--primary); color: #fff; border-color: var(--primary); }
-@media (hover: hover) { .library-button:not(:disabled):hover { background: var(--sky50); color: var(--sky700); } }
-@media (max-width: 360px) {
- .library-header { padding: max(8px, var(--safe-top)) 8px 8px; gap: 8px; }
- .library-page .library-toolbar, .library-selection { padding-left: 8px; padding-right: 8px; }
- .library-notice { padding-left: 8px; padding-right: 8px; }
- .library-list { padding-left: 8px; padding-right: 8px; scrollbar-gutter: auto; }
-}
-@media (orientation: landscape) and (max-height: 500px) {
- .library-header { padding-top: max(4px, var(--safe-top)); padding-bottom: 4px; }
- .library-page .library-toolbar { padding-top: 4px; padding-bottom: 4px; }
- .library-selection { padding-bottom: 4px; }
- .library-notice { padding-bottom: 4px; }
-}
-@media (min-width: 1000px) {
- .library-header, .library-page .library-toolbar, .library-selection, .library-notice { padding-left: 28px; padding-right: 28px; }
- .library-list { padding-left: 28px; padding-right: 28px; }
- .library-index-row { max-width: 1040px; }
-}
-
-@media (min-width: 900px) { .library-page { padding-inline: 0; max-width: var(--library-max); margin-inline: auto; } }

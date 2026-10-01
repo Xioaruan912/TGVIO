@@ -1,5 +1,5 @@
 import { api } from "./api";
-import { icon } from "./icons";
+import { buildBrowseFrame } from "./components/browse-frame";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { prefs } from "./settings";
 import { element, formatTime } from "./ui";
@@ -37,16 +37,11 @@ export class LongVideoPage {
     this.onOpen = onOpen;
     this.onClose = onClose;
     this.progress = api.longVideoProgress().catch(() => EMPTY_PROGRESS);
-    this.root = element("section", "long-page");
-    const topbar = element("header", "long-topbar");
-    const back = element("button", "long-back");
-    back.type = "button";
-    back.setAttribute("aria-label", "返回");
-    back.appendChild(icon("back", 24));
-    back.addEventListener("click", () => this.onClose());
-    topbar.append(back, element("span", "long-title", "长视频"));
     this.list = element("div", "long-list");
-    this.root.append(topbar, this.list);
+    const title = element("h1", "long-title", "长片");
+    const frame = buildBrowseFrame({ title, subtitle: "接着看，慢慢看",
+      kind: "long", onBack: () => this.onClose(), list: this.list });
+    this.root = frame.root;
     this.loadButton.type = "button";
     this.loadButton.addEventListener("click", () => { this.automaticPages = 0; void this.loadMore(); });
     this.list.addEventListener("scroll", () => this.maybeLoadMore());

@@ -25,7 +25,7 @@ const api = {
 async function transpile(source) {
   return ts.transpileModule(await readFile(new URL("../src/" + source, import.meta.url), "utf8"),
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
-    .replace(/^import .* from .*;$/gm, "");
+    .replace(/^import .* from .*;$/gm, "").replace(/^export .* from .*;$/gm, "");
 }
 const element = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -35,16 +35,24 @@ const element = (tag, className, text) => {
 };
 const iconsJs = await transpile("icons.ts");
 const { icon } = await import("data:text/javascript;base64," + Buffer.from(iconsJs).toString("base64"));
-const coverJs = await transpile("components/cover-tile.ts");
+globalThis.__frameDeps = { element, icon };
+const { buildBrowseFrame, browseButton, fillDirectoryCard } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, icon } = globalThis.__frameDeps;\n" + await transpile("components/browse-frame.ts")).toString("base64"));
+
 globalThis.__coverDeps = { element, icon };
+const imageCode = await transpile("components/cover-image.ts");
+const { bindCoverImage } = await import("data:text/javascript;base64," + Buffer.from(
+  "const enqueueCover = start => { start(() => {}); return () => {}; };\n" + imageCode).toString("base64"));
+globalThis.__coverDeps.bindCoverImage = bindCoverImage;
+const coverJs = await transpile("components/cover-tile.ts");
 const { buildCoverTile } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { element, icon } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + coverJs).toString("base64"));
+  "const { element, icon, bindCoverImage } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + coverJs).toString("base64"));
 const idleJs = await transpile("idle-privacy.ts");
 const { IdlePrivacyController, attachIdleActivity } = await import("data:text/javascript;base64," + Buffer.from(idleJs).toString("base64"));
-globalThis.__libraryDeps = { IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile };
+globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile };
 const libraryJs = await transpile("library.ts");
 const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");

@@ -23,7 +23,7 @@ REQUIRED = (
     "player/web/tsconfig.test.json",
 )
 # Existing debt may only shrink. New modules receive no exemption.
-FRONTEND_DEBT = {"main.ts": 1710, "large.ts": 770}
+FRONTEND_DEBT = {"main.ts": 1710, "large.ts": 682}
 FRONTEND_LIMIT = 600
 GOVERNANCE_LIMIT = 160
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")

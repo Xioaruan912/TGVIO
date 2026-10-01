@@ -63,8 +63,8 @@ try {
   for(let i=0;i<100;i++){if(await evaluate(expression))return;await delay(100);}throw new Error("Timed out: "+label);
  };
  const click=async selector=>{
-  const box=await evaluate("(()=>{const el=[...document.querySelectorAll("+JSON.stringify(selector)+")].find(e=>e.getClientRects().length&&!e.closest('[inert]'));if(!el)return null;el.scrollIntoView({block:'nearest',inline:'nearest'});const r=el.getBoundingClientRect(),sc=el.closest('.library-list,.long-list'),clip=sc?sc.getBoundingClientRect():{top:0,bottom:innerHeight};const x=r.x+r.width/2,y=(Math.max(r.top,clip.top)+Math.min(r.bottom,clip.bottom,innerHeight))/2;return {x,y,hit:el.contains(document.elementFromPoint(x,y))};})()");
-  check(box?.hit,"pointer can reach "+selector);
+  const box=await evaluate("(()=>{const el=[...document.querySelectorAll("+JSON.stringify(selector)+")].find(e=>e.getClientRects().length&&!e.closest('[inert]'));if(!el)return null;el.scrollIntoView({block:'nearest',inline:'nearest'});const r=el.getBoundingClientRect(),sc=el.closest('.library-list,.long-list'),clip=sc?sc.getBoundingClientRect():{top:0,bottom:innerHeight};const x=r.x+r.width/2,y=(Math.max(r.top,clip.top)+Math.min(r.bottom,clip.bottom,innerHeight))/2;return {x,y,hit:el.contains(document.elementFromPoint(x,y)),rect:{left:r.left,top:r.top,width:r.width,height:r.height},hitElement:document.elementFromPoint(x,y)?.outerHTML.slice(0,240),viewport:{width:innerWidth,height:innerHeight,scale:visualViewport?.scale},scroll:{x:scrollX,y:scrollY}};})()");
+  check(box?.hit,"pointer can reach "+selector+" "+JSON.stringify(box));
   await cdp("Input.dispatchMouseEvent",{type:"mousePressed",button:"left",clickCount:1,x:box.x,y:box.y});
   await cdp("Input.dispatchMouseEvent",{type:"mouseReleased",button:"left",clickCount:1,x:box.x,y:box.y});await delay(250);
  };
@@ -124,8 +124,8 @@ try {
   check(await evaluate("document.querySelector('.seek').getBoundingClientRect().height>=48"),"seek 48px "+width);
   check(await evaluate("(()=>{const p=document.querySelector('.player-panel').getBoundingClientRect(),n=document.querySelector('.bottom-nav');return getComputedStyle(n).display==='none'||p.bottom<=n.getBoundingClientRect().top+1})()"),"panel clears navigation "+width);
   await click(".transport-play");await wait("document.querySelector('.media-slot.is-current')?.readyState>=2","decoded short");
-  await wait("document.querySelector('.topbar .net-speed')?.textContent.includes('已缓存约')","short size readout");
-  check(await evaluate("(()=>{const e=document.querySelector('.topbar .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.topbar').getBoundingClientRect();return !/KB.s|缓冲 [0-9]+s/.test(e.textContent)&&r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside short header "+width);
+  await wait("document.querySelector('.player-panel .net-speed')?.textContent.includes('已缓存约')","short size readout");
+  check(await evaluate("(()=>{const e=document.querySelector('.player-panel .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.player-panel').getBoundingClientRect();return !/KB.s|缓冲 [0-9]+s/.test(e.textContent)&&r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside short panel "+width);
   check(await evaluate("(()=>{const e=document.querySelector('.topbar-settings'),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))})()"),"cache readout leaves settings reachable "+width);
   await screenshot("short-"+width+"x"+height);
   if(width===390){
@@ -180,8 +180,8 @@ try {
   await click(".long-resume-section .cover-tile-play");await click(".large-privacy-play");
   await wait("document.querySelector('.large-video')?.readyState>=2","decoded long");
   check(await evaluate("document.querySelector('.large-video').currentTime>=40"),"long resumes real position");
-  await wait("document.querySelector('.large-topbar .net-speed')?.textContent.includes('已缓存约')","long size readout");
-  check(await evaluate("(()=>{const e=document.querySelector('.large-topbar .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.large-topbar').getBoundingClientRect();return r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside long header "+width);
+  await wait("document.querySelector('.large-controls .net-speed')?.textContent.includes('已缓存约')","long size readout");
+  check(await evaluate("(()=>{const e=document.querySelector('.large-controls .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.large-controls').getBoundingClientRect();return r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside long panel "+width);
   check(await evaluate("document.querySelector('.large-quality').textContent==='原画'&&document.querySelector('.large-quality').disabled"),"no fake low quality for original-only media "+width);
   await screenshot("long-player-"+width+"x"+height);
   await click(".large-back");await nav("home");await click(".topbar-settings");await screenshot("settings-"+width+"x"+height);

@@ -1,3 +1,4 @@
+import { buildLargePlayerView, labeledIcon } from "./components/large-player-view";
 import { api } from "./api";
 import { favoriteMutations } from "./favorite-service";
 import { requestAudioEnable } from "./audio-warning";
@@ -132,103 +133,41 @@ export class LargePlayer {
         this.onPrivacyLock();
       },
     });
-    this.root = element("section", "large-player");
+    const view = buildLargePlayerView(clip.id, clip.duration);
+    this.root = view.root; this.video = view.video; this.seek = view.seek;
+    this.buffered = view.buffered; this.progress = view.progress;
+    this.timeCurrent = view.timeCurrent; this.timeTotal = view.timeTotal;
+    this.playButton = view.playButton; this.favoriteButton = view.favoriteButton;
+    this.soundButton = view.soundButton; this.fullscreenButton = view.fullscreenButton;
+    this.pipButton = view.pipButton; this.deleteButton = view.deleteButton;
+    this.qualityButton = view.qualityButton; this.loading = view.loading;
+    this.retryButton = view.retryButton; this.privacyPlayButton = view.privacyPlayButton;
+    const stage = view.stage, netSpeed = view.netSpeed;
+    this.video.muted = this.muted;
     this.detachIdleActivity = attachIdleActivity(this.root, this.idlePrivacy);
     this.root.dataset.wakeLock = this.wakeLock.supported ? "available" : "unsupported";
     this.root.dataset.mediaSession = playerMediaSession.supported
-      ? options.privacyLocked ? "cleared" : "long"
-      : "unsupported";
+      ? options.privacyLocked ? "cleared" : "long" : "unsupported";
     if (options.privacyLocked) this.root.classList.add("privacy-locked");
     this.playback.onTransition = (state) => this.applyState(state);
-    const topbar = element("header", "large-topbar");
-    const back = element("button", "large-back");
-    back.type = "button";
-    back.setAttribute("aria-label", "返回");
-    back.appendChild(icon("back", 24));
-    back.addEventListener("click", () => this.onClose());
-    const title = element("span", "large-title", `视频 #${clip.id.slice(0, 8)}`);
-    const netSpeed = element("span", "net-speed", "已缓存未知 / 文件大小未知");
-    netSpeed.hidden = true;
-    const privacyLock = element("button", "large-privacy-lock");
-    privacyLock.type = "button";
-    privacyLock.setAttribute("aria-label", "立即遮住画面并暂停");
-    privacyLock.append(icon("lock", 22));
-    privacyLock.addEventListener("click", () => {
-      this.lockPrivacy();
-      this.onPrivacyLock();
-    });
-    topbar.append(back, title, netSpeed, privacyLock);
-    const stage = element("div", "large-stage");
-    this.loading = element("span", "media-loading");
-    this.loading.setAttribute("role", "status");
-    const loadingRing = element("i", "media-loading-ring");
-    loadingRing.setAttribute("aria-hidden", "true");
-    this.loading.append(loadingRing, element("span", "media-loading-label", "正在加载"));
-    this.retryButton = element("button", "large-retry", "重新加载");
-    this.retryButton.type = "button";
-    this.retryButton.hidden = true;
-    this.retryButton.addEventListener("click", () => {
-      this.seekControl.cancel();
-      this.retryButton.hidden = true;
-      this.mediaErrorRetries += 1;
-      this.playback.update({ mediaErrored: false, autoplayBlocked: false, hasFrame: false });
-      void api.logPlaybackEvent({
-        event: "media_retry",
-        mediaId: this.clip.id,
-        category: this.clip.category,
-        retry: this.mediaErrorRetries,
-      });
-      this.setLoading(true);
-      this.video.load();
-      if (!this.root.classList.contains("privacy-locked")) {
-        this.playback.update({ pausedByUser: false });
-        void this.video.play().catch(() => undefined);
-      }
-    });
-    this.video = document.createElement("video");
-    this.video.className = "large-video";
-    this.video.playsInline = true;
-    this.video.setAttribute("playsinline", "");
-    this.video.preload = "auto";
-    this.video.muted = this.muted;
-    stage.append(this.video, this.loading, this.retryButton);
-    this.privacyPlayButton = element("button", "large-privacy-play");
-    this.privacyPlayButton.type = "button";
-    this.privacyPlayButton.setAttribute("aria-label", "播放并显示视频");
-    this.privacyPlayButton.append(icon("play", 36), element("span", undefined, "点击播放以显示画面"));
-    this.privacyPlayButton.addEventListener("click", (event) => {
-      event.stopPropagation();
-      this.togglePlay();
-    });
-    stage.appendChild(this.privacyPlayButton);
+    view.back.addEventListener("click", () => this.onClose());
+    view.privacyLock.addEventListener("click", () => { this.lockPrivacy(); this.onPrivacyLock(); });
+    this.privacyPlayButton.addEventListener("click", event => { event.stopPropagation(); this.togglePlay(); });
     this.root.classList.add("controls-visible");
-    this.preview.el.classList.add("large-scrub");
-    // Defer the first state derivation until loading/retryButton exist.
-    this.playback.update({ privacyUnlocked: !options.privacyLocked, shouldPlay: !options.privacyLocked });
-
-    const controls = element("div", "large-controls");
-    this.playButton = element("button", "large-btn");
-    this.playButton.type = "button";
-    this.playButton.setAttribute("aria-label", "播放");
-    this.playButton.appendChild(icon("play", 26));
+    this.preview.el.classList.add("large-scrub"); this.root.append(this.preview.el);
     this.playButton.addEventListener("click", () => this.togglePlay());
-
-    const timeline = element("div", "large-timeline");
-    this.progress = element("div", "large-progress");
-    this.buffered = element("div", "large-buffered");
-    this.seek = element("input", "seek large-seek");
-    this.seek.type = "range";
-    this.seek.min = "0";
-    this.seek.max = String(clip.duration || 0);
-    this.seek.step = "0.1";
-    this.seek.value = "0";
-    this.seek.setAttribute("aria-label", "播放进度");
-    this.progress.append(this.buffered, this.seek);
-    this.timeCurrent = element("span", "large-time-current", "0:00");
-    this.timeTotal = element("span", "large-time-total", formatTime(clip.duration || 0));
-    const times = element("div", "large-time-row");
-    times.append(this.timeCurrent, this.timeTotal);
-    timeline.append(this.progress, times);
+    this.clip.favorite = favoriteMutations.currentValue(this.clip.id, this.clip.favorite);
+    this.syncFavoriteButton(this.clip.favorite); this.syncSoundButton();
+    this.favoriteButton.addEventListener("click", () => void this.toggleFavorite());
+    this.soundButton.addEventListener("click", () => this.toggleSound());
+    this.deleteButton.hidden = !clip.deletable;
+    this.deleteButton.addEventListener("click", () => void this.deleteMedia());
+    this.pipButton.hidden = !document.pictureInPictureEnabled || !("requestPictureInPicture" in this.video);
+    this.pipButton.addEventListener("click", () => void this.togglePictureInPicture());
+    this.qualityButton.textContent = qualityLabel(clip, this.quality);
+    this.qualityButton.disabled = qualityOptions(clip).length <= 1;
+    this.qualityButton.setAttribute("aria-label", this.qualityButton.disabled ? "仅有原画" : "切换清晰度");
+    this.qualityButton.addEventListener("click", () => this.cycleQuality());
     this.seekControl = bindSeekControl(this.seek, {
       getDuration: () => this.video.duration,
       getSourceId: () => this.clip.id + ":" + this.resolveUrl(),
@@ -260,53 +199,25 @@ export class LargePlayer {
         if (!this.destroyed) this.updateProgress();
       },
     });
-
-    this.favoriteButton = element("button", "large-btn");
-    this.favoriteButton.type = "button";
-    this.clip.favorite = favoriteMutations.currentValue(this.clip.id, this.clip.favorite);
-    this.syncFavoriteButton(this.clip.favorite);
-    this.favoriteButton.appendChild(icon("heart", 24));
-    this.favoriteButton.addEventListener("click", () => void this.toggleFavorite());
-    this.soundButton = element("button", "large-btn");
-    this.soundButton.type = "button";
-    this.syncSoundButton();
-    this.soundButton.addEventListener("click", () => this.toggleSound());
-
-    this.deleteButton = element("button", "large-btn large-delete");
-    this.deleteButton.type = "button";
-    this.deleteButton.setAttribute("aria-label", "永久删除当前视频");
-    this.deleteButton.appendChild(icon("trash", 24));
-    this.deleteButton.hidden = !clip.deletable;
-    this.deleteButton.addEventListener("click", () => void this.deleteMedia());
-
-    this.fullscreenButton = element("button", "large-btn");
-    this.fullscreenButton.type = "button";
-    this.fullscreenButton.setAttribute("aria-label", "全屏");
-    this.pipButton = element("button", "large-btn large-pip");
-    this.pipButton.type = "button";
-    this.pipButton.setAttribute("aria-label", "画中画");
-    this.pipButton.appendChild(icon("pip", 24));
-    this.pipButton.hidden = !document.pictureInPictureEnabled || !("requestPictureInPicture" in this.video);
-    this.pipButton.addEventListener("click", () => void this.togglePictureInPicture());
-
-    this.qualityButton = element("button", "large-btn large-quality");
-    this.qualityButton.type = "button";
-    this.qualityButton.textContent = qualityLabel(clip, this.quality);
-    this.qualityButton.disabled = qualityOptions(clip).length <= 1; this.qualityButton.setAttribute("aria-label", this.qualityButton.disabled ? "仅有原画" : "切换清晰度");
-    this.qualityButton.addEventListener("click", () => this.cycleQuality());
-
-    const actions = element("div", "large-action-row");
-    actions.append(
-      this.playButton,
-      this.qualityButton,
-      this.favoriteButton,
-      this.soundButton,
-      this.pipButton,
-      this.fullscreenButton,
-      this.deleteButton,
-    );
-    controls.append(timeline, actions);
-    this.root.append(topbar, stage, controls, this.preview.el);
+    this.retryButton.addEventListener("click", () => {
+      this.seekControl.cancel();
+      this.retryButton.hidden = true;
+      this.mediaErrorRetries += 1;
+      this.playback.update({ mediaErrored: false, autoplayBlocked: false, hasFrame: false });
+      void api.logPlaybackEvent({
+        event: "media_retry",
+        mediaId: this.clip.id,
+        category: this.clip.category,
+        retry: this.mediaErrorRetries,
+      });
+      this.setLoading(true);
+      this.video.load();
+      if (!this.root.classList.contains("privacy-locked")) {
+        this.playback.update({ pausedByUser: false });
+        void this.video.play().catch(() => undefined);
+      }
+    });
+    this.playback.update({ privacyUnlocked: !options.privacyLocked, shouldPlay: !options.privacyLocked });
 
     for (const event of ["pause", "ended", "waiting", "seeking", "loadstart", "error"]) {
       this.video.addEventListener(event, () => this.idlePrivacy.setPlaying(false));
@@ -676,7 +587,7 @@ export class LargePlayer {
   }
 
   private setPlayIcon(playing: boolean): void {
-    this.playButton.replaceChildren(icon(playing ? "pause" : "play", 26));
+    labeledIcon(this.playButton, playing ? "pause" : "play", playing ? "暂停" : "播放");
     this.playButton.setAttribute("aria-label", playing ? "暂停" : "播放");
   }
 
@@ -699,12 +610,13 @@ export class LargePlayer {
   }
 
   private syncSoundButton(): void {
-    this.soundButton.replaceChildren(icon(this.muted ? "sound-off" : "sound-on", 24));
+    labeledIcon(this.soundButton, this.muted ? "sound-off" : "sound-on", this.muted ? "静音中" : "有声");
     this.soundButton.setAttribute("aria-label", this.muted ? "开启声音（当前静音）" : "关闭声音（当前有声）");
     this.soundButton.setAttribute("aria-pressed", String(!this.muted));
   }
 
   private syncFavoriteButton(enabled: boolean): void {
+    labeledIcon(this.favoriteButton, enabled ? "heart-filled" : "heart", enabled ? "已收藏" : "收藏");
     this.favoriteButton.classList.toggle("selected", enabled);
     this.favoriteButton.setAttribute("aria-pressed", String(enabled));
     this.favoriteButton.setAttribute("aria-label", enabled ? "取消收藏视频" : "收藏视频");

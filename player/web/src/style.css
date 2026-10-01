@@ -1,5 +1,6 @@
 @import "./styles/base.css";
 @import "./styles/cover.css";
+@import "./styles/browse.css";
 @import "./styles/shell.css";
 @import "./styles/feed.css";
 @import "./styles/overlay.css";

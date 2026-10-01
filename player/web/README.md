@@ -231,3 +231,19 @@ estimate is not a byte-exact transfer counter or persistent offline cache.
 Internal rate samples continue to drive the existing bounded preload strategy.
 Quality menus list only declared 480p/720p renditions plus original; a missing
 saved rendition falls back to original and is labelled accurately.
+
+### Presentation ownership
+
+The shell facade composes access-view, confirmations, sheet, navigation,
+player-panel and timeline. LargePlayer keeps media state/events while
+large-player-view builds its single stable video and grouped controls.
+Library, favorites and long lists share browse-frame and styles/browse.css;
+cover-image owns bounded image loading separately from tile interactions.
+action-menu uses native disclosures with Escape/focus restoration.
+Cache size belongs to the persistent control panel; it does not crowd the header.
+The debt budget for large.ts is reduced to 682 lines after DOM extraction.
+
+Static stills still require a real authenticated API cover_url. Better card
+layout cannot create a missing archive frame, and rendition backfill does not
+implicitly generate covers. Production supply evidence belongs to dated
+handoffs; do not put coverage percentages or deployed versions in this guide.

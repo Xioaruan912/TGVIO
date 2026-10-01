@@ -2,7 +2,7 @@
 .cover-grid {
   display: grid;
   grid-template-columns: repeat(auto-fill, minmax(min(100%, 142px), 1fr));
-  gap: 10px;
+  gap: 12px;
   align-content: start;
   min-width: 0;
 }
@@ -18,11 +18,11 @@
   .cover-grid:not(.cover-grid-wide) { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 }
 .cover-tile { position: relative; min-width: 0; transition: transform var(--duration-fast) var(--ease); }
-.cover-tile-play { position: relative; display: block; width: 100%; padding: 0; border-radius: var(--radius); background: transparent; text-align: left; }
-.cover-tile-media { position: relative; display: block; width: 100%; aspect-ratio: var(--cover-ratio); overflow: hidden; border-radius: var(--radius); background: var(--media-bg); }
+.cover-tile-play { position: relative; display: block; width: 100%; padding: 0; border-radius: var(--radius-lg); background: transparent; text-align: left; }
+.cover-tile-media { position: relative; display: block; width: 100%; aspect-ratio: var(--cover-ratio); overflow: hidden; border-radius: var(--radius-lg); background: var(--media-bg); }
 .cover-tile[data-variant="wide"] .cover-tile-media { aspect-ratio: 16 / 9; }
 .cover-tile-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform var(--duration-normal) var(--ease); }
-.cover-tile-fallback { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; background: linear-gradient(150deg, #25384e, #142235); color: #d4dfed; }
+.cover-tile-fallback { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; background: #223246; color: #d4dfed; }
 .cover-tile[data-cover-state="ready"] .cover-tile-fallback { display: none; }
 .cover-tile-fallback-mark { display: grid; justify-items: center; gap: 8px; transform: translateY(-22px); }
 .cover-tile-fallback-text { font-size: 12px; line-height: 1.5; }
@@ -30,26 +30,26 @@
 .cover-tile[data-cover-state="failed"] .cover-tile-fallback-mark { transform: translateY(-60px); }
 /* The scrim follows real information height, including larger fonts, and fades
    only above it. Even a white frame stays readable without a full-cover wash. */
-.cover-tile-scrim { position: absolute; inset: auto 0 0; z-index: -1; height: calc(100% + 32px); background: linear-gradient(to bottom, transparent, rgba(7,13,22,.82) 32px, rgba(7,13,22,.94)); pointer-events: none; border-radius: 0 0 var(--radius) var(--radius); }
+.cover-tile-scrim { position: absolute; inset: auto 0 0; z-index: -1; height: calc(100% + 32px); background: linear-gradient(to bottom, transparent, rgba(7,13,22,.82) 32px, rgba(7,13,22,.94)); pointer-events: none; border-radius: 0 0 var(--radius-lg) var(--radius-lg); }
 .cover-tile-hint { position: absolute; left: 50%; top: 50%; z-index: 3; display: grid; place-items: center; width: 44px; height: 44px; border-radius: 50%; color: #fff; background: rgba(10,18,30,.55); border: 1px solid rgba(255,255,255,.4); opacity: 0; transform: translate(-50%,-50%); transition: opacity var(--duration-fast) var(--ease); pointer-events: none; }
-.cover-tile-info { position: absolute; inset: auto 0 0; z-index: 3; display: grid; gap: 6px; padding: 12px; color: #fff; pointer-events: none; min-width: 0; }
+.cover-tile-info { position: absolute; inset: auto 0 0; z-index: 3; display: grid; gap: 5px; padding: 14px 12px 12px; color: #fff; pointer-events: none; min-width: 0; }
 .cover-tile-title { display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; font-size: 14px; line-height: 1.4; font-weight: 650; overflow-wrap: anywhere; }
 .cover-tile-metadata { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
-.cover-tile-duration { margin-left: auto; padding: 1px 5px; border-radius: 5px; background: rgba(7,13,22,.65); color: #fff; font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.cover-tile-duration { margin-left: auto; padding: 1px 5px; border-radius: 4px; background: rgba(7,13,22,.5); color: #fff; font-size: 12px; line-height: 1.5; font-variant-numeric: tabular-nums; white-space: nowrap; }
 .cover-tile-duration[data-known="false"] { font-variant-numeric: normal; }
-.cover-tile-tag { padding: 1px 5px; border-radius: 5px; background: rgba(255,255,255,.16); color: #fff; font-size: 12px; line-height: 1.5; white-space: nowrap; }
+.cover-tile-tag { padding: 1px 5px; border-radius: 5px; background: transparent; color: #e1e8f2; font-size: 12px; line-height: 1.5; white-space: nowrap; padding-left: 0; }
 .cover-tile-subtitle { min-width: 0; font-size: 12px; line-height: 1.4; color: #e1e8f2; font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
-.cover-tile-progress { position: absolute; z-index: 4; inset: auto 0 0; height: 3px; border-radius: 0 0 var(--radius) var(--radius); background: rgba(9,16,26,.45); pointer-events: none; overflow: hidden; }
+.cover-tile-progress { position: absolute; z-index: 4; inset: auto 0 0; height: 3px; border-radius: 0 0 var(--radius-lg) var(--radius-lg); background: rgba(9,16,26,.45); pointer-events: none; overflow: hidden; }
 .cover-tile-progress-fill { display: block; height: 100%; background: var(--accent); }
-.cover-tile-favorite { position: absolute; z-index: 4; top: 10px; left: 10px; display: grid; place-items: center; width: 26px; height: 26px; border-radius: 50%; color: #fff; background: var(--favorite); pointer-events: none; }
-.cover-tile-preview { position: absolute; z-index: 4; top: 4px; right: 4px; display: grid; place-items: center; width: 48px; height: 48px; border-radius: 50%; color: #fff; background: rgba(10,18,30,.56); border: 1px solid rgba(255,255,255,.35); }
+.cover-tile-favorite { position: absolute; z-index: 4; top: 10px; left: 10px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; background: rgba(14,23,36,.55); pointer-events: none; }
+.cover-tile-preview { position: absolute; z-index: 4; top: 8px; right: 8px; display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 44px; width: auto; height: 44px; padding: 0 10px; border-radius: var(--radius-pill); color: #fff; background: rgba(10,18,30,.56); border: 1px solid rgba(255,255,255,.35); }
 .cover-tile-preview[aria-pressed="true"] { background: var(--primary); border-color: #fff; }
 .cover-tile-select { position: absolute; z-index: 5; top: 0; left: 0; display: grid; place-items: center; width: 48px; height: 48px; color: transparent; }
 .cover-tile-select-mark { display: grid; place-items: center; width: 26px; height: 26px; border: 2px solid #fff; border-radius: 50%; background: rgba(12,20,32,.6); }
 .cover-tile-select.is-selected { color: #fff; }
 .cover-tile-select.is-selected .cover-tile-select-mark { background: var(--primary); }
 .cover-tile.is-select-mode .cover-tile-favorite { display: none; }
-.cover-tile.is-selected::after { content: ""; position: absolute; z-index: 4; inset: 0; border: 3px solid var(--primary-bright); border-radius: var(--radius); pointer-events: none; }
+.cover-tile.is-selected::after { content: ""; position: absolute; z-index: 4; inset: 0; border: 3px solid var(--primary-bright); border-radius: var(--radius-lg); pointer-events: none; }
 .cover-tile-retry { position: absolute; z-index: 5; left: 50%; top: 48%; transform: translate(-50%,-50%); min-height: 48px; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface); color: var(--primary); font-size: 13px; white-space: nowrap; }
 .cover-tile[data-variant="wide"] .cover-tile-retry { left: 10px; top: 8px; transform: none; min-height: 44px; }
 .cover-tile[data-cover-state="failed"] .cover-tile-hint,
@@ -67,3 +67,13 @@
 @media (max-width: 359px) { .cover-grid { gap: 8px; } .cover-tile-info { padding: 10px; } }
 .cover-tile[data-variant="wide"] .cover-tile-title { -webkit-line-clamp: 1; }
 .cover-tile[data-variant="wide"] .cover-tile-subtitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+
+.cover-preview-caption { font-size: 12px; line-height: 1.4; }
+.cover-tile-fallback-mark > .icon { width: 28px; height: 28px; opacity: .7; }
+.cover-tile[data-variant="wide"] .cover-tile-info { padding-inline: 14px; }
+
+@media (prefers-reduced-motion: reduce) {
+  .cover-tile:hover,
+  .cover-tile-play:hover .cover-tile-image { transform: none; }
+  .cover-tile button:active { translate: none; }
+}

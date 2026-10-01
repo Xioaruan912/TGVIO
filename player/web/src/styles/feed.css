@@ -24,7 +24,7 @@
 }
 
 .video-page.random-transition .media-slot {
-  animation: random-refresh-in 0.42s cubic-bezier(0.18, 0.72, 0.22, 1) both;
+  animation: random-refresh-in 0.22s cubic-bezier(0.18, 0.72, 0.22, 1) both;
 }
 
 @keyframes random-refresh-in {
@@ -101,7 +101,7 @@
   justify-items: center;
   gap: 10px;
   color: rgba(255, 255, 255, 0.72);
-  font-size: 11px;
+  font-size: 12px;
   letter-spacing: 0.08em;
   opacity: 0;
   pointer-events: none;
@@ -117,7 +117,7 @@
   border-top-color: rgba(255, 255, 255, 0.92);
   border-right-color: #7dd3fc;
   border-radius: 50%;
-  box-shadow: 0 0 22px rgb(14 165 233 / 12%);
+
   animation: media-ring-turn 1s linear infinite;
 }
 

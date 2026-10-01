@@ -6,11 +6,34 @@
 中文 SKY TGVIO 品牌及短片/长片/收藏/片库四区导航，设置独立。
 不新增社交数字、作者资料、会员、营销 Hero 或推荐算法。
 
+展示组件与业务控制器分离。ui.ts 保留兼容导出与 shell 装配；
+access-view、confirmations、sheet、navigation、player-panel、timeline、
+large-player-view、browse-frame、action-menu、cover-tile / cover-image 分别拥有单一展示职责。
+LargePlayer 只调用展示层提供的稳定 video/控件，媒体监听与播放意图不交给组件。
+短/长进度条共用 timeline 构建，交互仍由 seek-control 管理。
+
 浅色令牌统一在 player/web/src/styles/base.css，旧 SKY 名称为兼容别名。
-Header、Media Stage、Player Panel、Navigation 独立占位；媒体用中性深色、
+Header、Media Stage、Player Panel、Navigation 独立占位。
+手机为 58px 顶栏与 66px 导航基线；桌面为 92px 侧栏与宽观看区，
+视频下方控制卡分别安排标识、进度、直接操作与缓存大小。
+缓存显示不再占用顶栏，原 netSpeed 偏好键兼容。更多菜单原生 details，
+Escape 收起并恢复焦点；长片永久删除/画中画与播放/声音/收藏分开。媒体用中性深色、
 object-fit: contain 完整播放。低高度横屏采用画面与控制区分栏。
 常驻播放、声音、收藏、隐私锁；下载、文件夹、随机播放在低频菜单。
 永久删除单独分隔，并保留服务端权限及安全默认焦点。
+
+## 浏览与设置
+
+片库、收藏、长片共享 browse-frame：返回、标题、辅助上下文、工具栏、
+状态提示、选择条、独立滚动内容。实际 list 的 scrollTop 驱动标题分隔线，
+浏览容器在超宽窗口也不超过 library-max。
+日期和文件夹为明确的目录卡片，显示真实数量与日期基准。
+收藏保持“播放已加载”范围说明，只有选择模式才显示勾选。
+长片继续观看采用真实续播位置，章节不复制白色嵌套卡片。
+
+设置桌面为右侧抽屉，移动为底部 Sheet；分组、开关、可执行项箭头、
+关闭与焦点恢复保持同一语义。口令页是独立无媒体的访问组件，
+删除/声音确认由 confirmations 展示，原权限与确认回调不变。
 
 ## 内容封面
 
@@ -28,7 +51,7 @@ object-fit: contain 完整播放。低高度横屏采用画面与控制区分栏
 
 封面状态明确区分 loading / ready / missing / failed。缺图与失败使用实色中性
 蓝灰降级，不伪装成真实内容。请求失败不等于视频不可播放，提供独立重试。
-IntersectionObserver 只让临近可视区的图片加入共用两槽队列；
+cover-image 的 IntersectionObserver 只让临近可视区的图片加入共用两槽队列；
 实际请求有 20 秒期限及一次自动重试。离开可视区取消尚未开始的排队；
 卡片 destroy 清理 observer、监听、定时器、src 和请求槽，旧回调不复活新状态。
 列表不批量创建 video、Canvas 解码或完整 Blob，不持久缓存私人封面。

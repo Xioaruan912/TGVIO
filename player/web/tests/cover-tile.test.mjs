@@ -9,7 +9,7 @@ const { all, byClass } = installDom();
 async function load(source) {
   const js = ts.transpileModule(await readFile(new URL("../src/" + source, import.meta.url), "utf8"),
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
-    .replace(/^import .* from .*;$/gm, "");
+    .replace(/^import .* from .*;$/gm, "").replace(/^export .* from .*;$/gm, "");
   return js;
 }
 
@@ -25,10 +25,14 @@ globalThis.__coverDeps = {
 const iconsJs = await load("icons.ts");
 const { icon } = await import("data:text/javascript;base64," + Buffer.from(iconsJs).toString("base64"));
 globalThis.__coverDeps.icon = icon;
+const imageCode = await load("components/cover-image.ts");
+const { bindCoverImage } = await import("data:text/javascript;base64," + Buffer.from(
+  "const enqueueCover = start => { start(() => {}); return () => {}; };\n" + imageCode).toString("base64"));
+globalThis.__coverDeps.bindCoverImage = bindCoverImage;
 const coverJs = await load("components/cover-tile.ts");
 const { buildCoverTile, formatCoverDuration, coverTitle } = await import(
   "data:text/javascript;base64," + Buffer.from(
-    "const { element, icon } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + coverJs,
+    "const { element, icon, bindCoverImage } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + coverJs,
   ).toString("base64")
 );
 

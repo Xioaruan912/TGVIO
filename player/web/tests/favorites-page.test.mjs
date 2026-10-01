@@ -9,7 +9,7 @@ const { all, byClass, clickText, flush, videos } = installDom();
 async function transpile(source) {
   return ts.transpileModule(await readFile(new URL("../src/" + source, import.meta.url), "utf8"),
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
-    .replace(/^import .* from .*;$/gm, "");
+    .replace(/^import .* from .*;$/gm, "").replace(/^export .* from .*;$/gm, "");
 }
 const element = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -19,8 +19,16 @@ const element = (tag, className, text) => {
 };
 const { icon } = await import("data:text/javascript;base64," + Buffer.from(await transpile("icons.ts")).toString("base64"));
 globalThis.__coverDeps = { element, icon };
+const imageCode = await transpile("components/cover-image.ts");
+const { bindCoverImage } = await import("data:text/javascript;base64," + Buffer.from(
+  "const enqueueCover = start => { start(() => {}); return () => {}; };\n" + imageCode).toString("base64"));
+globalThis.__coverDeps.bindCoverImage = bindCoverImage;
 const { buildCoverTile } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { element, icon } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + await transpile("components/cover-tile.ts")).toString("base64"));
+  "const { element, icon, bindCoverImage } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + await transpile("components/cover-tile.ts")).toString("base64"));
+
+globalThis.__frameDeps = { element, icon };
+const { buildBrowseFrame, browseButton, fillDirectoryCard } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, icon } = globalThis.__frameDeps;\n" + await transpile("components/browse-frame.ts")).toString("base64"));
 
 const clip = (index, overrides = {}) => ({
   id: String(index).padStart(8, "0") + "f".repeat(56),
@@ -45,9 +53,9 @@ const api = {
     return { items, hasMore, nextCursor: hasMore ? items.at(-1).id : null };
   },
 };
-globalThis.__favoritesDeps = { api, element, shortId: id => id.slice(0, 8), buildCoverTile };
+globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile };
 const { FavoritesPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { api, element, shortId, buildCoverTile } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
+  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");

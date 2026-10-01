@@ -10,7 +10,9 @@ class PlayerContextFeedSourceTests(unittest.TestCase):
         ui = (ROOT / "player/web/src/ui.ts").read_text(encoding="utf-8")
         main = (ROOT / "player/web/src/main.ts").read_text(encoding="utf-8")
         actions = (ROOT / "player/web/src/components/media-actions.ts").read_text(encoding="utf-8")
-        self.assertIn("buildMediaActions(handlers)", ui)
+        panel = (ROOT / "player/web/src/components/player-panel.ts").read_text(encoding="utf-8")
+        self.assertIn("buildPlayerPanel(root, handlers, netSpeed)", ui)
+        self.assertIn("buildMediaActions(handlers)", panel)
         self.assertIn('"浏览所在文件夹"', actions)
         self.assertIn('onOpenGroup: openCurrentFolder', main)
         self.assertIn('void enterContext("favorites")', main)
@@ -80,7 +82,9 @@ class PlayerDownloadAndTailSourceTests(unittest.TestCase):
         ui = (ROOT / "player/web/src/ui.ts").read_text(encoding="utf-8")
         icons = (ROOT / "player/web/src/icons.ts").read_text(encoding="utf-8")
         actions = (ROOT / "player/web/src/components/media-actions.ts").read_text(encoding="utf-8")
-        self.assertIn("buildMediaActions(handlers)", ui)
+        panel = (ROOT / "player/web/src/components/player-panel.ts").read_text(encoding="utf-8")
+        self.assertIn("buildPlayerPanel(root, handlers, netSpeed)", ui)
+        self.assertIn("buildMediaActions(handlers)", panel)
         self.assertIn('"下载原片"', actions)
         self.assertIn("onDownload: () => void;", ui)
         self.assertIn("downloadBtn.addEventListener(\"click\", handlers.onDownload)", actions)
@@ -102,7 +106,9 @@ class PlayerCoverTileSourceTests(unittest.TestCase):
 
     def test_one_cover_unit_is_shared_by_every_browse_surface(self) -> None:
         tile = (ROOT / "player/web/src/components/cover-tile.ts").read_text(encoding="utf-8")
-        self.assertIn('export type CoverState = "loading" | "ready" | "missing" | "failed";', tile)
+        image = (ROOT / "player/web/src/components/cover-image.ts").read_text(encoding="utf-8")
+        self.assertIn('export type CoverState = "loading" | "ready" | "missing" | "failed";', image)
+        self.assertIn("bindCoverImage(", tile)
         # An unknown duration is never rendered as 0:00.
         self.assertIn('return "时长未知";', tile)
         # Selection is its own control: a button must never nest another button.

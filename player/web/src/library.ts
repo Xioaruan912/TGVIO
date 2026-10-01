@@ -1,3 +1,4 @@
+import { buildBrowseFrame, browseButton, fillDirectoryCard } from "./components/browse-frame";
 import { api, shortId } from "./api";
 import { element } from "./ui";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
@@ -131,17 +132,14 @@ export class VideoLibraryPage {
   private automaticPages = 0;
 
   constructor(private readonly onPlay: (clips: Clip[]) => void, private readonly onClose: () => void, options?: { mediaId?: string }) {
-    this.root = element("section", "long-page library-page");
-    this.root.setAttribute("aria-label", "文件夹选片");
+    const frame = buildBrowseFrame({ title: this.title, subtitle: "日期 / 文件夹 / 视频",
+      kind: "library", onBack: () => this.back(), toolbar: this.toolbar, notice: this.notice,
+      selection: this.selectionBar, list: this.list });
+    this.root = frame.root; this.backButton = frame.back;
     this.detachPreviewActivity = attachIdleActivity(this.root, this.previewIdle);
     document.addEventListener("visibilitychange", this.onPreviewVisibility);
-    const header = element("header", "library-header");
-    this.backButton = this.button("返回", () => this.back());
-    header.append(this.backButton, this.title);
     this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
-    this.list.tabIndex = -1;
     this.selectionBar.hidden = true;
-    this.root.append(header, this.toolbar, this.notice, this.selectionBar, this.list);
     this.list.addEventListener("scroll", () => {
       if (this.stage === "videos" && !this.playbackActive && !this.controller.error && this.automaticPages < 3 &&
           this.list.scrollTop + this.list.clientHeight >= this.list.scrollHeight - 200) {
@@ -152,8 +150,7 @@ export class VideoLibraryPage {
     else void this.loadDates();
   }
   private button(text: string, action: () => void): HTMLButtonElement {
-    const button = element("button", "library-button", text); button.type = "button";
-    button.addEventListener("click", action); return button;
+    return browseButton(text, action);
   }
   private beginIndex(): { signal: AbortSignal; generation: number } {
     this.indexRequest?.abort(); this.controller.cancel(); this.stopPreview();
@@ -163,7 +160,7 @@ export class VideoLibraryPage {
   private isCurrent(generation: number): boolean { return !this.destroyed && generation === this.generation; }
   private resetList(): void {
     this.list.replaceChildren(); this.list.scrollTop = 0; for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
-    this.list.classList.remove("cover-grid");
+    this.list.classList.remove("cover-grid", "directory-grid");
   }
   private async loadDates(): Promise<void> {
     this.stage = "dates"; this.membership = false;
@@ -177,7 +174,7 @@ export class VideoLibraryPage {
     } catch { if (this.isCurrent(request.generation)) this.indexError(() => void this.loadDates()); }
   }
   private renderDates(): void {
-    this.stage = "dates"; this.title.textContent = "片库 · 日期索引"; this.resetList(); this.selectionBar.replaceChildren();
+    this.stage = "dates"; this.title.textContent = "片库 · 日期索引"; this.resetList(); this.list.classList.add("directory-grid"); this.selectionBar.replaceChildren();
     const label = element("label", "library-date-label", "跳转目录日期");
     const input = element("input", "library-date-input"); input.type = "date";
     input.setAttribute("aria-label", "跳转目录日期");
@@ -189,9 +186,8 @@ export class VideoLibraryPage {
     label.append(input); this.toolbar.replaceChildren(label);
     for (const date of this.dates) {
       const button = this.button("", () => { this.datesScroll = this.list.scrollTop; void this.loadFolders({ date: date.date ?? "unknown" }); });
-      button.classList.add("library-index-row");
-      button.append(element("strong", "library-index-title", date.date ?? "未知日期"),
-        element("span", "library-index-meta", `${date.folder_count} 个文件夹 · ${date.video_count} 个视频 · ${basisLabel(date.basis)}`));
+      fillDirectoryCard(button, { kind: "date", title: date.date ?? "未知日期",
+        detail: date.folder_count + " 个文件夹 · " + basisLabel(date.basis), count: date.video_count + " 个视频" });
       this.list.append(button);
     }
     if (!this.dates.length) this.list.append(element("p", "library-empty", "暂无可播放的归档目录"));
@@ -212,15 +208,13 @@ export class VideoLibraryPage {
     } catch { if (this.isCurrent(request.generation)) this.indexError(() => void this.loadFolders(query)); }
   }
   private renderFolders(): void {
-    this.stage = "folders"; this.resetList(); this.toolbar.replaceChildren(); this.selectionBar.replaceChildren();
+    this.stage = "folders"; this.resetList(); this.list.classList.add("directory-grid"); this.toolbar.replaceChildren(); this.selectionBar.replaceChildren();
     this.title.textContent = this.membership ? "片库 · 选择所在文件夹" : `片库 · ${this.currentDate ?? "未知日期"}`;
     this.notice.textContent = "同日批次分别列出 · 日期来自目录";
     for (const folder of this.folders) {
       const button = this.button("", () => { this.foldersScroll = this.list.scrollTop; this.openFolder(folder); });
-      button.classList.add("library-index-row");
-      // Only sanitized server label and metadata are visible; opaque IDs/paths stay out of UI.
-      button.append(element("strong", "library-index-title", folder.label), element("span", "library-index-meta",
-        `${folder.video_count} 个视频 · ${folder.date ?? "未知日期"} · ${basisLabel(folder.date_basis)}`));
+      fillDirectoryCard(button, { kind: "folder", title: folder.label,
+        detail: (folder.date ?? "未知日期") + " · " + basisLabel(folder.date_basis), count: folder.video_count + " 个视频" });
       this.list.append(button);
     }
     if (!this.folders.length) this.list.append(element("p", "library-empty", "未找到可播放原版的文件夹"));

@@ -5,7 +5,7 @@ import type { ShellHandlers } from "../ui";
 export function buildAppHeader(handlers: ShellHandlers) {
   const topbar = element("header", "topbar app-header");
   const brandSmall = element("div", "topbar-brand");
-  brandSmall.append(brandMark(), element("strong", "brand-name", "SKY TGVIO"), element("small", "brand-tagline", "轻盈天空，私享时光"));
+  brandSmall.append(brandMark(), element("strong", "brand-name", "SKY TGVIO"), element("small", "brand-tagline", "私人视频空间"));
   const contextBackBtn = element("button", "context-back", "返回");
   contextBackBtn.type = "button";
   contextBackBtn.hidden = true;
@@ -21,7 +21,8 @@ export function buildAppHeader(handlers: ShellHandlers) {
   settingsBtn.setAttribute("aria-label", "设置");
   settingsBtn.appendChild(icon("settings", 22));
   settingsBtn.addEventListener("click", () => handlers.onNav("settings"));
-  topbar.append(contextBackBtn, brandSmall, netSpeed, fullscreenBtn, settingsBtn);
+  const context = element("h2", "app-header-context", "短片");
+  topbar.append(contextBackBtn, brandSmall, context, fullscreenBtn, settingsBtn);
 
   return { topbar, contextBackBtn, netSpeed, fullscreenBtn };
 }

@@ -9,7 +9,7 @@ const { all, byClass, flush, videos } = installDom();
 async function transpile(source) {
   return ts.transpileModule(await readFile(new URL("../src/" + source, import.meta.url), "utf8"),
     { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
-    .replace(/^import .* from .*;$/gm, "");
+    .replace(/^import .* from .*;$/gm, "").replace(/^export .* from .*;$/gm, "");
 }
 const element = (tag, className, text) => {
   const node = document.createElement(tag);
@@ -19,10 +19,18 @@ const element = (tag, className, text) => {
 };
 const { icon } = await import("data:text/javascript;base64," + Buffer.from(await transpile("icons.ts")).toString("base64"));
 globalThis.__coverDeps = { element, icon };
+const imageCode = await transpile("components/cover-image.ts");
+const { bindCoverImage } = await import("data:text/javascript;base64," + Buffer.from(
+  "const enqueueCover = start => { start(() => {}); return () => {}; };\n" + imageCode).toString("base64"));
+globalThis.__coverDeps.bindCoverImage = bindCoverImage;
 const { buildCoverTile } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { element, icon } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + await transpile("components/cover-tile.ts")).toString("base64"));
+  "const { element, icon, bindCoverImage } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + await transpile("components/cover-tile.ts")).toString("base64"));
 const { resumableItems, omitResumableDuplicates } = await import(
   "data:text/javascript;base64," + Buffer.from(await transpile("long-video-list.ts")).toString("base64"));
+
+globalThis.__frameDeps = { element, icon };
+const { buildBrowseFrame, browseButton, fillDirectoryCard } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, icon } = globalThis.__frameDeps;\n" + await transpile("components/browse-frame.ts")).toString("base64"));
 
 const clip = (index, overrides = {}) => ({
   id: String(index).padStart(8, "0") + "a".repeat(56),
@@ -44,11 +52,11 @@ const api = {
   longVideoProgress: async () => progress,
 };
 globalThis.__longDeps = {
-  api, element, prefs: { cacheMode: "auto" }, buildCoverTile, icon, resumableItems, omitResumableDuplicates,
+  buildBrowseFrame, api, element, prefs: { cacheMode: "auto" }, buildCoverTile, icon, resumableItems, omitResumableDuplicates,
   formatTime: seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds) % 60).padStart(2, "0")}`,
 };
 const { LongVideoPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { api, element, prefs, buildCoverTile, formatTime, icon, resumableItems, omitResumableDuplicates } = globalThis.__longDeps;\n" + await transpile("long.ts")).toString("base64"));
+  "const { buildBrowseFrame, api, element, prefs, buildCoverTile, formatTime, icon, resumableItems, omitResumableDuplicates } = globalThis.__longDeps;\n" + await transpile("long.ts")).toString("base64"));
 
 const tiles = page => byClass(page.root, "cover-tile");
 

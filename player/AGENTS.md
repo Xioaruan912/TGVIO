@@ -30,7 +30,7 @@
 ## 4. 交互与异步规则
 
 - 当前信息结构为独立 header、media-stage、常驻 player-panel、独立 navigation；用户明确要求新设计后可调整结构，仍保持资源与可访问性合同。进度、播放和导航不得再次挂到自动隐藏浮层上。短/长 seek 共用 `seek-control.ts`，触摸区 48px。
-- UI 组件在 `web/src/components/`；设置在 `views/settings-view.ts`；二级页面由 `views/view-lifecycle.ts` 单一拥有，切导航先销毁旧页面并解除相应 inert。长播放器打开时隔离底层页面，关闭恢复，不重建三 video 池。
+- `ui.ts` 只装配 shell 并保留公共兼容导出；口令页、确认框、Sheet、导航、共用 timeline、播放器控制区和长片 DOM 分别由 `web/src/components/` 中专用模块拥有。业务控制器不重新拼装另一套按钮或进度条。设置在 `views/settings-view.ts`；二级页面由 `views/view-lifecycle.ts` 单一拥有，切导航先销毁旧页面并解除相应 inert。长播放器打开时隔离底层页面，关闭恢复，不重建三 video 池。
 - Sheet/Dialog 统一焦点陷阱、Escape/backdrop 关闭与原焦点恢复；动画遵守 reduced-motion；窄屏与低高度横屏必须可达全部功能。
 - 隐私锁必须用实色媒体遮罩并隐藏媒体可见性，禁止用半透明/blur 替代隐私隐藏；仅作用于锁定，不能让正常缓冲重新盖黑。
 - 收藏 UI 初始化采用服务端事实，存在本地未完成修改时以 `FavoriteMutations.currentValue()` 的最新意图为准；短/长视图同步 selected、aria-pressed 和可读标签。
@@ -39,9 +39,11 @@
 - 隐藏控件必须同时退出指针命中与键盘焦点，不能只设置 opacity。重新显示时恢复可操作性。
 - 片库、收藏、长片的封面统一走 `web/src/components/cover-tile.ts`：封面层铺满、底部渐变承载白字、类型标签只在混合网格出现。加载中/暂无封面/加载失败（可重试）三态必须区分，缺图不得用渐变或随机图冒充真实封面。
 - 标题独占一至两行；类型与时长在独立信息行排布，禁止用相互竞争的绝对坐标或固定卡片行高。网格按实际容器宽度计算，小屏默认两列，封面裁切不影响播放器 contain。
-- 静态封面复用 cover-load-queue 的两请求预算；临近可视区才入队，实际请求有 20 秒期限及最多一次自动重试。列表销毁/替换必须调用 CoverTileHandle.destroy，释放 observer、请求槽与定时器，迟到事件不得恢复旧状态。
+- 静态封面的 observer、deadline、重试和取消由 cover-image 统一拥有，复用 cover-load-queue 的两请求预算；临近可视区才入队，实际请求有 20 秒期限及最多一次自动重试。列表销毁/替换必须调用 CoverTileHandle.destroy，释放 observer、请求槽与定时器，迟到事件不得恢复旧状态。
 - 手动隐私锁与播放、声音、收藏同处直接可达的控制区；低频菜单中的永久删除有明确名称与独立分隔，禁止重新混入高频控件。
 - 浏览=元数据：列表阶段不创建 `<video>`，同一时刻最多一个按需预览；预览是明确动作，不因 hover/聚焦自动发起大量请求。选择控件与预览控件是播放按钮的兄弟节点，禁止 button 嵌套 button。
+- 片库、收藏和长片共享 browse-frame 的页面标题/返回与实际滚动反馈；目录卡片只使用安全服务端名称，类型筛选与选择状态仍由原页面控制器拥有。browse 样式集中在 styles/browse.css，不再散落到设置或长播放器样式。
+- 更多操作统一使用 action-menu 的原生 details，关闭后退出 Tab 与命中；Escape 收起并恢复 summary 焦点，危险操作与高频控制分离。
 - 多选是显式模式：普通模式点封面播放；多选模式点封面只切换选中，绝不开始播放。选择数量、分页与筛选后的状态必须如实显示，离开文件夹要明确告知已清空。
 - 进度条视觉轨道可细，长视频触摸区域至少 44px；与操作按钮独立排布，避免遮挡、重叠与小屏横向溢出。
 - 拖动预览与实际 seek 分离；松手提交。`pointercancel`、`lostpointercapture`、切后台和销毁必须清理拖动/长按状态。

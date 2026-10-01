@@ -73,7 +73,7 @@
   --cyan: var(--accent);
   --shadow: var(--shadow-panel);
   --ease: var(--ease-ui);
-  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", Roboto, system-ui, sans-serif;
+  --font-sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "Microsoft YaHei", "Segoe UI", system-ui, sans-serif;
 }
 
 * { box-sizing: border-box; }
@@ -99,3 +99,5 @@ input { min-width: 0; }
 .tabs, .chips { display: flex; gap: var(--space-2); overflow-x: auto; padding: var(--space-1); }
 .tab, .chip { min-height: 44px; padding: 0 var(--space-4); border-radius: var(--radius-pill); background: var(--surface-soft); color: var(--text-secondary); }
 .tab[aria-selected="true"], .chip[aria-pressed="true"] { color: var(--primary); background: var(--primary-soft); }
+
+.sr-only { position: absolute; width: 1px; height: 1px; overflow: hidden; clip-path: inset(50%); white-space: nowrap; }

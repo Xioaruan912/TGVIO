@@ -1,6 +1,6 @@
 import { icon } from "../icons";
 import { element } from "./dom";
-import { enqueueCover } from "./cover-load-queue";
+import { bindCoverImage, type CoverState } from "./cover-image";
 
 /**
  * One reusable cover unit for every browse surface (library, favorites, long
@@ -8,7 +8,7 @@ import { enqueueCover } from "./cover-load-queue";
  * the single play target; preview/select/retry live as sibling controls so a
  * button is never nested inside another button.
  */
-export type CoverState = "loading" | "ready" | "missing" | "failed";
+export type { CoverState } from "./cover-image";
 
 export type CoverMedia = {
   id: string;
@@ -142,7 +142,7 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
         button.setAttribute("aria-label", `预览视频 #${shortId}`);
         button.title = "预览（静音）";
         button.setAttribute("aria-pressed", "false");
-        button.append(icon("preview", 20));
+        button.append(icon("preview", 18), element("span", "cover-preview-caption", "预览"));
         button.addEventListener("click", () => { if (!disposed) options.onPreview?.(); });
         return button;
       })()
@@ -167,14 +167,6 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
   retryButton.type = "button";
   retryButton.hidden = true;
 
-  let timer = 0;
-  let waiting = false;
-  let releaseCover = () => {};
-  let cancelQueued = () => {};
-  let generation = 0;
-  let observer: IntersectionObserver | null = null;
-  let detachImage = () => {};
-  const clearTimer = () => { window.clearTimeout(timer); timer = 0; };
   const setState = (next: CoverState): void => {
     if (disposed) return;
     state = next;
@@ -184,67 +176,8 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
     fallbackText.textContent = next === "failed" ? "封面加载失败"
       : next === "loading" ? "封面加载中" : "暂无封面";
   };
-  let attempts = 0;
-  const loadCover = (): void => {
-    if (!image || disposed) return;
-    clearTimer();
-    detachImage();
-    const token = ++generation;
-    setState("loading");
-    const finish = (next: CoverState) => {
-      if (disposed || token !== generation) return;
-      clearTimer();
-      detachImage();
-      setState(next);
-      releaseCover(); releaseCover = () => {};
-    };
-    const onLoad = () => finish("ready");
-    const onError = () => {
-      if (disposed || token !== generation) return;
-      if (attempts++ < 1) loadCover();
-      else finish("failed");
-    };
-    image.addEventListener("load", onLoad);
-    image.addEventListener("error", onError);
-    detachImage = () => {
-      image.removeEventListener("load", onLoad);
-      image.removeEventListener("error", onError);
-    };
-    // The deadline starts only when a card approaches the visible scroll area,
-    // never while a lazy offscreen image is waiting to be requested.
-    timer = window.setTimeout(() => {
-      if (disposed || token !== generation) return;
-      finish("failed");
-      image.removeAttribute("src");
-    }, 20_000);
-    image.setAttribute("src", media.coverUrl!);
-  };
-  const requestCover = () => {
-    if (disposed || waiting) return;
-    waiting = true;
-    setState("loading");
-    cancelQueued = enqueueCover(done => {
-      waiting = false;
-      releaseCover = done;
-      observer?.disconnect(); observer = null;
-      loadCover();
-    });
-  };
-  if (image) {
-    if (typeof IntersectionObserver !== "undefined") {
-      observer = new IntersectionObserver(entries => {
-        if (disposed) return;
-        if (entries.some(entry => entry.isIntersecting)) requestCover();
-        else if (waiting) { cancelQueued(); waiting = false; }
-      }, { rootMargin: "160px" });
-      observer.observe(root);
-    } else requestCover();
-  }
-  retryButton.addEventListener("click", () => {
-    if (disposed || !image) return;
-    attempts = 0;
-    requestCover();
-  });
+  const coverImage = bindCoverImage(root, image, media.coverUrl, setState);
+  retryButton.addEventListener("click", () => coverImage.retry());
 
   const syncSelection = (): void => {
     root.classList.toggle("is-selected", selected);
@@ -300,13 +233,7 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
     destroy() {
       if (disposed) return;
       disposed = true;
-      generation++;
-      clearTimer();
-      observer?.disconnect();
-      observer = null;
-      detachImage();
-      image?.removeAttribute("src");
-      cancelQueued(); releaseCover();
+      coverImage.destroy();
     },
   };
 }
