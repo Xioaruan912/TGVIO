@@ -147,3 +147,44 @@ Player 按该索引完整摘要、包和对象匹配，鉴权精确 Range 206 / 
 不新增并行下载/解码，不把旧索引、目录存在、done 数或一次 Range 当全覆盖。
 仍缺封面 87、480p 782、720p 646；维护与现有 tgvio 跟进继续，完成前不结束或重建自动化。
 本轮代码实际运行仍 668fcd7（副本）与 a5fd3e0（封面），文档推送只做源码快照同步。
+
+## 2026-10-02 02:19 北京时间封面细节修复与继续入口
+
+最新 [明亮画面封面修复回执](../operations/2026-10-02-cover-detail-release.md)：
+封面实际运行 64fdf442b1c163a361613cc50b09f863e9602484，副本保持 668fcd7，
+Bot/Player 身份、镜像、重启与版本保持不变。封面仍 768MiB/.75CPU/64PID、输入/输出单线程。
+代码完整门禁 Python 1058、Node 215、TS/Vite 通过；候选 537 个文件及镜像逐项核验，
+原 checkpoint 每行保留，旧 a5fd3e0 停止回滚和独立 SQLite 备份保留。
+
+实证修复一个约 99% 像素偏白但有真实细节的视频：
+旧算法返回空，完整源哈希与正常解码通过；候选保留亮度范围与方差可辨的内容，
+仍拒绝纯黑白/低幅噪声，不增加位置、Range 或执行时间预算。
+受控实际修复一张 5123-byte 290×640 JPEG，读取原媒体 1.5MiB、28.47 秒，
+上传后完整哈希/原画绑定/原清单不变通过，未手改任务完成/累计次数。
+正常 catalog 同步后，精确该封面 Player 鉴权 200/private/JPEG/完整哈希通过，匿名 401；
+实时 36 条收藏再次逐张鉴权及完整哈希通过。
+
+18:19:47 UTC 有效覆盖：封面 900/910，480p 98/871，720p 94/729，
+尚缺 10、773、635。两个内核 oom/oom_kill 为零、工作目录持续写入，磁盘约 22.27GB。
+剩余十个封面逐项核对：四个正常 done 待后续 catalog 确认，六个唯一来源失败，
+一个有两归档位置；不按 done 补算覆盖、不将所有失败假定为本次误判。
+副本仍有 upload_unverified TimeoutError、一次 metadata PUT 405 和未分类 ValueError；
+正常 written=2 持续，失败保持冷却。八个有效失败来源 HEAD/大小及端点 Range 正确，
+不能以两字节证明完整可解码。
+
+后续先 completion-release/monitor.py；expected-workers 已仅更新封面为 64fdf44，
+副本继续 668fcd7。completion-cover-detail 私有目录保存 clean/pushed 候选、源码镜像校验、
+部署回执、检查点、单来源有界真实验证、Player 鉴权和剩余封面状态。
+其 call-remote.py detail-player-remote.py / detail-sync-status-remote.py /
+missing-cover-state-remote.py 可用于只读复核；
+missing-cover-refs.json 仅远端 root600 保存私有来源，禁止输出原 ID、路径或图像。
+source-diagnostic-remote.py 位于 completion-cover-diagnostics，针对旧 a5fd3e0 且曾完整读小来源，
+不得照旧重跑或重复消耗同一文件预算。新 update-remote.py 已完成一次切换，
+不能因文档 HEAD 或重复 heartbeat 盲目部署，确认脚本也不应重复改预期版本。
+
+下一轮优先核对正常 catalog 的四张新封面与新算法到期重试的六个来源，
+若仍失败再逐项拆分截断容器/位置/解码/内容原因；优先复用已有受控副本并保留总资源边界。
+同时继续核实副本传输/索引确认阶段，不能把已验证单档、目录存在或任务 done 当全覆盖。
+九个 inactive/404 来源不复活；同摘要照片的旧取消包不重播；
+download_failed 原冻结 max3/count6/exhausted 继续单列、不重置、不重发 Telegram。
+维护与 tgvio 跟进继续，完成前须当前逐项与鉴权读取证据。
