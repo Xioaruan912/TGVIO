@@ -69,3 +69,43 @@ HEAD 均为 200，声明长度与源记录相符，源大小均在现有 4 GiB �
 私有证据保存在 completion-release 的时间戳进度、heartbeat-range-latest.json、
 heartbeat-resource-latest.json 及其本地结果；不向仓库写入原媒体标识、路径或凭据。
 补齐仍未完成，工作器持续执行及自动重试，每小时跟进保持启用。
+
+## 14:48 UTC / 22:48 北京时间
+
+| 项目 | 可用投影 | 应有数量 | 待补 |
+|---|---:|---:|---:|
+| 封面 | 643 | 910 | 267 |
+| 480p | 80 | 871 | 791 |
+| 720p | 74 | 729 | 655 |
+| 收藏封面 | 36 | 36 | 0 |
+
+相对上次 21:51 用户回报的 573/75/72，分别增加 70/5/2 条。
+封面 checkpoint done 679 / failed 1 / pending 337，唯一失败为 ValueError；
+14:43 的 TimeoutError 和 WebDavArchiveError 已不再失败。
+副本 done 77 / failed 25 / pending 915，含无效历史来源；当前有效失败任务 13、唯一视频 11。
+失败数及 checkpoint 完成数不代替有效投影或最终可读验收。
+
+本轮优先抽查八项失败来源，HEAD 全为 200、声明大小匹配且在 4 GiB 源上限内。
+封面 ValueError 的首尾一字节鉴权 Range 再次通过状态、长度及实际读取校验。
+该项累计失败 6 次，抽查时尚余约 105 分钟冷却；次数没有清零。
+追加只读元数据检查：manifest/_COMPLETE 摘要绑定、covers.json v2 绑定均有效，
+该视频没有 cover 条目或现有绑定低清副本，源大小在 12 MiB 内。
+不能据此确定整文件 Range、解码或 JPEG 校验的具体失败阶段，也不能直接判为损坏或源丢失。
+未启动额外媒体解码、未扩大取样预算，等待既有工作器到期重试。
+
+资源两次抽查副本临时文件总大小约 48 MB 后增至 66 MB；
+其间日志出现 written=2 的真实完成记录，并开始下一项，未发现全局停滞。
+封面维持稀疏有界采样。磁盘可用约 23.00 GB。
+两个工作器保留各自版本 a5fd3e0/763a1f6、身份和预算，重启 0、OOM false；
+Bot/Player healthy 且身份不变，catalog 和两个 checkpoint quick_check 通过。
+本轮读取 expected-workers 及 completion-cover-memory 的发布/隔离验证证据，没有按文档 HEAD 重建容器。
+
+收藏实时投影仍 36/36，此前逐张鉴权 JPEG 验收结论保留；
+本轮没有重复全量媒体读取，最终验收仍需实时逐项证据。
+归档 committed 51 / cancelled 1、Job succeeded 54 / failed 1；历史异常边界不变。
+download_failed 自动恢复仍 exhausted、累计次数 6，不自动重发 Telegram。
+没有确认可修复的新代码缺陷；本轮仅推送巡查/交接并同步源码快照，不切换服务。
+仓库卫生及差异检查通过；没有应用代码变更，未重复运行完整媒体回归。
+私有证据为时间戳进度、heartbeat-priority-range-latest.json、
+heartbeat-cover-binding-latest.json、heartbeat-resource-first-1443.json 及后续资源结果。
+全库尚未补齐，后台持续补齐与自动重试、每小时跟进继续。
