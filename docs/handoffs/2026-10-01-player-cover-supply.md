@@ -20,7 +20,7 @@ Player 校验并投影到已有 media_covers，再通过原有鉴权、版本化
 
 ## 验证
 
-scripts/check.sh --browser 完整通过：
+scripts/check.sh 完整门禁通过；消费侧初次实现另通过 --browser 验收：
 Python 1034 项、Node 215 项、TypeScript/Vite 构建，浏览器 999 项检查；
 视口 360、390、430、768、1440，以及 844×390。
 新增回归包含绑定/路径/预算/损坏索引、瞬时失败保留、图片优先删除、

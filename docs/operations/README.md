@@ -39,3 +39,5 @@
 
 本轮事实与清理记录写入有日期的operations文档，后续每次审计单独追加新记录。
 docs/refactor-v2的旧部署协议与版本只用于追溯，不表示当前runtime。
+
+封面生成/读取合同见 [COVER_SUPPLY](../development/COVER_SUPPLY.md)，本轮真实供给与持续补齐状态见 [2026-10-01 发布回执](2026-10-01-player-cover-supply-release.md)。
