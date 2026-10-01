@@ -57,3 +57,4 @@ docs/refactor-v2的旧部署协议与版本只用于追溯，不表示当前runt
 - [最后缺图 HEVC 来源巡查](2026-10-02-hevc-source-audit.md)：首包结构、有界诊断、当前有效副本失败和未完成范围。
 
 - [到期失败公平重试发布](2026-10-02-maintenance-retry-fairness-release.md)：最久未尝试优先、完整验证、副本维护切换及当前未完成范围。
+\n- [补齐与上传只读巡查](2026-10-02-maintenance-upload-audit.md)：当前覆盖、新失败归属、405 方法与索引证据及未完成范围。\n

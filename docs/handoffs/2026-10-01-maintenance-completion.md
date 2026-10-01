@@ -326,3 +326,25 @@ logout成功、catalog_sync_pending=false；只读每档bytes0-1，不等于完�
 副本done157/failed35/pending825，有效失败21任务/17唯一来源；
 编码与写入持续，新副本峰值390.71MB，无OOM，磁盘21.45GB。
 实际工作器ddedb1c/eaa83cd保持，文档后续只同步源码；全覆盖未完成、自动跟进继续。
+
+## 2026-10-02 05:56 北京时间上传只读巡查
+
+最新回执：[补齐与上传巡查](../operations/2026-10-02-maintenance-upload-audit.md)。
+21:56:29 UTC 当前有效原画908，封面907；480p161/870，720p150/729，
+比上一轮分别增加13/12；36当前收藏又一次全部鉴权JPEG/完整哈希/尺寸通过。
+当前有效副本失败22任务/19唯一来源；精确键匹配当前有效ValueError为0，
+全局18个ValueError与最近5次未分类不能解释为当前有效来源损坏。
+副本done172/failed40/pending805是检查点，不替代覆盖。
+
+新 completion-retry-fairness/dav-readonly-remote.py 已执行四来源受控只读审计：
+两个metadata405、两个upload405，四索引存在且绑定，OPTIONS200声明PUT，
+索引都是文件，三个有大小正确的本来源480p，一个没有；
+不等于完整副本哈希、失败目标证明或405修复。未做PUT/DELETE/覆写。
+继续公平重试与原累计次数/冷却，不盲目增加deadline或根据OPTIONS假定上传成功。
+
+最后HEVC缺图原绑定有效，无绑定副本、副本pending/attempt0，封面attempt7冷却；
+不重复四个已做的取帧/NAL诊断。正常副本完整源验证或现有安全恢复才推进，
+不伪造封面、不复活历史九个或新增两个已删除来源、不重发照片包/冻结Job。
+运行ddedb1c/eaa83cd与Bot/Player身份不变，OOM0，副本峰值496.46MB，
+实际编码/写入持续，磁盘21.38GB。只同步文档源码，不重建进程。
+下一轮先monitor和真实进展，必要时安全核查405，自动跟进继续至逐项全覆盖。
