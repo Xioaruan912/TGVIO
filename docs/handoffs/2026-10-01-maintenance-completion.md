@@ -87,3 +87,14 @@ completion-cover-memory 保留封面后续切换及隔离 4K 验证。不要按 
 后续继续读取 monitor，使用 completion-rendition-diagnostics/call-remote.py telemetry-remote.py
 核对精确 failure_code/http_status，定位写入/验证瓶颈；不盲目重建其他工作器。
 补齐和自动重试继续，最终完成仍需当前有效视频逐项及鉴权可读验收。
+
+## 2026-10-02 00:27 北京时间继续入口
+
+当前有效覆盖封面 752/910、480p 85/871、720p 78/729、收藏封面 36/36，仍未全覆盖。
+新日志确认至少三次 archive_upload_unverified；一次 archive_source_read 须区分失效来源，
+不得借此复活已删除内容。一次有效上传失败目录发现四个未登记 480p 对象，尚未验证完整内容。
+下一步优先受控验证/恢复真正已上传副本，并定位传输/确认失败，不只重复转码或 HEAD。
+恢复前须校验实际内容哈希、源绑定、质量/时长及原清单仍未变化；不以文件名/长度判完成。
+保持单工作器与现有预算，禁止旁路第二个媒体传输/解码进程。
+详细已知/未知范围见 [诊断回执后验](../operations/2026-10-02-rendition-diagnostics-release.md)。
+当前副本运行仍 7e3c35b、封面 a5fd3e0，源码文档提交不应触发其他重建。
