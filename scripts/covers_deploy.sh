@@ -26,7 +26,7 @@ if docker inspect tgvio-covers >/dev/null 2>&1; then
   printf 'cover worker already exists; inspect it before a separate update\n' >&2; exit 2
 fi
 docker run -d --name tgvio-covers --restart unless-stopped \
-  --cpus 0.75 --memory 256m --pids-limit 64 \
+  --cpus 0.75 --memory 768m --pids-limit 64 \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=32m \
   --env-file "$env_file" \

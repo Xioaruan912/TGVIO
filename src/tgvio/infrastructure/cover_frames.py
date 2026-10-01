@@ -28,7 +28,7 @@ async def extract(source: Path, work: Path) -> bytes | None:
                 "ffmpeg", "-nostdin", "-y", "-v", "fatal", "-threads", "1",
                 "-filter_threads", "1", "-xerror", "-err_detect", "explode",
                 "-ss", position, "-i", str(source), "-map", "0:v:0",
-                "-frames:v", "1", "-vf", "scale=640:640:force_original_aspect_ratio=decrease",
+                "-frames:v", "1", "-threads", "1", "-vf", "scale=640:640:force_original_aspect_ratio=decrease",
                 "-q:v", "5", "-fs", "1000000", str(output))
         except TimeoutError:
             continue
@@ -37,7 +37,7 @@ async def extract(source: Path, work: Path) -> bytes | None:
         try:
             code, gray = await command(
                 "ffmpeg", "-nostdin", "-v", "fatal", "-threads", "1", "-filter_threads", "1",
-                "-i", str(output), "-frames:v", "1", "-vf", "scale=32:32", "-pix_fmt", "gray",
+                "-i", str(output), "-frames:v", "1", "-threads", "1", "-vf", "scale=32:32", "-pix_fmt", "gray",
                 "-f", "rawvideo", "-")
         except TimeoutError:
             continue
