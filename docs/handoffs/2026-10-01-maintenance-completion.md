@@ -273,3 +273,42 @@ active-upload-phase-remote.py 保存四个有效上传失败索引观察：
 frozen-job-remote.py 当前确认 download_failed 仍 enabled/max3/count6/exhausted。
 九个 inactive/404 与同哈希照片取消包沿用既有单列证据，不复活或重播。
 只推送文档、同步源码快照并核验所有容器身份不变，自动跟进继续至逐项全覆盖。
+
+## 2026-10-02 05:07 北京时间失败公平调度发布
+
+[公平重试回执](../operations/2026-10-02-maintenance-retry-fairness-release.md)为最新实际发布。
+副本运行 ddedb1c1b111af63379c662de0d18da37f002133，封面保持 eaa83cd，
+Bot/Player 容器、镜像、版本、健康和零重启不变。
+发现旧失败选择按发现列表固定前缀，批次超过冷却后会重复前面的失败项，
+后续到期失败可能持续等待；当前22有效失败均attempt1、最久约6.8小时。
+两项隔离行为回归旧实现失败、新实现通过；改为到期失败按上次尝试从旧到新轮转，
+保留冷却、累计次数、三/十重试配额、新任务顺序与有界资源。
+38项针对性、完整Python1062/Node215/TS/Vite/架构治理通过（WSL3.13.5）。
+543源码文件/模式/完整集合和归档/候选镜像RootFS/Config/架构/revision核验；
+VPS image ID和本地不同但等价字段逐项确认，部署使用实际VPS ID。
+停原668fcd7、备份检查点、dry-run仍1017任务，每条原记录不变；
+Python3.11/UID65532/无网络隔离调度门禁和复制的1017条检查点核验通过。
+保留668fcd7停止回滚、镜像和独立SQLite备份；expected-workers仅更新副本。
+
+21:05:06 UTC 当前封面907/908、480p147/870、720p137/729，缺1/723/592。
+有效原画从910到908是新增两个已记录删除、inactive且远端HEAD404；
+一个需要480p、均不需要720p，不复活这两来源，原九个历史inactive/404仍单列。
+当前36收藏再次全部鉴权/尺寸/JPEG/完整哈希通过，匿名401，验收后退出。
+最后HEVC缺图原清单绑定有效，暂无绑定副本、副本状态pending/attempt0，
+封面自然失败到attempt7仍冷却，不重复四个既有取帧/包表诊断或扩大预算。
+
+私有 completion-retry-fairness 保存 clean/pushed 候选、543文件镜像验证、
+独立检查点/部署回执、隔离Python3.11门禁和真实调度后验：
+21:07 新进程完成scan并start原failed/attempt1、等待24873秒的最旧到期失败，
+准确匹配停机前检查点中的最旧待重试项；此时尚无complete，不能说恢复完成。
+call-remote.py retry-start-remote.py / telemetry-remote.py / memory-events-remote.py
+可只读复核新进程。update-remote.py / confirm-deployment.py已一次性执行，不重跑。
+schedule-audit-remote.py 做实际发现及临时检查点审计，需要时才运行，不重复全量元数据扫描。
+completion-cover-late/missing-bound-status-remote.py 可只读核对最后缺图的原画绑定、
+已绑定副本及副本检查点；recent-deleted-remote.py已确认两个新删除，不重播。
+
+后续先monitor、实时覆盖/真实恢复结果/405与TimeoutError阶段；不把running或done数当全覆盖。
+封面仍768MiB单线程、副本2GiB/1.5CPU/96PID，OOM为零，磁盘约21.56GB。
+download_failed Job仍enabled/max3/count6/exhausted，不重置/重发Telegram；
+同哈希照片取消包既有验证保留，不重复下载或重播。
+有新的实际恢复才核对绑定、完整内容与鉴权接口；暂未全覆盖，tgvio跟进继续。

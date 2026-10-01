@@ -55,3 +55,5 @@ docs/refactor-v2的旧部署协议与版本只用于追溯，不表示当前runt
 - [低对比与开头空白封面修复](2026-10-02-cover-lowcontrast-release.md)：有界真实诊断、两次封面切换及当前缺失项。
 
 - [最后缺图 HEVC 来源巡查](2026-10-02-hevc-source-audit.md)：首包结构、有界诊断、当前有效副本失败和未完成范围。
+
+- [到期失败公平重试发布](2026-10-02-maintenance-retry-fairness-release.md)：最久未尝试优先、完整验证、副本维护切换及当前未完成范围。
