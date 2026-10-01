@@ -32,6 +32,15 @@ class FailurePrivacyTests(unittest.TestCase):
         self.assertNotIn("http_status", maintenance_failure_fields(invalid))
 
 
+    def test_wrapped_upload_error_exposes_only_allowlisted_cause_type(self):
+        error = WebDavArchiveError("WebDAV archive PUT result was not verifiable")
+        error.__cause__ = TimeoutError("fixture-private password=secret")
+        self.assertEqual(maintenance_failure_fields(error)["cause_error"], "TimeoutError")
+        self.assertNotIn("fixture", json.dumps(maintenance_failure_fields(error)))
+        error.__cause__ = type("fixture_private", (RuntimeError,), {})("fixture-private")
+        self.assertNotIn("cause_error", maintenance_failure_fields(error))
+
+
 class WorkerFailureTests(unittest.IsolatedAsyncioTestCase):
     async def test_worker_reports_failure_phase_without_resetting_checkpoint(self):
         from tgvio.interfaces.backfill_renditions import work

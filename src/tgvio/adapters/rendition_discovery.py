@@ -20,24 +20,36 @@ class RenditionDiscovery:
     async def collections(self, path: str) -> tuple[str, ...]:
         return await retry_archive(lambda: asyncio.to_thread(self._collections, path))
 
+    async def files(self, path: str) -> tuple[tuple[str, int], ...]:
+        entries = await retry_archive(lambda: asyncio.to_thread(self._entries, path, True))
+        return tuple((name, size) for name, collection, size in entries
+                     if not collection and isinstance(size, int) and size > 0)
+
     def _collections(self, path: str) -> tuple[str, ...]:
+        return tuple(name for name, collection, _size in self._entries(path) if collection)
+
+    def _entries(self, path: str, allow_missing: bool = False) -> tuple[tuple[str, bool, int | None], ...]:
         conn = self.transport._connect()
         absolute = self.transport._absolute_path(path).rstrip("/") + "/"
         try:
             conn.request("PROPFIND", self.transport._quote_path(absolute),
-                         body=b'<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/></d:prop></d:propfind>',
+                         body=b'<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getcontentlength/></d:prop></d:propfind>',
                          headers={"Authorization": self.transport._authorization,
                                   "Depth": "1", "Content-Type": "application/xml"})
             response = conn.getresponse()
+            if response.status == 404 and allow_missing:
+                return ()
             if response.status not in (200, 207):
                 raise RuntimeError("archive discovery unavailable")
             payload = response.read(1024 * 1024 + 1)
             if len(payload) > 1024 * 1024:
                 raise ValueError("archive discovery exceeds metadata budget")
             root = ET.fromstring(payload)
-            names = set()
+            names = {}
             for row in root.findall("{DAV:}response"):
-                if row.find(".//{DAV:}collection") is None:
+                props = [p for p in row.findall("{DAV:}propstat")
+                         if re.search(r"\s200(?:\s|$)", p.findtext("{DAV:}status", ""))]
+                if not props:
                     continue
                 href = row.findtext("{DAV:}href") or ""
                 decoded = urllib.parse.unquote(urllib.parse.urlsplit(href).path).rstrip("/")
@@ -45,8 +57,17 @@ class RenditionDiscovery:
                     continue
                 name = decoded[len(absolute):]
                 if name and "/" not in name and not name.startswith("."):
-                    names.add(safe_path(name))
-            return tuple(sorted(names))
+                    collection = any(p.find(".//{DAV:}collection") is not None for p in props)
+                    length = next((p.findtext(".//{DAV:}getcontentlength") for p in props
+                                   if p.findtext(".//{DAV:}getcontentlength") is not None), None)
+                    try:
+                        size = int(length) if length is not None else None
+                    except ValueError:
+                        size = None
+                    names[safe_path(name)] = (collection, size)
+                    if len(names) > 10000:
+                        raise ValueError("archive collection entry budget exceeded")
+            return tuple((name, *names[name]) for name in sorted(names))
         finally:
             conn.close()
 

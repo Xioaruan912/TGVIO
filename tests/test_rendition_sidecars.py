@@ -62,6 +62,9 @@ class FakePort:
             return True
         return self.objects.get(path) == size
 
+    async def recover(self, task, heights, work, max_bytes):
+        return {}
+
     async def download(self, path, target, size, digest):
         self.calls.append(("download", path))
         target.write_bytes(b"fixture")

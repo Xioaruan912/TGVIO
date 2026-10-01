@@ -82,3 +82,29 @@ async def encode(source: Path, target: Path, height: int) -> dict:
                 "bitrate_bps": round(size * 8 / actual_duration)}
     finally:
         temporary.unlink(missing_ok=True)
+
+
+async def verify_recovered(path: Path, parent: str, height: int, duration: float,
+                           digest: str) -> dict:
+    """Validate only our source-bound H.264 output, including a complete decode."""
+    info = await probe(path)
+    video = [s for s in info.get("streams", []) if s.get("codec_type") == "video"
+             and not s.get("disposition", {}).get("attached_pic")]
+    actual = float(info.get("format", {}).get("duration", 0))
+    fmt = info.get("format", {})
+    if (len(video) != 1 or video[0].get("codec_name") != "h264"
+            or video[0].get("height") != height
+            or type(video[0].get("width")) is not int or video[0]["width"] <= 0
+            or not math.isfinite(actual) or actual <= 0
+            or abs(actual - duration) > max(1, duration * .01)
+            or "mp4" not in fmt.get("format_name", "").split(",")
+            or fmt.get("tags", {}).get("comment") != f"tgvio.source_sha256:{parent}"):
+        raise ValueError("recovery media binding invalid")
+    await run_process(
+        "ffmpeg", "-nostdin", "-v", "error", "-xerror", "-err_detect", "explode",
+        "-threads", "2", "-i", str(path), "-map", "0:v:0", "-map", "0:a:0?",
+        "-sn", "-dn", "-f", "null", "-", timeout=60)
+    size = path.stat().st_size
+    return {"sha256": digest, "size_bytes": size, "height": height,
+            "width": video[0]["width"], "duration_seconds": actual,
+            "bitrate_bps": round(size * 8 / actual)}

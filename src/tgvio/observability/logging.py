@@ -3,6 +3,8 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import json
 import logging
+import http.client
+import ssl
 from logging.handlers import RotatingFileHandler
 from pathlib import Path
 import re
@@ -186,6 +188,11 @@ def maintenance_failure_fields(error: Exception) -> dict[str, Any]:
     }
     fields: dict[str, Any] = {"error": type(error).__name__,
                              "failure_code": codes.get(str(error), "unclassified")}
+    cause = error.__cause__
+    if type(cause) in (TimeoutError, ConnectionResetError, ConnectionAbortedError,
+                       BrokenPipeError, ConnectionRefusedError, ssl.SSLError,
+                       http.client.RemoteDisconnected, http.client.IncompleteRead):
+        fields["cause_error"] = type(cause).__name__
     status = getattr(error, "status", None)
     if type(status) is int and 100 <= status <= 599:
         fields["http_status"] = status

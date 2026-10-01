@@ -71,7 +71,8 @@ async def work(args) -> None:
                     with tempfile.TemporaryDirectory(prefix="encode-", dir=root) as directory:
                         written = await runner.run(task, Path(directory))
                     state.finish(task, written)
-                    report("complete", task=task.key[:12], written=written, **state.summary())
+                    report("complete", task=task.key[:12], written=written,
+                           recovered=getattr(runner, "last_recovered", 0), **state.summary())
                 except asyncio.CancelledError:
                     raise
                 except Exception as error:
