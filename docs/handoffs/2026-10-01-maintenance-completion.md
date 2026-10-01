@@ -98,3 +98,41 @@ completion-cover-memory 保留封面后续切换及隔离 4K 验证。不要按 
 保持单工作器与现有预算，禁止旁路第二个媒体传输/解码进程。
 详细已知/未知范围见 [诊断回执后验](../operations/2026-10-02-rendition-diagnostics-release.md)。
 当前副本运行仍 7e3c35b、封面 a5fd3e0，源码文档提交不应触发其他重建。
+
+## 2026-10-02 01:14 北京时间副本恢复切换
+
+最新 [未登记副本恢复回执](../operations/2026-10-02-rendition-recovery-release.md)：
+668fcd7 已推送并实际部署副本维护；封面仍 a5fd3e0，Bot/Player 不变。
+完整门禁 Python 1055、Node 215、TS/Vite 等通过。新逻辑在单工作器内有界验证并恢复未登记的副本，
+不凭文件名/长度登记，校验完整内容哈希、原画完整摘要注释、高度/时长及完整解码。
+恢复与预留原画下载合计不超过既有 4GiB，上限 128MiB 恢复、每候选 64MiB，每高度最多两个；
+持续冷却、累计失败、原件与清单边界保持。
+
+受控只读验收一份有效来源的 16023038-byte 480p 未登记对象，全部媒体校验通过，原索引未改变。
+不能将此验收计为索引已登记或全覆盖；随后由正常工作器自动恢复，不清零或催促失败预算。
+部署预演保持所有原 checkpoint 行，保留独立 SQLite 备份与 7e3c35b 回滚。
+第一次发布检查误读统计字段已自动退回旧进程；修正检查后重新预演再完成切换。
+
+17:14 UTC 覆盖封面 800/910、480p 88/871、720p 83/729，收藏封面 36/36；
+此轮 36 条收藏再次逐张鉴权读取/JPEG/完整 SHA256 验收。无 OOM，仍未全库完成。
+后续先运行 completion-release/monitor.py（expected-workers 已只更新副本为 668fcd7）。
+私有 completion-rendition-recovery 保存候选、逐项镜像/源码验证、部署、检查点、已验证孤立对象及验收辅助脚本：
+call-remote.py telemetry-remote.py / memory-events-remote.py / recovery-acceptance-remote.py /
+recovery-player-range-remote.py。验收 helper 只输出匿名统计，不输出原 ID、Archive 路径或图像。
+recovery-acceptance 检查所验来源当前索引、远端对象和累计冷却；Player Range 验收需先等正常 catalog 同步。
+不得在正常工作器运行时追加并行媒体下载/解码；不要重复 cold 验证同一文件消耗预算。
+后续按 recovered 完成事件、实际索引及 Player 鉴权 Range 核对自动恢复；继续定位 cause_error 指示的上传瓶颈。
+原副本诊断 completion-rendition-diagnostics 的 updater 针对旧版本，不能盲目重跑。
+当前工作器版本与 Git 文档 HEAD 可以不同；下一次仅因实证缺陷且完整门禁后切换对应工作器。
+九个 inactive/404 来源、已找到同摘要照片的旧取消包和 download_failed Job 保持各自边界；
+不能借封面/副本补齐重发 Telegram或复活删除内容。全覆盖须当前有效数据逐项及鉴权可读证据。
+
+## 01:21 北京时间恢复验收更新
+
+上述 480p 对象已由正常工作器实际恢复登记，原画绑定保持，未手改 checkpoint。
+Player 按该索引完整摘要、包和对象匹配，鉴权精确 Range 206 / Content-Range / 两字节读取通过，匿名请求 401。
+本轮恢复的另一高度尚在处理，完整任务未结束；不要以恢复一档推断两档齐全。
+17:21:55 UTC 有效覆盖封面 817/910、480p 88/871、720p 83/729、收藏封面 36/36。
+重复来源的恢复不能直接累加为去重视频覆盖，后续继续 monitor 与实际读取核对。
+副本此时工作文件约 327.5MB，近期写入后在网络/确认阶段，无解码进程、无新失败分类；
+后续检查 cause_error 和原任务进展，不盲目扩大 timeout 或宣称上传故障已根治。
