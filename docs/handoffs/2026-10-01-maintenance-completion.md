@@ -40,3 +40,9 @@ Bot 归档包 committed 51、cancelled 1，没有 pending/failed 归档包。
 每小时当前线程跟进 ID 为 tgvio，继续检查真实完成条件，尚未全库补齐。
 本机私有 completion-release/monitor.py 通过 expected-workers.json 检查当前两个不同版本；
 completion-cover-memory 保留封面后续切换及隔离 4K 验证。不要按 Git HEAD 强行重建 Bot/Player。
+
+## 20:42 北京时间跟进
+
+当前封面 483/910，480p 71/871，720p 67/729，收藏封面仍 36/36。
+只读失败来源抽查与历史下载恢复状态见 [持续巡查](../operations/2026-10-01-maintenance-progress.md)。
+两个工作器无重启/OOM，继续自动重试；此轮没有应用发布。

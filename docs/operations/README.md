@@ -43,3 +43,5 @@ docs/refactor-v2的旧部署协议与版本只用于追溯，不表示当前runt
 封面生成/读取合同见 [COVER_SUPPLY](../development/COVER_SUPPLY.md)，本轮真实供给与持续补齐状态见 [2026-10-01 发布回执](2026-10-01-player-cover-supply-release.md)。
 
 归档媒体持续重试与补齐的运行证据见 [2026-10-01 维护发布回执](2026-10-01-maintenance-completion-release.md)。
+
+持续数量与失败核查见 [2026-10-01 补齐巡查](2026-10-01-maintenance-progress.md)。
