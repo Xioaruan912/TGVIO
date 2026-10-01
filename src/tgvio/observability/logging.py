@@ -165,3 +165,28 @@ def log_event(
         extra={"event": event, **safe_fields},
         exc_info=exc_info,
     )
+
+
+def maintenance_failure_fields(error: Exception) -> dict[str, Any]:
+    """Use exact public transport messages as codes; never emit exception text."""
+    codes = {
+        "WebDAV collection creation failed": "archive_collection",
+        "WebDAV metadata lookup failed": "archive_stat",
+        "WebDAV archive PUT result was not verifiable": "archive_upload_unverified",
+        "WebDAV archive PUT failed": "archive_upload_status",
+        "WebDAV archive PUT failed size verification": "archive_upload_size",
+        "WebDAV metadata PUT failed": "archive_metadata_put",
+        "WebDAV metadata PUT failed size verification": "archive_metadata_size",
+        "WebDAV metadata PUT failed content verification": "archive_metadata_content",
+        "WebDAV metadata object exceeds read limit": "archive_metadata_budget",
+        "archive metadata unavailable": "archive_metadata_read",
+        "archive source unavailable": "archive_source_read",
+        "archive source integrity mismatch": "archive_source_integrity",
+        "media command failed": "media_command",
+    }
+    fields: dict[str, Any] = {"error": type(error).__name__,
+                             "failure_code": codes.get(str(error), "unclassified")}
+    status = getattr(error, "status", None)
+    if type(status) is int and 100 <= status <= 599:
+        fields["http_status"] = status
+    return fields

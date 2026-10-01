@@ -15,6 +15,7 @@ from tgvio.adapters.rendition_archive import RenditionArchivePort
 from tgvio.adapters.rendition_discovery import RenditionDiscovery
 from tgvio.application.rendition_backfill import RenditionBackfill
 from tgvio.infrastructure.rendition_state import RenditionState
+from tgvio.observability.logging import maintenance_failure_fields
 
 
 def report(event: str, **fields) -> None:
@@ -45,7 +46,7 @@ async def work(args) -> None:
             try:
                 tasks = await discovery.tasks()
             except Exception as error:
-                report("scan_failed", error=type(error).__name__, **state.summary())
+                report("scan_failed", **maintenance_failure_fields(error), **state.summary())
                 if not args.watch:
                     raise
                 await asyncio.sleep(30)
@@ -75,7 +76,7 @@ async def work(args) -> None:
                     raise
                 except Exception as error:
                     state.fail(task, error)
-                    report("failed", task=task.key[:12], error=type(error).__name__, **state.summary())
+                    report("failed", task=task.key[:12], **maintenance_failure_fields(error), **state.summary())
                 processed += 1
                 if batch and processed >= batch:
                     break
