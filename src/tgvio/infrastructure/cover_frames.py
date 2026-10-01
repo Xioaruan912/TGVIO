@@ -23,18 +23,24 @@ async def extract(source: Path, work: Path) -> bytes | None:
     output = work / "frame.jpg"
     for position in ("1", "0.1", "3", "0"):
         output.unlink(missing_ok=True)
-        code, _ = await command(
-            "ffmpeg", "-nostdin", "-y", "-v", "fatal", "-threads", "1",
-            "-filter_threads", "1", "-xerror", "-err_detect", "explode",
-            "-ss", position, "-i", str(source), "-map", "0:v:0",
-            "-frames:v", "1", "-vf", "scale=640:640:force_original_aspect_ratio=decrease",
-            "-q:v", "5", "-fs", "1000000", str(output))
+        try:
+            code, _ = await command(
+                "ffmpeg", "-nostdin", "-y", "-v", "fatal", "-threads", "1",
+                "-filter_threads", "1", "-xerror", "-err_detect", "explode",
+                "-ss", position, "-i", str(source), "-map", "0:v:0",
+                "-frames:v", "1", "-vf", "scale=640:640:force_original_aspect_ratio=decrease",
+                "-q:v", "5", "-fs", "1000000", str(output))
+        except TimeoutError:
+            continue
         if code or not output.is_file() or not 0 < output.stat().st_size <= 1_000_000:
             continue
-        code, gray = await command(
-            "ffmpeg", "-nostdin", "-v", "fatal", "-threads", "1", "-filter_threads", "1",
-            "-i", str(output), "-frames:v", "1", "-vf", "scale=32:32", "-pix_fmt", "gray",
-            "-f", "rawvideo", "-")
+        try:
+            code, gray = await command(
+                "ffmpeg", "-nostdin", "-v", "fatal", "-threads", "1", "-filter_threads", "1",
+                "-i", str(output), "-frames:v", "1", "-vf", "scale=32:32", "-pix_fmt", "gray",
+                "-f", "rawvideo", "-")
+        except TimeoutError:
+            continue
         if code or len(gray) != 1024:
             continue
         if sum(v < 24 for v in gray) >= 974 or sum(v > 231 for v in gray) >= 974:

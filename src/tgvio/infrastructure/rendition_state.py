@@ -9,8 +9,10 @@ from tgvio.domain.renditions import RenditionTask
 
 
 class MaintenanceState:
-    def __init__(self, path: Path, *, written_label: str = "renditions_written") -> None:
+    def __init__(self, path: Path, *, written_label: str = "renditions_written",
+                 persistent_retry: bool = False) -> None:
         self.written_label = written_label
+        self.persistent_retry = persistent_retry
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path)
         self.conn.execute("""CREATE TABLE IF NOT EXISTS tasks(
@@ -31,7 +33,25 @@ class MaintenanceState:
         if status == "done":
             # Periodically verify remote objects again rather than trusting a local flag forever.
             return now - updated >= 86400
-        return attempts < 5 and (attempts == 0 or now - updated >= 600)
+        if attempts >= 5 and not self.persistent_retry:
+            return False
+        delay = 600 if attempts < 5 else min(21600, 3600 * 2**min(attempts-5, 3))
+        return attempts == 0 or now - updated >= delay
+
+    def ready_batch(self, tasks: list[RenditionTask], *, limit: int = 0,
+                    now: float | None = None) -> list[RenditionTask]:
+        """Due retries get reserved slots; fresh work cannot be starved."""
+        now = time.time() if now is None else now
+        ready = [t for t in tasks if self.eligible(t, now)]
+        statuses = dict(self.conn.execute("SELECT key,status FROM tasks"))
+        retries = [t for t in ready if statuses[t.key] == "failed"]
+        fresh = [t for t in ready if statuses[t.key] != "failed"]
+        if not limit:
+            return retries + fresh
+        quota = max(1, limit//3)
+        selected = retries[:quota] + fresh[:limit-min(quota, len(retries))]
+        keys = {t.key for t in selected}
+        return selected + [t for t in ready if t.key not in keys][:limit-len(selected)]
 
     def finish(self, task: RenditionTask, written: int) -> None:
         self.conn.execute("UPDATE tasks SET status='done',attempts=0,updated=?,error=NULL,"
@@ -47,7 +67,11 @@ class MaintenanceState:
         return {"tasks": self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0],
                 "done": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='done'").fetchone()[0],
                 "failed": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='failed'").fetchone()[0],
-                "blocked": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE attempts>=5").fetchone()[0],
+                "blocked": 0 if self.persistent_retry else self.conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE attempts>=5").fetchone()[0],
+                "slow_retry": self.conn.execute(
+                    "SELECT COUNT(*) FROM tasks WHERE status='failed' AND attempts>=5").fetchone()[0]
+                    if self.persistent_retry else 0,
                 self.written_label: self.conn.execute("SELECT COALESCE(SUM(written),0) FROM tasks").fetchone()[0]}
 
 

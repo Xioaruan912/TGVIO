@@ -3,7 +3,6 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
-import http.client
 from pathlib import Path
 import threading
 import time
@@ -12,28 +11,14 @@ from tgvio.adapters.rendition_archive import RenditionArchivePort
 from tgvio.adapters.rendition_discovery import RenditionDiscovery
 from tgvio.domain.renditions import safe_path
 from tgvio.infrastructure.cover_frames import sample
+from tgvio.infrastructure.archive_retry import retry_archive
 
 
-async def retry_archive(operation):
-    """Three attempts for transient I/O only; cancellation and invalid data escape."""
-    for attempt in range(3):
-        try:
-            return await operation()
-        except (OSError, http.client.HTTPException, RuntimeError):
-            if attempt == 2:
-                raise
-            await asyncio.sleep(attempt + 1)
-
-
-class CoverDiscovery(RenditionDiscovery):
-    async def collections(self, path: str) -> tuple[str, ...]:
-        return await retry_archive(lambda: super(CoverDiscovery, self).collections(path))
+# Compatibility name; discovery has one shared retry implementation.
+CoverDiscovery = RenditionDiscovery
 
 
 class CoverArchivePort(RenditionArchivePort):
-    async def read_json(self, path: str):
-        return await retry_archive(lambda: super(CoverArchivePort, self).read_json(path))
-
     async def read_range(self, path: str, start: int, end: int, size: int) -> bytes:
         return await retry_archive(lambda: self._read_range(path, start, end, size))
 

@@ -9,6 +9,7 @@ import xml.etree.ElementTree as ET
 
 from tgvio.application.rendition_backfill import canonical
 from tgvio.domain.renditions import RenditionTask, safe_path
+from tgvio.infrastructure.archive_retry import retry_archive
 
 
 class RenditionDiscovery:
@@ -17,7 +18,7 @@ class RenditionDiscovery:
         self.root = safe_path(remote_root)
 
     async def collections(self, path: str) -> tuple[str, ...]:
-        return await asyncio.to_thread(self._collections, path)
+        return await retry_archive(lambda: asyncio.to_thread(self._collections, path))
 
     def _collections(self, path: str) -> tuple[str, ...]:
         conn = self.transport._connect()

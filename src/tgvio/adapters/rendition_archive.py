@@ -11,12 +11,15 @@ import time
 from tgvio.adapters.webdav_archive import WebDavArchiveTransport
 from tgvio.application.rendition_backfill import canonical
 from tgvio.infrastructure.rendition_encoder import encode
+from tgvio.infrastructure.archive_retry import retry_archive
 
 
 class RenditionArchivePort(WebDavArchiveTransport):
     async def read_json(self, path: str):
-        data = await asyncio.to_thread(self._metadata, path)
-        return json.loads(data) if data is not None else None
+        async def read():
+            data = await asyncio.to_thread(self._metadata, path)
+            return json.loads(data) if data is not None else None
+        return await retry_archive(read)
 
     def _metadata(self, path: str) -> bytes | None:
         conn = self._connect()

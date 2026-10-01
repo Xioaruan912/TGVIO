@@ -37,8 +37,11 @@ env 必须 root 600，仅包含 TGVIO_ARCHIVE_WEBDAV_URL / USER / PASSWORD 和 R
     docker exec tgvio-renditions python -m tgvio.interfaces.backfill_renditions --status
     docker logs --tail 20 tgvio-renditions
 
-失败冷却 600 秒，最多 5 次；失败不会标完成。先停止 worker，再用同一镜像、
-同一维护目录 --retry-failed --watch 可显式重试已核实的失败。
+持续 worker 保留累计失败次数：前五次间隔至少 600 秒，之后按 1 / 2 / 4 / 6 小时
+退避，最多六小时冷却后继续自动重试，不因次数耗尽而永久停下。失败不会标完成。
+每批为到期失败项保留约三分之一名额，其余处理新任务；单次网络 I/O 最多三次。
+发现扫描失败时三十秒后重扫；损坏或缺失原文件仍按失败保留，不能伪造副本。
+--retry-failed 仅用于停止 worker 后、已核实失败的人工恢复，常规续跑不清零累计次数。
 --dry-run 只计划，不下载、不转码、不写 Archive；会登记维护任务。
 --limit 限制本轮处理数；--watch 默认每处理 10 条重新扫描，持续发现新归档并检查重试。不要与另一个 writer 同时执行。
 停止 worker 不影响 Bot/Player，已验证并登记的副本仍可使用。

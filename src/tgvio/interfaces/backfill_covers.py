@@ -40,7 +40,7 @@ def priority_order(path: str | None) -> dict[str, int]:
 async def work(args) -> None:
     root = Path(args.work_dir)
     root.mkdir(parents=True, exist_ok=True)
-    state = MaintenanceState(root / "progress.sqlite3", written_label="covers_written")
+    state = MaintenanceState(root / "progress.sqlite3", written_label="covers_written", persistent_retry=True)
     lock = None
     try:
         if args.status:
@@ -58,28 +58,36 @@ async def work(args) -> None:
             response_timeout=30, verify_attempts=6, verify_interval_seconds=2)
         discovery = CoverDiscovery(port, os.environ.get("TGVIO_ARCHIVE_REMOTE_ROOT", "TGVIO"))
         runner = CommittedCoverBackfill(port)
+        tasks = []
+        scan_at = -600.0
+        loop = asyncio.get_running_loop()
         while True:
-            try:
-                tasks = await discovery.tasks()
-            except Exception as error:
-                report("scan_failed", error=type(error).__name__, **state.summary())
-                if not args.watch:
-                    raise
-                await asyncio.sleep(30)
-                continue
-            tasks.sort(key=lambda t: (priority.get(t.media["sha256"], 1001),
-                                      int(t.media.get("size_bytes") or 0), t.key))
-            state.discover(tasks)
-            report("scan", **state.summary())
+            if not tasks or loop.time() - scan_at >= 600:
+                try:
+                    discovered = await discovery.tasks()
+                    discovered.sort(key=lambda t: (priority.get(t.media["sha256"], 1001),
+                                                   int(t.media.get("size_bytes") or 0), t.key))
+                    tasks = discovered
+                    state.discover(tasks)
+                    scan_at = loop.time()
+                    report("scan", **state.summary())
+                except Exception as error:
+                    report("scan_failed", error=type(error).__name__, **state.summary())
+                    if not args.watch:
+                        raise
+                    if not tasks:
+                        await asyncio.sleep(30)
+                        continue
+                    # Known task bindings are revalidated by the runner before writes.
+                    scan_at = loop.time() - 570
             if args.dry_run:
                 report("plan", eligible=sum(state.eligible(t) for t in tasks),
                        source_bytes=sum(int(t.media["size_bytes"]) for t in tasks),
                        max_sample_bytes=12*1024**2, download_rate_bytes=512*1024)
                 return
             processed = 0
-            for task in tasks:
-                if not state.eligible(task):
-                    continue
+            batch = state.ready_batch(tasks, limit=args.limit or (10 if args.watch else 0))
+            for task in batch:
                 if shutil.disk_usage(root).free < 64*1024**2:
                     report("disk_budget_wait", **state.summary())
                     break
@@ -100,7 +108,7 @@ async def work(args) -> None:
             if not args.watch:
                 report("finished", **state.summary())
                 return
-            await asyncio.sleep(600)
+            await asyncio.sleep(10 if batch else 60)
     finally:
         state.conn.close()
         if lock is not None:

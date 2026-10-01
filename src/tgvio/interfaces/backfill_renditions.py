@@ -24,7 +24,7 @@ def report(event: str, **fields) -> None:
 async def work(args) -> None:
     root = Path(args.work_dir)
     root.mkdir(parents=True, exist_ok=True)
-    state = RenditionState(root / "progress.sqlite3")
+    state = RenditionState(root / "progress.sqlite3", persistent_retry=True)
     lock = None
     try:
         if args.status:
@@ -42,7 +42,14 @@ async def work(args) -> None:
         discovery = RenditionDiscovery(port, os.environ.get("TGVIO_ARCHIVE_REMOTE_ROOT", "TGVIO"))
         runner = RenditionBackfill(port)
         while True:
-            tasks = await discovery.tasks()
+            try:
+                tasks = await discovery.tasks()
+            except Exception as error:
+                report("scan_failed", error=type(error).__name__, **state.summary())
+                if not args.watch:
+                    raise
+                await asyncio.sleep(30)
+                continue
             state.discover(tasks)
             report("scan", **state.summary())
             if args.dry_run:
@@ -53,9 +60,7 @@ async def work(args) -> None:
                 return
             processed = 0
             batch = args.limit or (10 if args.watch else 0)
-            for task in tasks:
-                if not state.eligible(task):
-                    continue
+            for task in state.ready_batch(tasks, limit=batch):
                 try:
                     size = int(task.media["size_bytes"])
                     if shutil.disk_usage(root).free < size * 2 + 2 * 1024**3:
