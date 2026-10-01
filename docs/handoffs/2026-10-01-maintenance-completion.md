@@ -241,3 +241,35 @@ completion-cover-lowcontrast 的后备位置只读诊断已证明一来源第 10
 九个 inactive/404 来源不复活；同哈希照片的旧取消包不重播；
 download_failed 原冻结 max3/count6/exhausted 保留、不重发 Telegram。
 当前不结束 tgvio 自动化，直到当前可用视频逐项满足封面/应有副本及鉴权可读证据。
+
+## 2026-10-02 04:01 北京时间最后缺图来源诊断
+
+[HEVC 来源巡查](../operations/2026-10-02-hevc-source-audit.md)记录本轮只读证据。
+运行封面 eaa83cd、副本 668fcd7，Bot/Player 身份不变，无应用代码发布。
+20:01:09 UTC 封面 909/910、480p 129/871、720p 120/729，
+仍缺 1、742、609；36 收藏封面再次全部鉴权/JPEG/尺寸/完整哈希通过。
+封面原失败来源自然冷却后正常确认，检查点 done 942/failed 75，不替代覆盖。
+
+最后来源 HEVC/hev1、约460.27MB、1072×1920/957.85s、无已绑定副本。
+12MiB 严格取帧全部 NAL 错误，没有进入亮度校验；包表确认首关键包位于已填充头部，
+hvcC 声明四字节长度而所读首包不符合该结构，降低探测也无效。
+四次有界只读诊断累计18.5MiB，单次不超过12MiB；
+所有原清单/索引/检查点行不变，同一封面容器恢复，OOM为零。
+这些证据不等于完整原画哈希或整文件损坏；不得伪造封面、降低严格校验来宣称成功。
+下一轮不重复同一组诊断或盲目加位置，优先正常副本完整源哈希/解码、
+安全来源恢复或经过完整验证的绑定副本；没有实证代码缺陷不发布新版本。
+
+私有 completion-cover-late 的 last-diagnostic-remote、last-packet-remote、
+last-probe-remote、last-nal-remote 保存匿名结论；均已执行，不照旧重跑。
+missing-cover-state-remote.py 才用于实时缺图状态。
+原 immutable bounded-repair-refs 不变，不再重跑六来源补齐批次。
+
+当前有效副本 ValueError 失败精确任务键匹配0，近期尾日志未分类不能当现存失败。
+completion-rendition-recovery/valueerror-metadata-remote.py 保存匹配方法与本轮结论；
+active-upload-phase-remote.py 保存四个有效上传失败索引观察：
+均绑定有效，两个已有远端大小正确的480p，两个暂无；这不是完整副本读取验收。
+仍有405/TimeoutError按原预算冷却和恢复，normal written=2/recovered=1持续。
+磁盘约21.69GB，副本峰值685.35MB，无OOM。
+frozen-job-remote.py 当前确认 download_failed 仍 enabled/max3/count6/exhausted。
+九个 inactive/404 与同哈希照片取消包沿用既有单列证据，不复活或重播。
+只推送文档、同步源码快照并核验所有容器身份不变，自动跟进继续至逐项全覆盖。
