@@ -40,18 +40,22 @@ class MaintenanceState:
 
     def ready_batch(self, tasks: list[RenditionTask], *, limit: int = 0,
                     now: float | None = None) -> list[RenditionTask]:
-        """Due retries get reserved slots; fresh work cannot be starved."""
+        """Oldest due retries get reserved slots; fresh work keeps its order."""
         now = time.time() if now is None else now
         ready = [t for t in tasks if self.eligible(t, now)]
-        statuses = dict(self.conn.execute("SELECT key,status FROM tasks"))
-        retries = [t for t in ready if statuses[t.key] == "failed"]
-        fresh = [t for t in ready if statuses[t.key] != "failed"]
+        checkpoints = {key: (status, updated) for key, status, updated in
+                       self.conn.execute("SELECT key,status,updated FROM tasks")}
+        # A long encode batch can outlast cooldowns. Input order alone would
+        # repeatedly select the same failed prefix and starve later failures.
+        retries = sorted((t for t in ready if checkpoints[t.key][0] == "failed"),
+                         key=lambda t: checkpoints[t.key][1])
+        fresh = [t for t in ready if checkpoints[t.key][0] != "failed"]
         if not limit:
             return retries + fresh
         quota = max(1, limit//3)
         selected = retries[:quota] + fresh[:limit-min(quota, len(retries))]
         keys = {t.key for t in selected}
-        return selected + [t for t in ready if t.key not in keys][:limit-len(selected)]
+        return selected + [t for t in retries + fresh if t.key not in keys][:limit-len(selected)]
 
     def finish(self, task: RenditionTask, written: int) -> None:
         self.conn.execute("UPDATE tasks SET status='done',attempts=0,updated=?,error=NULL,"
