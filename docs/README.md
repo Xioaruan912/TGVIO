@@ -16,3 +16,6 @@
 规范与执行日志分开维护。docs/refactor-v2、docs/superpowers、docs/product 为历史设计或证据，不决定当前线上版本，也不能授权部署。
 
 当前缓存提示与播放排查见 [交接记录](handoffs/2026-10-01-player-cache-size.md)，证据见 [播放排查](operations/2026-10-01-player-playback.md)。
+
+当前运行版本见 [Player VPS 发布](operations/2026-10-01-player-deployment.md)；
+归档多清晰度与旧代码差异见 [核查交接](handoffs/2026-10-01-archive-quality-audit.md)。
