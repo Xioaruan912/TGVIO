@@ -38,7 +38,8 @@ JPEG sha256、size_bytes、mime_type 和 cover/backfill/<sha256>.jpg。
 只有覆盖整个小文件的请求才接受 200，拒绝远端忽略 Range 的大响应。
 单 worker，0.5MiB/s，单 FFmpeg 解码线程；采样 180 秒总期限、单命令 12 秒，
 取消杀死子进程、终止传输并清理临时目录。只保留自己的有界 checkpoint/日志。
-失败最多五次、十分钟冷却；已完成项一天后复核，持续扫描新归档。
+单次元数据与 Range I/O 对临时网络错误最多重试三次；错误范围、损坏 JSON 不重试。
+持续模式扫描失败保留检查点，三十秒后重扫，不退出进程。单项失败最多五次、十分钟冷却；已完成项一天后复核，持续扫描新归档。
 源超过 4GiB、损坏、被删除、全黑帧或超出取样预算可能无法生成，不宣称全覆盖。
 
 部署复用 Dockerfile.renditions 的维护环境，覆盖 entrypoint 为 backfill_covers；

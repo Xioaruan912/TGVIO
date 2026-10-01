@@ -11,8 +11,7 @@ import shutil
 import signal
 import tempfile
 
-from tgvio.adapters.cover_archive import CoverArchivePort
-from tgvio.adapters.rendition_discovery import RenditionDiscovery
+from tgvio.adapters.cover_archive import CoverArchivePort, CoverDiscovery
 from tgvio.application.cover_backfill_runner import CommittedCoverBackfill
 from tgvio.infrastructure.rendition_state import MaintenanceState
 
@@ -57,10 +56,17 @@ async def work(args) -> None:
             os.environ["TGVIO_ARCHIVE_WEBDAV_URL"], os.environ["TGVIO_ARCHIVE_WEBDAV_USER"],
             os.environ["TGVIO_ARCHIVE_WEBDAV_PASSWORD"], timeout=15,
             response_timeout=30, verify_attempts=6, verify_interval_seconds=2)
-        discovery = RenditionDiscovery(port, os.environ.get("TGVIO_ARCHIVE_REMOTE_ROOT", "TGVIO"))
+        discovery = CoverDiscovery(port, os.environ.get("TGVIO_ARCHIVE_REMOTE_ROOT", "TGVIO"))
         runner = CommittedCoverBackfill(port)
         while True:
-            tasks = await discovery.tasks()
+            try:
+                tasks = await discovery.tasks()
+            except Exception as error:
+                report("scan_failed", error=type(error).__name__, **state.summary())
+                if not args.watch:
+                    raise
+                await asyncio.sleep(30)
+                continue
             tasks.sort(key=lambda t: (priority.get(t.media["sha256"], 1001),
                                       int(t.media.get("size_bytes") or 0), t.key))
             state.discover(tasks)

@@ -183,3 +183,50 @@ class CoverRangeTests(unittest.IsolatedAsyncioTestCase):
              patch.object(port, "get_bytes", new=AsyncMock(return_value=b"corrupt")):
             with self.assertRaisesRegex(ValueError, "hash verification"):
                 await port.write_cover(path, image)
+
+    async def test_transient_metadata_retries_bounded_and_invalid_json_does_not(self):
+        from unittest.mock import AsyncMock
+        port = CoverArchivePort("https://fixture.invalid", "fixture", "fixture")
+        with patch.object(port, "_metadata", side_effect=[TimeoutError(), b'{"ok":true}']) as read, \
+             patch("tgvio.adapters.cover_archive.asyncio.sleep", new=AsyncMock()):
+            self.assertEqual(await port.read_json("fixture/index.json"), {"ok": True})
+            self.assertEqual(read.call_count, 2)
+        with patch.object(port, "_metadata", side_effect=TimeoutError()) as read, \
+             patch("tgvio.adapters.cover_archive.asyncio.sleep", new=AsyncMock()):
+            with self.assertRaises(TimeoutError): await port.read_json("fixture/index.json")
+            self.assertEqual(read.call_count, 3)
+        with patch.object(port, "_metadata", return_value=b"malformed") as read:
+            with self.assertRaises(ValueError): await port.read_json("fixture/index.json")
+            self.assertEqual(read.call_count, 1)
+
+    async def test_range_recovers_transient_io_but_never_retries_wrong_range(self):
+        from unittest.mock import AsyncMock
+        port = CoverArchivePort("https://fixture.invalid", "fixture", "fixture")
+        with patch.object(port, "_read_range", side_effect=[TimeoutError(), b"data"]) as read, \
+             patch("tgvio.adapters.cover_archive.asyncio.sleep", new=AsyncMock()):
+            self.assertEqual(await port.read_range("fixture/video.mp4", 2, 5, 100), b"data")
+            self.assertEqual(read.call_count, 2)
+        with patch.object(port, "_read_range", side_effect=ValueError("wrong range")) as read:
+            with self.assertRaises(ValueError): await port.read_range("fixture/video.mp4", 2, 5, 100)
+            self.assertEqual(read.call_count, 1)
+
+    async def test_watch_recovers_failed_scan_without_exiting_or_losing_checkpoint(self):
+        from unittest.mock import AsyncMock, Mock
+        from types import SimpleNamespace
+        from tgvio.interfaces.backfill_covers import work
+        with tempfile.TemporaryDirectory() as tmp:
+            args=SimpleNamespace(work_dir=tmp, status=False, retry_failed=False,
+                                 priority_file=None, watch=True, dry_run=True, limit=0)
+            discovery=Mock(tasks=AsyncMock(side_effect=[TimeoutError(), []]))
+            with patch.dict("os.environ", {
+                "TGVIO_ARCHIVE_WEBDAV_URL":"https://fixture.invalid",
+                "TGVIO_ARCHIVE_WEBDAV_USER":"fixture",
+                "TGVIO_ARCHIVE_WEBDAV_PASSWORD":"fixture"}), \
+                 patch("tgvio.interfaces.backfill_covers.CoverArchivePort"), \
+                 patch("tgvio.interfaces.backfill_covers.CoverDiscovery", return_value=discovery), \
+                 patch("tgvio.interfaces.backfill_covers.asyncio.sleep", new=AsyncMock()), \
+                 patch("tgvio.interfaces.backfill_covers.report") as report:
+                await work(args)
+            self.assertEqual(discovery.tasks.await_count, 2)
+            self.assertEqual([c.args[0] for c in report.call_args_list],
+                             ["scan_failed", "scan", "plan"])

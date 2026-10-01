@@ -15,12 +15,13 @@ Player 校验并投影到已有 media_covers，再通过原有鉴权、版本化
 原包清单、提交标记、视频、清晰度副本与 Bot 身份保持独立。
 封面读取短暂失败保留已有投影；明确不存在时清除。永久删除先删已登记封面，
 图片删除失败时保留原视频并准确返回失败。
-所有者、资源预算、生命周期、部署与权限合同见 ../development/COVER_SUPPLY.md。
+元数据与 Range 临时错误有界重试三次，持续扫描失败保留检查点并恢复，
+错误范围与损坏 JSON 不重试。所有者、资源预算、生命周期、部署与权限合同见 ../development/COVER_SUPPLY.md。
 
 ## 验证
 
 scripts/check.sh --browser 完整通过：
-Python 1031 项、Node 215 项、TypeScript/Vite 构建，浏览器 999 项检查；
+Python 1034 项、Node 215 项、TypeScript/Vite 构建，浏览器 999 项检查；
 视口 360、390、430、768、1440，以及 844×390。
 新增回归包含绑定/路径/预算/损坏索引、瞬时失败保留、图片优先删除、
 真实 HTTP Range 合同、合成尾部 moov 视频实际 FFmpeg 取帧、

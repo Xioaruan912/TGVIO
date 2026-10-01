@@ -3,17 +3,42 @@ from __future__ import annotations
 
 import asyncio
 import hashlib
+import http.client
 from pathlib import Path
 import threading
 import time
 
 from tgvio.adapters.rendition_archive import RenditionArchivePort
+from tgvio.adapters.rendition_discovery import RenditionDiscovery
 from tgvio.domain.renditions import safe_path
 from tgvio.infrastructure.cover_frames import sample
 
 
+async def retry_archive(operation):
+    """Three attempts for transient I/O only; cancellation and invalid data escape."""
+    for attempt in range(3):
+        try:
+            return await operation()
+        except (OSError, http.client.HTTPException, RuntimeError):
+            if attempt == 2:
+                raise
+            await asyncio.sleep(attempt + 1)
+
+
+class CoverDiscovery(RenditionDiscovery):
+    async def collections(self, path: str) -> tuple[str, ...]:
+        return await retry_archive(lambda: super(CoverDiscovery, self).collections(path))
+
+
 class CoverArchivePort(RenditionArchivePort):
+    async def read_json(self, path: str):
+        return await retry_archive(lambda: super(CoverArchivePort, self).read_json(path))
+
     async def read_range(self, path: str, start: int, end: int, size: int) -> bytes:
+        return await retry_archive(lambda: self._read_range(path, start, end, size))
+
+
+    async def _read_range(self, path: str, start: int, end: int, size: int) -> bytes:
         safe_path(path)
         if not 0 <= start <= end < size or end - start + 1 > 8 * 1024**2:
             raise ValueError("cover range exceeds budget")
@@ -36,6 +61,8 @@ class CoverArchivePort(RenditionArchivePort):
                          headers={"Authorization": self._authorization,
                                   "Range": f"bytes={start}-{end}", "Accept-Encoding": "identity"})
             response = conn.getresponse()
+            if response.status == 429 or response.status >= 500:
+                raise RuntimeError("archive range temporarily unavailable")
             valid = (response.status == 206
                      and response.getheader("Content-Range") == f"bytes {start}-{end}/{size}")
             whole_small = response.status == 200 and start == 0 and wanted == size
