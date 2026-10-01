@@ -30,6 +30,7 @@ class ArchivePackageCandidate:
     complete: Any
     manifest_etag: str | None = None
     complete_etag: str | None = None
+    renditions: Any = None
 
 
 @dataclass(frozen=True, slots=True)

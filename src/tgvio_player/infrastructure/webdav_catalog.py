@@ -91,6 +91,15 @@ class WebDavArchiveCatalogSource:
             )
         except Exception:
             return None, False
+        renditions = None
+        if "renditions.json" in by_name:
+            try:
+                renditions = await self._client.get_json(
+                    f"{package_path}/renditions.json", max_bytes=_METADATA_LIMIT
+                )
+            except Exception:
+                # Optional sidecars never make a committed original unplayable.
+                pass
         return (
             ArchivePackageCandidate(
                 remote_path=package_path,
@@ -98,6 +107,7 @@ class WebDavArchiveCatalogSource:
                 complete=complete,
                 manifest_etag=manifest_entry.etag,
                 complete_etag=complete_entry.etag,
+                renditions=renditions,
             ),
             True,
         )

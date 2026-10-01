@@ -1,0 +1,13 @@
+# syntax=docker/dockerfile:1.7
+# Reuse pinned Python and FFmpeg; never run the Telegram entry point.
+FROM python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg ca-certificates \
+    && rm -rf /var/lib/apt/lists/*
+WORKDIR /app
+ARG APP_COMMIT=unknown
+LABEL org.opencontainers.image.revision=$APP_COMMIT
+ENV PYTHONPATH=/app/src PYTHONDONTWRITEBYTECODE=1 PYTHONUNBUFFERED=1
+COPY src/tgvio /app/src/tgvio
+USER 65532:65532
+ENTRYPOINT ["python", "-m", "tgvio.interfaces.backfill_renditions"]
+CMD ["--watch"]

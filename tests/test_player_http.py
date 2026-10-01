@@ -420,6 +420,52 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await response.json())["deleted_copies"], 2)
         self.assertIsNone(await self.repo.active_media_details(self.media_id))
 
+    async def _add_delete_rendition(self):
+        variant_id = "e" * 64
+        package = CatalogPackage(
+            "package", "TGVIO/2026-09-22/1", "b" * 64, None, None,
+            (CatalogMedia(self.media_id, "video", 4, "video/mp4", 1080, 1920, 2.0),
+             CatalogMedia(variant_id, "video", 3, "video/mp4", 270, 480, 2.0,
+                          "mp4", "h264", self.media_id, "480p", 1200000)),
+            (CatalogLocation(self.media_id, "package", "video.mp4"),
+             CatalogLocation(variant_id, "package", "renditions/480.mp4")),
+        )
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+        return variant_id, package
+
+    async def test_delete_includes_renditions_and_tombstones_prevent_restore(self):
+        variant_id, package = await self._add_delete_rendition()
+        cookie = await self._login()
+        response = await self.client.delete(
+            f"/api/v1/media/{self.media_id}",
+            cookies={"tgvio_player_session": cookie},
+        )
+        body = await response.json()
+        self.assertTrue(body["removed"])
+        self.assertEqual(body["deleted_copies"], 2)
+        self.assertEqual(self.delete_client.calls,
+                         [("TGVIO/2026-09-22/1", "renditions/480.mp4"),
+                          ("TGVIO/2026-09-22/1", "video.mp4")])
+        await self.repo.apply_package(package)
+        await self.repo.refresh_media_activity()
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+        self.assertIsNone(await self.repo.active_media_details(variant_id))
+
+    async def test_failed_rendition_deletion_keeps_original_and_reports_failure(self):
+        _, _package = await self._add_delete_rendition()
+        self.delete_client.failures.add(("TGVIO/2026-09-22/1", "renditions/480.mp4"))
+        cookie = await self._login()
+        response = await self.client.delete(
+            f"/api/v1/media/{self.media_id}",
+            cookies={"tgvio_player_session": cookie},
+        )
+        body = await response.json()
+        self.assertFalse(body["removed"])
+        self.assertEqual(body["failed_copies"], 2)
+        self.assertEqual(self.delete_client.calls, [("TGVIO/2026-09-22/1", "renditions/480.mp4")])
+        self.assertIsNotNone(await self.repo.active_media_details(self.media_id))
+
     async def test_deleted_location_tombstone_prevents_catalog_resurrection(self) -> None:
         cookie = await self._login()
         response = await self.client.delete(

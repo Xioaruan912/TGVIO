@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import hashlib
 import json
 from typing import Any
 
+from tgvio_player.application.rendition_sidecar import parse_renditions
 from tgvio_player.application.ports import ArchiveCatalogSource, PlayerCatalogRepository
 from tgvio_player.domain.catalog import (
     ArchivePackageCandidate,
@@ -176,7 +178,7 @@ class CatalogSyncService:
         if int(complete.get("total_bytes", -1)) != total_bytes:
             raise CatalogValidationError("archive complete total_bytes mismatch")
 
-        return CatalogPackage(
+        package = CatalogPackage(
             package_id=package_id,
             remote_path=remote_path,
             manifest_sha256=manifest_hash,
@@ -185,6 +187,12 @@ class CatalogSyncService:
             media=tuple(media),
             locations=tuple(locations),
             covers=tuple(covers),
+        )
+        additions = parse_renditions(package, candidate.renditions)
+        return replace(
+            package,
+            media=package.media + tuple(m for m, _ in additions),
+            locations=package.locations + tuple(loc for _, loc in additions),
         )
 
     @classmethod

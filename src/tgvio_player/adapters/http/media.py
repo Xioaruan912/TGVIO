@@ -139,17 +139,27 @@ class PlayerMediaHttpMixin:
         if not locations:
             raise web.HTTPNotFound(text="media not found")
 
+        variants = await self._repository.active_variants(media_id)
+        variant_locations = [
+            (str(v["variant_media_id"]), location)
+            for v in variants
+            for location in await self._repository.active_location_records(str(v["variant_media_id"]))
+        ]
+        targets = variant_locations + [(media_id, location) for location in locations]
         log_event(
             "media_delete_started",
             request_id=request_id,
             media=media_fingerprint,
-            copies=len(locations),
+            copies=len(targets),
         )
 
         deleted = 0
         failed = 0
         assert self._deleter is not None
-        for copy_index, (package_id, package_path, remote_relpath) in enumerate(locations, start=1):
+        for copy_index, (target_id, (package_id, package_path, remote_relpath)) in enumerate(targets, start=1):
+            if target_id == media_id and failed and variant_locations:
+                failed += 1
+                continue
             failure_kind = "DeleteReturnedFalse"
             try:
                 succeeded = await self._deleter.delete_location(
@@ -169,8 +179,14 @@ class PlayerMediaHttpMixin:
                 )
                 continue
             await self._repository.record_deleted_location(
-                media_id, package_id, remote_relpath
+                target_id, package_id, remote_relpath
             )
+            if target_id != media_id:
+                await self._repository.finalize_media_deletion(target_id)
+                for cache in (self._range_cache, self._faststart, self._startup_cache):
+                    discard = getattr(cache, "discard", None)
+                    if callable(discard):
+                        await discard(target_id)
             deleted += 1
 
         removed = await self._repository.finalize_media_deletion(media_id)
