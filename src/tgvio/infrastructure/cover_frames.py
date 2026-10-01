@@ -34,9 +34,10 @@ def flat_extreme_frame(gray: bytes) -> bool:
     return variance_numerator < 16 * count * count
 
 
-async def extract(source: Path, work: Path) -> bytes | None:
+async def extract(source: Path, work: Path, *,
+                  positions: tuple[str, ...] = ("1", "0.1", "3", "0")) -> bytes | None:
     output = work / "frame.jpg"
-    for position in ("1", "0.1", "3", "0"):
+    for position in positions:
         output.unlink(missing_ok=True)
         try:
             code, _ = await command(
@@ -92,4 +93,6 @@ async def sample(reader, path: str, size: int, work: Path) -> bytes | None:
         frame = await extract(source, work)
         if frame:
             return frame
-    return None
+    # A dark intro can hide content already in the filled prefix. Two fixed
+    # fallback positions reuse the existing ranges and the outer 180s deadline.
+    return await extract(source, work, positions=("5", "10"))
