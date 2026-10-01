@@ -196,3 +196,48 @@ download_failed 原冻结 max3/count6/exhausted 继续单列、不重置、不�
 收藏仍 36/36。不要再将这四张标为待同步；剩余六个缺封面来源待原冷却重试与逐项原因核对。
 Bot/Player 健康、所有容器零重启/无 OOM，实际封面 64fdf44、副本 668fcd7 不变。
 本轮文档只做 clean/pushed 源码快照同步，维护及每小时跟进继续，尚未全覆盖。
+
+## 2026-10-02 03:43 北京时间低对比与后备位置修复
+
+最新 [低对比及开头空白封面回执](../operations/2026-10-02-cover-lowcontrast-release.md)：
+封面实际 eaa83cdb7150daa8a135b8cbb1616acd45625051，副本继续 668fcd7，
+Bot/Player 容器、镜像、版本和重启计数保持原身份。
+32ccdb0 先修复低对比跨度门槛，eaa83cd 再在原样本全部失败后固定检查第 5/10 秒；
+不追加 Range，仍头尾累计 12MiB、0.5MiB/s、768MiB/.75CPU/64PID、输入/输出单线程，
+单命令 12 秒、sample 总 180 秒不变。最多增加两个候选/四个命令。
+完整门禁分别 Python 1059/1060、Node 215、TS/Vite 通过，真实隔离媒体先红后绿。
+每次只切对应封面工作器，冷扫描 1017、检查点每行保留、独立备份与
+64fdf44/32ccdb0 停止回滚均保留；不因文档 HEAD 重建其他工作器。
+
+本轮五个原缺图来源都已生成真实封面，并逐张通过 Player 鉴权
+200/private/JPEG/尺寸/完整 SHA256，匿名 401，验收后退出登录。
+36 条当前收藏再次逐张验证通过。受控补齐采用同一个已验证 runner，
+原封面工作器停止且持有维护锁，所有检查点行不变；
+已存在封面只验证、不重复解码，不手改 done 或累计次数。
+
+19:43:13 UTC 当前有效覆盖：封面 909/910，480p 124/871、720p 116/729，
+缺 1、747、613。最后缺图来源约 460.27MB、1920 高、约 957.85 秒，
+12MiB 内仍无可用帧，不能称为损坏或已补齐；此前无绑定副本，须按实时数据再核对。
+后续优先核对现有样本可解码的位置或已完整验证、绑定原画的副本，
+保持有界预算，不能批量浏览器解码或改用假封面。
+封面旧失败 79/有效唯一 7 不表示真实缺图数量；已修好来源待原冷却确认。
+副本实际 written=2/recovered=1 和正常 written=2 都持续，
+仍有 TimeoutError、metadata PUT 405、upload status 405 和未分类 ValueError 待区分；
+下一轮应优先分类当前有效副本失败与最后缺图源，不重复下载已验好的来源。
+磁盘此时约 21.74GB，可用资源仍有界，未出现 OOM。
+
+继续先 completion-release/monitor.py；expected-workers 已仅更新封面至 eaa83cd，
+副本仍 668fcd7。completion-cover-late 保存本次 clean/pushed 候选、540 文件/镜像校验、
+部署、独立检查点和原六来源的不可变 bounded-repair-refs.json（远端 root600）。
+call-remote.py repair-player-remote.py 可复核本轮五个已修好源，
+它读取不可变批次快照，不依赖会变化的 missing-cover-refs.json；
+missing-cover-state-remote.py 可生成实时缺图私有引用，不得输出原 ID、Archive 路径或图像。
+bounded-repair-remote.py 已执行一批，不照旧重复整个批次、部署或 confirm 脚本；
+update-remote.py 与 confirm-deployment.py 是一次性发布回执，不在后续盲目重跑。
+completion-cover-lowcontrast 的后备位置只读诊断已证明一来源第 10 秒有真实内容，
+不要重复读取这个已修好的文件。各诊断保留原清单、索引、检查点与其他运行身份。
+下一次因实证缺陷修改时才从 clean 已推送提交发布对应工作器。
+
+九个 inactive/404 来源不复活；同哈希照片的旧取消包不重播；
+download_failed 原冻结 max3/count6/exhausted 保留、不重发 Telegram。
+当前不结束 tgvio 自动化，直到当前可用视频逐项满足封面/应有副本及鉴权可读证据。

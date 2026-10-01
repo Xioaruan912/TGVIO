@@ -51,3 +51,5 @@ docs/refactor-v2的旧部署协议与版本只用于追溯，不表示当前runt
 - [未登记副本恢复发布](2026-10-02-rendition-recovery-release.md)：受限真实内容验证、维护切换和后验；尚未全覆盖。
 
 - [明亮画面封面修复发布](2026-10-02-cover-detail-release.md)：实际来源诊断、隔离回归、封面进程切换与未完成范围。
+
+- [低对比与开头空白封面修复](2026-10-02-cover-lowcontrast-release.md)：有界真实诊断、两次封面切换及当前缺失项。
