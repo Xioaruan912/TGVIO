@@ -420,6 +420,44 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await response.json())["deleted_copies"], 2)
         self.assertIsNone(await self.repo.active_media_details(self.media_id))
 
+    async def test_permanent_delete_removes_still_before_original(self):
+        cover_path = "cover/backfill/" + "f" * 64 + ".jpg"
+        package = CatalogPackage(
+            "package", "TGVIO/2026-09-22/1", "b" * 64, None, None,
+            (CatalogMedia(self.media_id, "video", 4, "video/mp4", 1080, 1920, 2.0),),
+            (CatalogLocation(self.media_id, "package", "video.mp4"),),
+            covers=(CatalogCover(self.media_id, "package", cover_path, 4, "image/jpeg", "bounded-frame-v2"),),
+        )
+        await self.repo.apply_package(package)
+        cookie = await self._login()
+        response = await self.client.delete(f"/api/v1/media/{self.media_id}",
+                                            cookies={"tgvio_player_session": cookie})
+        body = await response.json()
+        self.assertTrue(body["removed"])
+        self.assertEqual(body["deleted_covers"], 1)
+        self.assertEqual(body["deleted_copies"], 1)
+        self.assertEqual([path for _, path in self.delete_client.calls], [cover_path, "video.mp4"])
+        self.assertIsNone(await self.repo.active_cover(self.media_id))
+
+    async def test_failed_cover_delete_keeps_original_and_reports_partial_failure(self):
+        cover_path = "cover/backfill/" + "f" * 64 + ".jpg"
+        package = CatalogPackage(
+            "package", "TGVIO/2026-09-22/1", "b" * 64, None, None,
+            (CatalogMedia(self.media_id, "video", 4, "video/mp4", 1080, 1920, 2.0),),
+            (CatalogLocation(self.media_id, "package", "video.mp4"),),
+            covers=(CatalogCover(self.media_id, "package", cover_path, 4, "image/jpeg", "bounded-frame-v2"),),
+        )
+        await self.repo.apply_package(package)
+        self.delete_client.failures.add(("TGVIO/2026-09-22/1", cover_path))
+        cookie = await self._login()
+        response = await self.client.delete(f"/api/v1/media/{self.media_id}",
+                                            cookies={"tgvio_player_session": cookie})
+        body = await response.json()
+        self.assertFalse(body["removed"])
+        self.assertEqual(body["failed_covers"], 1)
+        self.assertEqual([path for _, path in self.delete_client.calls], [cover_path])
+        self.assertIsNotNone(await self.repo.active_media_details(self.media_id))
+
     async def _add_delete_rendition(self):
         variant_id = "e" * 64
         package = CatalogPackage(

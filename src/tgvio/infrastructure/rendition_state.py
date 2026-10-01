@@ -8,8 +8,9 @@ import time
 from tgvio.domain.renditions import RenditionTask
 
 
-class RenditionState:
-    def __init__(self, path: Path) -> None:
+class MaintenanceState:
+    def __init__(self, path: Path, *, written_label: str = "renditions_written") -> None:
+        self.written_label = written_label
         path.parent.mkdir(parents=True, exist_ok=True)
         self.conn = sqlite3.connect(path)
         self.conn.execute("""CREATE TABLE IF NOT EXISTS tasks(
@@ -47,4 +48,8 @@ class RenditionState:
                 "done": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='done'").fetchone()[0],
                 "failed": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='failed'").fetchone()[0],
                 "blocked": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE attempts>=5").fetchone()[0],
-                "renditions_written": self.conn.execute("SELECT COALESCE(SUM(written),0) FROM tasks").fetchone()[0]}
+                self.written_label: self.conn.execute("SELECT COALESCE(SUM(written),0) FROM tasks").fetchone()[0]}
+
+
+# Existing rendition callers retain their public name; one checkpoint implementation.
+RenditionState = MaintenanceState

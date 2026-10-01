@@ -100,6 +100,17 @@ class WebDavArchiveCatalogSource:
             except Exception:
                 # Optional sidecars never make a committed original unplayable.
                 pass
+        covers = None
+        cover_read_failed = False
+        if "covers.json" in by_name:
+            try:
+                covers = await self._client.get_json(
+                    f"{package_path}/covers.json", max_bytes=_METADATA_LIMIT
+                )
+            except Exception:
+                cover_read_failed = True
+            if covers is None:
+                cover_read_failed = True
         return (
             ArchivePackageCandidate(
                 remote_path=package_path,
@@ -108,6 +119,8 @@ class WebDavArchiveCatalogSource:
                 manifest_etag=manifest_entry.etag,
                 complete_etag=complete_entry.etag,
                 renditions=renditions,
+                covers=covers,
+                cover_read_failed=cover_read_failed,
             ),
             True,
         )

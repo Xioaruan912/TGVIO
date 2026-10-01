@@ -6,6 +6,7 @@ import json
 from typing import Any
 
 from tgvio_player.application.rendition_sidecar import parse_renditions
+from tgvio_player.application.cover_sidecar import parse_covers
 from tgvio_player.application.ports import ArchiveCatalogSource, PlayerCatalogRepository
 from tgvio_player.domain.catalog import (
     ArchivePackageCandidate,
@@ -193,6 +194,8 @@ class CatalogSyncService:
             package,
             media=package.media + tuple(m for m, _ in additions),
             locations=package.locations + tuple(loc for _, loc in additions),
+            covers=package.covers + parse_covers(package, candidate.covers),
+            keep_existing_covers=candidate.cover_read_failed,
         )
 
     @classmethod

@@ -217,10 +217,11 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin, PlayerLibrary
             if has_covers:
                 # Covers are optional metadata. A package that no longer carries
                 # one simply loses its row; the video itself stays playable.
-                conn.execute(
-                    "UPDATE media_covers SET active=0 WHERE package_id=?",
-                    (package.package_id,),
-                )
+                if not package.keep_existing_covers:
+                    conn.execute(
+                        "UPDATE media_covers SET active=0 WHERE package_id=?",
+                        (package.package_id,),
+                    )
                 for cover in package.covers:
                     conn.execute(
                         """
@@ -252,6 +253,20 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin, PlayerLibrary
                             "DELETE FROM media_covers WHERE package_id=? AND media_id=?",
                             (package.package_id, media_item.media_id),
                         )
+
+    async def active_cover_records(self, media_id: str) -> list[tuple[str, str, str]]:
+        rows = self._require().execute(
+            """SELECT mc.package_id, cp.remote_path, mc.remote_relpath
+            FROM media_covers mc JOIN catalog_packages cp ON cp.package_id=mc.package_id
+            WHERE mc.media_id=? AND mc.active=1 AND cp.active=1
+            ORDER BY mc.package_id""", (media_id,),
+        ).fetchall()
+        return [(str(row[0]), str(row[1]), str(row[2])) for row in rows]
+
+    async def record_deleted_cover(self, media_id: str, package_id: str) -> None:
+        async with self._write_transaction() as conn:
+            conn.execute("UPDATE media_covers SET active=0 WHERE media_id=? AND package_id=?",
+                         (media_id, package_id))
 
     async def active_cover(self, media_id: str) -> dict[str, object] | None:
         """Return one catalog-owned cover, never a caller-supplied path."""

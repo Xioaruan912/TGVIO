@@ -11,9 +11,12 @@ offline and the transport wiring stays mechanical.
 from __future__ import annotations
 
 from dataclasses import dataclass
+import hashlib
+from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 import json
 
+from tgvio.domain.renditions import RenditionTask, canonical, safe_path
 from tgvio.application.cover_backfill import (
     COVERS_INDEX_NAME,
     COVERS_SCHEMA,
@@ -132,3 +135,79 @@ class CoverBackfillRunner:
             return await self._port.read(relpath, max_bytes=self._index_max_bytes)
         except Exception:
             return None
+
+
+class CommittedCoverPort(Protocol):
+    async def read_json(self, path: str): ...
+    async def exists(self, path: str, size: int) -> bool: ...
+    async def sample(self, path: str, size: int, work: Path) -> bytes | None: ...
+    async def write_cover(self, path: str, payload: bytes) -> None: ...
+    async def write_json(self, path: str, value) -> None: ...
+
+
+class CommittedCoverBackfill:
+    """Single-writer v2 projection; never rewrites committed manifest or marker."""
+
+    def __init__(self, port: CommittedCoverPort) -> None:
+        self.port = port
+
+    async def run(self, task: RenditionTask, work: Path) -> int:
+        root = safe_path(task.root)
+        parent = task.media["sha256"]
+        source = safe_path(task.media["path"])
+        await self._unchanged(task)
+        index = await self.port.read_json(f"{root}/{COVERS_INDEX_NAME}")
+        if index is None:
+            index = {"schema": "tgvio.archive.covers/v2", "package_id": task.package_id,
+                     "manifest_sha256": task.manifest_hash, "algorithm": "bounded-frame-v2",
+                     "covers": {}}
+        if (not isinstance(index, dict) or index.get("schema") != "tgvio.archive.covers/v2"
+                or index.get("package_id") != task.package_id
+                or index.get("manifest_sha256") != task.manifest_hash
+                or index.get("algorithm") != "bounded-frame-v2"
+                or not isinstance(index.get("covers"), dict)):
+            raise ValueError("cover index conflict")
+        existing = index["covers"].get(source)
+        if isinstance(existing, dict) and existing.get("media_sha256") == parent:
+            digest = str(existing.get("sha256", ""))
+            path = existing.get("path")
+            size = existing.get("size_bytes")
+            if (len(digest) == 64 and all(c in "0123456789abcdef" for c in digest)
+                    and path == f"cover/backfill/{digest}.jpg"
+                    and type(size) is int and 0 < size <= 1_000_000
+                    and existing.get("mime_type") == "image/jpeg"
+                    and await self.port.exists(f"{root}/{path}", size)):
+                return 0
+        if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
+            raise ValueError("cover source removed")
+        payload = await self.port.sample(f"{root}/{source}", int(task.media["size_bytes"]), work)
+        if (not isinstance(payload, bytes) or not 0 < len(payload) <= 1_000_000
+                or not payload.startswith(b"\xff\xd8") or not payload.endswith(b"\xff\xd9")):
+            raise ValueError("no usable frame within cover budget")
+        digest = hashlib.sha256(payload).hexdigest()
+        path = f"cover/backfill/{digest}.jpg"
+        await self._unchanged(task)
+        if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
+            raise ValueError("cover source removed during sample")
+        await self.port.write_cover(f"{root}/{path}", payload)
+        index["covers"][source] = {"path": path, "size_bytes": len(payload),
+                                   "media_sha256": parent, "sha256": digest, "mime_type": "image/jpeg"}
+        if len(canonical(index)) > 512 * 1024:
+            raise ValueError("cover index exceeds reader budget")
+        await self._unchanged(task)
+        if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
+            raise ValueError("cover source removed before index commit")
+        # Verified image first, bound index last. Other media's entries survive.
+        await self.port.write_json(f"{root}/{COVERS_INDEX_NAME}", index)
+        return 1
+
+    async def _unchanged(self, task: RenditionTask) -> None:
+        manifest = await self.port.read_json(f"{task.root}/manifest.json")
+        marker = await self.port.read_json(f"{task.root}/_COMPLETE.json")
+        if (not isinstance(manifest, dict) or not isinstance(marker, dict)
+                or manifest.get("package_id") != task.package_id
+                or marker.get("package_id") != task.package_id
+                or hashlib.sha256(canonical(manifest)).hexdigest() != task.manifest_hash
+                or marker.get("manifest_sha256") != task.manifest_hash
+                or task.media not in manifest.get("media", [])):
+            raise ValueError("committed cover source changed")

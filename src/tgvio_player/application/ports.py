@@ -89,6 +89,10 @@ class PlayerCatalogRepository(Protocol):
 
     async def active_cover(self, media_id: str) -> dict[str, object] | None: ...
 
+    async def active_cover_records(self, media_id: str) -> list[tuple[str, str, str]]: ...
+
+    async def record_deleted_cover(self, media_id: str, package_id: str) -> None: ...
+
     async def deactivate_packages_not_seen(
         self,
         package_ids: set[str],

@@ -145,6 +145,7 @@ class PlayerMediaHttpMixin:
             for v in variants
             for location in await self._repository.active_location_records(str(v["variant_media_id"]))
         ]
+        cover_locations = await self._repository.active_cover_records(media_id)
         targets = variant_locations + [(media_id, location) for location in locations]
         log_event(
             "media_delete_started",
@@ -156,8 +157,20 @@ class PlayerMediaHttpMixin:
         deleted = 0
         failed = 0
         assert self._deleter is not None
+        deleted_covers = 0
+        failed_covers = 0
+        for package_id, package_path, relpath in cover_locations:
+            try:
+                succeeded = await self._deleter.delete_location(package_path, relpath)
+            except Exception:
+                succeeded = False
+            if succeeded:
+                await self._repository.record_deleted_cover(media_id, package_id)
+                deleted_covers += 1
+            else:
+                failed_covers += 1
         for copy_index, (target_id, (package_id, package_path, remote_relpath)) in enumerate(targets, start=1):
-            if target_id == media_id and failed and variant_locations:
+            if target_id == media_id and (failed_covers or (failed and variant_locations)):
                 failed += 1
                 continue
             failure_kind = "DeleteReturnedFalse"
@@ -223,6 +236,8 @@ class PlayerMediaHttpMixin:
                 "deleted_copies": deleted,
                 "failed_copies": failed,
                 "removed": removed,
+                "deleted_covers": deleted_covers,
+                "failed_covers": failed_covers,
             }
         )
 

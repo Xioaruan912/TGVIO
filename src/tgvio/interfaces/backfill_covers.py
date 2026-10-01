@@ -1,174 +1,131 @@
-"""One-off, bounded cover backfill for already committed archive packages.
-
-Run it **inside the Bot container**, so archive credentials never leave the host::
-
-    docker exec tgvio python -m tgvio.interfaces.backfill_covers --dry-run --limit 1
-
-Committed packages are never rewritten: ``manifest.json`` and ``_COMPLETE.json``
-keep their bytes (their hash is what the archive verifies) and covers are added
-only as sidecar objects with ``covers.json`` written last. A package that already
-carries an index is skipped, so repeated runs advance and never redo work.
-"""
+"""Independent bounded cover worker. Never starts Telegram or opens Bot/Player DB."""
 from __future__ import annotations
 
 import argparse
 import asyncio
+import fcntl
 import json
-import sys
+import os
+from pathlib import Path
+import shutil
+import signal
 import tempfile
-from pathlib import Path, PurePosixPath
-from typing import Sequence
 
-from tgvio.adapters.webdav_archive import WebDavArchiveTransport
-from tgvio.application.cover_backfill import CoverBackfill
-from tgvio.application.cover_backfill_runner import (
-    CoverBackfillRunner,
-    PackageRef,
-)
-from tgvio.config import Settings
-from tgvio.domain.archive import ArchivePackage, ArchivePackageState
-from tgvio.infrastructure.cover_sampler import HeadSampleCoverPort
-from tgvio.infrastructure.media_transformer import FFmpegMediaTransformer
-from tgvio.infrastructure.sqlite import SQLiteJobRepository
-
-HEAD_SAMPLE_BYTES = 8 * 1024 * 1024
-INDEX_MAX_BYTES = 1_000_000
-DEFAULT_PACKAGE_SCAN = 50
+from tgvio.adapters.cover_archive import CoverArchivePort
+from tgvio.adapters.rendition_discovery import RenditionDiscovery
+from tgvio.application.cover_backfill_runner import CommittedCoverBackfill
+from tgvio.infrastructure.rendition_state import MaintenanceState
 
 
-class HeadRangeReader:
-    """Bound the sampler to a head read; a non-head range is refused, not fetched."""
-
-    def __init__(self, transport: WebDavArchiveTransport, *, head_bytes: int = HEAD_SAMPLE_BYTES) -> None:
-        self._transport = transport
-        self._head_bytes = max(1, int(head_bytes))
-
-    async def read_range(self, remote_path: str, start: int, end: int) -> bytes:
-        if start != 0 or end < 0 or end >= self._head_bytes:
-            return b""
-        payload = await self._transport.get_bytes(remote_path, max_bytes=end + 1)
-        return payload or b""
+def report(event: str, **fields) -> None:
+    print(json.dumps({"event": event, **fields}), flush=True)
 
 
-class ArchiveTransportPort:
-    """Adapt the archive transport and package repository to the runner ports."""
-
-    def __init__(
-        self,
-        transport: WebDavArchiveTransport,
-        repository: SQLiteJobRepository,
-        *,
-        scan: int = DEFAULT_PACKAGE_SCAN,
-        package_id: str | None = None,
-        dry_run: bool = False,
-    ) -> None:
-        self._transport = transport
-        self._repository = repository
-        self._scan = max(1, int(scan))
-        self._package_id = package_id
-        self._dry_run = dry_run
-
-    def _ref(self, package: ArchivePackage) -> PackageRef:
-        return PackageRef(
-            package_id=package.id,
-            remote_path=package.remote_path,
-            manifest=package.manifest or {},
-        )
-
-    async def packages(self, limit: int | None) -> Sequence[PackageRef]:
-        if self._package_id:
-            package = await self._repository.get_archive_package(self._package_id)
-            return [self._ref(package)] if package is not None else []
-        wanted = self._scan if limit is None else min(self._scan, max(1, int(limit)))
-        packages = await self._repository.list_archive_packages_by_states(
-            (ArchivePackageState.COMMITTED,), limit=wanted
-        )
-        return [self._ref(package) for package in packages]
-
-    async def read(self, relpath: str, *, max_bytes: int) -> bytes | None:
-        return await self._transport.get_bytes(relpath, max_bytes=max_bytes)
-
-    async def write(self, relpath: str, payload: bytes) -> None:
-        parent = str(PurePosixPath(relpath).parent)
-        if parent and parent != ".":
-            await self._transport.ensure_collection(parent)
-        await self._transport.put_bytes(relpath, payload)
-
-
-def parser() -> argparse.ArgumentParser:
-    result = argparse.ArgumentParser(description=__doc__)
-    result.add_argument(
-        "--limit",
-        type=int,
-        default=DEFAULT_PACKAGE_SCAN,
-        help="how many committed packages to inspect in this run",
-    )
-    result.add_argument("--package-id", default=None, help="backfill exactly one package")
-    result.add_argument(
-        "--dry-run",
-        action="store_true",
-        help="report what would be written without touching the archive",
-    )
-    result.add_argument(
-        "--head-bytes",
-        type=int,
-        default=HEAD_SAMPLE_BYTES,
-        help="bounded head sample used to decode one frame",
-    )
+def priority_order(path: str | None) -> dict[str, int]:
+    if not path:
+        return {}
+    file = Path(path)
+    if file.is_symlink() or file.stat().st_size > 64 * 1024:
+        raise ValueError("cover priority file exceeds budget")
+    value = json.loads(file.read_text())
+    if not isinstance(value, list) or len(value) > 1000:
+        raise ValueError("invalid cover priorities")
+    result = {}
+    for digest in value:
+        if not isinstance(digest, str) or len(digest) != 64 or any(c not in "0123456789abcdef" for c in digest):
+            raise ValueError("invalid priority identity")
+        result.setdefault(digest, len(result))
     return result
 
 
-async def run_backfill(args: argparse.Namespace) -> int:
-    settings = Settings.from_env()
-    repository = SQLiteJobRepository(settings.data_dir / "state.sqlite3")
-    await repository.open()
-    transport = WebDavArchiveTransport(
-        settings.archive_url,
-        settings.archive_user,
-        settings.archive_password,
-        capability_root=settings.archive_remote_root,
-        response_timeout=float(settings.archive_response_timeout_seconds),
-        verify_attempts=settings.archive_verify_attempts,
-        verify_interval_seconds=float(settings.archive_verify_interval_seconds),
-    )
+async def work(args) -> None:
+    root = Path(args.work_dir)
+    root.mkdir(parents=True, exist_ok=True)
+    state = MaintenanceState(root / "progress.sqlite3", written_label="covers_written")
+    lock = None
     try:
-        port = ArchiveTransportPort(
-            transport,
-            repository,
-            scan=args.limit,
-            package_id=args.package_id,
-            dry_run=args.dry_run,
-        )
-        sampler = HeadSampleCoverPort(
-            HeadRangeReader(transport, head_bytes=args.head_bytes),
-            FFmpegMediaTransformer(),
-            head_bytes=args.head_bytes,
-            work_root=Path(tempfile.gettempdir()),
-        )
-        runner = CoverBackfillRunner(
-            port,
-            CoverBackfill(sampler),
-            limit=args.limit,
-            dry_run=args.dry_run,
-            index_max_bytes=INDEX_MAX_BYTES,
-        )
-        result = await runner.run()
-        print(json.dumps({"status": "ok", "dry_run": bool(args.dry_run), **result.as_dict()}))
-        return 0
+        if args.status:
+            report("status", **state.summary())
+            return
+        lock = (root / "worker.lock").open("a")
+        fcntl.flock(lock, fcntl.LOCK_EX | fcntl.LOCK_NB)
+        if args.retry_failed:
+            state.conn.execute("UPDATE tasks SET attempts=0,status='pending' WHERE status='failed'")
+            state.conn.commit()
+        priority = priority_order(args.priority_file)
+        port = CoverArchivePort(
+            os.environ["TGVIO_ARCHIVE_WEBDAV_URL"], os.environ["TGVIO_ARCHIVE_WEBDAV_USER"],
+            os.environ["TGVIO_ARCHIVE_WEBDAV_PASSWORD"], timeout=15,
+            response_timeout=30, verify_attempts=6, verify_interval_seconds=2)
+        discovery = RenditionDiscovery(port, os.environ.get("TGVIO_ARCHIVE_REMOTE_ROOT", "TGVIO"))
+        runner = CommittedCoverBackfill(port)
+        while True:
+            tasks = await discovery.tasks()
+            tasks.sort(key=lambda t: (priority.get(t.media["sha256"], 1001),
+                                      int(t.media.get("size_bytes") or 0), t.key))
+            state.discover(tasks)
+            report("scan", **state.summary())
+            if args.dry_run:
+                report("plan", eligible=sum(state.eligible(t) for t in tasks),
+                       source_bytes=sum(int(t.media["size_bytes"]) for t in tasks),
+                       max_sample_bytes=12*1024**2, download_rate_bytes=512*1024)
+                return
+            processed = 0
+            for task in tasks:
+                if not state.eligible(task):
+                    continue
+                if shutil.disk_usage(root).free < 64*1024**2:
+                    report("disk_budget_wait", **state.summary())
+                    break
+                try:
+                    with tempfile.TemporaryDirectory(prefix="sample-", dir=root) as directory:
+                        written = await runner.run(task, Path(directory))
+                    state.finish(task, written)
+                    report("complete", task=task.key[:12], written=written, **state.summary())
+                except asyncio.CancelledError:
+                    raise
+                except Exception as error:
+                    state.fail(task, error)
+                    report("failed", task=task.key[:12], error=type(error).__name__, **state.summary())
+                processed += 1
+                if args.limit and processed >= args.limit:
+                    break
+                await asyncio.sleep(1)
+            if not args.watch:
+                report("finished", **state.summary())
+                return
+            await asyncio.sleep(600)
     finally:
-        closer = getattr(repository, "close", None)
-        if closer is not None:
-            await closer()
+        state.conn.close()
+        if lock is not None:
+            lock.close()
 
 
-def main(argv: Sequence[str] | None = None) -> int:
-    args = parser().parse_args(argv)
+async def cancellable(args):
+    current = asyncio.current_task()
+    loop = asyncio.get_running_loop()
+    for sig in (signal.SIGTERM, signal.SIGINT):
+        loop.add_signal_handler(sig, current.cancel)
+    await work(args)
+
+
+def main():
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--work-dir", default="/work")
+    parser.add_argument("--priority-file")
+    parser.add_argument("--watch", action="store_true")
+    parser.add_argument("--dry-run", action="store_true")
+    parser.add_argument("--status", action="store_true")
+    parser.add_argument("--retry-failed", action="store_true")
+    parser.add_argument("--limit", type=int, default=0)
+    args = parser.parse_args()
+    if args.limit < 0:
+        parser.error("limit must be non-negative")
     try:
-        return asyncio.run(run_backfill(args))
-    except KeyboardInterrupt:
-        print(json.dumps({"status": "interrupted"}), file=sys.stderr)
-        return 130
+        asyncio.run(cancellable(args))
+    except asyncio.CancelledError:
+        report("stopped")
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    main()

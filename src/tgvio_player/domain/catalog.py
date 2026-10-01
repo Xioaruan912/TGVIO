@@ -31,6 +31,8 @@ class ArchivePackageCandidate:
     manifest_etag: str | None = None
     complete_etag: str | None = None
     renditions: Any = None
+    covers: Any = None
+    cover_read_failed: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -89,6 +91,7 @@ class CatalogPackage:
     media: tuple[CatalogMedia, ...]
     locations: tuple[CatalogLocation, ...]
     covers: tuple[CatalogCover, ...] = ()
+    keep_existing_covers: bool = False
 
 
 @dataclass(frozen=True, slots=True)

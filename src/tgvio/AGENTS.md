@@ -11,3 +11,4 @@
 - 所有测试用fake；不得在WSL启动生产身份。用根scripts/check.sh验证，应用发布走既有deploy_hostdzire.py。
 - 不把临时诊断、交接或线上版本追加到本规范。
 - 低清副本由独立维护进程扫描有效归档；不启动第二个 Telegram 身份、不访问 Bot/Player 主库。原画和已提交 manifest/_COMPLETE 不变，验证副本后最后提交绑定原清单摘要的索引；单 worker、有界资源、断点与失败预算必须保留。
+- 旧视频封面由独立 backfill_covers 维护进程生成：只持有 Archive 能力、使用自己的 checkpoint，不访问 Bot/Player 库。真 Range 的头尾累计不超过 12MiB，单并发、0.5MiB/s、有界 FFmpeg 与取消；验证 JPEG 哈希后最后提交 covers.json v2，不改原画/manifest/_COMPLETE，不能与低清副本混用工作目录或锁。
