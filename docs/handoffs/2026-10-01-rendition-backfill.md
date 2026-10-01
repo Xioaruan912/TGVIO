@@ -97,3 +97,23 @@ C:/Users/Administrator/TGVIO-rendition-backfill-20261001。
 未创建替代原文件，也未将失败计入完成。后台继续处理其他条目。
 后续来源绑定、10 条分批重扫及取消释放增强的完整检查：
 Python 1016 项、前端 210 项，构建与规范通过。应用不因此重启 Player/Bot。
+
+## 维护镜像独立升级后验
+
+2026-10-01 11:46:50（北京时间），只更新维护任务到 bf02deb067976f08ea2f8f90076eff03ac9140eb。
+504 个 clean 源文件 SHA256 / 模式通过，镜像归档 SHA256
+d5d2b41aad0970ffcf37f5ba9c9ef23187ec5ed38cc2f3604c83a4757b59fc5c，
+实际运行镜像 sha256:858240a79013aaf356e9a314816f3fdc24493efb737be95417a56a49df362bb5。
+实际 Python 3.11 维护镜像 15 项全部通过，包含 FFmpeg 与来源身份/分批/取消回归。
+
+旧维护容器已停止并改名 tgvio-renditions-before-bf02deb，保留供回滚；
+沿用 /root/tgvio-renditions/work，前后 checkpoint 均为 1017 条、完成 7、写入 14、失败 1、blocked 0。
+仅新任务持有 writer 锁。Player 应用仍为 7886149，Bot 仍为 5dc86a7，
+两者容器 ID / 镜像 / restart 不变，running / healthy。
+
+2026-10-01 11:47:35 核对：有效主视频 910，已登记有效版本 14，
+覆盖 7 个主视频（480p 7、720p 7）；quick_check=ok，收藏 36、续播 5；
+公开 health=200，匿名 feed=401。此刻后台持续运行，全库尚未完成。
+源码指针已更新到核对过的 bf02deb snapshot，不能把源码指针解释为 Player 运行提交。
+独立 worker-deployment.json、progress.json 和授权样本 range-smoke.json
+已保存到 Windows 交付目录；不包含访问口令、WebDAV 凭据或私人视频。
