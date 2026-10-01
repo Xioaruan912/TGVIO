@@ -312,3 +312,17 @@ completion-cover-late/missing-bound-status-remote.py 可只读核对最后缺图
 download_failed Job仍enabled/max3/count6/exhausted，不重置/重发Telegram；
 同哈希照片取消包既有验证保留，不重复下载或重播。
 有新的实际恢复才核对绑定、完整内容与鉴权接口；暂未全覆盖，tgvio跟进继续。
+
+### 05:15 真实恢复已确认
+
+新副本最旧失败任务已complete/written1/recovered0，准确该来源两清晰度
+原清单/索引/Player行绑定、480p/720p DTO及鉴权Range206通过，匿名401、
+logout成功、catalog_sync_pending=false；只读每档bytes0-1，不等于完整远端MP4哈希。
+私有completion-retry-fairness/first-retry-player-range-remote.py及JSON保存对应证据，
+首次不可变引用first-retry-ref.json仅远端root600；后续不要盲目再次做完整读取。
+又一失败任务complete/written1/recovered1；第三个仍metadata PUT405，
+继续按原冷却/资源预算核实提供端语义或真对象，不盲目延长deadline、删除/覆写对象。
+21:15:51 UTC 封面907/908、480p148/870、720p138/729，缺1/722/591。
+副本done157/failed35/pending825，有效失败21任务/17唯一来源；
+编码与写入持续，新副本峰值390.71MB，无OOM，磁盘21.45GB。
+实际工作器ddedb1c/eaa83cd保持，文档后续只同步源码；全覆盖未完成、自动跟进继续。

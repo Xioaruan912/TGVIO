@@ -82,3 +82,19 @@ completion-release/expected-workers.json 仅更新副本为 ddedb1c，封面 eaa
 download_failed Job 当前只读复核仍 enabled/max3/count6/exhausted，不清零、不重发 Telegram。
 同哈希照片旧取消包沿用已验证恢复证据，本轮未重播或重新读取。
 本轮后续文档同步只切独立源码快照、记录报告，运行工作器版本继续 ddedb1c/eaa83cd。
+
+## 05:15 北京时间真实恢复后验
+
+首个最旧失败任务实际 complete/written1/recovered0；
+只读查原清单及绑定 rendition 索引、与 Player 位置/完整媒体哈希标识逐项对应，
+准确该来源的 480p、720p DTO/大小/高度及鉴权 Range 206 均通过，
+匿名 media 401，验收后退出登录，catalog_sync_pending=false。
+这次接口仅各读 bytes=0-1，不声称完整远端 MP4 哈希/全片播放已经验收。
+随后另一个到期失败任务 complete/written1/recovered1，
+第三个仍 archive_metadata_put 405，原累计次数/冷却继续，不能说传输故障已消失。
+
+21:15:51 UTC 当前有效封面907/908、480p148/870、720p138/729，
+仍缺1、722、591；副本done157/failed35/pending825，
+当前有效失败21任务/17唯一来源，真实恢复有推进但尚未全覆盖。
+新进程实际编码、临时文件写入持续，启动以来峰值约390.71MB，OOM为零；
+磁盘约21.45GB。私有 retry-start.json / first-retry-player-range.json 保存真实后验。
