@@ -15,7 +15,7 @@ async function run() {
   const handlers = new Proxy({}, { get: () => () => undefined }) as ShellHandlers;
   const shell = buildShell(handlers); document.getElementById("app")!.append(shell.root);
   const clip: Clip = { id: "a".repeat(64), streamUrl: "", width: 640, height: 360, duration: 60, sizeBytes: 100,
-    favorite: false, deletable: false, mimeType: "video/mp4", codec: null, category: "short", groups: [], variants: [] };
+    favorite: false, deletable: false, mimeType: "video/mp4", codec: null, category: "short", groups: [], variants: [{ id: "v480", height: 480, width: 854, stream_url: "/480" }, { id: "v720", height: 720, width: 1280, stream_url: "/720" }] };
   const feed = new FeedView(shell.feed); feed.setClips([clip]);
   const page = feed.pageAt(0)!; page.classList.add("is-active");
   page.dataset.playbackState = "loading"; shell.root.dataset.playbackState = "loading";

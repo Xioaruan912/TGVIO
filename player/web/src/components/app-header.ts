@@ -10,7 +10,7 @@ export function buildAppHeader(handlers: ShellHandlers) {
   contextBackBtn.type = "button";
   contextBackBtn.hidden = true;
   contextBackBtn.addEventListener("click", handlers.onBackFromContext);
-  const netSpeed = element("span", "net-speed", "↓ 0 KB/s");
+  const netSpeed = element("span", "net-speed", "已缓存未知 / 文件大小未知");
   netSpeed.hidden = true;
   const fullscreenBtn = element("button", "topbar-fullscreen");
   fullscreenBtn.type = "button";

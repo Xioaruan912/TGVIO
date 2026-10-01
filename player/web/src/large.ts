@@ -147,7 +147,7 @@ export class LargePlayer {
     back.appendChild(icon("back", 24));
     back.addEventListener("click", () => this.onClose());
     const title = element("span", "large-title", `视频 #${clip.id.slice(0, 8)}`);
-    const netSpeed = element("span", "net-speed", "↓ 0 KB/s");
+    const netSpeed = element("span", "net-speed", "已缓存未知 / 文件大小未知");
     netSpeed.hidden = true;
     const privacyLock = element("button", "large-privacy-lock");
     privacyLock.type = "button";
@@ -292,7 +292,7 @@ export class LargePlayer {
     this.qualityButton = element("button", "large-btn large-quality");
     this.qualityButton.type = "button";
     this.qualityButton.textContent = qualityLabel(clip, this.quality);
-    this.qualityButton.setAttribute("aria-label", "切换清晰度");
+    this.qualityButton.disabled = qualityOptions(clip).length <= 1; this.qualityButton.setAttribute("aria-label", this.qualityButton.disabled ? "仅有原画" : "切换清晰度");
     this.qualityButton.addEventListener("click", () => this.cycleQuality());
 
     const actions = element("div", "large-action-row");

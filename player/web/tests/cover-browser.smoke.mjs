@@ -116,7 +116,7 @@ try {
   check(!result.error&&!result.errors.length&&!result.overflow,label+" "+JSON.stringify(result));return result;
  };
  await cdp("Page.enable");
- await cdp("Page.addScriptToEvaluateOnNewDocument",{source:"try{localStorage.setItem('tgvio.player.prefs',JSON.stringify({cacheMode:'off',netSpeed:false,gestureGuideSeen:true,quality:'original'}));}catch{}"});
+ await cdp("Page.addScriptToEvaluateOnNewDocument",{source:"try{localStorage.setItem('tgvio.player.prefs',JSON.stringify({cacheMode:'off',netSpeed:true,gestureGuideSeen:true,quality:'original'}));}catch{}"});
  for(const [width,height]of [[360,800],[390,844],[430,932],[768,1024],[1440,1000],[844,390]]){
   await cdp("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:width<900});await navigate("/");
   await wait("!!document.querySelector('.app-shell')","main app");
@@ -124,6 +124,9 @@ try {
   check(await evaluate("document.querySelector('.seek').getBoundingClientRect().height>=48"),"seek 48px "+width);
   check(await evaluate("(()=>{const p=document.querySelector('.player-panel').getBoundingClientRect(),n=document.querySelector('.bottom-nav');return getComputedStyle(n).display==='none'||p.bottom<=n.getBoundingClientRect().top+1})()"),"panel clears navigation "+width);
   await click(".transport-play");await wait("document.querySelector('.media-slot.is-current')?.readyState>=2","decoded short");
+  await wait("document.querySelector('.topbar .net-speed')?.textContent.includes('已缓存约')","short size readout");
+  check(await evaluate("(()=>{const e=document.querySelector('.topbar .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.topbar').getBoundingClientRect();return !/KB.s|缓冲 [0-9]+s/.test(e.textContent)&&r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside short header "+width);
+  check(await evaluate("(()=>{const e=document.querySelector('.topbar-settings'),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))})()"),"cache readout leaves settings reachable "+width);
   await screenshot("short-"+width+"x"+height);
   if(width===390){
    await click(".player-panel .action-btn.is-muted");
@@ -176,7 +179,11 @@ try {
   check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"leave stops preview");await screenshot("long-list-"+width+"x"+height);
   await click(".long-resume-section .cover-tile-play");await click(".large-privacy-play");
   await wait("document.querySelector('.large-video')?.readyState>=2","decoded long");
-  check(await evaluate("document.querySelector('.large-video').currentTime>=40"),"long resumes real position");await screenshot("long-player-"+width+"x"+height);
+  check(await evaluate("document.querySelector('.large-video').currentTime>=40"),"long resumes real position");
+  await wait("document.querySelector('.large-topbar .net-speed')?.textContent.includes('已缓存约')","long size readout");
+  check(await evaluate("(()=>{const e=document.querySelector('.large-topbar .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.large-topbar').getBoundingClientRect();return r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside long header "+width);
+  check(await evaluate("document.querySelector('.large-quality').textContent==='原画'&&document.querySelector('.large-quality').disabled"),"no fake low quality for original-only media "+width);
+  await screenshot("long-player-"+width+"x"+height);
   await click(".large-back");await nav("home");await click(".topbar-settings");await screenshot("settings-"+width+"x"+height);
   check(await evaluate("document.querySelector('.sheet-card')?.contains(document.activeElement)"),"settings constrains focus");
   for(const type of ["keyDown","keyUp"])await cdp("Input.dispatchKeyEvent",{type,key:"Escape",code:"Escape",windowsVirtualKeyCode:27});

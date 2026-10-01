@@ -12,7 +12,7 @@ const clip = {
   ],
 };
 
-test("quality choices are the fixed manual 480p, 720p and original ladder", () => {
+test("quality choices expose available manual renditions in a stable order", () => {
   assert.deepEqual(
     qualityOptions(clip).map(({ label, selection }) => ({ label, selection })),
     [
@@ -28,5 +28,7 @@ test("manual quality resolves exact renditions and safely falls back to original
   assert.equal(resolveStreamUrl(clip, 720), "/720");
   assert.equal(resolveStreamUrl(clip, "original"), "/original");
   assert.equal(resolveStreamUrl({ ...clip, variants: [] }, 480), "/original");
-  assert.equal(qualityLabel({ ...clip, variants: [] }, 480), "480p");
+  assert.equal(qualityLabel({ ...clip, variants: [] }, 480), "原画");
+  assert.deepEqual(qualityOptions({ ...clip, variants: [] }).map(o => o.selection), ["original"]);
+  assert.deepEqual(qualityOptions({ ...clip, variants: clip.variants.slice(0, 1) }).map(o => o.selection), [720, "original"]);
 });

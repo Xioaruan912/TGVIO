@@ -6,12 +6,11 @@ export type QualityOption = {
   selection: QualitySelection;
 };
 
-/** The only user-facing choices, in the order shown in settings. */
+/** Expose only supported, declared renditions, in the existing manual order. */
 export function qualityOptions(clip: Clip): QualityOption[] {
-  void clip;
   return [
-    { key: "480", label: "480p", selection: 480 },
-    { key: "720", label: "720p", selection: 720 },
+    ...(clip.variants.some(item => item.height === 480) ? [{ key: "480", label: "480p", selection: 480 as const }] : []),
+    ...(clip.variants.some(item => item.height === 720) ? [{ key: "720", label: "720p", selection: 720 as const }] : []),
     { key: "original", label: "原画", selection: "original" },
   ];
 }
@@ -25,7 +24,6 @@ export function resolveStreamUrl(clip: Clip, selection: QualitySelection): strin
 
 /** Label for the currently active selection. */
 export function qualityLabel(clip: Clip, selection: QualitySelection): string {
-  void clip;
-  if (selection === "original") return "原画";
+  if (selection === "original" || !clip.variants.some(item => item.height === selection)) return "原画";
   return `${selection}p`;
 }

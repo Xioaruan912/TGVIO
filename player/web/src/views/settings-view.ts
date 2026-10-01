@@ -114,8 +114,10 @@ export function buildSettingsView(actions: SettingsViewActions): Node[] {
     ? qualityOptions(currentClip)
     : [];
   if (!currentClip) body.push(sheetNote("打开一个视频后，这里只列出该视频实际支持的清晰度。"));
+  if (currentClip && qualityChoices.length === 1) body.push(sheetNote("此视频仅有原画，没有可切换的 480p/720p 版本。"));
+  const effectiveQuality = qualityChoices.some(option => option.selection === quality) ? quality : "original";
   for (const option of qualityChoices) {
-    const selected = option.selection === quality;
+    const selected = option.selection === effectiveQuality;
     body.push(
       sheetRow({
         title: option.label,
@@ -133,8 +135,8 @@ export function buildSettingsView(actions: SettingsViewActions): Node[] {
   }));
   body.push(
     sheetToggle(
-      "显示网速",
-      prefs.netSpeed ? "右上角显示下载速率" : "已关闭",
+      "显示缓存进度",
+      prefs.netSpeed ? "已缓存估算大小 / 当前版本文件大小" : "已关闭",
       prefs.netSpeed,
       () => {
         setPref("netSpeed", !prefs.netSpeed);

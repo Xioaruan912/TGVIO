@@ -3,7 +3,7 @@
 统一验证：`npm run check`；浏览器：`npm run test:browser`。
 Node 20.19+ / 22.12+；严格 TS 测试编译到临时 .test-dist，退出自动清理。
 完整说明见 [当前开发文档](../../docs/development/README.md) 与 [Player 约定](../AGENTS.md)。
-以下为既有功能说明；视觉/交互重构等待本轮用户设计提示词。
+当前视觉与交互边界见 [Player 前端设计](../../docs/development/PLAYER_FRONTEND.md)。
 
 ## 既有 Player Web
 
@@ -220,3 +220,14 @@ WebDAV, production login or Bot data. It removes generated files on normal exit.
 A Windows CJK font may be served locally for screenshot readability, but is not
 copied or included in the application. Chrome CDP touch emulation is not an
 Android/iOS hardware acceptance test.
+
+### Cache size readout
+
+“显示缓存进度” retains the existing netSpeed preference key. Short and long
+players show estimated browser-buffered size / the current rendition file size,
+instead of buffered seconds or download speed. TimeRanges are merged and summed;
+seek gaps are excluded. Missing size/duration is explicitly unknown, and the
+estimate is not a byte-exact transfer counter or persistent offline cache.
+Internal rate samples continue to drive the existing bounded preload strategy.
+Quality menus list only declared 480p/720p renditions plus original; a missing
+saved rendition falls back to original and is labelled accurately.

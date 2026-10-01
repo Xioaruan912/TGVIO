@@ -10,15 +10,56 @@ export function formatSpeed(bytesPerSecond: number): string {
   return `↓ ${Math.round(kb)} KB/s`;
 }
 
-/**
- * Browser buffering is not persistent cache: label it as the browser's own
- * buffered-ahead window so it is never read as "the file is cached". The
- * compact form keeps the top-right readout from competing with the center
- * playback-state indicator.
- */
-export function formatNetworkStatus(bufferedAheadSeconds: number): string {
-  const seconds = Math.floor(bufferedAheadSeconds);
-  return seconds > 0 ? `缓冲 ${seconds}s` : "";
+function positiveSize(value: number | null | undefined): number | null {
+  return typeof value === "number" && Number.isFinite(value) && value > 0 ? value : null;
+}
+
+function normalizedSource(source: string): string {
+  if (!source) return "";
+  try {
+    const url = new URL(source, document.baseURI);
+    url.searchParams.delete("playback_session");
+    return url.href;
+  } catch { return ""; }
+}
+
+function assignedSource(video: HTMLVideoElement): string {
+  return normalizedSource(video.getAttribute("src") || video.currentSrc || video.src);
+}
+
+/** TimeRanges expose time, not byte offsets: this is explicitly an estimate.
+ * Sum the union of buffered intervals; a seek gap is never counted as cached. */
+export function estimateBufferedSize(video: HTMLVideoElement, clip: Clip): { bytes: number | null; totalBytes: number | null } {
+  const source = assignedSource(video);
+  const variant = clip.variants.find(item => normalizedSource(item.stream_url) === source);
+  const totalBytes = source === normalizedSource(clip.streamUrl)
+    ? positiveSize(clip.sizeBytes) : positiveSize(variant?.size_bytes);
+  const duration = positiveSize(video.duration) ?? positiveSize(clip.duration);
+  if (totalBytes === null || duration === null) return { bytes: null, totalBytes };
+  const ranges: Array<[number, number]> = [];
+  for (let i = 0; i < video.buffered.length; i++) {
+    const start = video.buffered.start(i), end = video.buffered.end(i);
+    if (!Number.isFinite(start) || !Number.isFinite(end) || end <= start) continue;
+    ranges.push([Math.max(0, start), Math.min(duration, end)]);
+  }
+  ranges.sort((a, b) => a[0] - b[0]);
+  let seconds = 0, previousEnd = 0;
+  for (const [start, end] of ranges) {
+    seconds += Math.max(0, end - Math.max(previousEnd, start));
+    previousEnd = Math.max(previousEnd, end);
+  }
+  return { bytes: Math.min(totalBytes, totalBytes * seconds / duration), totalBytes };
+}
+
+export function formatNetworkStatus(bufferedBytes: number | null, fileBytes: number | null): string {
+  const total = positiveSize(fileBytes);
+  if (total === null) return "已缓存未知 / 文件大小未知";
+  const unit = total >= 1024 ** 3 ? 3 : total >= 1024 ** 2 ? 2 : total >= 1024 ? 1 : 0;
+  const scale = 1024 ** unit, label = ["B", "KB", "MB", "GB"][unit];
+  const format = (size: number) => unit ? (size / scale).toFixed(1) : String(Math.floor(size));
+  const known = bufferedBytes !== null && Number.isFinite(bufferedBytes) && bufferedBytes >= 0;
+  const buffered = known ? format(Math.min(total, bufferedBytes!)) : "未知";
+  return `已缓存${known ? "约 " : ""}${buffered} / ${format(total)} ${label}`;
 }
 
 /**
@@ -38,6 +79,7 @@ export class NetworkMeter {
   private readonly seenResources = new Set<string>();
   private readonly transfers: { end: number; bytes: number; duration: number }[] = [];
   private ema = 0;
+  private sourceKey = "";
 
   constructor(el: HTMLElement) {
     this.el = el;
@@ -47,6 +89,16 @@ export class NetworkMeter {
     if (this.video === video && this.clip?.id === clip?.id) return;
     this.video = video;
     this.clip = clip;
+    this.sourceKey = this.sourceIdentity();
+    this.resetSampling();
+    this.renderStatus();
+  }
+
+  private sourceIdentity(): string {
+    return this.video ? `${assignedSource(this.video)}|${this.video.dataset?.loadToken ?? ""}` : "";
+  }
+
+  private resetSampling(): void {
     this.lastBytes = 0;
     this.lastAt = performance.now();
     this.watchStartedAt = this.lastAt - RESOURCE_WINDOW_MS;
@@ -54,7 +106,6 @@ export class NetworkMeter {
     this.seenResources.clear();
     this.transfers.length = 0;
     this.ema = 0;
-    this.renderStatus();
   }
 
   start(): void {
@@ -76,16 +127,7 @@ export class NetworkMeter {
   }
 
   private bufferedBytes(): number {
-    const video = this.video;
-    const clip = this.clip;
-    if (!video || !clip || clip.sizeBytes <= 0) return 0;
-    const duration = Number.isFinite(video.duration) && video.duration > 0 ? video.duration : clip.duration;
-    if (duration <= 0) return 0;
-    let end = 0;
-    for (let index = 0; index < video.buffered.length; index += 1) {
-      end = Math.max(end, video.buffered.end(index));
-    }
-    return clip.sizeBytes * Math.min(1, end / duration);
+    return this.video && this.clip ? estimateBufferedSize(this.video, this.clip).bytes ?? 0 : 0;
   }
 
   private resourceRate(now: number): number {
@@ -93,7 +135,7 @@ export class NetworkMeter {
     if (!clip || typeof performance.getEntriesByType !== "function") return 0;
     let mediaPath = "";
     try {
-      mediaPath = new URL(clip.streamUrl, document.baseURI).pathname;
+      mediaPath = new URL(this.video ? assignedSource(this.video) : clip.streamUrl, document.baseURI).pathname;
     } catch {
       return 0;
     }
@@ -134,6 +176,8 @@ export class NetworkMeter {
   }
 
   private sample(): void {
+    const source = this.sourceIdentity();
+    if (source !== this.sourceKey) { this.sourceKey = source; this.resetSampling(); this.lastBytes = this.bufferedBytes(); }
     const now = performance.now();
     const bytes = this.bufferedBytes();
     const seconds = (now - this.lastAt) / 1000;
@@ -164,10 +208,9 @@ export class NetworkMeter {
   }
 
   private renderStatus(): void {
-    const video = this.video;
-    const status = video ? formatNetworkStatus(this.bufferedAheadSeconds(video)) : "";
-    const speed = this.ema > 0 ? formatSpeed(this.ema) : "";
-    this.el.textContent = [status, speed].filter(Boolean).join(" · ") || "↓ 0 KB/s";
+    const size = this.video && this.clip ? estimateBufferedSize(this.video, this.clip) : { bytes: null, totalBytes: null };
+    this.el.textContent = formatNetworkStatus(size.bytes, size.totalBytes).replace("已缓存约 ", "已缓存约\n").replace("已缓存未知", "已缓存\n未知");
+    this.el.title = "已缓存大小按浏览器缓冲区与当前版本文件大小估算，不代表精确下载字节或持久离线缓存";
   }
 }
 

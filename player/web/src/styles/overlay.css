@@ -8,7 +8,7 @@
 .topbar-mode { display: inline-flex; align-items: center; gap: 6px; font-size: 14px; font-weight: 650; }
 .mode-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--sky500); }
 .topbar-settings, .topbar-fullscreen { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border-radius: 14px; color: var(--sky700); background: var(--sky50); }
-.net-speed { margin-left: auto; min-width: 0; font-size: 10px; color: var(--muted); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.net-speed { margin-left: auto; min-width: 0; max-width: 112px; flex-shrink: 0; font-size: 11px; line-height: 1.35; color: var(--muted); white-space: pre-line; text-align: right; font-variant-numeric: tabular-nums; }
 .topbar-fullscreen { margin-left: auto; }
 .net-speed:not([hidden]) + .topbar-fullscreen { margin-left: 0; }
 .playback-pressure .mode-dot, .app-shell[data-playback-state="buffering"] .mode-dot { animation: sky-pulse 1s ease-in-out infinite; }
