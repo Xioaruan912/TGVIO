@@ -52,7 +52,10 @@ SHA256 校验；未登录封面抽查返回 401，私有缓存语义保持。
 
 当前 Bot 归档包 committed 51、cancelled 1，无待处理或失败归档包。
 历史取消包错误为 archive_capability_missing，一项原缓存已不在本地；发布 Job 曾成功。
-另有一个 download_failed Job 未形成归档包。它们没有被假算成功或盲目重播。
+随后核对发现它是照片，同摘要同大小媒体已在另一有效 committed 归档中。
+实际鉴权有界读取 116647 bytes，通过完整大小及 SHA256 校验；无需重播或恢复该旧取消包。
+读取曾有 Range ValueError，后续核验成功，不把一次读取失败直接解释为原件丢失。
+另有一个 download_failed Job 未形成归档包，仍单列；不能把下载失败说成归档成功。
 
 副本失败中的九个来源在 Player 已 inactive；有界 HEAD 逐项返回 404。
 保留其失败记录，单列为非有效来源，不复活删除内容。

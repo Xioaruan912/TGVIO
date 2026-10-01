@@ -12,8 +12,9 @@
 Bot 归档包 committed 51、cancelled 1，没有 pending/failed 归档包。
 历史 cancelled 记录含 archive_capability_missing，不将它解释为用户主动取消或归档成功。
 只读核对显示该历史包的一项原始缓存已不在本地，不能直接重试；它的发布 Job 已成功。
-另一个 failed Job 是 download_failed，未形成归档包。两者不能冒称归档完整。
-不重播 Telegram，不复活已删除媒体；历史原件恢复需走既有主进程恢复路径。
+后续证实该原件是照片，在另一 committed 包已有同摘要同大小对象，116647 bytes 实际读取及全 SHA256 校验通过；不需重播该旧包。
+另一个 failed Job 是 download_failed，未形成归档包，继续单列核实。
+不重播 Telegram，不复活已删除媒体；其他原件恢复需走既有主进程恢复路径。
 
 ## 修改与验证
 
