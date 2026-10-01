@@ -28,10 +28,10 @@ def flat_extreme_frame(gray: bytes) -> bool:
     if not dominated:
         return False
     total = sum(gray)
-    # Standard deviation >= 4 and a meaningful luma range preserve small
-    # content on white backgrounds and highlights in dark scenes.
+    # A standard deviation >= 4 preserves real low contrast detail even
+    # when all pixels fall inside the dark or bright band.
     variance_numerator = sum(v*v for v in gray) * count - total*total
-    return max(gray) - min(gray) < 32 or variance_numerator < 16 * count * count
+    return variance_numerator < 16 * count * count
 
 
 async def extract(source: Path, work: Path) -> bytes | None:
