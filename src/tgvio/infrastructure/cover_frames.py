@@ -19,6 +19,21 @@ async def command(*args: str) -> tuple[int, bytes]:
         raise
 
 
+def flat_extreme_frame(gray: bytes) -> bool:
+    """Reject featureless black/white, without discarding bright or dark detail."""
+    count = len(gray)
+    if not count:
+        return True
+    dominated = sum(v < 24 for v in gray) >= count * .95 or sum(v > 231 for v in gray) >= count * .95
+    if not dominated:
+        return False
+    total = sum(gray)
+    # Standard deviation >= 4 and a meaningful luma range preserve small
+    # content on white backgrounds and highlights in dark scenes.
+    variance_numerator = sum(v*v for v in gray) * count - total*total
+    return max(gray) - min(gray) < 32 or variance_numerator < 16 * count * count
+
+
 async def extract(source: Path, work: Path) -> bytes | None:
     output = work / "frame.jpg"
     for position in ("1", "0.1", "3", "0"):
@@ -43,7 +58,7 @@ async def extract(source: Path, work: Path) -> bytes | None:
             continue
         if code or len(gray) != 1024:
             continue
-        if sum(v < 24 for v in gray) >= 974 or sum(v > 231 for v in gray) >= 974:
+        if flat_extreme_frame(gray):
             continue
         payload = output.read_bytes()
         if payload.startswith(b"\xff\xd8") and payload.endswith(b"\xff\xd9"):
