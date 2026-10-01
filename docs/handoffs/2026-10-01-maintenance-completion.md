@@ -31,3 +31,11 @@ Bot 归档包 committed 51、cancelled 1，没有 pending/failed 归档包。
 生产切换和最新数量另写 operations 发布证据。维护进程使用各自原 checkpoint。
 完成标准是有效媒体逐项拥有真实可读封面，以及按原画高度应有的 480p/720p；
 收藏覆盖单独核对。历史取消、源丢失或损坏必须列为真实异常，不能以占位代替。
+
+## 已部署与继续入口
+
+持续恢复版本 763a1f6 已部署两个维护进程；4K 内存/编码线程修正 a5fd3e0 仅再切换封面进程。
+生产数量、原件异常和逐张收藏验收见 [维护发布回执](../operations/2026-10-01-maintenance-completion-release.md)。
+每小时当前线程跟进 ID 为 tgvio，继续检查真实完成条件，尚未全库补齐。
+本机私有 completion-release/monitor.py 通过 expected-workers.json 检查当前两个不同版本；
+completion-cover-memory 保留封面后续切换及隔离 4K 验证。不要按 Git HEAD 强行重建 Bot/Player。
