@@ -472,3 +472,21 @@ OOM0、副本峰值672.04MB、磁盘21.19GB，四运行身份/零重启不变。
 7次上传失败累计1262.5秒，1.5核上限确有CPU throttling，仍单任务有界处理。
 performance-remote.py及JSON保存匿名时间/资源证据；没有分阶段计时，
 不声称某阶段精确占比或增加资源后的倍数。未变更运行配置。
+
+### 11:02 恢复结果鉴权通过与封面暂时读取失败
+
+最新[元数据核验发布](../operations/2026-10-02-metadata-put-verification-release.md)新增11:02续查。
+03:02:20 UTC封面907/908、登记480p249/870、720p231/729，比10:03增加19/17；
+副本done259/failed50/pending708，有效失败25、有效ValueError精确键匹配0。
+02:55六个有效405来源暂无同源随后complete，后续又一upload405，仍待恢复。
+02:54:43 written2/recovered1精确来源先Player同步待完成，
+随后同一不可变recovered-20261002-0254-ref两档绑定/DTO/鉴权Range0-1全通过，
+匿名401、logout成功、pending=false；不是完整MP4或全覆盖。
+recovered-0254-range-remote固定完成时间、已验收，不照旧重跑；旧引用保持。
+36收藏初验502失败，单列保留；有界一次重试版最终全36鉴权/完整哈希通过，
+验收中一次502恢复；没有改Player生产重试逻辑。
+一当前Timeout来源480p大小先false、后stat实际等于预期1,937,245；
+不据波动宣称源损坏或两档完成。最后缺图仍binding有效/无副本/pending0/封面attempt8。
+OOM0/四身份零重启、磁盘21.13GB、冻结Jobenabled/max3/count6/exhausted边界保持。
+completion-metadata-verify/audit-20261002-0302保留18项证据，未修改应用或扩大资源；
+仅文档源码同步，自动跟进继续至逐项全覆盖。

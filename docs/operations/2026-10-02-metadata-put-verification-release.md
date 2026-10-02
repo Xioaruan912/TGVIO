@@ -192,3 +192,45 @@ upload_unverified/TimeoutError两次；失败消耗时间不等于全程停滞�
 现有日志无分阶段计时，不能断言下载/转码/上传各占多少。
 私有performance-remote.py/performance-latest.json保存只读实际证据，无原媒体标识输出。
 本轮仅审计，未调大CPU/并发/预算或发布代码。
+
+### 11:02 真实恢复、封面重试与当前覆盖
+
+03:02:20 UTC有效原画908、封面907/908；登记480p249/870、720p231/729，
+仍缺1/621/498。相比10:03的230/214，分别增加19/17，仍不是全部对象鉴权验收。
+副本checkpoint done259/failed50/pending708，有效失败25任务/25唯一来源；
+02:54时有效失败24，随后新upload405增至25。全局ValueError25，精确有效键匹配0。
+02:55新进程日志有6个有效405来源、暂无同源随后complete；03:00又一upload405，
+不能将正常恢复写成405全部解决或把checkpoint done当真实覆盖。
+
+02:54:43实际complete/written2/recovered1来源，原清单哈希/_COMPLETE、
+原画远端大小、绑定索引已核验。初次Player行0、catalog_sync_pending=true，
+同步日志当时最近02:52:59正常完成，尚未发现新索引，无同步失败。
+后续同一不可变recovered-20261002-0254-ref的Player两档行/DTO/精确对象绑定、
+480p/720p各bytes0-1鉴权206、完整Content-Range及两字节长度通过；
+匿名401、logout成功、catalog_sync_pending=false。
+仅该来源Range抽查，不是完整远端MP4哈希/解码或所有副本已验证。
+
+本轮36收藏初验某封面HTTP502，不写成全通过；错误类/fixture位置单列保留。
+隔离验收仅对502/503/504一次有界重试、原完整校验不变，随后36张全部
+鉴权200/private/JPEG/尺寸/完整SHA256通过、匿名401、logout成功，
+此轮验收过程中也有一次502重试恢复。这不是Player生产重试策略变更。
+新增当前有效TimeoutError来源原绑定/原画大小有效、77秒失败；
+第一次索引480p远端大小核验false，随后只读stat确认文件存在、非目录、
+实际与预期均1,937,245字节。说明读取/元数据结果存在波动，
+不据第一次false宣称损坏，也不据大小正确宣称完整内容或两档恢复。
+
+最后缺图原绑定有效、无绑定副本、副本pending/attempt0、封面attempt8，
+原冷却/12MiB/768MiB/输入输出单线程保持，不重复四次HEVC取帧/NAL诊断。
+实际FFmpeg编码及临时写入持续，封面/副本OOM及OOM-kill0；
+四容器身份/运行版本仍eaa83cd/8097821及既有Bot/Player、零重启、后两者健康。
+三库quick_check通过，磁盘21,129,236,480字节，未调大CPU/并发/预算。
+冻结download_failed仍enabled/max3/count6/exhausted；九个旧inactive/404、
+两个删除和已验证照片取消包保持不复活/重播/重发边界。
+
+私有completion-metadata-verify/audit-20261002-0302保存本轮18项证据；
+recovered-0254-range-remote选择固定完成时间，不按变化的最近complete重绑定，
+已鉴权验收通过，不再盲目重跑或覆写该私有引用。
+favorites原失败及favorites-retry成功分别保留；新helper均只读或鉴权验收，
+没有生产代码热补丁或数据库写入。本轮仅文档推送/独立源码同步，不重建服务。
+尚未全覆盖，tgvio自动跟进继续；下一轮先当前monitor、有效失败归属/重试、
+最后缺图副本与上游读取波动，不把旧图/副本验收当实时全部可读。
