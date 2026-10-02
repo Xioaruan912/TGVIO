@@ -106,4 +106,33 @@ active_videos908/rejected0，无失败事件；配置poll60秒，完整发现+�
 player-index-view、player-sync-log及JSON保留从等待到实际鉴权通过的证据。
 first-player-range已执行，不盲目重跑；首任务可能随日志裁切改变，
 不可变metadata-first-ref不覆写；旧fairness的first-retry引用也不覆盖。
-发布/确认脚本仍是一性回执，不再执行；后续先实时覆盖、资源与真实重试结果。
+发布/确认脚本仍是一次性回执，不再执行；后续先实时覆盖、资源与真实重试结果。
+
+### 08:53 当前覆盖与新进程重试巡查
+
+00:53:45 UTC当前有效原画908，封面907/908；
+480p212/870、720p199/729，仍缺1/658/530。
+相比上一轮08:25的200/190，两档新增12/9，不把checkpoint done当覆盖。
+副本checkpoint done226/failed46/pending745，有效失败22任务/22唯一来源；
+全局ValueError24，但精确当前有效任务键匹配仍0。
+当前新8097821进程日志有2个有效来源metadata PUT405，尚无同来源随后complete；
+不能将非2xx完整内容确认修复写成所有提供端405已消失。
+22有效失败中attempt2有4、attempt1有18，未重置累计次数。
+
+最后缺图原清单绑定有效，无绑定副本，副本pending/attempt0；
+封面自然重试至attempt8仍ValueError。保持原冷却、12MiB/768MiB/单线程预算，
+不重复已做四次取帧/NAL诊断；等待正常副本完整源验证或现有受控安全恢复。
+36当前收藏再次逐张鉴权200/JPEG/尺寸/完整SHA256通过，匿名401；
+不是全库907张封面鉴权或全部MP4完整读取验收。
+
+新副本实际FFmpeg编码持续，临时文件最近1秒写入；cgroup峰值434,053,120字节，
+封面峰值84,774,912字节，两者OOM/OOM-kill0。
+四容器身份/版本与expected-workers一致、零重启，Bot/Player健康；
+Player和两个检查点quick_check通过，可用磁盘21,273,047,040字节。
+无新应用缺陷证据，本轮仅只读审计与文档源码同步，不重建/重启任何服务。
+
+私有completion-metadata-verify/audit-20261002-0053保存本轮11项证据，
+明确runtime8097821/eaa83cd；旧pre8097821证据保留，不把两进程日志混用。
+九个历史inactive/404、两个删除来源、旧照片取消包和冻结download_failed Job边界保持。
+后续仍先实时monitor、最后缺图副本状态、真实405重试结果和资源；
+全覆盖未完成，tgvio自动跟进保持。

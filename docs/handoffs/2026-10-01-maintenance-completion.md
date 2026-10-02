@@ -425,3 +425,17 @@ player-sync-log保存私有匿名结论；不可变metadata-first-ref勿覆盖�
 不要按“第一条start”盲目重跑，旧fairness first-retry私有引用保持原样。
 新副本OOM0/峰值425.37MB；身份及quick_check保持、磁盘21.18GB。
 继续自动补齐最后缺图与所需副本；只同步文档源码，不重复发布。
+
+### 08:53 自动补齐继续
+
+最新[元数据核验发布](../operations/2026-10-02-metadata-put-verification-release.md)新增08:53巡查。
+00:53:45 UTC封面907/908、480p212/870、720p199/729，较08:25增加12/9；
+副本done226/failed46/pending745，有效失败22，当前有效ValueError精确匹配0。
+新8097821日志2个有效来源metadata405尚无同源随后complete，不能宣称405根治。
+36当前收藏再次全部鉴权JPEG/尺寸/完整SHA256通过。
+最后缺图binding有效、无绑定副本、副本pending0，封面自然attempt8；
+不重做取帧/NAL诊断或放宽预算，等待正常副本源验证/受控恢复。
+OOM0，编码持续，磁盘21.27GB；8097821/eaa83cd与Bot/Player身份、零重启保持。
+私有completion-metadata-verify/audit-20261002-0053保存本轮证据和运行范围，
+旧pre8097821关联回执保持。只推文档、同步独立源码，不重复发布；
+自动跟进继续，下一轮从monitor和当前missing状态开始。
