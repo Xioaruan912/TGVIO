@@ -313,7 +313,26 @@ class WebDavArchiveTransport(WebDavClientMixin):
             },
         )
         if status not in {200, 201, 204}:
-            raise WebDavArchiveError("WebDAV metadata PUT failed", status=status)
+            # A failed response is not proof that the desired metadata is absent.
+            # Accept only a complete byte match; size alone is insufficient here.
+            try:
+                verified = self._stat_sync(remote_path)
+                matches = (
+                    verified.exists and not verified.is_collection
+                    and verified.size_bytes == len(payload)
+                    and self._get_bytes_sync(remote_path, max(len(payload), 1)) == payload
+                )
+            except (OSError, http.client.HTTPException, WebDavArchiveError) as exc:
+                raise WebDavArchiveError("WebDAV metadata PUT failed", status=status) from exc
+            if not matches:
+                raise WebDavArchiveError("WebDAV metadata PUT failed", status=status)
+            return ArchiveStoreReceipt(
+                remote_path=remote_path,
+                size_bytes=len(payload),
+                verification_method="content",
+                etag=verified.etag,
+                reused_remote=False,
+            )
         verified = self._stat_sync(remote_path)
         if not (verified.exists and verified.size_bytes == len(payload)):
             raise WebDavArchiveError("WebDAV metadata PUT failed size verification", status=status)
