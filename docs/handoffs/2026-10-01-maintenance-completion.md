@@ -375,3 +375,36 @@ catalog_sync_pending=false；不是完整远端MP4读取/哈希或全覆盖。
 副本峰值576.85MB，临时写入近期5秒；磁盘21.52GB，quick_check通过。
 本轮只读审计/文档推送/独立源码同步，不重建任一工作器；
 未全覆盖，tgvio自动跟进继续。下一轮先实时覆盖、真实恢复、上传阶段和资源。
+
+## 2026-10-02 08:08 北京时间元数据响应核验发布
+
+最新 [元数据核验发布](../operations/2026-10-02-metadata-put-verification-release.md)。
+副本维护实际809782137ae3a080ec1957f36d7c39101339e083，
+image2129d1706c8b4638bd556360114abc4336cf430b776b32755cc6bf8e49163440；
+封面eaa83cd、Bot/Player身份/版本未变，四容器零重启，OOM0。
+元数据PUT非2xx过去直接failed；新实现仅在文件、大小和完整字节都匹配payload
+时接受结果，错内容/不可读/目录仍失败并保留原HTTP状态，不额外PUT/DELETE/MOVE，
+不增加timeout/轮询，不清零检查点或改变失败冷却。
+旧实现3项初始回归先红，新实现4项、35目标测试、完整Python1066/Node215/
+TS/Vite/治理通过（WSL3.13.5，browserfalse）；VPS候选3.11/UID65532/network-none
+4回归及临时1017检查点公平调度门禁通过，不声称全套3.11/浏览器验收。
+
+546源码文件/模式/集合和镜像RootFS/Config/revision精确核验，本地与VPS imageID不同，
+使用实际VPS ID发布。停dded、SQLite一致性备份、dry-run1017任务、原每条检查点不变，
+保留停止dded容器/镜像/独立备份，expected-workers只更新副本。
+completion-metadata-verify/update-remote.py、confirm-deployment.py已一次执行，不重跑。
+00:08首轮scan/start尚待结果，不能将running写成处理成功；后续先真实事件/覆盖/资源。
+
+00:08:30 UTC封面907/908、480p194/870、720p185/729，缺1/676/544；
+36收藏本轮全鉴权JPEG/完整哈希/尺寸通过，匿名401、退出成功。
+副本done211/failed47/pending759，有效失败24任务/24唯一来源；
+全局ValueError23但当前有效精确键匹配0。最后HEVCbinding有效、无副本、
+副本pending0/封面attempt7自然冷却，不重复四个既有取帧/NAL诊断。
+旧dded日志24个当前来源405，8包中7有别的成功写、6有随后成功写，
+一项metadata405约9768秒后written0完成；不等于首响应已可读或新分支生产触发。
+原completion-retry-fairness的retry-outcomes-pre8097821/failed-profile-pre8097821
+是旧进程快照；新进程日志不能覆盖旧证据。文件405/提供端根因仍未确认。
+
+原九个、两个已删、照片取消包及冻结Job不复活/重播/重发；
+磁盘21.29GB，quick_check通过。仅文档源码同步不触发其他重建。
+继续自动跟进至当前可用媒体逐项真实封面、应有副本与鉴权可读证据。
