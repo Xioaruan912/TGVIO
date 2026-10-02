@@ -408,3 +408,20 @@ completion-metadata-verify/update-remote.py、confirm-deployment.py已一次执�
 原九个、两个已删、照片取消包及冻结Job不复活/重播/重发；
 磁盘21.29GB，quick_check通过。仅文档源码同步不触发其他重建。
 继续自动跟进至当前可用媒体逐项真实封面、应有副本与鉴权可读证据。
+
+### 08:23 已确认新进程实际处理与鉴权接口
+
+新进程scan/start后真实complete/written2/recovered0，后续持续complete；
+00:23:19 UTC封面907/908、480p199/870、720p189/729，缺1/671/540，
+副本done216/failed46/pending755，有效失败23任务/23唯一来源。
+初验该来源catalog_sync_pending=true；两条元数据实际被Player校验器及只读客户端
+接受、无删除标记。同步正常完成间隔约5–6分钟，配置poll60是轮询等待，
+不是每个包60秒内完成；未强制刷新、改库或重启Player。
+随后同一metadata-first-ref的480p/720p DTO/索引/鉴权Range bytes0-1全通过，
+匿名401、退出成功、catalog_sync_pending=false；不是完整MP4内容验收，
+也没有证据说该来源实际触发非2xx确认分支或全部405已根治。
+completion-metadata-verify/first-player-range、first-catalog-parse、player-index-view、
+player-sync-log保存私有匿名结论；不可变metadata-first-ref勿覆盖，Range脚本已执行
+不要按“第一条start”盲目重跑，旧fairness first-retry私有引用保持原样。
+新副本OOM0/峰值425.37MB；身份及quick_check保持、磁盘21.18GB。
+继续自动补齐最后缺图与所需副本；只同步文档源码，不重复发布。

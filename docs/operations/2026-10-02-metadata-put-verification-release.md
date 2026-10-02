@@ -14,7 +14,7 @@
 完整Python1066/Node215/TS/Vite/规范门禁通过，WSL Python3.13.5，browser=false。
 源码809782137ae3a080ec1957f36d7c39101339e083已推送且clean；
 只构建副本维护镜像，封面/Bot/Player不重建。
-后续需要记录精确VPS导入镜像、Python3.11隔离门禁、检查点备份、实际部署和后验。
+实际VPS导入镜像、Python3.11隔离门禁、检查点备份、部署和后验记录如下。
 不能把隔离修复证明或正常complete写成提供端405全部解决。
 
 ## 实际发布与隔离门禁
@@ -82,3 +82,28 @@ completion-release/monitor.py与expected-workers.json是当前运行身份审计
 若需证明某任务恢复，精确绑定索引和鉴权接口后再报告。
 未运行浏览器/真机或全视频播放验收；全覆盖尚未达成，tgvio自动跟进继续。
 文档后续仅同步独立源码快照并核验容器不变，不重建其他进程。
+
+### 08:23 运行与鉴权后验
+
+新进程已scan/start并实际complete/written2/recovered0，后续complete持续。
+初次该来源Player副本数0，不能当可播放验收；精确源绑定、当前校验器干解析
+及Player生产只读客户端都接受两条索引，元数据有效、没有删除标记。
+只读同步日志显示00:03:17、00:08:38、00:14:05、00:19:57正常完成，
+active_videos908/rejected0，无失败事件；配置poll60秒，完整发现+等待的实际完成
+间隔约5–6分钟，不能解释为每个来源60秒内立即同步，也未强制刷新/改库。
+
+随后同一不可变metadata-first-ref.json的两档Player行/DTO/绑定索引核验，
+480p/720p各bytes0-1鉴权206、Content-Range和两字节长度通过，
+匿名媒体401、退出成功，catalog_sync_pending=false。
+只是该来源Range抽查，不等于完整远端MP4哈希/解码；
+也没有日志字段证明该生产任务触发了非2xx核验分支，不能宣称全部405已解决。
+
+00:23:19 UTC，封面907/908，480p199/870、720p189/729，缺1/671/540；
+副本done216/failed46/pending755，有效失败23任务/23唯一来源。
+相比上一轮06:58两档增加25/27；磁盘21,183,770,624字节，quick_check/身份通过。
+新副本cgroup OOM/OOM-kill0，实测峰值425.37MB；封面仍eaa83cd。
+私有completion-metadata-verify/first-player-range-remote.py、first-catalog-parse、
+player-index-view、player-sync-log及JSON保留从等待到实际鉴权通过的证据。
+first-player-range已执行，不盲目重跑；首任务可能随日志裁切改变，
+不可变metadata-first-ref不覆写；旧fairness的first-retry引用也不覆盖。
+发布/确认脚本仍是一性回执，不再执行；后续先实时覆盖、资源与真实重试结果。
