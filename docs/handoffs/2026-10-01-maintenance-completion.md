@@ -439,3 +439,20 @@ OOM0，编码持续，磁盘21.27GB；8097821/eaa83cd与Bot/Player身份、零�
 私有completion-metadata-verify/audit-20261002-0053保存本轮证据和运行范围，
 旧pre8097821关联回执保持。只推文档、同步独立源码，不重复发布；
 自动跟进继续，下一轮从monitor和当前missing状态开始。
+
+### 09:57 新上传失败与补齐进展
+
+最新[元数据核验发布](../operations/2026-10-02-metadata-put-verification-release.md)新增09:57续查。
+01:57:21 UTC封面907/908、480p226/870、720p213/729，两档比09:00各增加14；
+副本done239/failed52/pending726，有效失败27，当前有效ValueError精确匹配0。
+新8097821日志metadata405有2、upload405有3、upload_unverified/TimeoutError有2；
+五个有效405来源尚无同源随后complete，不宣称修复提供端全部问题。
+最新四WebDav失败索引绑定字段匹配/目录有效，三已有大小正确480p、一暂无；
+不是完整MP4哈希/两档鉴权验收。失败后新start继续，资源预算/累计次数保持。
+36收藏再次全部鉴权JPEG/尺寸/完整哈希通过；最后缺图binding有效、无副本、
+副本pending/attempt0、封面attempt8；不重做既有HEVC取帧诊断。
+OOM0、副本峰值672.04MB、磁盘21.19GB，四运行身份/零重启不变。
+冻结Job本轮仍enabled/max3/count6/exhausted，不重发；
+删除来源/照片取消包不复活或重播。
+私有completion-metadata-verify/audit-20261002-0157保留本轮运行范围及13项证据。
+本轮仅文档源码同步，不改代码/部署工作器；自动跟进继续至逐项全覆盖。
