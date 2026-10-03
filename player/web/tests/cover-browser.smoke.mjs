@@ -121,6 +121,10 @@ try {
   await cdp("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:width<900});await navigate("/");
   await wait("!!document.querySelector('.app-shell')","main app");
   check(await evaluate("document.querySelector('.player-panel .action-btn[aria-label=\"立即遮住并暂停\"]')!==null"),"privacy lock directly available");
+  check(await evaluate("(()=>{const f=document.querySelector('#feed');return f.getAttribute('role')==='region'&&f.getAttribute('aria-label')==='竖屏视频流'&&f.tabIndex===0})()"),"short feed is a labelled focusable region "+width);
+  // A 5-character label must stay on one line and inside its button: `nowrap`
+  // turns the old wrap failure into an overflow, which is what we measure.
+  check(await evaluate("(()=>{const l=document.querySelector('.transport-play .transport-label'),b=document.querySelector('.transport-play');const lr=l.getBoundingClientRect(),br=b.getBoundingClientRect();return l.scrollWidth<=l.clientWidth+1&&l.scrollHeight<=l.clientHeight+1&&lr.left>=br.left-0.5&&lr.right<=br.right+0.5})()"),"primary transport label fits on one line "+width);
   check(await evaluate("document.querySelector('.seek').getBoundingClientRect().height>=48"),"seek 48px "+width);
   check(await evaluate("(()=>{const p=document.querySelector('.player-panel').getBoundingClientRect(),n=document.querySelector('.bottom-nav');return getComputedStyle(n).display==='none'||p.bottom<=n.getBoundingClientRect().top+1})()"),"panel clears navigation "+width);
   await click(".transport-play");await wait("document.querySelector('.media-slot.is-current')?.readyState>=2","decoded short");

@@ -55,6 +55,7 @@ export function installDom() {
     pause() { this.pauses = (this.pauses ?? 0) + 1; }
     load() { this.loads = (this.loads ?? 0) + 1; }
     play() { return Promise.resolve(); }
+    getContext() { return null; }
   }
   const all = node => node.children.flatMap(c => [c, ...all(c)]);
   const select = (node, selector) => {
