@@ -48,6 +48,21 @@
 .long-resume-notice { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-muted); }
 @media (hover: hover) { .long-resume-clear:not(:disabled):hover { border-color: var(--primary); color: var(--primary); } }
 .long-retry { justify-self: center; min-height: 48px; padding: 0 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--primary); font-size: 13px; }
+/* The filter panel. Every control is a real 44px hit target and every state is
+   visible without reading: a pressed pill is the state, not a checkmark to hunt. */
+.filter-sheet { display: grid; gap: 10px; }
+.filter-dates { display: flex; align-items: center; gap: 8px; }
+.filter-input { flex: 1 1 0; min-width: 0; min-height: 44px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: 16px; color-scheme: light; accent-color: var(--primary); }
+.filter-dash { flex: none; color: var(--muted); font-size: 13px; }
+.filter-tri { display: flex; align-items: center; gap: 10px; justify-content: space-between; }
+.filter-tri-label { font-size: 13px; color: var(--text-secondary); }
+.filter-tri-choices { display: inline-flex; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-sunken); }
+.filter-tri-button { min-height: 44px; min-width: 44px; padding: 0 12px; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font-size: 13px; touch-action: manipulation; }
+.filter-tri-button[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); font-weight: 650; }
+.filter-actions { display: flex; gap: 10px; padding-top: 6px; }
+.filter-actions .library-button { flex: 1 1 0; }
+.filter-apply { background: var(--primary-soft); color: var(--primary); font-weight: 650; }
+@media (hover: hover) { .filter-tri-button:not([aria-pressed="true"]):hover { color: var(--primary); } }
 @media (min-width: 900px) {
  .browse-page { left: calc(92px + var(--safe-left)); bottom: 0; padding-inline: 28px; max-width: var(--library-max); margin-inline: auto; }
  .browse-header { min-height: calc(118px + var(--safe-top)); padding-inline: 0; background: transparent; }

@@ -5,13 +5,19 @@ import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
 import { bindCoverMasonry, type CoverMasonry } from "./components/cover-masonry";
 import { createSlidingIndicator } from "./components/indicator";
+import { closeSheet, openSheet, type SheetHost } from "./components/sheet";
+import { buildFilterSheet } from "./components/filter-sheet";
+import { emptyFilters, filterCount, type LibraryFilters } from "./library-filters";
 import { prefs, setPref } from "./settings";
 import type { Clip, LibraryCategory, LibraryDate, LibraryFolder, LibraryVideosPage } from "./types";
 
 const BATCH = 20;
 const MAX_SELECTED = 100;
 const MAX_ROWS = 1000; // One explicit page session has a bounded metadata/DOM budget.
-type LibrarySource = { libraryVideos(folderId: string, category: LibraryCategory, limit: number, cursor: string | null, signal?: AbortSignal): Promise<LibraryVideosPage> };
+type LibrarySource = {
+  libraryVideos(folderId: string, category: LibraryCategory, limit: number, cursor: string | null, signal?: AbortSignal): Promise<LibraryVideosPage>;
+  videos(category: LibraryCategory, limit: number, offset: number, cache: boolean, search: string, signal?: AbortSignal, filters?: LibraryFilters): Promise<{ items: Clip[]; hasMore: boolean; total: number | null }>;
+};
 
 /** Pure, injectable metadata controller. Selection is insertion ordered, never implicit. */
 export class LibraryController {
@@ -22,7 +28,11 @@ export class LibraryController {
   hasMore = true;
   loading = false;
   error = false;
+  /** "folder" pages a keyset inside one directory; "wall" pages the whole library. */
+  mode: "folder" | "wall" = "folder";
+  filters: LibraryFilters = emptyFilters();
   private cursor: string | null = null;
+  private offset = 0;
   private generation = 0;
   private request: AbortController | null = null;
   private readonly seen = new Set<string>();
@@ -45,6 +55,9 @@ export class LibraryController {
     this.removed.add(mediaId); this.selected.delete(mediaId);
     this.rows = this.rows.filter(row => row.id !== mediaId);
     if (this.cursor === mediaId) this.cursor = this.rows.at(-1)?.id ?? null;
+    // A removed row shifts every later offset by one, so the next wall page must not
+    // skip the video that moved into its place.
+    if (this.mode === "wall" && this.offset > 0) this.offset -= 1;
     if (clip && (this.category === "all" || this.category === clip.category)) this.total = Math.max(0, this.total - 1);
     if (clip && this.folder) this.folder = { ...this.folder, video_count: Math.max(0, this.folder.video_count - 1) };
     // A pending response may predate server deletion; abort it, do not reset loaded rows/cursor.
@@ -52,38 +65,62 @@ export class LibraryController {
   }
   cancel(): void { this.generation++; this.request?.abort(); this.loading = false; }
   open(folder: LibraryFolder): void {
-    this.clearSelection(); this.folder = folder; this.category = "all"; this.reset();
+    this.clearSelection(); this.folder = folder; this.category = "all";
+    this.mode = "folder"; this.filters = emptyFilters(); this.reset();
+  }
+  /** The flat wall: every video the filter set selects, in the order it asks for. */
+  openWall(filters: LibraryFilters): void {
+    this.clearSelection(); this.folder = null; this.category = "all";
+    this.mode = "wall"; this.filters = filters; this.reset();
   }
   setCategory(category: LibraryCategory): void { this.category = category; this.reset(); }
   private reset(): void {
-    this.cancel(); this.rows = []; this.seen.clear(); this.cursor = null;
-    this.total = this.folder?.video_count ?? 0; this.hasMore = true; this.error = false;
+    this.cancel(); this.rows = []; this.seen.clear(); this.cursor = null; this.offset = 0;
+    this.total = this.mode === "folder" ? this.folder?.video_count ?? 0 : 0;
+    this.hasMore = true; this.error = false;
   }
   async loadMore(): Promise<void> {
-    if (this.disposed || this.loading || !this.hasMore || !this.folder || this.rows.length >= MAX_ROWS) return;
+    if (this.disposed || this.loading || !this.hasMore || this.rows.length >= MAX_ROWS) return;
+    if (this.mode === "folder" && !this.folder) return;
     const generation = this.generation;
     this.request?.abort(); const request = this.request = new AbortController();
     this.loading = true; this.error = false;
     try {
-      const page = await this.source.libraryVideos(this.folder.id, this.category, BATCH, this.cursor, request.signal);
-      if (generation !== this.generation || this.disposed) return;
-      // Stage the bounded page before committing rows or cursor. A malformed
-      // has_more response must remain retryable from the last good keyset.
+      // Stage the bounded page before committing rows or the paging key. A malformed
+      // has_more response must remain retryable from the last good position.
       const incoming = new Map<string, Clip>();
-      for (const clip of page.items.slice(0, BATCH)) {
-        if (!this.seen.has(clip.id) && !this.removed.has(clip.id)) incoming.set(clip.id, clip);
-      }
-      if (page.hasMore && (!page.nextCursor ||
-          (this.cursor !== null && page.nextCursor <= this.cursor) || incoming.size === 0)) {
-        throw new Error("Library pagination did not advance");
+      if (this.mode === "wall") {
+        const page = await this.source.videos(this.category, BATCH, this.offset, false, "", request.signal, this.filters);
+        if (generation !== this.generation || this.disposed) return;
+        if (page.hasMore && page.items.length === 0) {
+          throw new Error("Library pagination did not advance");
+        }
+        this.offset += page.items.length;
+        for (const clip of page.items.slice(0, BATCH)) {
+          if (!this.seen.has(clip.id) && !this.removed.has(clip.id)) incoming.set(clip.id, clip);
+        }
+        this.total = page.total ?? this.total;
+        this.hasMore = page.hasMore;
+      } else {
+        const page = await this.source.libraryVideos(this.folder!.id, this.category, BATCH, this.cursor, request.signal);
+        if (generation !== this.generation || this.disposed) return;
+        for (const clip of page.items.slice(0, BATCH)) {
+          if (!this.seen.has(clip.id) && !this.removed.has(clip.id)) incoming.set(clip.id, clip);
+        }
+        // A shaped keyset need not still exist (concurrent deletion). Scope the
+        // returned rows by folder and category, never infer scope from the cursor.
+        if (page.hasMore && (!page.nextCursor ||
+            (this.cursor !== null && page.nextCursor <= this.cursor) || incoming.size === 0)) {
+          throw new Error("Library pagination did not advance");
+        }
+        this.total = page.total;
+        this.hasMore = page.hasMore;
+        this.cursor = page.nextCursor;
       }
       for (const clip of incoming.values()) {
         if (this.rows.length >= MAX_ROWS) break;
         this.seen.add(clip.id); this.rows.push(clip);
       }
-      this.total = page.total;
-      this.hasMore = page.hasMore;
-      this.cursor = page.nextCursor;
     } catch {
       if (generation === this.generation && !this.disposed) this.error = true;
     } finally { if (generation === this.generation) this.loading = false; }
@@ -106,7 +143,7 @@ export class VideoLibraryPage {
   private readonly controller = new LibraryController(api);
   private dates: LibraryDate[] = [];
   private folders: LibraryFolder[] = [];
-  private stage: "dates" | "folders" | "videos" = "dates";
+  private stage: "dates" | "folders" | "videos" | "wall" = "dates";
   private currentDate: string | null = null;
   private membership = false;
   private indexRequest: AbortController | null = null;
@@ -130,9 +167,19 @@ export class VideoLibraryPage {
   private readonly selectToggle = this.button("选择", () => this.setSelectMode(!this.selectMode));
   private readonly density = buildCoverDensityControl({ value: prefs.coverDensity, onSelect: value => this.setDensity(value) });
   private readonly loadButton = this.button("加载更多", () => void this.loadMore());
+  /** The flat wall's entry points: the whole library, and the filters over it. */
+  private readonly allButton = this.button("浏览全部封面", () => this.openWall());
+  private readonly filterButton = this.button("筛选", () => this.openFilterSheet());
+  private filters: LibraryFilters = emptyFilters();
+  private readonly sheet: SheetHost | null;
+  private filterSheetOpen = false;
   private automaticPages = 0;
 
-  constructor(private readonly onPlay: (clips: Clip[]) => void, private readonly onClose: () => void, options?: { mediaId?: string }) {
+  constructor(private readonly onPlay: (clips: Clip[]) => void, private readonly onClose: () => void, options?: { mediaId?: string; sheet?: SheetHost }) {
+    this.sheet = options?.sheet ?? null;
+    this.filterButton.disabled = this.sheet === null;
+    this.allButton.classList.add("library-browse-all");
+    this.filterButton.classList.add("library-filter");
     const frame = buildBrowseFrame({ title: this.title, subtitle: "日期 / 文件夹 / 视频",
       kind: "library", onBack: () => this.back(), toolbar: this.toolbar, notice: this.notice,
       selection: this.selectionBar, list: this.list });
@@ -141,7 +188,7 @@ export class VideoLibraryPage {
     this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
     this.selectionBar.hidden = true;
     this.list.addEventListener("scroll", () => {
-      if (this.stage === "videos" && !this.playbackActive && !this.controller.error && this.automaticPages < 3 &&
+      if (this.isGridStage() && !this.playbackActive && !this.controller.error &&
           this.list.scrollTop + this.list.clientHeight >= this.list.scrollHeight - 200) {
         this.automaticPages++; void this.loadMore();
       }
@@ -156,6 +203,49 @@ export class VideoLibraryPage {
     this.indexRequest?.abort(); this.controller.cancel();
     this.indexRequest = new AbortController();
     return { signal: this.indexRequest.signal, generation: ++this.generation };
+  }
+  private isGridStage(): boolean { return this.stage === "videos" || this.stage === "wall"; }
+  /** What the notice calls the thing on screen: a directory, or the filtered wall. */
+  private sourceLabel(): string {
+    const folder = this.controller.folder;
+    if (this.controller.mode === "wall" || !folder) {
+      const count = filterCount(this.filters);
+      return count ? `全部封面 · ${count} 个筛选条件` : "全部封面";
+    }
+    return `${folder.date ?? "未知日期"} · ${basisLabel(folder.date_basis)}`;
+  }
+  /**
+   * Apply a filter set by opening the flat wall at its first page.
+   *
+   * A directory has no filter of its own on the wire - `/api/v1/videos` selects by
+   * condition over the whole library - so filtering only the pages a folder had
+   * already loaded would quietly lie about what exists.
+   */
+  applyFilters(filters: LibraryFilters): void { this.openWall(filters); }
+  private openWall(filters: LibraryFilters = this.filters): void {
+    if (this.destroyed) return;
+    this.beginIndex();
+    this.filters = filters;
+    this.controller.openWall(filters);
+    this.stage = "wall"; this.automaticPages = 0; this.selectMode = false;
+    this.resetList(); this.list.classList.add("cover-grid");
+    this.renderWallToolbar();
+    this.notice.textContent = `${this.sourceLabel()} · 仅加载视频信息`;
+    void this.loadMore();
+  }
+  private syncFilterButton(): void {
+    const count = filterCount(this.filters);
+    this.filterButton.textContent = count ? `筛选 (${count})` : "筛选";
+    this.filterButton.setAttribute("aria-pressed", String(count > 0));
+  }
+  private openFilterSheet(): void {
+    const sheet = this.sheet;
+    if (!sheet) return;
+    this.filterSheetOpen = true;
+    openSheet(sheet, "筛选", [buildFilterSheet({
+      value: this.filters,
+      onApply: next => { this.filterSheetOpen = false; closeSheet(sheet); this.applyFilters(next); },
+    })]);
   }
   private isCurrent(generation: number): boolean { return !this.destroyed && generation === this.generation; }
   private resetList(): void {
@@ -194,7 +284,9 @@ export class VideoLibraryPage {
       if (day) { this.datesScroll = this.list.scrollTop; void this.loadFolders({ date: input.value }); }
       else this.notice.textContent = "该日期没有可播放原版的目录，请选择索引中的日期";
     });
-    label.append(input); this.toolbar.replaceChildren(label);
+    label.append(input);
+    this.syncFilterButton();
+    this.toolbar.replaceChildren(label, this.allButton, this.filterButton);
     for (const date of this.dates) {
       const button = this.button("", () => { this.datesScroll = this.list.scrollTop; void this.loadFolders({ date: date.date ?? "unknown" }); });
       fillDirectoryCard(button, { kind: "date", title: date.date ?? "未知日期",
@@ -241,6 +333,18 @@ export class VideoLibraryPage {
   private renderVideoToolbar(): void {
     this.buildSegments();
     if (this.toolbar.firstElementChild !== this.segments) this.toolbar.replaceChildren(this.segments, this.selectToggle, this.density.el);
+    this.syncSegments();
+  }
+  /** The wall keeps the same segments, select and density, and adds the filters. */
+  private renderWallToolbar(): void {
+    this.buildSegments();
+    this.syncFilterButton();
+    if (this.toolbar.firstElementChild !== this.segments) {
+      this.toolbar.replaceChildren(this.segments, this.filterButton, this.selectToggle, this.density.el);
+    }
+    this.syncSegments();
+  }
+  private syncSegments(): void {
     for (const button of this.segmentButtons) {
       const active = button.dataset.category === this.controller.category;
       button.setAttribute("aria-pressed", String(active));
@@ -262,6 +366,11 @@ export class VideoLibraryPage {
     }
     this.selectToggle.classList.add("library-select-toggle");
   }
+  /** Whichever grid is on screen owns the toolbar; the wall adds its filter entry. */
+  private renderGridToolbar(): void {
+    if (this.stage === "wall") this.renderWallToolbar();
+    else this.renderVideoToolbar();
+  }
   private setDensity(value: CoverDensityStep): void {
     setPref("coverDensity", value);
     applyCoverDensity(this.root, value);
@@ -274,13 +383,13 @@ export class VideoLibraryPage {
     if (category === this.controller.category) return;
     this.generation += 1; this.controller.setCategory(category); this.automaticPages = 0;
     this.resetList(); this.list.classList.add("cover-grid");
-    this.renderVideoToolbar(); void this.loadMore();
+    this.renderGridToolbar(); void this.loadMore();
   }
   private setSelectMode(enabled: boolean): void {
     this.selectMode = enabled;
     this.selectionBar.hidden = !enabled;
     for (const tile of this.tiles.values()) tile.setSelectMode(enabled);
-    this.renderVideoToolbar();
+    this.renderGridToolbar();
     if (enabled) this.notice.textContent = "多选模式：点击封面选中，可跨页与跨类型累计选择";
   }
   private clearSelection(): void {
@@ -298,12 +407,12 @@ export class VideoLibraryPage {
     this.selectionBar.replaceChildren(play, clear);
   }
   private async loadMore(): Promise<void> {
-    if (this.stage !== "videos" || this.playbackActive || this.destroyed || this.controller.loading) return;
+    if (!this.isGridStage() || this.playbackActive || this.destroyed || this.controller.loading) return;
     const generation = this.generation;
     this.loadButton.disabled = true; this.loadButton.textContent = "正在加载…";
     this.list.append(this.loadButton);
     await this.controller.loadMore();
-    if (!this.isCurrent(generation) || this.stage !== "videos") return;
+    if (!this.isCurrent(generation) || !this.isGridStage()) return;
     this.loadButton.remove();
     for (const clip of this.controller.rows) {
       if (this.tiles.has(clip.id)) continue;
@@ -311,15 +420,15 @@ export class VideoLibraryPage {
     }
     this.list.querySelector(".library-empty")?.remove();
     if (!this.controller.rows.length && !this.controller.hasMore && !this.controller.error) this.list.append(element("p", "library-empty", "该类型暂无视频，可切换筛选或返回文件夹"));
-    this.title.textContent = `${this.controller.folder?.label ?? "文件夹"} · ${this.controller.rows.length}/${this.controller.total}`;
+    this.title.textContent = `${this.controller.folder?.label ?? "全部封面"} · ${this.controller.rows.length}/${this.controller.total}`;
     this.loadButton.disabled = false;
     this.loadButton.textContent = this.controller.error ? "加载失败，重试" : "加载更多";
     if (this.controller.hasMore && this.controller.rows.length < MAX_ROWS) this.list.append(this.loadButton);
     this.syncGrid();
     if (this.controller.rows.length >= MAX_ROWS) this.notice.textContent = "本次浏览已达 1000 条信息预算，请使用类型筛选缩小范围";
     else if (this.controller.error) this.notice.textContent = "分页加载失败，已保留当前视频与选择，请点击重试";
-    else if (!this.controller.hasMore) this.notice.textContent = `${this.controller.folder?.date ?? "未知日期"} · ${basisLabel(this.controller.folder!.date_basis)} · ${this.controller.rows.length ? "已加载全部" : "该类型暂无视频"}`;
-    else this.notice.textContent = `${this.controller.folder?.date ?? "未知日期"} · ${basisLabel(this.controller.folder!.date_basis)} · 仅加载视频信息`;
+    else if (!this.controller.hasMore) this.notice.textContent = `${this.sourceLabel()} · ${this.controller.rows.length ? "已加载全部" : "该类型暂无视频"}`;
+    else this.notice.textContent = `${this.sourceLabel()} · 仅加载视频信息`;
   }
   private tile(clip: Clip): CoverTileHandle {
     const handle = buildCoverTile({
@@ -373,13 +482,16 @@ export class VideoLibraryPage {
     const scroll = this.list.scrollTop;
     tile?.destroy(); tile?.root.remove(); this.tiles.delete(mediaId);
     if (this.focusedRow === mediaId) this.focusedRow = null;
-    if (this.stage === "videos") {
-      this.title.textContent = `${this.controller.folder?.label ?? "文件夹"} · ${this.controller.rows.length}/${this.controller.total}`;
+    if (this.isGridStage()) {
+      this.title.textContent = `${this.controller.folder?.label ?? "全部封面"} · ${this.controller.rows.length}/${this.controller.total}`;
       this.renderSelection(); this.list.scrollTop = scroll;
     }
   }
   destroy(): void {
     this.destroyed = true; this.generation++; this.indexRequest?.abort(); this.controller.dispose();
+    // A sheet this page opened must not outlive it; the page owns its lifetime.
+    if (this.sheet && this.filterSheetOpen) closeSheet(this.sheet);
+    this.filterSheetOpen = false;
     this.segmentIndicator.destroy();
     for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
     this.masonry?.destroy(); this.masonry = null;
@@ -391,7 +503,7 @@ export class VideoLibraryPage {
       this.beginIndex(); this.controller.clearSelection(); this.selectMode = false;
       this.selectionBar.hidden = true; this.renderFolders(); this.renderVideoToolbarClear();
       if (hadSelection) this.notice.textContent = "已离开文件夹，选择已清空";
-    } else if (this.stage === "folders") {
+    } else if (this.stage === "folders" || this.stage === "wall") {
       this.beginIndex();
       if (this.dates.length) { this.renderDates(); this.notice.textContent = "日期来自目录，不代表上传完成时间"; }
       else void this.loadDates();

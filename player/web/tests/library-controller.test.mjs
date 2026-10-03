@@ -6,7 +6,10 @@ import ts from "typescript";
 const source = await readFile(new URL("../src/library.ts", import.meta.url), "utf8");
 const js = ts.transpileModule(source, { compilerOptions: { target: ts.ScriptTarget.ES2022, module: ts.ModuleKind.ESNext } }).outputText
  .replace(/^import .* from .*;$/gm, "");
-const { LibraryController } = await import("data:text/javascript;base64," + Buffer.from(js).toString("base64"));
+// The controller only needs the empty set; the filter vocabulary itself is pinned in
+// library-filters.test.mjs.
+const emptyFilters = () => ({ dateFrom: null, dateTo: null, minSeconds: null, maxSeconds: null, minBytes: null, maxBytes: null, hasCover: null, favorite: null, resumable: null, unwatched: null, sort: "newest", seed: null });
+const { LibraryController } = await import("data:text/javascript;base64," + Buffer.from("const emptyFilters = " + emptyFilters.toString() + ";\n" + js).toString("base64"));
 const clip = id => ({ id, category: "short" });
 const folder = { id: "opaque", label: "批次 1", date: "2026-06-01", date_basis: "directory_v2", video_count: 900 };
 const page = (items, cursor = null) => ({ items: items.map(clip), nextCursor: cursor, hasMore: !!cursor, total: 900, folder });
@@ -56,6 +59,36 @@ test("removeMedia removes selection and row, decrements total only once", async 
  c.removeMedia("a"); assert.deepEqual(c.rows.map(x => x.id), ["b"]);
  assert.equal(c.selectedClips.length, 0); assert.equal(c.total, 899);
  c.removeMedia("a"); assert.equal(c.total, 899);
+});
+
+test("the wall pages by offset, and a removed row does not make the next page skip", async () => {
+ const offsets = [];
+ const c = new LibraryController({
+  libraryVideos: async () => page([]),
+  videos: async (category, limit, offset) => {
+   offsets.push(offset);
+   return { items: offset === 0 ? [clip("a"), clip("b")] : [clip("c")], hasMore: offset === 0, total: 3 };
+  },
+ });
+ c.openWall({ ...emptyFilters(), minSeconds: 30 });
+ await c.loadMore();
+ assert.deepEqual(offsets, [0], "the first wall page starts at offset 0");
+ assert.deepEqual(c.rows.map(x => x.id), ["a", "b"]);
+ c.removeMedia("a");
+ await c.loadMore();
+ assert.deepEqual(offsets, [0, 1], "the removed row leaves a gap the next page must not skip");
+ assert.deepEqual(c.rows.map(x => x.id), ["b", "c"]);
+});
+
+test("a wall page that claims more without advancing stops instead of looping", async () => {
+ const c = new LibraryController({
+  libraryVideos: async () => page([]),
+  videos: async () => ({ items: [], hasMore: true, total: 900 }),
+ });
+ c.openWall(emptyFilters());
+ await c.loadMore();
+ assert.equal(c.error, true);
+ assert.equal(c.rows.length, 0);
 });
 
 test("invalid has_more pages preserve committed cursor/rows and can explicitly retry", async () => {

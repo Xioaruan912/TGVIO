@@ -3,7 +3,13 @@ import { icon, type IconName } from "../icons";
 import { activateDialog, animateArrival } from "./dialog";
 import { flingOut, settleFromVelocity } from "../motion";
 import type { Shell } from "../ui";
-const sheetDialogs = new WeakMap<Shell, () => void>();
+
+/**
+ * Everything a sheet needs. The shell is larger than this, and a page that owns its
+ * own sheet (the library's filter panel) can satisfy this without holding a shell.
+ */
+export type SheetHost = Pick<Shell, "root" | "sheet" | "sheetTitle" | "sheetBody">;
+const sheetDialogs = new WeakMap<SheetHost, () => void>();
 
 /** Past this drag distance or release speed the sheet is on its way out. */
 const DISMISS_DISTANCE = 88;
@@ -101,7 +107,7 @@ export function buildSheet(onClose: () => void) {
   return { sheet, sheetTitle, sheetBody };
 }
 
-export function openSheet(shell: Shell, title: string, body: Node[]): void {
+export function openSheet(shell: SheetHost, title: string, body: Node[]): void {
   shell.sheetTitle.textContent = title;
   shell.sheetBody.replaceChildren(...body);
   shell.sheetBody.scrollTop = 0;
@@ -196,7 +202,7 @@ export function sheetChoice(
   return row;
 }
 
-export function closeSheet(shell: Shell): void {
+export function closeSheet(shell: SheetHost): void {
   sheetDialogs.get(shell)?.();
   sheetDialogs.delete(shell);
   shell.sheet.hidden = true;

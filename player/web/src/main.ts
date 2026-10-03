@@ -1250,7 +1250,7 @@ function openCurrentFolder(): void {
 function openLibrary(options: { mediaId?: string } = {}): void {
   if (!shell) return;
   contentView.clear();
-  lockPrivacyScreen();
+  lockPrivacyScreen(); shortIdle.setEnabled(true);
   closeSheet(shell);
   const originFocus = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   const header = shell.root.querySelector<HTMLElement>(".app-header");
@@ -1258,7 +1258,7 @@ function openLibrary(options: { mediaId?: string } = {}): void {
   if (header) header.inert = true;
   let restoreOriginFocus = false;
   let page: VideoLibraryPage | null = null;
-  const playback = createCollectionPlayback(active => page?.setPlaybackActive(active));
+  const playback = createCollectionPlayback(active => { page?.setPlaybackActive(active); if (!active && libraryPage === page) shortIdle.setEnabled(true); });
   page = new VideoLibraryPage(
     selected => {
       playback.start(selected, clip => {
@@ -1269,7 +1269,7 @@ function openLibrary(options: { mediaId?: string } = {}): void {
       });
     },
     () => { restoreOriginFocus = true; contentView.clear(); },
-    options,
+    { ...options, sheet: shell },
   );
   libraryPage = page;
   contentView.activate(() => {

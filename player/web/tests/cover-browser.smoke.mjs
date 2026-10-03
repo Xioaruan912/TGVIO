@@ -230,6 +230,24 @@ try {
    else check(titled,`${density} keeps the title`);
   }
   await screenshot("library-density-"+width+"x"+height);
+  // The wall is the flat listing: filters reach it, the density steps still own the
+  // column count, and applying a filter restarts from the first page.
+  await click(".browse-back");await click(".browse-back");
+  await wait("!!document.querySelector('.library-index-row')","date index for the wall");
+  await click(".library-browse-all");
+  await wait("!!document.querySelector('.library-page .cover-tile')","flat wall");
+  await click(".library-filter");
+  await wait("!!document.querySelector('.sheet .filter-sheet')","filter panel open");
+  check(await evaluate("document.querySelectorAll('.sheet .filter-tri-button').length>=15"),"every filter condition is a control");
+  await click('.sheet .filter-tri[data-filter="hasCover"] .filter-tri-button:nth-child(2)');
+  await click(".sheet .filter-apply");
+  await wait("document.querySelector('.sheet').hidden","applying a filter closes the panel");
+  await wait("!!document.querySelector('.library-page .cover-tile')","filtered wall");
+  check(await evaluate("document.querySelector('.library-filter').textContent.includes('筛选 (1)')"),"the filter entry counts the applied condition");
+  const wall=await layout("library wall "+width);
+  check(wall.columns===densityColumns.comfortable[width],`the filtered wall keeps ${densityColumns.comfortable[width]} columns at ${width}, measured ${wall.columns}`);
+  check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"the wall never decodes media "+width);
+  await screenshot("library-wall-"+width+"x"+height);
   check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"listing metadata no preview decoding");
   check(await evaluate("document.querySelectorAll('.library-page .cover-tile-preview').length===0"),"covers expose no preview control "+width);
   check(await evaluate("document.querySelectorAll('.library-page .cover-tile button button').length===0"),"no nested cover button "+width);
@@ -316,6 +334,18 @@ try {
  // way back in is exercised rather than assumed.
  await evaluate("document.querySelector('.login-input').value='idle-test';document.querySelector('.login-form').requestSubmit();true");
  await wait("!!document.querySelector('.app-shell')","signing back in after the idle eject");
+ // A panel must not be an idle exemption: with the filter sheet open the minute still
+ // ends the session, and the sheet does not outlive it.
+ await nav("library");await wait("!!document.querySelector('.library-index-row')","library for the panel idle check");
+ await click(".library-browse-all");
+ await wait("!!document.querySelector('.library-page .cover-tile')","wall for the panel idle check");
+ await click(".library-filter");
+ await wait("!!document.querySelector('.sheet .filter-sheet')","filter panel open for the idle check");
+ await evaluate("window.__advanceIdle(60001);true");
+ await wait("!!document.querySelector('.login-input')","the idle deadline still ends the session with the panel open");
+ check(await evaluate("!document.querySelector('.sheet')"),"the filter panel does not outlive the session");
+ await evaluate("document.querySelector('.login-input').value='idle-panel-test';document.querySelector('.login-form').requestSubmit();true");
+ await wait("!!document.querySelector('.app-shell')","signing back in after the panel idle eject");
  await cdp("Page.removeScriptToEvaluateOnNewDocument",{identifier:idleClock.identifier});
  await cdp("Emulation.setDeviceMetricsOverride",{width:2560,height:1200,deviceScaleFactor:1,mobile:false});
  await navigate("/");await wait("!!document.querySelector('.app-shell')","wide app");await nav("favorites");

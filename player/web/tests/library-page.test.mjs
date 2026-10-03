@@ -5,9 +5,12 @@ import ts from "typescript";
 import { createLibraryFixture } from "./library-fixture.mjs";
 import { installDom } from "./dom-stub.mjs";
 
-const { all, byClass, clickText, flush, videos } = installDom();
+const { all, byClass, clickText, flush, videos, Node } = installDom();
+// sheet.ts asks whether a built row is a real button; the stub has one element class.
+globalThis.HTMLButtonElement = Node;
 const fixture = createLibraryFixture();
 const calls = [];
+const wallCalls = [];
 const clipFrom = m => ({
   id: m.id, category: m.category, duration: m.duration_seconds, streamUrl: m.stream_url,
   coverUrl: m.cover_url ?? null, favorite: Boolean(m.favorite),
@@ -19,6 +22,12 @@ const api = {
     calls.push({ id, category, limit, cursor });
     const p = await fixture.result(new URL("http://local/api/v1/library/videos?" + new URLSearchParams({ folder_id: id, category, limit: String(limit), ...(cursor ? { cursor } : {}) })));
     return { items: p.items.map(clipFrom), hasMore: p.has_more, nextCursor: p.next_cursor, folder: p.folder, total: p.total };
+  },
+  // The flat wall: offset paging over the whole library, with the filter set the
+  // page applied. Recorded flat so the assertions read like the request.
+  videos: async (category, limit, offset, cache, search, signal, filters) => {
+    wallCalls.push({ ...(filters ?? {}), category, limit, offset });
+    return { items: fixture.originals.slice(0, 2).map(clipFrom), hasMore: false, total: fixture.originals.length };
   },
 };
 
@@ -60,12 +69,35 @@ const { createSlidingIndicator } = await import("data:text/javascript;base64," +
 globalThis.__densityDeps = { element, createSlidingIndicator };
 const { buildCoverDensityControl, applyCoverDensity } = await import("data:text/javascript;base64," + Buffer.from(
   "const { element, createSlidingIndicator } = globalThis.__densityDeps;\n" + await transpile("components/cover-density.ts")).toString("base64"));
+// The sheet and the filter panel are the real modules; only their imports are stubbed.
+globalThis.__sheetDeps = { element, icon: () => document.createElement("span"), activateDialog: () => () => {}, animateArrival: () => {}, flingOut: async () => {}, settleFromVelocity: async () => {} };
+const sheetModule = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, icon, activateDialog, animateArrival, flingOut, settleFromVelocity } = globalThis.__sheetDeps;\n" + await transpile("components/sheet.ts")).toString("base64"));
+const filtersModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("library-filters.ts")).toString("base64"));
+globalThis.__filterSheetDeps = { element, emptyFilters: filtersModule.emptyFilters, ...sheetModule };
+const { buildFilterSheet } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, sheetChoice, sheetNote, sheetSection, emptyFilters } = globalThis.__filterSheetDeps;\n" + await transpile("components/filter-sheet.ts")).toString("base64"));
+/** A page-owned sheet host, the way main.ts hands the page the real shell. */
+const makeSheetHost = () => {
+  const root = element("div", "app-shell");
+  root.dispatchEvent = () => {};
+  let host;
+  const built = sheetModule.buildSheet(() => sheetModule.closeSheet(host));
+  root.append(built.sheet);
+  host = { root, sheet: built.sheet, sheetTitle: built.sheetTitle, sheetBody: built.sheetBody };
+  return host;
+};
+/** The tri-state row whose label matches, then one of its three choices. */
+const triChoice = (root, label, text) => {
+  const row = byClass(root, "filter-tri").find(node => byClass(node, "filter-tri-label")[0]?.textContent === label);
+  return byClass(row, "filter-tri-button").find(button => button.textContent === text);
+};
 const libraryPrefs = { coverDensity: "comfortable" };
 const setPref = (key, value) => { libraryPrefs[key] = value; };
-globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref };
+globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref, openSheet: sheetModule.openSheet, closeSheet: sheetModule.closeSheet, buildFilterSheet, emptyFilters: filtersModule.emptyFilters, filterCount: filtersModule.filterCount };
 const libraryJs = await transpile("library.ts");
 const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref, openSheet, closeSheet, buildFilterSheet, emptyFilters, filterCount } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");
@@ -307,4 +339,95 @@ test("a provided archive cover is lazy, single, ready on load and degrades on er
   assert.equal(tiles(page).length, 20);
   page.destroy();
  } finally { api.libraryVideos = original; }
+});
+
+test("applying a filter reloads the grid from the first page", async () => {
+ const page = mount(new VideoLibraryPage(() => {}, () => {}));
+ await flush();
+ wallCalls.length = 0;
+ page.applyFilters({ ...filtersModule.emptyFilters(), minSeconds: 30 });
+ await flush();
+ assert.equal(wallCalls.at(-1).minSeconds, 30);
+ assert.equal(wallCalls.at(-1).offset, 0, "a new filter restarts paging");
+ assert.equal(wallCalls.at(-1).category, "all");
+ assert.ok(tiles(page).length > 0, "the filtered wall renders its first page");
+ page.destroy();
+});
+
+test("the filter panel applies a draft and the toolbar reports the condition count", async () => {
+ const host = makeSheetHost();
+ const page = mount(new VideoLibraryPage(() => {}, () => {}, { sheet: host }));
+ await flush();
+ clickText(page.root, "筛选");
+ assert.equal(host.sheet.hidden, false, "the panel opens in the page's sheet");
+ assert.equal(byClass(host.sheetBody, "filter-sheet").length, 1);
+ const choices = byClass(host.sheetBody, "filter-tri-button");
+ assert.equal(choices.length, 15, "three choices for each of four conditions and three date presets");
+ for (const button of choices) assert.notEqual(button.getAttribute("aria-pressed"), null, "every control states its own state");
+ triChoice(host.sheetBody, "有封面", "是").dispatch("click");
+ assert.equal(triChoice(host.sheetBody, "有封面", "是").getAttribute("aria-pressed"), "true");
+ assert.equal(triChoice(host.sheetBody, "有封面", "不限").getAttribute("aria-pressed"), "false");
+ wallCalls.length = 0;
+ clickText(host.sheetBody, "应用");
+ await flush();
+ assert.equal(wallCalls.at(-1).hasCover, true);
+ assert.equal(host.sheet.hidden, true, "applying closes the panel");
+ assert.equal(byClass(page.root, "library-toolbar")[0].textContent.includes("筛选 (1)"), true, "the entry counts the live conditions");
+ page.destroy();
+});
+
+test("a random order mints a fresh seed and any other order clears it", async () => {
+ const applied = [];
+ const body = buildFilterSheet({ value: filtersModule.emptyFilters(), onApply: next => applied.push(next) });
+ const pick = title => byClass(body, "sheet-row-choice").find(row => byClass(row, "sheet-row-title")[0]?.textContent === title);
+ pick("随机换一批").dispatch("click"); clickText(body, "应用");
+ pick("随机换一批").dispatch("click"); clickText(body, "应用");
+ assert.equal(applied[0].sort, "random");
+ assert.ok(Number.isInteger(applied[0].seed), "a random order always carries a seed");
+ assert.notEqual(applied[0].seed, applied[1].seed, "换一批 means a new seed");
+ pick("最长").dispatch("click"); clickText(body, "应用");
+ assert.equal(applied[2].sort, "longest");
+ assert.equal(applied[2].seed, null, "a seed means nothing outside a random order");
+});
+
+test("the date presets store absolute seconds and read them back", async () => {
+ const applied = [];
+ const body = buildFilterSheet({ value: filtersModule.emptyFilters(), onApply: next => applied.push(next) });
+ clickText(body, "最近 7 天");
+ clickText(body, "应用");
+ const now = Math.floor(Date.now() / 1000);
+ const range = applied[0];
+ assert.ok(Math.abs(range.dateFrom - (now - 7 * 86400)) <= 5, "seven days back, as absolute seconds");
+ assert.ok(Math.abs(range.dateTo - now) <= 5);
+ const dates = byClass(body, "filter-input").filter(node => node.type === "date");
+ assert.equal(dates[0].value.slice(0, 4), String(new Date(range.dateFrom * 1000).getFullYear()));
+ assert.equal(dates[1].value.slice(0, 4), String(new Date(range.dateTo * 1000).getFullYear()));
+});
+
+test("a filter applied mid-flight wins over the response already in the air", async () => {
+ const host = makeSheetHost();
+ const page = mount(new VideoLibraryPage(() => {}, () => {}, { sheet: host }));
+ await flush();
+ const original = api.videos;
+ const stale = { id: "f".repeat(64), category: "short", duration: 5, streamUrl: "/s.mp4", coverUrl: null, favorite: false };
+ let release;
+ const gate = new Promise(resolve => { release = resolve; });
+ api.videos = async (category, limit, offset, cache, search, signal, filters) => {
+   if (filters && filters.minSeconds === 30) {
+     await gate;
+     return { items: [stale], hasMore: false, total: 1 };
+   }
+   return { items: fixture.originals.slice(0, 2).map(clipFrom), hasMore: false, total: 2 };
+ };
+ try {
+   page.applyFilters({ ...filtersModule.emptyFilters(), minSeconds: 30 });
+   page.applyFilters({ ...filtersModule.emptyFilters(), minBytes: 1024 });
+   release();
+   await flush();
+   assert.equal(
+     tiles(page).some(tile => tile.dataset.mediaId === stale.id), false,
+     "the superseded page never writes into the new context",
+   );
+   assert.ok(tiles(page).length > 0, "the page that is actually current still lands");
+ } finally { api.videos = original; page.destroy(); }
 });
