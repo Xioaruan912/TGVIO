@@ -25,6 +25,7 @@ from tgvio_player.domain.storage_settings import PlayerStorageSettings
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 from tgvio_player.infrastructure.player_crypto import PlayerStateCipher
 from tgvio_player.infrastructure.webdav_write import AioHttpWebDavWriteClient
+from tgvio_player.infrastructure.cover_mirror import CoverMirror, CoverMirrorCounters
 from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDavRangeResponse
 
 
@@ -2403,3 +2404,168 @@ class PlayerSimilarCoverTests(unittest.IsolatedAsyncioTestCase):
                 cookies={"tgvio_player_session": cookie},
             )).json()
         self.assertTrue(body["truncated"], "the scan hit its ceiling and says so")
+
+class PlayerCoverMirrorTests(unittest.IsolatedAsyncioTestCase):
+    """The cover route answers from the local mirror before it asks the archive.
+
+    The mirror is a cache in front of the cover budget, not a second source of truth: the
+    route still resolves the active cover row and its version first, and a mirror hit only
+    saves the round trip.
+    """
+
+    JPEG = b"\xff\xd8\xff\xe0cover-bytes"
+    DIGEST = "d" * 64
+    ADDRESSED = f"cover/backfill/{DIGEST}.jpg"
+    PLAIN = "cover/video-cover.jpg"
+
+    class FakeCoverReader:
+        def __init__(self, payload: bytes) -> None:
+            self.payload = payload
+            self.calls: list[tuple[str, ByteRange | None]] = []
+            self.fail: Exception | None = None
+
+        async def open_range(self, remote_path: str, byte_range: ByteRange | None) -> WebDavRangeResponse:
+            self.calls.append((remote_path, byte_range))
+            if self.fail is not None:
+                raise self.fail
+            length = len(self.payload) if byte_range is None else byte_range.length
+            return WebDavRangeResponse(
+                206, "image/jpeg", length, None, '"cover"', ClosableBody([self.payload])
+            )
+
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = PlayerCatalogRepositorySQLite(Path(self.tmp.name) / "player.sqlite3")
+        await self.repo.open()
+        self.media_id = "c" * 64
+        self.counter = 0
+        self.mirror_root = Path(self.tmp.name) / "covers"
+        self.client = None
+        await self._publish(self.ADDRESSED)
+
+    async def asyncTearDown(self) -> None:
+        if self.client is not None:
+            await self.client.close()
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _publish(self, relpath: str) -> None:
+        """One package per call: a fresh package_id keeps the newest cover the active one."""
+        self.counter += 1
+        package_id = f"package-{self.counter}"
+        await self.repo.apply_package(CatalogPackage(
+            package_id, f"TGVIO/2026-09-22/{self.counter}", "b" * 64, f'"{package_id}"', '"complete"',
+            (CatalogMedia(self.media_id, "video", 8, "video/mp4", 1080, 1920, 2.0),),
+            (CatalogLocation(self.media_id, package_id, "video.mp4", '"etag"'),),
+            (
+                CatalogCover(
+                    media_id=self.media_id, package_id=package_id, remote_relpath=relpath,
+                    size_bytes=len(self.JPEG), mime_type="image/jpeg",
+                    algorithm="reuse-publish-thumbnail-v1",
+                ),
+            ),
+        ))
+        await self.repo.refresh_media_activity()
+
+    async def _serve(self, mirror: CoverMirror | None) -> tuple[CoverMirrorCounters, FakeCoverReader]:
+        self.reader = self.FakeCoverReader(self.JPEG)
+        self.counters = CoverMirrorCounters()
+        self.server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            ReadOnlyWebDavAdapter(self.reader),
+            max_streams=4,
+            max_streams_per_client=4,
+            cover_mirror=mirror,
+            cover_mirror_counters=self.counters,
+        )
+        self.client = TestClient(TestServer(self.server.application()))
+        await self.client.start_server()
+        return self.counters, self.reader
+
+    async def _cover(self):
+        response = await self.client.post("/api/v1/auth/login", json={"secret": "s" * 32})
+        cookie = response.cookies["tgvio_player_session"].value
+        return await self.client.get(
+            f"/api/v1/media/{self.media_id}/cover", cookies={"tgvio_player_session": cookie}
+        )
+
+    async def test_a_mirrored_cover_is_served_without_touching_the_archive(self) -> None:
+        mirror = CoverMirror(self.mirror_root, budget_bytes=1024 * 1024)
+        mirror.write(self.DIGEST, self.JPEG)
+        counters, reader = await self._serve(mirror)
+        response = await self._cover()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), self.JPEG)
+        self.assertEqual(reader.calls, [], "a mirror hit costs no upstream round trip")
+        self.assertEqual((counters.hits, counters.misses), (1, 0))
+
+    async def test_a_miss_reads_upstream_and_fills_the_mirror(self) -> None:
+        mirror = CoverMirror(self.mirror_root, budget_bytes=1024 * 1024)
+        counters, reader = await self._serve(mirror)
+        first = await self._cover()
+        self.assertEqual(await first.read(), self.JPEG)
+        self.assertEqual(len(reader.calls), 1)
+        self.assertTrue(mirror.has(self.DIGEST, len(self.JPEG)), "the first read fills the mirror")
+        second = await self._cover()
+        self.assertEqual(await second.read(), self.JPEG)
+        self.assertEqual(len(reader.calls), 1, "the second request never left the host")
+        self.assertEqual((counters.hits, counters.misses), (1, 1))
+
+    async def test_the_mirror_does_not_change_the_response_contract(self) -> None:
+        mirror = CoverMirror(self.mirror_root, budget_bytes=1024 * 1024)
+        await self._serve(mirror)
+        upstream = await self._cover()
+        upstream_headers = {name: upstream.headers[name] for name in
+                            ("Content-Type", "Content-Length", "Content-Disposition")}
+        self.assertEqual(await upstream.read(), self.JPEG)
+        mirror.write(self.DIGEST, self.JPEG)
+        served = await self._cover()
+        self.assertEqual(
+            {name: served.headers[name] for name in upstream_headers}, upstream_headers,
+            "a mirrored cover answers with the same three headers",
+        )
+        self.assertEqual(await served.read(), self.JPEG)
+
+    async def test_an_upstream_failure_still_serves_a_mirrored_cover(self) -> None:
+        mirror = CoverMirror(self.mirror_root, budget_bytes=1024 * 1024)
+        mirror.write(self.DIGEST, self.JPEG + b"-a-different-size")
+        counters, reader = await self._serve(mirror)
+        reader.fail = OSError("archive down")
+        response = await self._cover()
+        self.assertEqual(response.status, 200, "the local copy answers when the archive cannot")
+        self.assertEqual(await response.read(), self.JPEG + b"-a-different-size")
+        self.assertEqual(counters.hits, 0, "an unverified size is a fallback, not a hit")
+
+    async def test_a_mirrored_cover_does_not_need_the_cover_budget(self) -> None:
+        mirror = CoverMirror(self.mirror_root, budget_bytes=1024 * 1024)
+        mirror.write(self.DIGEST, self.JPEG)
+        await self._serve(mirror)
+        self.server._max_cover = 0                     # every upstream cover would be shed
+        response = await self._cover()
+        self.assertEqual(response.status, 200, "the local copy never waits for a cover slot")
+        self.assertEqual(await response.read(), self.JPEG)
+
+    async def test_an_unreadable_key_keeps_todays_behaviour(self) -> None:
+        await self._publish(self.PLAIN)
+        # The first package's cover holds the active slot (active_cover orders by package
+        # id), so retire it: the plain cover is then the one this media serves.
+        await self.repo.record_deleted_cover(self.media_id, "package-1")
+        mirror = CoverMirror(self.mirror_root, budget_bytes=1024 * 1024)
+        counters, reader = await self._serve(mirror)
+        self.assertIsNone(mirror.key_for(self.PLAIN))
+        response = await self._cover()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(len(reader.calls), 1)
+        self.assertEqual(mirror.stats(), (0, 0), "a cover that is not content-addressed is never mirrored")
+        self.assertEqual((counters.hits, counters.misses), (0, 1))
+
+    async def test_the_mirror_off_is_exactly_today(self) -> None:
+        counters, reader = await self._serve(None)
+        response = await self._cover()
+        self.assertEqual(response.status, 200)
+        self.assertEqual(await response.read(), self.JPEG)
+        self.assertEqual(len(reader.calls), 1)
+        self.assertEqual((counters.hits, counters.misses), (0, 0))
+        self.assertFalse(self.mirror_root.exists(), "off writes nothing at all")

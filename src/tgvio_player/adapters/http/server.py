@@ -46,6 +46,7 @@ from tgvio_player.domain.storage_settings import (
     validate_webdav_endpoint,
 )
 from tgvio_player.application.ports import WebDavWriteClient, WebDavWriteError
+from tgvio_player.infrastructure.cover_mirror import CoverMirror, CoverMirrorCounters
 from tgvio_player.infrastructure.video_query import listing_query_kwargs
 from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter
 
@@ -115,6 +116,8 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         favorite_backup: FavoriteBackupService | None = None,
         recovery_service: PlayerRecoveryService | None = None,
         storage_client_factory: Callable[[str, str, str], WebDavWriteClient] | None = None,
+        cover_mirror: CoverMirror | None = None,
+        cover_mirror_counters: CoverMirrorCounters | None = None,
     ) -> None:
         if min(
             max_streams, max_streams_per_client, max_header_size, stream_chunk_size, startup_range_bytes
@@ -124,6 +127,10 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         self._sessions = sessions
         self._deck = deck
         self._reader = reader
+        # A local cover mirror is optional: without one the cover route behaves exactly as
+        # it did before it existed, which is also the switch that turns it off.
+        self._cover_mirror = cover_mirror
+        self._cover_mirror_counters = cover_mirror_counters
         self._deleter = deleter
         self._favorite_backup = favorite_backup
         self._recovery_service = recovery_service

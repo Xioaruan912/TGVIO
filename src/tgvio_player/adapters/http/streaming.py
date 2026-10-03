@@ -250,6 +250,18 @@ class PlayerHttpStreamingMixin:
         length = min(declared, _MAX_COVER_BYTES)
         if length <= 0:
             raise web.HTTPNotFound(text="cover not found")
+        # The mirror answers before the budget: a local copy is not an archive round trip,
+        # so it neither needs a cover slot nor counts as one.
+        mirror, counters = self._cover_mirror, self._cover_mirror_counters
+        key = mirror.key_for(str(cover["remote_relpath"])) if mirror is not None else None
+        if mirror is not None and key is not None and mirror.has(key, length):
+            payload = await asyncio.to_thread(mirror.read, key)
+            if payload is not None:
+                if counters is not None:
+                    counters.hits += 1
+                return await self._serve_cover_bytes(request, media_id, cover, payload, version)
+        if mirror is not None and counters is not None:
+            counters.misses += 1
         capacity: dict[str, object] = {}
         if not await self._acquire_cover(diagnostics=capacity):
             log_event(
@@ -267,6 +279,12 @@ class PlayerHttpStreamingMixin:
                     str(cover["remote_path"]), str(cover["remote_relpath"]), ByteRange(0, length - 1)
                 )
             except Exception as exc:
+                # The archive is unreachable but a local copy exists: answer with it rather
+                # than failing a request the host can already satisfy.
+                if mirror is not None and key is not None and mirror.exists(key):
+                    payload = await asyncio.to_thread(mirror.read, key)
+                    if payload is not None:
+                        return await self._serve_cover_bytes(request, media_id, cover, payload, version)
                 raise web.HTTPBadGateway(text="cover upstream unavailable") from exc
             # Own the upstream before status validation or response preparation.
             # Even an unread error body or a cancelled prepare must be closed.
@@ -286,18 +304,23 @@ class PlayerHttpStreamingMixin:
                 request["player_cover_cacheable"] = version is not None
                 await response.prepare(request)
                 written = 0
+                collected = bytearray() if key is not None else None
                 try:
                     async for chunk in upstream.body:
                         if not chunk:
                             continue
                         piece = chunk[: length - written]
                         written += len(piece)
+                        if collected is not None:
+                            collected.extend(piece)
                         await response.write(piece)
                         if written >= length:
                             break  # Never drain an ignored Range or infinite tail.
                     if written < length:
                         request["player_cover_incomplete"] = f"{written}/{length}"
                         raise IncompleteUpstreamBody(f"{written} of {length} cover bytes")
+                    if collected is not None and mirror is not None and key is not None:
+                        await self._fill_mirror(mirror, counters, key, bytes(collected))
                     await response.write_eof()
                 except (BrokenPipeError, ConnectionError, ConnectionResetError) as exc:
                     request["player_stream_disconnect"] = type(exc).__name__
@@ -306,6 +329,43 @@ class PlayerHttpStreamingMixin:
                 await self._close_body(upstream.body)
         finally:
             await self._release_cover()
+
+    async def _serve_cover_bytes(
+        self,
+        request: web.Request,
+        media_id: str,
+        cover: dict[str, object],
+        payload: bytes,
+        version: str | None,
+    ) -> web.StreamResponse:
+        """The three headers a cover always carries, for bytes that are already in hand."""
+        response = web.StreamResponse(
+            status=200,
+            headers={
+                "Content-Type": str(cover["mime_type"]),
+                "Content-Length": str(len(payload)),
+                "Content-Disposition": _content_disposition(request, media_id, cover["mime_type"]),
+            },
+        )
+        request["player_cover_cacheable"] = version is not None
+        await response.prepare(request)
+        try:
+            await response.write(payload)
+            await response.write_eof()
+        except (BrokenPipeError, ConnectionError, ConnectionResetError) as exc:
+            request["player_stream_disconnect"] = type(exc).__name__
+        return response
+
+    async def _fill_mirror(
+        self, mirror: object, counters: object | None, key: str, payload: bytes
+    ) -> None:
+        """Best effort: a cover that reached the reader must not fail because the cache did."""
+        try:
+            await asyncio.to_thread(mirror.write, key, payload)  # type: ignore[attr-defined]
+        except Exception:
+            if counters is not None:
+                counters.write_failed += 1  # type: ignore[attr-defined]
+            log_event("cover_mirror_write_failed", key=key[:12])
 
     async def _stream_plain(
         self,
