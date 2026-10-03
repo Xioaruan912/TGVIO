@@ -4,6 +4,8 @@ import { favoriteMutations } from "./favorite-service";
 import { requestAudioEnable } from "./audio-warning";
 import { attachFullscreen } from "./fullscreen";
 import { attachGestures } from "./gestures";
+import { buildLargeGestureOptions } from "./components/large-gestures";
+import { createLevelControl } from "./components/level-control";
 import { IdlePrivacyController, attachIdleActivity, type Clock, type IdleActivityWindow } from "./idle-privacy";
 import { exitPrivacyPresentation } from "./privacy-presentation";
 import { icon } from "./icons";
@@ -14,7 +16,7 @@ import { prefs, setPref } from "./settings";
 import { initialMutedState, rememberMuted } from "./sound-policy";
 import { ScreenWakeLockController } from "./wake-lock";
 import { playerMediaSession } from "./media-session";
-import { confirmMediaDelete, element, formatTime, seekPercent, showSeekFeedback } from "./ui";
+import { confirmMediaDelete, element, formatTime, seekPercent } from "./ui";
 import { qualityLabel, qualityOptions, resolveStreamUrl } from "./quality";
 import { applyRate, boostRate, type PlaybackRate } from "./playback-rate";
 import type { RateMenu } from "./components/rate-menu";
@@ -308,45 +310,21 @@ export class LargePlayer {
       paintBuffered(this.buffered, this.video);
     });
 
-    this.detach = attachGestures(stage, {
-      isLongPressEnabled: () => prefs.longPressFastForward,
-      isDragSeekEnabled: () => prefs.dragSeek,
-      isDoubleTapEnabled: () => prefs.doubleTapSeek,
-      fastForwardSpeed: () => prefs.fastForwardSpeed,
-      currentTime: () => this.video.currentTime,
-      duration: () => this.video.duration,
-      onTap: () => {
-        if (!this.root.classList.contains("privacy-locked")) this.togglePlay();
-      },
-      onDoubleTap: (direction) => this.doubleTapSeek(direction, stage),
-      onFastForward: (speed) => {
-        this.video.playbackRate = boostRate(speed, this.rate);
-      },
-      onScrubStart: () => {
-        if (this.root.classList.contains("privacy-locked")) return;
-        this.seekControl.cancel();
-        this.userSeeking = true;
-        const wasPlaying = !this.video.paused;
-        this.playback.update({ pausedByUser: true });
-        this.video.pause();
-        return wasPlaying;
-      },
-      onScrubMove: (time, clientX) => {
-        if (this.root.classList.contains("privacy-locked")) return;
-        this.seek.value = String(time);
-        this.timeCurrent.textContent = formatTime(time);
-        this.progress.style.setProperty("--p", `${seekPercent(this.seek.max, time)}%`);
-        if (prefs.dragThumbnail) this.preview.show(this.clip, time, formatTime(time), clientX);
-      },
-      onScrubEnd: (time, resumePlayback) => {
-        this.userSeeking = false;
-        this.preview.hide();
-        if (this.root.classList.contains("privacy-locked")) return;
-        if (time !== null) this.video.currentTime = time;
-        this.playback.update({ pausedByUser: !resumePlayback });
-        if (resumePlayback) void this.video.play().catch(() => undefined);
-      },
+    const level = createLevelControl(this.video, stage, {
+      isLocked: () => this.root.classList.contains("privacy-locked"),
+      mute: () => this.setMuted(true),
+      requestAudio: () => this.enableSound(),
     });
+    this.detach = attachGestures(stage, buildLargeGestureOptions({
+      video: this.video,
+      isLocked: () => this.root.classList.contains("privacy-locked"),
+      togglePlay: () => this.togglePlay(),
+      updateProgress: () => this.updateProgress(),
+      setFastForward: (speed) => { this.video.playbackRate = boostRate(speed, this.rate); },
+      beginScrub: () => this.beginScrub(),
+      scrubTo: (time, clientX) => this.scrubTo(time, clientX),
+      finishScrub: (time, resumePlayback) => this.finishScrub(time, resumePlayback),
+    }, stage, level));
     this.meter = new NetworkMeter(netSpeed);
     this.meter.watch(this.video, clip);
     this.detachFullscreen = attachFullscreen(
@@ -490,13 +468,30 @@ export class LargePlayer {
     });
   }
 
-  private doubleTapSeek(direction: "backward" | "forward", stage: HTMLElement): void {
+  /** The scrub bodies the gesture map calls: they stay here, beside the seeking state. */
+  private beginScrub(): boolean {
+    this.seekControl.cancel();
+    this.userSeeking = true;
+    const wasPlaying = !this.video.paused;
+    this.playback.update({ pausedByUser: true });
+    this.video.pause();
+    return wasPlaying;
+  }
+
+  private scrubTo(time: number, clientX: number): void {
+    this.seek.value = String(time);
+    this.timeCurrent.textContent = formatTime(time);
+    this.progress.style.setProperty("--p", `${seekPercent(this.seek.max, time)}%`);
+    if (prefs.dragThumbnail) this.preview.show(this.clip, time, formatTime(time), clientX);
+  }
+
+  private finishScrub(time: number | null, resumePlayback: boolean): void {
+    this.userSeeking = false;
+    this.preview.hide();
     if (this.root.classList.contains("privacy-locked")) return;
-    const delta = direction === "backward" ? -10 : 10;
-    const duration = Number.isFinite(this.video.duration) ? this.video.duration : Infinity;
-    this.video.currentTime = Math.min(duration, Math.max(0, this.video.currentTime + delta));
-    this.updateProgress();
-    showSeekFeedback(stage, direction);
+    if (time !== null) this.video.currentTime = time;
+    this.playback.update({ pausedByUser: !resumePlayback });
+    if (resumePlayback) void this.video.play().catch(() => undefined);
   }
 
   private async togglePictureInPicture(): Promise<void> {
@@ -655,26 +650,31 @@ export class LargePlayer {
     }
   }
 
+  /** One place that writes the mute state, so the picture, the attribute and the button agree. */
+  private setMuted(muted: boolean): void {
+    this.muted = muted;
+    rememberMuted(muted);
+    this.video.defaultMuted = muted;
+    if (muted) this.video.setAttribute("muted", "");
+    else this.video.removeAttribute("muted");
+    this.video.muted = muted;
+    this.syncSoundButton();
+  }
+
+  /** The one path that turns sound on: the sound button and the volume gesture share it. */
+  private enableSound(): Promise<boolean> {
+    const generation = ++this.audioGeneration;
+    return requestAudioEnable(this.root).then((confirmed) => {
+      const allowed = confirmed && !this.destroyed && generation === this.audioGeneration
+        && !this.root.classList.contains("privacy-locked");
+      if (allowed) this.setMuted(false);
+      return allowed;
+    });
+  }
+
   private toggleSound(): void {
     if (this.destroyed || this.root.classList.contains("privacy-locked")) return;
-    const generation = ++this.audioGeneration;
-    if (!this.muted) {
-      this.muted = true;
-      rememberMuted(true);
-      this.video.defaultMuted = true;
-      this.video.setAttribute("muted", "");
-      this.video.muted = true;
-      this.syncSoundButton();
-      return;
-    }
-    void requestAudioEnable(this.root).then((confirmed) => {
-      if (!confirmed || this.destroyed || generation !== this.audioGeneration || this.root.classList.contains("privacy-locked")) return;
-      this.muted = false;
-      rememberMuted(false);
-      this.video.defaultMuted = false;
-      this.video.removeAttribute("muted");
-      this.video.muted = false;
-      this.syncSoundButton();
-    });
+    if (this.muted) void this.enableSound();
+    else { this.audioGeneration++; this.setMuted(true); }
   }
 }

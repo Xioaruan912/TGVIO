@@ -27,6 +27,9 @@ function clamp(value: number, limits: readonly [number, number]): number {
   return Math.min(limits[1], Math.max(limits[0], value));
 }
 
+/** The object `createLevelControl` returns: the gesture layer talks to it through this. */
+export type LevelControl = ReturnType<typeof createLevelControl>;
+
 /**
  * Brightness and volume for one video surface, with the values shared by the whole session.
  * A vertical drag reports a fraction; this module turns it into a level, paints the picture,

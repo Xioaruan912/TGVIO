@@ -364,6 +364,43 @@ async function run() {
     if (box.width === 0) continue;
     check(box.height >= 43.9, "settings row keeps a 44px target: " + Math.round(box.height));
   }
+  // Level gestures: the long player opts in, the wall does not. A vertical drag on the left
+  // half dims the picture, on the right half it moves the volume, and the sound stays off
+  // until the button's own prompt is answered. The touch-action pair is the real thing this
+  // rests on: the stage keeps vertical touch for its own gestures, the wall keeps scrolling.
+  const levelPlayer = new LargePlayer({...clip, category:"long"}, () => undefined, {idleClock:clock});
+  document.body.append(levelPlayer.root);
+  const levelStage = levelPlayer.root.querySelector<HTMLElement>(".large-stage")!;
+  const levelVideo = levelPlayer.currentVideo();
+  const levelBox = levelStage.getBoundingClientRect();
+  const levelMidY = levelBox.top + levelBox.height / 2;
+  const levelTravel = 120;
+  const levelPress = (x: number, fromY: number, toY: number) => {
+    // Read-only pointer fields are not reliably taken from the init dictionary, so they are
+    // forced the same way the unit harness does it.
+    const fire = (type: string, y: number) => {
+      const event = new PointerEvent(type, { bubbles: true, cancelable: true, clientX: x, clientY: y, button: 0 });
+      for (const [key, value] of Object.entries({ pointerId: 9, pointerType: "touch", isPrimary: true, clientX: x, clientY: y })) {
+        try { Object.defineProperty(event, key, { value }); } catch { /* init already set it */ }
+      }
+      levelStage.dispatchEvent(event);
+    };
+    fire("pointerdown", fromY);
+    fire("pointermove", fromY + (toY - fromY) / 2);
+    fire("pointermove", toY);
+    fire("pointerup", toY);
+  };
+  const levelExpected = 100 - Math.round((levelTravel / levelBox.height) * 100);
+  // Downwards, because a level that starts full has nowhere to go but down.
+  levelPress(levelBox.left + 24, levelMidY - levelTravel / 2, levelMidY + levelTravel / 2);
+  check(levelVideo.style.filter === `brightness(${levelExpected}%)`, "a left-half drag dims the picture: " + levelVideo.style.filter);
+  check(Boolean(levelPlayer.root.querySelector(".level-hud")), "the level readout shows over the stage");
+  levelPress(levelBox.right - 24, levelMidY - levelTravel / 2, levelMidY + levelTravel / 2);
+  check(Math.abs(levelVideo.volume - levelExpected / 100) < 1e-6, "a right-half drag lowers the volume: " + levelVideo.volume);
+  check(levelVideo.muted, "the volume gesture does not unmute on its own");
+  check(getComputedStyle(levelStage).touchAction === "none", "the stage keeps vertical touch for its own gestures");
+  check(getComputedStyle(shell.feed).touchAction === "pan-y", "the wall still scrolls vertically");
+  levelPlayer.destroy();
   shell.root.remove();
   shell.sheet.remove();
 }

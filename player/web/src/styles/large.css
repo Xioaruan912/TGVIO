@@ -15,7 +15,7 @@
 .large-topbar .large-back .control-caption, .large-topbar .large-privacy-lock .control-caption { display: none; }
 .large-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; font-weight: 650; line-height: 22px; }
 .large-topbar .net-speed { flex: none; }
-.large-stage { position: relative; min-height: 0; min-width: 0; display: grid; place-items: center; overflow: hidden; background: var(--media-bg); isolation: isolate; }
+.large-stage { position: relative; min-height: 0; min-width: 0; display: grid; place-items: center; overflow: hidden; background: var(--media-bg); isolation: isolate; touch-action: none; }
 .large-video { width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; background: var(--media-bg); }
 .large-player.privacy-locked .large-stage::after { content: ''; position: absolute; z-index: 1; inset: 0; background: var(--privacy-cover); pointer-events: none; }
 .large-player.privacy-locked .large-video { visibility: hidden; }
