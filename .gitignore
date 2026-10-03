@@ -37,6 +37,11 @@ docs/refactor-v2/*
 !docs/refactor-v2/README.md
 # Already tracked historical evidence stays versioned.
 
-# Local historical drafts; existing tracked documents remain versioned.
-docs/superpowers/
+# Local historical drafts; existing tracked documents remain versioned. The specs and
+# plans the brainstorming/planning skills produce for this repository are project
+# records - four are already tracked - so the ignore rule leaves those two directories
+# visible and keeps the rest of the tool's output local.
+docs/superpowers/*
+!docs/superpowers/specs/
+!docs/superpowers/plans/
 docs/product/
