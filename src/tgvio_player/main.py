@@ -17,8 +17,10 @@ from tgvio_player.application.favorite_backup import FavoriteBackupService, Sour
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.player_recovery import PlayerRecoveryService
+from tgvio_player.application.cover_warm import CoverWarm
 from tgvio_player.application.range_cache import MediaRangeCache
 from tgvio_player.application.warm_backfill import MediaWarmBackfill
+from tgvio_player.infrastructure.cover_mirror import CoverMirror, CoverMirrorCounters
 from tgvio_player.infrastructure.faststart_store import FaststartStore
 from tgvio_player.infrastructure.player_crypto import PlayerStateCipher
 from tgvio_player.infrastructure.range_store import RangeStore
@@ -61,6 +63,11 @@ class PlayerSettings:
     warm_head_mb: int
     warm_tail_mb: int
     delete_enabled: bool
+    cover_mirror: bool
+    cover_mirror_bytes: int
+    cover_mirror_batch: int
+    cover_mirror_concurrency: int
+    cover_mirror_interval_seconds: int
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -102,6 +109,13 @@ class PlayerSettings:
             cls._integer(get("WARM_HEAD_MB") or "16", "WARM_HEAD_MB", 1, 512),
             cls._integer(get("WARM_TAIL_MB") or "8", "WARM_TAIL_MB", 0, 512),
             cls._flag(get("DELETE_ENABLED") or "false", "DELETE_ENABLED"),
+            cls._flag(get("COVER_MIRROR") or "on", "COVER_MIRROR"),
+            cls._integer(get("COVER_MIRROR_BYTES") or str(256 * 1024**2),
+                         "COVER_MIRROR_BYTES", 1024**2, 8 * 1024**3),
+            cls._integer(get("COVER_MIRROR_BATCH") or "64", "COVER_MIRROR_BATCH", 1, 1024),
+            cls._integer(get("COVER_MIRROR_CONCURRENCY") or "2", "COVER_MIRROR_CONCURRENCY", 1, 8),
+            cls._integer(get("COVER_MIRROR_INTERVAL_SECONDS") or "900",
+                         "COVER_MIRROR_INTERVAL_SECONDS", 30, 86400),
         )
 
     @staticmethod
@@ -122,6 +136,18 @@ class PlayerSettings:
         if not minimum <= parsed <= maximum:
             raise ValueError(f"TGVIO_PLAYER_{name} must be between {minimum} and {maximum}")
         return parsed
+
+
+def build_cover_mirror(
+    settings: PlayerSettings,
+) -> tuple[CoverMirror | None, CoverMirrorCounters | None]:
+    """The mirror is a decision the settings make once, so the switch is testable alone."""
+    if not settings.cover_mirror:
+        return None, None
+    return (
+        CoverMirror(settings.data_dir / "covers", budget_bytes=settings.cover_mirror_bytes),
+        CoverMirrorCounters(),
+    )
 
 
 async def _catalog_poll(sync: CatalogSyncService, seconds: int, stop: asyncio.Event) -> None:
@@ -222,6 +248,7 @@ async def run(settings: PlayerSettings) -> None:
             FaststartStore(settings.data_dir / "faststart"), repository, reader
         )
         server_ref: list[object | None] = [None]
+        cover_mirror, cover_mirror_counters = build_cover_mirror(settings)
         range_cache = MediaRangeCache(
             RangeStore(
                 settings.data_dir / "cache",
@@ -253,6 +280,8 @@ async def run(settings: PlayerSettings) -> None:
             favorite_backup=favorite_backup,
             recovery_service=recovery,
             storage_client_factory=storage_client_factory,
+            cover_mirror=cover_mirror,
+            cover_mirror_counters=cover_mirror_counters,
         )
         server_ref[0] = server
         runner = server.runner()
@@ -279,6 +308,25 @@ async def run(settings: PlayerSettings) -> None:
             )
             tasks.append(asyncio.create_task(warm.run(stop)))
             _LOG.info("TGVIO Player media warm backfill enabled")
+        if settings.cover_mirror and cover_mirror is not None and cover_mirror_counters is not None:
+            # Half the cover lanes at most: warming a cache must never be the reason a
+            # viewer's own cover request waits.
+            warm_covers = CoverWarm(
+                repository,
+                reader,
+                cover_mirror,
+                cover_mirror_counters,
+                batch=settings.cover_mirror_batch,
+                concurrency=min(
+                    settings.cover_mirror_concurrency, max(1, server.cover_lane_limit // 2)
+                ),
+                idle_seconds=settings.cover_mirror_interval_seconds,
+            )
+            tasks.append(asyncio.create_task(warm_covers.run(stop)))
+            _LOG.info(
+                "TGVIO Player cover mirror enabled: budget=%s batch=%s",
+                settings.cover_mirror_bytes, settings.cover_mirror_batch,
+            )
         _LOG.info("TGVIO Player listening on configured Player host and port")
         await stop.wait()
         for task in tasks:

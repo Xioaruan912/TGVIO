@@ -353,6 +353,27 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         else:
             response.headers["Cache-Control"] = "no-cache"
 
+    @property
+    def cover_lane_limit(self) -> int:
+        """The cover budget the warm loop must stay under half of."""
+        return self._max_cover
+
+    def _cover_mirror_report(self) -> dict[str, object]:
+        """What the mirror did, for `/healthz`. Disabled reads as zeroes, never as absent."""
+        counters = self._cover_mirror_counters
+        files, total = (0, 0)
+        if self._cover_mirror is not None:
+            files, total = self._cover_mirror.stats()
+        return {
+            "enabled": self._cover_mirror is not None,
+            "files": files,
+            "bytes": total,
+            "hits": counters.hits if counters is not None else 0,
+            "misses": counters.misses if counters is not None else 0,
+            "warm_pending": counters.warm_pending if counters is not None else 0,
+            "warm_failed": counters.warm_failed if counters is not None else 0,
+        }
+
     async def _healthz(self, request: web.Request) -> web.Response:
         del request
         try:
@@ -371,6 +392,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
                     "active_probe": self._probe_active,
                     "active_cover": self._cover_active,
                     "cover_limit": self._max_cover,
+                    "cover_mirror": self._cover_mirror_report(),
                     "foreground_waiters": self._foreground_waiters,
                     "available": max(0, self._max_streams - occupied),
                     "saturated": occupied >= self._max_streams,

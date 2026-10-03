@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from pathlib import Path
 import unittest
 from unittest.mock import AsyncMock, Mock
 
@@ -10,7 +11,8 @@ from tgvio_player.infrastructure.webdav_aiohttp import (
     AioHttpReadOnlyWebDavClient,
     WebDavClientSettings,
 )
-from tgvio_player.main import PlayerSettings
+from tgvio_player.infrastructure.cover_mirror import CoverMirrorCounters
+from tgvio_player.main import PlayerSettings, build_cover_mirror
 
 
 def player_env(**overrides: str) -> dict[str, str]:
@@ -29,6 +31,36 @@ def player_env(**overrides: str) -> dict[str, str]:
 
 
 class PlayerRuntimeSettingsTests(unittest.TestCase):
+    def test_the_cover_mirror_is_on_by_default_and_bounded(self) -> None:
+        settings = PlayerSettings.from_env(player_env())
+        self.assertTrue(settings.cover_mirror, "the mirror is on unless it is turned off")
+        self.assertEqual(settings.cover_mirror_bytes, 268435456)
+        self.assertEqual(settings.cover_mirror_batch, 64)
+        self.assertEqual(settings.cover_mirror_concurrency, 2)
+        self.assertEqual(settings.cover_mirror_interval_seconds, 900)
+        off = PlayerSettings.from_env(player_env(TGVIO_PLAYER_COVER_MIRROR="off"))
+        self.assertFalse(off.cover_mirror)
+        # This file's convention is fail-closed: a value off the list is an error, never a
+        # silent fallback that would ship a mirror nobody asked for.
+        with self.assertRaises(ValueError):
+            PlayerSettings.from_env(player_env(TGVIO_PLAYER_COVER_MIRROR="maybe"))
+        with self.assertRaises(ValueError):
+            PlayerSettings.from_env(player_env(TGVIO_PLAYER_COVER_MIRROR_BYTES="0"))
+        with self.assertRaises(ValueError):
+            PlayerSettings.from_env(player_env(TGVIO_PLAYER_COVER_MIRROR_BATCH="many"))
+
+    def test_the_mirror_lives_under_the_data_directory_and_is_absent_when_off(self) -> None:
+        settings = PlayerSettings.from_env(player_env(TGVIO_PLAYER_DATA_DIR="/tmp/tgvio-mirror-test"))
+        mirror, counters = build_cover_mirror(settings)
+        self.assertEqual(mirror.root, Path("/tmp/tgvio-mirror-test") / "covers")
+        self.assertEqual(mirror.budget_bytes, settings.cover_mirror_bytes)
+        self.assertEqual(counters, CoverMirrorCounters())
+        self.assertEqual(
+            build_cover_mirror(PlayerSettings.from_env(player_env(TGVIO_PLAYER_COVER_MIRROR="off"))),
+            (None, None),
+            "off builds nothing at all",
+        )
+
     def test_only_player_namespace_is_read_and_defaults_are_bounded(self) -> None:
         settings = PlayerSettings.from_env({**player_env(), "BOT_TOKEN": "must-not-be-read"})
         self.assertEqual(settings.host, "0.0.0.0")

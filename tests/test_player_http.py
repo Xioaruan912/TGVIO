@@ -1037,6 +1037,15 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
                     "active_probe": 0,
                     "active_cover": 0,
                     "cover_limit": self.server._max_cover,
+                    "cover_mirror": {
+                        "enabled": False,
+                        "files": 0,
+                        "bytes": 0,
+                        "hits": 0,
+                        "misses": 0,
+                        "warm_pending": 0,
+                        "warm_failed": 0,
+                    },
                     "foreground_waiters": 0,
                     "available": 0,
                     "saturated": True,
@@ -2501,13 +2510,24 @@ class PlayerCoverMirrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(reader.calls, [], "a mirror hit costs no upstream round trip")
         self.assertEqual((counters.hits, counters.misses), (1, 0))
 
+    async def _await_mirror(self, mirror: CoverMirror, key: str, size: int) -> bool:
+        """The fill is best effort and rides alongside the response, so it may land after it."""
+        for _ in range(200):
+            if mirror.has(key, size):
+                return True
+            await asyncio.sleep(0.01)
+        return False
+
     async def test_a_miss_reads_upstream_and_fills_the_mirror(self) -> None:
         mirror = CoverMirror(self.mirror_root, budget_bytes=1024 * 1024)
         counters, reader = await self._serve(mirror)
         first = await self._cover()
         self.assertEqual(await first.read(), self.JPEG)
         self.assertEqual(len(reader.calls), 1)
-        self.assertTrue(mirror.has(self.DIGEST, len(self.JPEG)), "the first read fills the mirror")
+        self.assertTrue(
+            await self._await_mirror(mirror, self.DIGEST, len(self.JPEG)),
+            "the first read fills the mirror",
+        )
         second = await self._cover()
         self.assertEqual(await second.read(), self.JPEG)
         self.assertEqual(len(reader.calls), 1, "the second request never left the host")
@@ -2569,3 +2589,23 @@ class PlayerCoverMirrorTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(reader.calls), 1)
         self.assertEqual((counters.hits, counters.misses), (0, 0))
         self.assertFalse(self.mirror_root.exists(), "off writes nothing at all")
+
+    async def test_health_reports_what_the_mirror_did(self) -> None:
+        mirror = CoverMirror(self.mirror_root, budget_bytes=1024 * 1024)
+        counters, reader = await self._serve(mirror)
+        await self._cover()                       # one miss, which fills the mirror
+        self.assertTrue(await self._await_mirror(mirror, self.DIGEST, len(self.JPEG)))
+        body = await (await self.client.get("/healthz")).json()
+        report = body["stream_capacity"]["cover_mirror"]
+        self.assertTrue(report["enabled"])
+        self.assertEqual(report["files"], 1)
+        self.assertEqual(report["bytes"], len(self.JPEG))
+        self.assertEqual((report["hits"], report["misses"]), (0, 1))
+        self.assertEqual((report["warm_pending"], report["warm_failed"]), (0, 0))
+
+    async def test_health_says_when_the_mirror_is_off(self) -> None:
+        await self._serve(None)
+        body = await (await self.client.get("/healthz")).json()
+        report = body["stream_capacity"]["cover_mirror"]
+        self.assertFalse(report["enabled"])
+        self.assertEqual((report["files"], report["bytes"], report["hits"], report["misses"]), (0, 0, 0, 0))
