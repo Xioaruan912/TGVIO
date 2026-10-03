@@ -135,6 +135,22 @@ def parse_filters(query: Mapping[str, str]) -> LibraryFilters:
     return filters
 
 
+def duration_bounds(
+    filters: LibraryFilters, *, category: str, large_video_seconds: float
+) -> tuple[float | None, float | None]:
+    """The duration band to query: the category's own band, intersected with any
+    explicit seconds filter the client sent. An empty category set means both."""
+    low, high = filters.min_seconds, filters.max_seconds
+    categories = filters.categories or (
+        {category} if category in CATEGORIES else frozenset()
+    )
+    if "long" in categories and "short" not in categories:
+        low = max(low or 0.0, large_video_seconds)
+    elif "short" in categories and "long" not in categories:
+        high = large_video_seconds if high is None else min(high, large_video_seconds)
+    return low, high
+
+
 def parse_rules(value: Any) -> LibraryFilters:
     """Lenient: this is what a stored smart collection remembers.
 

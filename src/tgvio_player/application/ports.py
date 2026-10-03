@@ -117,6 +117,18 @@ class PlayerCatalogRepository(Protocol):
         order: str = "media_id",
         limit: int = 1000,
         offset: int = 0,
+        date_from: int | None = None,
+        date_to: int | None = None,
+        min_bytes: int | None = None,
+        max_bytes: int | None = None,
+        has_cover: bool | None = None,
+        favorite: bool | None = None,
+        favorite_scope: str = "session",
+        favorite_token_digest: str | None = None,
+        resumable: bool | None = None,
+        unwatched: bool | None = None,
+        sort: str | None = None,
+        seed: int | None = None,
     ) -> list[str]: ...
 
     async def count_video_ids(

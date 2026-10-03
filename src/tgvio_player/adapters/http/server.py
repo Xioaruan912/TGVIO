@@ -36,6 +36,11 @@ from tgvio_player.application.player_recovery import (
     WebDavBootstrap,
 )
 from tgvio_player.domain.auth import token_digest
+from tgvio_player.domain.library_filters import (
+    InvalidFilters,
+    duration_bounds,
+    parse_filters,
+)
 from tgvio_player.domain.storage_settings import (
     PlayerStorageSettings,
     safe_storage_relpath,
@@ -47,6 +52,13 @@ from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter
 
 _MAX_JSON_BYTES = 4096
 _MAX_FEED_LIMIT = 20
+
+# Everything /api/v1/videos accepts that is not a filter: paging, the id-prefix search
+# and the prefetch hint. Anything else in the query string is a filter this build does
+# not know, which is a client error rather than something to quietly ignore.
+_VIDEO_TRANSPORT_KEYS = frozenset(
+    {"category", "limit", "offset", "search", "cache", "prefetch"}
+)
 _MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _FAVORITE_CURSOR_RE = re.compile(r"^[A-Za-z0-9_-]{1,256}$")
 _MAX_RANDOM_CANDIDATES = 5
@@ -511,29 +523,42 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
             raise web.HTTPBadRequest(text="invalid paging") from None
         if not 1 <= limit <= _MAX_FEED_LIMIT or offset < 0:
             raise web.HTTPBadRequest(text="invalid paging")
-        if category == "all":
-            media_ids = await self._repository.list_video_ids(
-                order="media_id",
-                limit=limit + 1,
-                offset=offset,
-                **({"media_id_prefix": search} if search else {}),
+        try:
+            filters = parse_filters(
+                {
+                    key: value
+                    for key, value in request.query.items()
+                    if key not in _VIDEO_TRANSPORT_KEYS
+                }
             )
-        elif category == "long":
-            media_ids = await self._repository.list_video_ids(
-                min_seconds=self._large_video_seconds,
-                order="duration_desc",
-                limit=limit + 1,
-                offset=offset,
-                **({"media_id_prefix": search} if search else {}),
-            )
-        else:
-            media_ids = await self._repository.list_video_ids(
-                max_seconds=self._large_video_seconds,
-                order="media_id",
-                limit=limit + 1,
-                offset=offset,
-                **({"media_id_prefix": search} if search else {}),
-            )
+        except InvalidFilters as error:
+            raise web.HTTPBadRequest(text=str(error)) from None
+        min_seconds, max_seconds = duration_bounds(
+            filters, category=category, large_video_seconds=self._large_video_seconds
+        )
+        # A sort the client did not ask for keeps the order that was already in use, so
+        # existing clients and the deck see no change.
+        sort = filters.sort if "sort" in request.query else None
+        media_ids = await self._repository.list_video_ids(
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            order="duration_desc" if category == "long" else "media_id",
+            limit=limit + 1,
+            offset=offset,
+            date_from=filters.date_from,
+            date_to=filters.date_to,
+            min_bytes=filters.min_bytes,
+            max_bytes=filters.max_bytes,
+            has_cover=filters.has_cover,
+            favorite=filters.favorite,
+            favorite_scope="global" if self._favorite_backup is not None else "session",
+            favorite_token_digest=digest,
+            resumable=filters.resumable,
+            unwatched=filters.unwatched,
+            sort=sort,
+            seed=filters.seed,
+            **({"media_id_prefix": search} if search else {}),
+        )
         has_more = len(media_ids) > limit
         media_ids = media_ids[:limit]
         prefetch = _prefetch_requested(request)

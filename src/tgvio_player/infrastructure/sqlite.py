@@ -16,6 +16,7 @@ from tgvio_player.domain.catalog import CatalogPackage
 from tgvio_player.infrastructure.migration import run_migrations
 from tgvio_player.infrastructure.sqlite_favorites import PlayerFavoriteRepositoryMixin
 from tgvio_player.infrastructure.sqlite_library import PlayerLibraryRepositoryMixin
+from tgvio_player.infrastructure.video_query import build_video_query
 
 
 _GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -366,32 +367,40 @@ class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin, PlayerLibrary
         order: str = "media_id",
         limit: int = 1000,
         offset: int = 0,
+        date_from: int | None = None,
+        date_to: int | None = None,
+        min_bytes: int | None = None,
+        max_bytes: int | None = None,
+        has_cover: bool | None = None,
+        favorite: bool | None = None,
+        favorite_scope: str = "session",
+        favorite_token_digest: str | None = None,
+        resumable: bool | None = None,
+        unwatched: bool | None = None,
+        sort: str | None = None,
+        seed: int | None = None,
     ) -> list[str]:
-        clauses = [
-            "active=1",
-            "kind='video'",
-            "media_id NOT IN (SELECT variant_media_id FROM media_variants)",
-        ]
-        params: list[object] = []
-        if min_seconds is not None:
-            clauses.append("duration_seconds > ?")
-            params.append(float(min_seconds))
-        if max_seconds is not None:
-            clauses.append("duration_seconds <= ?")
-            params.append(float(max_seconds))
-        if media_id_prefix is not None:
-            clauses.append("media_id LIKE ?")
-            params.append(f"{media_id_prefix}%")
-        order_sql = {
-            "duration_desc": "duration_seconds DESC, media_id",
-            "duration_asc": "duration_seconds ASC, media_id",
-        }.get(order, "media_id")
-        params.extend([max(1, int(limit)), max(0, int(offset))])
-        rows = self._require().execute(
-            f"SELECT media_id FROM media WHERE {' AND '.join(clauses)} "
-            f"ORDER BY {order_sql} LIMIT ? OFFSET ?",
-            tuple(params),
-        ).fetchall()
+        sql, params = build_video_query(
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            media_id_prefix=media_id_prefix,
+            order=order,
+            limit=limit,
+            offset=offset,
+            date_from=date_from,
+            date_to=date_to,
+            min_bytes=min_bytes,
+            max_bytes=max_bytes,
+            has_cover=has_cover,
+            favorite=favorite,
+            favorite_scope=favorite_scope,
+            favorite_token_digest=favorite_token_digest,
+            resumable=resumable,
+            unwatched=unwatched,
+            sort=sort,
+            seed=seed,
+        )
+        rows = self._require().execute(sql, tuple(params)).fetchall()
         return [str(row["media_id"]) for row in rows]
 
     async def list_media_groups(self, media_id: str) -> list[tuple[str, str]]:
