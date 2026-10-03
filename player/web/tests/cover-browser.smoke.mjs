@@ -183,6 +183,9 @@ try {
   check(await evaluate("window.__testVideo===document.querySelector('.media-slot.is-current')"),"pause reuses current node");
   await click('.player-panel .action-btn[aria-label="立即遮住并暂停"]');
   check(await evaluate("document.querySelector('.app-shell').classList.contains('privacy-locked')&&window.__testVideo.paused&&window.__testVideo.muted&&getComputedStyle(window.__testVideo).visibility==='hidden'"),"lock pauses mutes hides");
+  // `visibility: hidden` does not stop an animation, so a spinner parked inside a
+  // hidden loader is pure waste: nineteen of them used to turn behind the feed.
+  check(await evaluate("(()=>{const rings=[...document.querySelectorAll('.media-loading-ring')];const turning=document.getAnimations().filter(a=>a.animationName==='media-ring-turn'&&a.playState==='running');return rings.length>0&&turning.every(a=>{const loader=a.effect.target.closest('.media-loading');if(!loader)return false;const cs=getComputedStyle(loader);return cs.opacity!=='0'&&cs.visibility!=='hidden'})})()"),"no spinner turns inside a hidden loader");
   await nav("favorites");await wait("document.querySelectorAll('.favorites-page .cover-tile').length===8","favorite grid");
   await wait("!!document.querySelector('.favorites-page .cover-tile[data-cover-state=\"ready\"]')","real cover");
   await wait("!!document.querySelector('.favorites-page .cover-tile[data-cover-state=\"failed\"]')","failed cover");
@@ -245,6 +248,16 @@ try {
   check(await evaluate("document.querySelector('.sheet-card')?.contains(document.activeElement)"),"settings constrains focus");
   for(const type of ["keyDown","keyUp"])await cdp("Input.dispatchKeyEvent",{type,key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
  }
+ // The unlock reveal, checked on its own so it does not disturb the viewport pass:
+ // the cover leaves with the class, so the picture is what animates in.
+ await cdp("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:1,mobile:true});
+ await navigate("/");await wait("!!document.querySelector('.app-shell')","app for the reveal check");
+ await wait("document.querySelector('.app-shell').classList.contains('privacy-ready')","first frame ready");
+ check(await evaluate("getComputedStyle(document.querySelector('.video-host')).animationName==='none'"),"a locked player runs no reveal animation");
+ await click(".gesture-play");
+ check(await evaluate("(()=>{const cs=getComputedStyle(document.querySelector('.video-host'));return cs.animationName==='privacy-reveal'&&parseFloat(cs.animationDuration)<=0.3&&cs.opacity==='1'})()"),"unlocking reveals the picture on a short animation");
+ await wait("getComputedStyle(document.querySelector('.video-host')).opacity==='1'","the reveal settles at full opacity");
+
  // Clearing continue watching runs once, after the viewport loop: it empties records
  // the earlier iterations need, and the fixture is shared across them.
  await cdp("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:1,mobile:true});

@@ -286,6 +286,47 @@ test("the header scrim keeps its text readable on the brightest frame", () => {
   assert.deepEqual(overWhite(1), [255, 255, 255], "the scrim is fully transparent at its far edge");
 });
 
+test("a spinner only turns while the loader it belongs to is on screen", () => {
+  // `visibility: hidden` does not stop an animation. Nineteen of the twenty rings in
+  // a full feed sit inside a hidden loader, so they used to turn forever behind an
+  // invisible layer - a frame of raster and composite work each frame, for nothing.
+  const ring = body(feedCss, ".media-loading-ring");
+  assert.match(ring, /animation:\s*media-ring-turn/, "the ring keeps its rotation");
+  assert.match(ring, /animation-play-state:\s*paused/, "but it is parked until its loader shows");
+  const running = body(feedCss, ".video-page[data-playback-state=\"loading\"] .media-loading-ring");
+  assert.match(running, /animation-play-state:\s*running/, "only the states that paint the loader spin it");
+  for (const state of ["buffering"]) {
+    for (const host of [".video-page", ".large-player"]) {
+      assert.match(
+        body(feedCss, `${host}[data-playback-state="${state}"] .media-loading-ring`),
+        /animation-play-state:\s*running/,
+        `${host} ${state}`,
+      );
+    }
+  }
+  assert.match(
+    body(feedCss, ".video-page:not(.is-active) .media-loading-ring"),
+    /animation-play-state:\s*paused/,
+    "a placeholder page keeps its ring parked even while buffering",
+  );
+});
+
+test("the lock cover leaves, so the picture is what animates in", () => {
+  // The cover is a pseudo-element that disappears with the class, so it cannot fade
+  // out. The reveal is animated instead, on the thing that becomes visible.
+  assert.match(feedCss, /@keyframes privacy-reveal\s*\{\s*from\s*\{\s*opacity:\s*0/);
+  for (const [css, selector] of [[feedCss, ".app-shell:not(.privacy-locked) .video-host"], [largeCss, ".large-player:not(.privacy-locked) .large-video"]]) {
+    const rule = body(css, selector);
+    assert.match(rule, /animation:\s*privacy-reveal/, selector);
+    assert.match(rule, /var\(--dur-fast\)/, `${selector} stays a short reveal`);
+  }
+  // The privacy contract itself is untouched: the cover stays opaque and the media
+  // stays hidden while locked.
+  assert.match(body(feedCss, ".app-shell.privacy-locked .video-host"), /visibility:\s*hidden/);
+  assert.match(body(largeCss, ".large-player.privacy-locked .large-video"), /visibility:\s*hidden/);
+  assert.doesNotMatch(feedCss, /\.privacy-locked[^{]*\{[^}]*opacity:\s*0/, "the cover is never made translucent");
+});
+
 test("long privacy lock also uses an opaque cover", () => {
   assert.match(body(largeCss, ".large-player.privacy-locked .large-video"), /visibility:\s*hidden/);
   assert.match(body(largeCss, ".large-player.privacy-locked .large-stage::after"), /background:\s*var\(--privacy-cover\)/);

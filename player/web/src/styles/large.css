@@ -19,6 +19,11 @@
 .large-video { width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; background: var(--media-bg); }
 .large-player.privacy-locked .large-stage::after { content: ''; position: absolute; z-index: 1; inset: 0; background: var(--privacy-cover); pointer-events: none; }
 .large-player.privacy-locked .large-video { visibility: hidden; }
+/* Unlocking reveals the picture rather than fading the cover, which is removed with
+   the class. Same reveal as the feed, so both players settle the same way. */
+.large-player:not(.privacy-locked) .large-video {
+  animation: privacy-reveal var(--dur-fast) var(--ease-out-quint);
+}
 .large-privacy-play { position: absolute; left: 50%; top: 50%; z-index: 3; transform: translate(-50%,-50%); display: none; justify-items: center; gap: 12px; min-height: 76px; padding: 20px; color: var(--text); background: rgba(11, 13, 16, .92); border: 1px solid var(--border-strong); border-radius: 22px; font-size: 12px; white-space: nowrap; }
 .large-player.privacy-locked .large-privacy-play { display: grid; }
 .large-player.privacy-locked[data-playback-state="loading"] .large-privacy-play, .large-player.privacy-locked[data-playback-state="buffering"] .large-privacy-play, .large-player.privacy-locked .large-retry { display: none; }

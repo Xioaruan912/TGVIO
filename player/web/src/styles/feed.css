@@ -119,6 +119,11 @@
   border-radius: 50%;
 
   animation: media-ring-turn 1s linear infinite;
+  /* `visibility: hidden` does not stop an animation, and in a full feed nineteen of
+     the twenty rings sit inside a hidden loader. A rotation nobody can see still
+     costs raster and composite work every frame, competing with the video for it.
+     The ring is parked here and started only by the loader that is actually painting. */
+  animation-play-state: paused;
 }
 
 /* Playback state is the single source of truth for the ring. Buffering must
@@ -129,6 +134,25 @@
 .large-player[data-playback-state="buffering"] .media-loading {
   opacity: 1;
   transform: translate(-50%, -50%);
+}
+/* The same four states that paint the loader are the ones allowed to spin it. */
+.video-page[data-playback-state="loading"] .media-loading-ring,
+.video-page[data-playback-state="buffering"] .media-loading-ring,
+.large-player[data-playback-state="loading"] .media-loading-ring,
+.large-player[data-playback-state="buffering"] .media-loading-ring {
+  animation-play-state: running;
+}
+/* A placeholder page is hidden whatever its own state says, so it never spins. */
+.video-page:not(.is-active) .media-loading-ring {
+  animation-play-state: paused;
+}
+
+/* The privacy cover is a pseudo-element that leaves with the class, so it cannot
+   fade out. The picture is what animates in instead, which is also what reads as
+   smooth: the cover cuts, the frame settles. Reduced motion makes it instant. */
+@keyframes privacy-reveal { from { opacity: 0; } }
+.app-shell:not(.privacy-locked) .video-host {
+  animation: privacy-reveal var(--dur-fast) var(--ease-out-quint);
 }
 
 /* Keep the poster only while the first frame is still missing. Only the active
