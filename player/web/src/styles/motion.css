@@ -1,0 +1,54 @@
+/* 深夜影院 motion scale.
+   The spring curves are generated from the damped-spring response
+   x(t) = 1 - e^(-z*w*t) * (cos(wd*t) + (z*w/wd) * sin(wd*t)), wd = w*sqrt(1-z^2),
+   sampled into `linear()` stops. Measured overshoot is noted per token so the
+   character of each curve is explicit rather than guessed. */
+
+:root {
+  /* z=0.62 w=18, 8.4% overshoot: press feedback, switches, sliding indicators. */
+  --ease-spring: linear(0 0%, 0.156 3.57%, 0.4586 7.14%, 0.7439 10.71%, 0.943 14.29%, 1.0484 17.86%, 1.0826 21.43%, 1.0752 25%, 1.0512 28.57%, 1.0263 32.14%, 1.0078 35.71%, 0.9974 39.29%, 0.9934 42.86%, 0.9934 46.43%, 0.9952 50%, 0.9974 53.57%, 0.9991 57.14%, 1.0001 60.71%, 1.0005 64.29%, 1.0006 67.86%, 1.0004 71.43%, 1.0003 75%, 1.0001 78.57%, 1 82.14%, 1 85.71%, 1 89.29%, 1 92.86%, 1 96.43%, 1 100%);
+  /* z=0.85 w=14, 0.6% overshoot: panels, sheets, drawers. */
+  --ease-spring-soft: linear(0 0%, 0.1222 4.17%, 0.3518 8.33%, 0.573 12.5%, 0.7447 16.67%, 0.862 20.83%, 0.9344 25%, 0.9751 29.17%, 0.9954 33.33%, 1.0039 37.5%, 1.0062 41.67%, 1.0058 45.83%, 1.0044 50%, 1.003 54.17%, 1.0018 58.33%, 1.001 62.5%, 1.0005 66.67%, 1.0002 70.83%, 1 75%, 1 79.17%, 1 83.33%, 1 87.5%, 1 91.67%, 1 95.83%, 1 100%);
+  /* z=0.90 w=11, 0.2% overshoot: large surfaces that must not bounce. */
+  --ease-gentle: linear(0 0%, 0.109 5%, 0.3164 10%, 0.5215 15%, 0.6873 20%, 0.8075 25%, 0.8882 30%, 0.9392 35%, 0.9695 40%, 0.9865 45%, 0.9953 50%, 0.9995 55%, 1.0011 60%, 1.0015 65%, 1.0014 70%, 1.0011 75%, 1.0008 80%, 1.0005 85%, 1.0003 90%, 1.0002 95%, 1.0001 100%);
+  /* Exit and scroll-reveal: no overshoot, fast start, long settle. */
+  --ease-out-quint: cubic-bezier(0.22, 1, 0.36, 1);
+  --ease-in-quiet: cubic-bezier(0.4, 0, 1, 1);
+
+  --dur-instant: 90ms;
+  --dur-fast: 180ms;
+  --dur-base: 280ms;
+  --dur-slow: 420ms;
+  --dur-cinema: 560ms;
+
+  /* 2% film grain. Kept as a data URI so the app never requests an asset. */
+  --grain: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='160' height='160'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='0.82' numOctaves='3' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='160' height='160' filter='url(%23n)' opacity='0.022'/%3E%3C/svg%3E");
+}
+
+/* Registered so numeric/colour values can interpolate instead of snapping. */
+@property --p {
+  syntax: "<percentage>";
+  inherits: false;
+  initial-value: 0%;
+}
+
+/* Grain lives on the app background rather than as a full-viewport overlay, so
+   the chrome gets texture while the picture stays clean and screenshot pixel
+   sampling for contrast stays unaffected. Declared last so it wins over the
+   `background:` shorthands in shell/browse/large. */
+.app-shell, .browse-page, .large-player {
+  background-image: var(--grain);
+  background-repeat: repeat;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  /* Springs become plain linear so nothing overshoots or travels. The global
+     transition/animation kill switch stays in style.css. */
+  :root {
+    --ease-spring: linear;
+    --ease-spring-soft: linear;
+    --ease-gentle: linear;
+    --ease-out-quint: linear;
+    --ease-in-quiet: linear;
+  }
+}

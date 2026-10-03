@@ -77,7 +77,7 @@
   inset: 0;
   z-index: 1;
   pointer-events: none;
-  background: #0a0a0a;
+  background: var(--media-bg);
   transition: opacity 0.28s ease;
 }
 
@@ -115,7 +115,7 @@
   height: 38px;
   border: 1px solid rgba(255, 255, 255, 0.16);
   border-top-color: rgba(255, 255, 255, 0.92);
-  border-right-color: #7dd3fc;
+  border-right-color: var(--primary);
   border-radius: 50%;
 
   animation: media-ring-turn 1s linear infinite;

@@ -4,11 +4,15 @@ import test from "node:test";
 
 const source = (path) => readFileSync(new URL("../src/" + path, import.meta.url), "utf8");
 const baseCss = source("styles/base.css");
+const motionCss = source("styles/motion.css");
+const styleEntry = source("style.css");
 const feed = source("feed.ts");
 const ui = source("ui.ts");
 const feedCss = source("styles/feed.css");
 const overlayCss = source("styles/overlay.css");
 const largeCss = source("styles/large.css");
+const browseCss = source("styles/browse.css");
+const shellCss = source("styles/shell.css");
 const rules = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]+)\{([^{}]*)\}/g)]
   .flatMap(([, selectors, body]) => selectors.split(",").map((selector) => ({ selector: selector.trim(), body })));
 const body = (css, selector) => rules(css).filter((rule) => rule.selector === selector).map((rule) => rule.body).join("\n");
@@ -35,7 +39,46 @@ test("12px metadata keeps WCAG AA contrast on every surface it sits on", () => {
     assert.ok(ratio >= 4.5, `--text-muted on --${surface} is ${ratio.toFixed(2)}:1`);
   }
   assert.ok(contrast(tokens["text-secondary"], tokens["bg"]) >= 4.5, "secondary text on the page background");
-  assert.ok(contrast("#ffffff", tokens["primary"]) >= 4.5, "white label on the primary action");
+  // The accent is amber, so labels drawn on it must use the dark ink, not white.
+  assert.ok(contrast(tokens["accent-ink"], tokens["primary"]) >= 4.5, "ink on the primary action");
+  assert.ok(contrast("#ffffff", tokens["primary"]) < 4.5, "white must not be used on the accent");
+  assert.ok(contrast("#ffffff", tokens["danger-fill"]) >= 4.5, "white on the filled danger action");
+});
+
+test("the palette is dark and never falls back to a light surface", () => {
+  assert.ok(luminance(tokens["bg"]) < 0.05, `--bg luminance ${luminance(tokens["bg"]).toFixed(3)}`);
+  assert.ok(luminance(tokens["surface"]) < 0.05, "--surface stays dark");
+  assert.match(baseCss, /color-scheme:\s*dark/);
+  // Every surface token is dark, so a stray light panel cannot slip back in.
+  for (const surface of ["bg", "bg-deep", "surface", "surface-raised", "surface-sunken", "surface-soft", "media-bg", "privacy-cover"]) {
+    assert.ok(luminance(tokens[surface]) < 0.08, `--${surface} is not dark`);
+  }
+});
+
+test("the accent ink is the only label colour on an accent fill", () => {
+  const accentFilled = [
+    [overlayCss, ".transport-play"],
+    [largeCss, ".large-play"],
+    [browseCss, ".library-selection > .library-button:first-child"],
+    [shellCss, ".desktop-nav .nav-btn.active"],
+  ];
+  for (const [css, selector] of accentFilled) {
+    assert.match(body(css, selector), /color:\s*var\(--accent-ink\)/, selector);
+  }
+});
+
+test("the motion scale is spring based and collapses under reduced motion", () => {
+  assert.match(motionCss, /--ease-spring:\s*linear\(0 0%/);
+  assert.match(motionCss, /--ease-spring-soft:\s*linear\(0 0%/);
+  for (const token of ["--dur-instant: 90ms", "--dur-fast: 180ms", "--dur-base: 280ms", "--dur-slow: 420ms", "--dur-cinema: 560ms"]) {
+    assert.ok(motionCss.includes(token), token);
+  }
+  const reduced = motionCss.slice(motionCss.indexOf("prefers-reduced-motion"));
+  for (const token of ["--ease-spring: linear;", "--ease-spring-soft: linear;", "--ease-gentle: linear;"]) {
+    assert.ok(reduced.includes(token), "reduced motion must neutralise " + token);
+  }
+  // Motion tokens and the grain are declared after the component shorthands.
+  assert.ok(styleEntry.indexOf("motion.css") > styleEntry.indexOf("settings.css"));
 });
 
 test("the unfilled seek track stays a perceivable control boundary", () => {

@@ -11,12 +11,12 @@
 .library-toolbar > .library-button:not(.library-select-toggle) { border-color: transparent; background: transparent; }
 .library-toolbar > .library-button[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); font-weight: 650; }
 .library-toolbar > .library-select-toggle { margin-left: auto; display: flex; align-items: center; }
-.library-select-toggle[aria-pressed="true"] { background: var(--primary); color: #fff; border-color: var(--primary); }
+.library-select-toggle[aria-pressed="true"] { background: var(--primary); color: var(--accent-ink); border-color: var(--primary); }
 .library-date-label { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 13px; color: var(--text-secondary); }
 .library-date-input { min-width: 0; max-width: 100%; min-height: 44px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: 16px; color-scheme: light; accent-color: var(--primary); }
 .library-notice { margin: 0; padding: 0 20px 14px; color: var(--text-muted); font-size: 12px; line-height: 1.7; flex: none; overflow-wrap: anywhere; }
 .library-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface); flex: none; }
-.library-selection > .library-button:first-child { background: var(--primary); border-color: var(--primary); color: #fff; }
+.library-selection > .library-button:first-child { background: var(--primary); border-color: var(--primary); color: var(--accent-ink); }
 .library-selection:empty { display: none; }
 .library-list, .long-list { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 20px 24px; scrollbar-gutter: stable; }
 .library-list.cover-grid { align-content: start; }

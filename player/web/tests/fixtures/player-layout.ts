@@ -72,7 +72,16 @@ async function run() {
   const favoriteButton = large.root.querySelector<HTMLButtonElement>('.large-favorite')!;
   check(Boolean(favoriteButton) && favoriteButton.classList.contains("selected") && favoriteButton.getAttribute("aria-pressed") === "true", "long favorite initializes server truth and accessible state");
   check(getComputedStyle(large.currentVideo()).visibility === "hidden", "long privacy never reveals blurred video");
-  check(getComputedStyle(large.root.querySelector(".large-stage")!, "::after").backgroundColor === "rgb(20, 34, 53)", "long privacy has an opaque cover");
+  // Compare against the token rather than a frozen rgb so a palette change does
+  // not silently turn the privacy cover translucent.
+  const coverToken = getComputedStyle(document.documentElement).getPropertyValue("--privacy-cover").trim();
+  const coverProbe = document.createElement("span");
+  coverProbe.style.color = coverToken;
+  document.body.append(coverProbe);
+  const coverRgb = getComputedStyle(coverProbe).color;
+  coverProbe.remove();
+  check(getComputedStyle(large.root.querySelector(".large-stage")!, "::after").backgroundColor === coverRgb, "long privacy has an opaque cover");
+  check(!coverRgb.startsWith("rgba"), "the privacy cover token is fully opaque");
   check(!large.root.querySelector<HTMLElement>(".large-topbar")!.inert, "privacy-locked return navigation stays available");
   const seek = large.root.querySelector<HTMLElement>(".large-seek")!;
   check(seek.getBoundingClientRect().height >= 44, "long seek touch target at least 44px");

@@ -41,12 +41,12 @@
 .cover-tile-media { position: relative; display: block; width: 100%; aspect-ratio: var(--cover-ratio); overflow: hidden; border-radius: var(--radius-lg); background: var(--media-bg); }
 .cover-tile[data-variant="wide"] .cover-tile-media { aspect-ratio: 16 / 9; }
 .cover-tile-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform var(--duration-normal) var(--ease); }
-.cover-tile-fallback { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; background: #223246; color: #d4dfed; }
+.cover-tile-fallback { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; background: var(--surface-raised); color: var(--text-secondary); }
 .cover-tile[data-cover-state="ready"] .cover-tile-fallback { display: none; }
 .cover-tile-fallback-mark { display: grid; justify-items: center; gap: 8px; transform: translateY(-22px); }
 .cover-tile-fallback-text { font-size: 12px; line-height: 1.5; }
 .cover-tile-fallback-mark > .icon { width: 28px; height: 28px; opacity: .7; }
-.cover-tile[data-cover-state="loading"] .cover-tile-fallback { background: #263749; }
+.cover-tile[data-cover-state="loading"] .cover-tile-fallback { background: var(--surface); }
 .cover-tile[data-cover-state="failed"] .cover-tile-fallback-mark { transform: translateY(-60px); }
 /* The scrim follows real information height, including larger fonts, and fades
    only above it. Even a white frame stays readable without a full-cover wash. */

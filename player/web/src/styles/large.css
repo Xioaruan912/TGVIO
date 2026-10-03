@@ -8,32 +8,32 @@
 .large-video { width: 100%; height: 100%; min-width: 0; min-height: 0; object-fit: contain; background: var(--media-bg); }
 .large-player.privacy-locked .large-stage::after { content: ''; position: absolute; z-index: 1; inset: 0; background: var(--privacy-cover); pointer-events: none; }
 .large-player.privacy-locked .large-video { visibility: hidden; }
-.large-privacy-play { position: absolute; left: 50%; top: 50%; z-index: 3; transform: translate(-50%,-50%); display: none; justify-items: center; gap: 12px; min-height: 76px; padding: 20px; color: #fff; background: rgb(10 30 45 / 90%); border: 1px solid rgb(125 211 252 / 60%); border-radius: 22px; font-size: 12px; white-space: nowrap; }
+.large-privacy-play { position: absolute; left: 50%; top: 50%; z-index: 3; transform: translate(-50%,-50%); display: none; justify-items: center; gap: 12px; min-height: 76px; padding: 20px; color: var(--text); background: rgba(11, 13, 16, .92); border: 1px solid var(--border-strong); border-radius: 22px; font-size: 12px; white-space: nowrap; }
 .large-player.privacy-locked .large-privacy-play { display: grid; }
 .large-player.privacy-locked[data-playback-state="loading"] .large-privacy-play, .large-player.privacy-locked[data-playback-state="buffering"] .large-privacy-play, .large-player.privacy-locked .large-retry { display: none; }
 .large-stage .media-loading { z-index: 2; }
-.large-retry { position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%,-50%); min-height: 48px; padding: 12px 18px; border-radius: 16px; background: #fff; color: var(--sky700); font-size: 13px; }
-.large-controls { position: relative; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; padding: 12px 20px calc(16px + var(--safe-bottom)); background: #fff; border-top: 1px solid var(--line); }
+.large-retry { position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%,-50%); min-height: 48px; padding: 12px 18px; border-radius: 16px; border: 1px solid var(--border-strong); background: var(--surface-raised); color: var(--primary); font-size: 13px; }
+.large-controls { position: relative; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; padding: 12px 20px calc(16px + var(--safe-bottom)); background: var(--surface); border-top: 1px solid var(--border); }
 .large-action-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; min-width: 0; }
 .large-btn { width: auto; min-width: 48px; height: auto; flex: none; display: grid; place-items: center; border-radius: var(--radius); color: var(--text-secondary); background: transparent; min-height: 56px; padding: 6px 8px; gap: 4px; }
-.large-btn.selected { color: var(--favorite); background: #fff0f5; }
+.large-btn.selected { color: var(--favorite); background: rgba(232, 121, 154, .16); }
 .large-delete { color: var(--danger); }
 .large-player.privacy-locked .large-pip { display: none; }
 .large-btn.large-quality { width: auto; padding: 0 12px; font-size: 12px; font-weight: 650; }
 .large-timeline { min-width: 0; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0 8px; font-size: 12px; line-height: 18px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .large-time-row { display: flex; flex: 1 1 100%; justify-content: space-between; gap: 12px; }
 .large-progress { position: relative; flex: 1 1 100%; height: 48px; min-height: 48px; display: grid; align-items: center; --p: 0%; }
-.large-buffered { position: absolute; z-index: 0; left: 0; top: 50%; height: 8px; width: 0; transform: translateY(-50%); border-radius: 8px; background: #b5dff5; }
+.large-buffered { position: absolute; z-index: 0; left: 0; top: 50%; height: 8px; width: 0; transform: translateY(-50%); border-radius: 8px; background: var(--accent-soft); }
 .large-seek { position: relative; z-index: 1; height: 48px; min-height: 48px; --p: inherit; }
 /* Playback visibility hooks intentionally do not hide or disable these rows. */
 .double-tap-feedback { position: absolute; z-index: 5; top: 45%; padding: 12px 16px; border-radius: 999px; background: rgb(0 0 0 / 62%); color: #fff; font-size: 14px; pointer-events: none; animation: tap-feedback 650ms ease both; }
 .double-tap-feedback.backward { left: 10%; }
 .double-tap-feedback.forward { right: 10%; }
 @keyframes tap-feedback { 0% { opacity: 0; transform: scale(.85); } 25% { opacity: 1; transform: scale(1); } 100% { opacity: 0; } }
-.scrub-bubble { position: fixed; bottom: calc(190px + var(--safe-bottom)); left: 50%; transform: translateX(-50%); z-index: 60; display: grid; gap: 6px; justify-items: center; padding: 8px; border: 1px solid var(--line); border-radius: 16px; color: var(--text); background: #fff; box-shadow: var(--shadow); pointer-events: none; }
+.scrub-bubble { position: fixed; bottom: calc(190px + var(--safe-bottom)); left: 50%; transform: translateX(-50%); z-index: 60; display: grid; gap: 6px; justify-items: center; padding: 8px; border: 1px solid var(--border-strong); border-radius: 16px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-panel); pointer-events: none; }
 .scrub-frame { position: relative; width: 168px; height: 94px; border-radius: 10px; overflow: hidden; background: var(--media-bg); }
 /* A frame that is not decoded yet is an explicit state, never an empty dark box. */
-.scrub-bubble:not([data-frame="ready"]) .scrub-frame::after { content: "画面准备中"; position: absolute; inset: 0; display: grid; place-items: center; color: #b9c7d8; font-size: 12px; letter-spacing: .02em; }
+.scrub-bubble:not([data-frame="ready"]) .scrub-frame::after { content: "画面准备中"; position: absolute; inset: 0; display: grid; place-items: center; color: var(--text-muted); font-size: 12px; letter-spacing: .02em; }
 .scrub-canvas { display: block; width: 168px; height: 94px; }
 .scrub-time { font-size: 12px; font-variant-numeric: tabular-nums; }
 .scrub-video { position: fixed; left: -10000px; top: 0; width: 2px; height: 2px; opacity: 0; pointer-events: none; }
@@ -55,7 +55,7 @@
 .large-heading { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .large-context { font-size: 12px; color: var(--text-muted); }
 .control-caption { font-size: 12px; line-height: 14px; }
-.large-play { min-width: 64px; background: var(--primary); color: #fff; }
+.large-play { min-width: 64px; background: var(--primary); color: var(--accent-ink); }
 .large-back .control-caption { display: none; }
 .large-quality { background: var(--surface-soft); }
 .large-more .media-actions-toggle { min-height: 56px; }
