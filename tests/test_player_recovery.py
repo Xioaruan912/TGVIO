@@ -305,6 +305,143 @@ class PlayerRecoveryTests(unittest.IsolatedAsyncioTestCase):
             partial.endpoint_url, partial.player_root, partial.favorites_dir,
             partial.username_ciphertext, partial.password_ciphertext, retried.revision,
         ))
+    async def test_collections_travel_with_the_backup_and_come_back(self) -> None:
+        manual = await self.repo.create("旅行", "manual", None)
+        await self.repo.add_item(manual.collection_id, self.media_id)
+        await self.repo.add_item(manual.collection_id, self.deleting_id)
+        await self.repo.create("短片", "smart", '{"min_seconds": 1}')
+        await self.service.export_state()
+
+        new_repo = PlayerCatalogRepositorySQLite(self.path / "collections.sqlite3")
+        await new_repo.open()
+        try:
+            result = await PlayerRecoveryService(new_repo, self.cipher, self.factory).restore(
+                WebDavBootstrap(self.settings.endpoint_url, "player", "alice", "old-password")
+            )
+            self.assertTrue(result.restored)
+            restored = {item.name: item for item in await new_repo.list()}
+            self.assertEqual(sorted(restored), ["旅行", "短片"])
+            self.assertEqual(
+                (restored["旅行"].kind, restored["短片"].kind), ("manual", "smart")
+            )
+            self.assertEqual(restored["短片"].rules_json, '{"min_seconds": 1}')
+            self.assertEqual(
+                await new_repo.items(restored["旅行"].collection_id, 50, 0),
+                (self.media_id, self.deleting_id),
+            )
+        finally:
+            await new_repo.close()
+
+    async def test_a_manifest_written_by_the_previous_build_restores_without_collections(self) -> None:
+        """A v1 payload is valid input: it simply carries no collections."""
+        await self.service.export_state()
+        remote = self.factory.clients[self.settings.endpoint_url]
+        config_store = EncryptedManifestStore(
+            remote, self.cipher, "player", context=CONFIG_CONTEXT, name="player-config",
+        )
+        config = await config_store.load()
+        config["revision"] = int(config["revision"]) + 1
+        await config_store.save_atomic(config)
+        previous = await EncryptedManifestStore(remote, self.cipher, "player").load()
+        previous.pop("collections")
+        previous["schema_version"] = 1
+        previous["revision"] = config["revision"]
+        await EncryptedManifestStore(
+            remote, self.cipher, "player", schema_version=1
+        ).save_atomic(previous)
+
+        new_repo = PlayerCatalogRepositorySQLite(self.path / "v1.sqlite3")
+        await new_repo.open()
+        try:
+            result = await PlayerRecoveryService(new_repo, self.cipher, self.factory).restore(
+                WebDavBootstrap(self.settings.endpoint_url, "player", "alice", "old-password")
+            )
+            self.assertTrue(result.restored)
+            self.assertEqual(await new_repo.list(), ())
+            self.assertEqual(
+                {str(row[0]) for row in new_repo._require().execute(
+                    "SELECT media_id FROM player_global_favorites"
+                ).fetchall()},
+                {self.media_id},
+            )
+        finally:
+            await new_repo.close()
+
+    async def test_a_member_the_server_has_not_catalogued_waits_as_a_placeholder(self) -> None:
+        """A fresh install restores before its catalog finishes syncing."""
+        manual = await self.repo.create("旅行", "manual", None)
+        await self.repo.add_item(manual.collection_id, self.pending_id)
+        await self.service.export_state()
+
+        new_repo = PlayerCatalogRepositorySQLite(self.path / "placeholder.sqlite3")
+        await new_repo.open()
+        try:
+            await PlayerRecoveryService(new_repo, self.cipher, self.factory).restore(
+                WebDavBootstrap(self.settings.endpoint_url, "player", "alice", "old-password")
+            )
+            restored = (await new_repo.list())[0]
+            self.assertEqual(await new_repo.items(restored.collection_id, 50, 0), ())
+            self.assertEqual(
+                new_repo._require().execute(
+                    "SELECT COUNT(*) FROM collection_items WHERE collection_id=?",
+                    (restored.collection_id,),
+                ).fetchone()[0],
+                1,
+                "the membership is real even while the video is not",
+            )
+            await new_repo.apply_package(CatalogPackage(
+                "package", "archive/package", "b" * 64, None, None,
+                (CatalogMedia(self.pending_id, "video", 7, "video/mp4"),),
+                (CatalogLocation(self.pending_id, "package", "pending.mp4"),),
+            ))
+            await new_repo.refresh_media_activity()
+            self.assertEqual(
+                await new_repo.items(restored.collection_id, 50, 0), (self.pending_id,)
+            )
+        finally:
+            await new_repo.close()
+
+    async def test_restoring_twice_neither_duplicates_collections_nor_loses_members(self) -> None:
+        manual = await self.repo.create("旅行", "manual", None)
+        await self.repo.add_item(manual.collection_id, self.media_id)
+        await self.service.export_state()
+
+        new_repo = PlayerCatalogRepositorySQLite(self.path / "twice.sqlite3")
+        await new_repo.open()
+        try:
+            service = PlayerRecoveryService(new_repo, self.cipher, self.factory)
+            bootstrap = WebDavBootstrap(
+                self.settings.endpoint_url, "player", "alice", "old-password"
+            )
+            await service.restore(bootstrap)
+            await service.restore(bootstrap)
+            restored = await new_repo.list()
+            self.assertEqual([item.name for item in restored], ["旅行"])
+            self.assertEqual(
+                await new_repo.items(restored[0].collection_id, 50, 0), (self.media_id,)
+            )
+        finally:
+            await new_repo.close()
+
+    async def test_target_migration_writes_the_collections_into_the_new_manifest(self) -> None:
+        manual = await self.repo.create("旅行", "manual", None)
+        await self.repo.add_item(manual.collection_id, self.media_id)
+        new_settings = PlayerStorageSettings(
+            "https://dav-collections.example.test", "moved-root", "Saved",
+            self.cipher.encrypt(b"bob", context=b"webdav-username"),
+            self.cipher.encrypt(b"new-password", context=b"webdav-password"), 2,
+        )
+        await self.service.migrate_target(new_settings)
+        copied = self.factory.clients[new_settings.endpoint_url]
+        manifest = await EncryptedManifestStore(copied, self.cipher, "moved-root").load()
+        self.assertEqual(manifest["schema_version"], 2)
+        self.assertEqual(
+            [
+                (entry["name"], entry["kind"], entry["items"])
+                for entry in manifest["collections"]
+            ],
+            [("旅行", "manual", [self.media_id])],
+        )
 
 
 if __name__ == "__main__":

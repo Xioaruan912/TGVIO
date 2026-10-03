@@ -164,6 +164,41 @@ class PlayerCollectionRepositoryMixin:
             )
             return cursor.rowcount > 0
 
+    async def restore_item(self, collection_id: str, media_id: str) -> bool:
+        """Add a membership from a restored backup, placeholder and all.
+
+        A backup can name a video this server has not catalogued yet - a reinstall
+        restores before the archive sync finishes. The video gets the same inactive
+        placeholder row a pending favourite gets, so the membership is real and the
+        video joins the collection the moment the catalog activates it. Unlike
+        ``add_item``, this is only reachable from a verified backup payload, which is
+        why it may create the row that ``add_item`` refuses to invent.
+        """
+        async with self._write_transaction() as conn:
+            if conn.execute(
+                "SELECT 1 FROM collections WHERE collection_id=?", (collection_id,)
+            ).fetchone() is None:
+                return False
+            conn.execute(
+                """
+                INSERT INTO media(media_id, kind, size_bytes, active, first_seen_at, last_seen_at)
+                VALUES(?, 'video', 0, 0, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+                ON CONFLICT(media_id) DO NOTHING
+                """,
+                (media_id,),
+            )
+            position = conn.execute(
+                "SELECT COALESCE(MAX(position), -1) + 1 FROM collection_items "
+                "WHERE collection_id=?",
+                (collection_id,),
+            ).fetchone()[0]
+            cursor = conn.execute(
+                "INSERT INTO collection_items(collection_id, media_id, position) VALUES(?,?,?) "
+                "ON CONFLICT(collection_id, media_id) DO NOTHING",
+                (collection_id, media_id, int(position)),
+            )
+            return cursor.rowcount > 0
+
     async def items(
         self, collection_id: str, limit: int, offset: int = 0
     ) -> tuple[str, ...]:

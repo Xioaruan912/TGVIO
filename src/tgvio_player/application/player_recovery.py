@@ -7,6 +7,7 @@ from dataclasses import dataclass, replace
 import hashlib
 import json
 from pathlib import PurePosixPath
+import re
 from typing import Any
 
 from tgvio_player.application.ports import (
@@ -25,7 +26,15 @@ CONFIG_CONTEXT = b"tgvio-player-config-v1"
 FAVORITES_CONTEXT = b"tgvio-player-favorites-v1"
 USERNAME_CONTEXT = b"webdav-username"
 PASSWORD_CONTEXT = b"webdav-password"
+# The favorites manifest is the one snapshot whose *contents* grow with a feature:
+# v2 adds user collections. Older payloads stay valid input (they carry no
+# collections), and the encryption contexts above must never change with it - those
+# strings are part of the key derivation, so bumping one would make every existing
+# backup undecryptable.
+MANIFEST_SCHEMA_VERSION = 2
+_SUPPORTED_MANIFEST_VERSIONS = (1, MANIFEST_SCHEMA_VERSION)
 _MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
+_MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
 class RecoveryError(RuntimeError):
@@ -97,6 +106,7 @@ class EncryptedManifestStore:
         *,
         context: bytes = FAVORITES_CONTEXT,
         name: str = "favorites-manifest",
+        schema_version: int = 1,
     ) -> None:
         self._client = client
         self._cipher = cipher
@@ -105,6 +115,7 @@ class EncryptedManifestStore:
             raise ValueError("invalid Player snapshot name")
         self._name = name
         self._context = context
+        self._schema_version = schema_version
 
     async def load(self) -> dict[str, Any] | None:
         pointer_path = _join(self._root, f"{self._name}.enc")
@@ -138,7 +149,7 @@ class EncryptedManifestStore:
 
     async def save_atomic(self, value: dict[str, Any]) -> None:
         revision = value.get("revision")
-        if value.get("schema_version") != 1 or type(revision) is not int or revision < 1:
+        if value.get("schema_version") != self._schema_version or type(revision) is not int or revision < 1:
             raise RecoveryError("Player snapshot schema or revision is invalid")
         current = await self.load()
         if current is not None:
@@ -220,10 +231,13 @@ class PlayerRecoveryService:
             location_by_id = {item[0]: item[1:] for item in locations}
             favorites = await self._list_favorites()
             pending_jobs = await self._repository.list_pending_favorite_sync()
+            collections = await self._list_collections()
             config_store = EncryptedManifestStore(
                 client, self._cipher, root, context=CONFIG_CONTEXT, name="player-config",
             )
-            manifest_store = EncryptedManifestStore(client, self._cipher, root)
+            manifest_store = EncryptedManifestStore(
+                client, self._cipher, root, schema_version=MANIFEST_SCHEMA_VERSION,
+            )
             old_config = await config_store.load()
             old_manifest = await manifest_store.load()
             revision = max(
@@ -234,7 +248,7 @@ class PlayerRecoveryService:
             settings = replace(current, revision=revision)
             config = self._config_snapshot(settings)
             manifest = self._manifest_snapshot(
-                settings, revision, favorites, location_by_id, pending_jobs,
+                settings, revision, favorites, location_by_id, pending_jobs, collections,
             )
             await config_store.save_atomic(config)
             await manifest_store.save_atomic(manifest)
@@ -263,13 +277,15 @@ class PlayerRecoveryService:
             config_store = EncryptedManifestStore(
                 client, self._cipher, root, context=CONFIG_CONTEXT, name="player-config",
             )
-            manifest_store = EncryptedManifestStore(client, self._cipher, root)
+            manifest_store = EncryptedManifestStore(
+                client, self._cipher, root, schema_version=MANIFEST_SCHEMA_VERSION,
+            )
             config = await config_store.load()
             manifest = await manifest_store.load()
             if config is None or manifest is None:
                 raise RecoveryError("remote Player state snapshot is incomplete")
             self._validate_snapshot(config, "Player config")
-            self._validate_snapshot(manifest, "favorites manifest")
+            self._validate_snapshot(manifest, "favorites manifest", versions=_SUPPORTED_MANIFEST_VERSIONS)
             revision = int(config["revision"])
             if int(manifest["revision"]) > revision:
                 raise RecoveryError("remote Player snapshots have inconsistent revisions")
@@ -284,6 +300,9 @@ class PlayerRecoveryService:
             items = manifest.get("items")
             if not isinstance(items, list):
                 raise RecoveryError("remote favorites manifest is invalid")
+            # Validated before anything is written: a payload this build cannot read
+            # must fail the restore while the old state is still intact.
+            collections = self._read_collections(manifest)
 
             verified: list[tuple[str, str, int, str, int, str]] = []
             deleting: list[tuple[str, str, int, str, int]] = []
@@ -296,8 +315,7 @@ class PlayerRecoveryService:
                 state = item.get("state")
                 created_at = item.get("created_at")
                 if (
-                    not isinstance(media_id, str) or len(media_id) != 64
-                    or any(char not in "0123456789abcdef" for char in media_id)
+                    not isinstance(media_id, str) or not _MEDIA_ID_RE.fullmatch(media_id)
                     or type(created_at) is not int or created_at < 0
                 ):
                     raise RecoveryError("remote favorite record is invalid")
@@ -342,6 +360,7 @@ class PlayerRecoveryService:
                 await self._repository.set_global_favorite(media_id, False)
                 await self._repository.enqueue_favorite_sync(media_id, "delete")
                 await self._repository.mark_favorite_delete_intent(media_id)
+            await self._restore_collections(collections)
             return RecoveryResult(True, revision, len(verified) + len(pending))
         except RecoveryError:
             raise
@@ -375,7 +394,9 @@ class PlayerRecoveryService:
             config_store = EncryptedManifestStore(
                 new_client, self._cipher, new_root, context=CONFIG_CONTEXT, name="player-config",
             )
-            manifest_store = EncryptedManifestStore(new_client, self._cipher, new_root)
+            manifest_store = EncryptedManifestStore(
+                new_client, self._cipher, new_root, schema_version=MANIFEST_SCHEMA_VERSION,
+            )
             existing_config = await config_store.load()
             existing_manifest = await manifest_store.load()
             new_settings = replace(
@@ -428,10 +449,12 @@ class PlayerRecoveryService:
 
             favorite_rows = await self._list_favorites()
             pending_jobs = await self._repository.list_pending_favorite_sync()
+            collections = await self._list_collections()
             config = self._config_snapshot(new_settings)
             location_by_id = {item[0]: item[1:] for item in migrated_locations}
             manifest = self._manifest_snapshot(
-                new_settings, new_settings.revision, favorite_rows, location_by_id, pending_jobs,
+                new_settings, new_settings.revision, favorite_rows, location_by_id,
+                pending_jobs, collections,
             )
             await config_store.save_atomic(config)
             await manifest_store.save_atomic(manifest)
@@ -465,6 +488,86 @@ class PlayerRecoveryService:
             before = created_at, media_id
         return rows
 
+    async def _list_collections(self) -> list[dict[str, Any]]:
+        """Every collection with its members, paged so one large collection cannot
+        turn an export into an unbounded read."""
+        payload: list[dict[str, Any]] = []
+        for collection in await self._repository.list():
+            members: list[str] = []
+            offset = 0
+            while True:
+                page = await self._repository.items(collection.collection_id, 500, offset)
+                members.extend(page)
+                if len(page) < 500:
+                    break
+                offset += len(page)
+            payload.append({
+                "name": collection.name,
+                "kind": collection.kind,
+                "rules_json": collection.rules_json,
+                "items": members,
+            })
+        return payload
+
+    @staticmethod
+    def _read_collections(manifest: dict[str, Any]) -> list[dict[str, Any]]:
+        raw = manifest.get("collections")
+        if raw is None:
+            # A v1 manifest has no collections at all; that is not an error.
+            return []
+        if not isinstance(raw, list):
+            raise RecoveryError("remote collections manifest is invalid")
+        collections: list[dict[str, Any]] = []
+        for entry in raw:
+            if not isinstance(entry, dict):
+                raise RecoveryError("remote collections manifest is invalid")
+            name, kind = entry.get("name"), entry.get("kind")
+            rules, items = entry.get("rules_json"), entry.get("items")
+            if (
+                not isinstance(name, str)
+                or kind not in {"manual", "smart"}
+                or (rules is not None and not isinstance(rules, str))
+                or not isinstance(items, list)
+                or any(
+                    not isinstance(item, str) or not _MEDIA_ID_RE.fullmatch(item)
+                    for item in items
+                )
+            ):
+                raise RecoveryError("remote collection record is invalid")
+            collections.append(
+                {"name": name, "kind": kind, "rules_json": rules, "items": items}
+            )
+        return collections
+
+    async def _restore_collections(self, collections: list[dict[str, Any]]) -> None:
+        """Collections are matched by name and kind, never overwritten.
+
+        The snapshot's copy of a collection is a stale echo of an editable field, so
+        an existing row keeps what the user has since made of it and only gains the
+        members it is missing. A member the catalog has not supplied yet is restored
+        as an inactive placeholder, exactly like a pending favourite.
+        """
+        if not collections:
+            return
+        known = {
+            (collection.name, collection.kind): collection.collection_id
+            for collection in await self._repository.list()
+        }
+        for entry in collections:
+            key = (entry["name"], entry["kind"])
+            collection_id = known.get(key)
+            if collection_id is None:
+                try:
+                    created = await self._repository.create(
+                        entry["name"], entry["kind"], entry["rules_json"]
+                    )
+                except ValueError as exc:
+                    raise RecoveryError("remote collection cannot be restored") from exc
+                collection_id = created.collection_id
+                known[key] = collection_id
+            for media_id in entry["items"]:
+                await self._repository.restore_item(collection_id, media_id)
+
     def _config_snapshot(self, settings: PlayerStorageSettings) -> dict[str, Any]:
         return {
             "schema_version": 1,
@@ -485,6 +588,7 @@ class PlayerRecoveryService:
         favorites: list[tuple[str, int]],
         location_by_id: dict[str, tuple[str, int, str]],
         pending_jobs: list[Any],
+        collections: list[dict[str, Any]],
     ) -> dict[str, Any]:
         items: list[dict[str, Any]] = []
         for media_id, created_at in favorites:
@@ -518,7 +622,12 @@ class PlayerRecoveryService:
                 "state": "deleting",
                 "revision": revision,
             })
-        return {"schema_version": 1, "revision": revision, "items": items}
+        return {
+            "schema_version": MANIFEST_SCHEMA_VERSION,
+            "revision": revision,
+            "items": items,
+            "collections": collections,
+        }
 
     def _settings_from_snapshot(self, config: dict[str, Any]) -> PlayerStorageSettings:
         try:
@@ -531,8 +640,10 @@ class PlayerRecoveryService:
             raise RecoveryError("remote WebDAV settings are invalid") from exc
         return PlayerStorageSettings(endpoint, root, favorites, username, password, int(config["revision"]))
 
-    def _validate_snapshot(self, value: dict[str, Any], label: str) -> None:
-        if value.get("schema_version") != 1:
+    def _validate_snapshot(
+        self, value: dict[str, Any], label: str, *, versions: tuple[int, ...] = (1,)
+    ) -> None:
+        if value.get("schema_version") not in versions:
             raise RecoveryError(f"{label} schema version is unsupported")
         if type(value.get("revision")) is not int or value["revision"] < 1:
             raise RecoveryError(f"{label} revision is invalid")
