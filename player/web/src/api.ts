@@ -1,4 +1,5 @@
 import type { LibraryCategory, LibraryDatesResponse, LibraryFoldersResponse, LibraryVideosResponse, LibraryVideosPage, ArchiveGroup, Clip, FeedResponse, GroupVideosResponse, LongVideoProgressResponse, MediaDto, PagedMediaResponse, PreloadLevel, RandomVideoListResponse, VideoListResponse } from "./types";
+import { toQuery, type LibraryFilters } from "./library-filters";
 
 export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
 
@@ -147,11 +148,17 @@ class PlayerApi {
     cache = false,
     search = "",
     signal?: AbortSignal,
+    filters?: LibraryFilters,
   ): Promise<{ items: Clip[]; hasMore: boolean; total: number | null }> {
     if (MOCK_MODE) return { items: [], hasMore: false, total: 0 };
     const params = new URLSearchParams({ category, limit: String(limit), offset: String(offset) });
     if (cache) params.set("cache", "1");
     if (search) params.set("search", search);
+    // The filter vocabulary lives in one module, so the wall and the query string
+    // cannot drift from what the server parses.
+    if (filters) {
+      for (const [key, value] of new URLSearchParams(toQuery(filters))) params.set(key, value);
+    }
     const payload = await this.request<VideoListResponse>(
       `/api/v1/videos?${params}`, { signal },
     );

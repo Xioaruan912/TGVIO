@@ -4,9 +4,21 @@ import { readFile } from "node:fs/promises";
 import ts from "typescript";
 globalThis.sessionStorage={setItem(){}};
 globalThis.window={setTimeout,clearTimeout};
+const transpile=async name=>ts.transpileModule(await readFile(new URL("../src/"+name,import.meta.url),"utf8"),{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText;
+// api.ts asks the filter module for its query string; the test owns that dependency
+// so the data-URL module needs no resolver of its own.
+globalThis.__apiFilterDeps=await import("data:text/javascript;base64,"+Buffer.from(await transpile("library-filters.ts")).toString("base64"));
 const source=await readFile(new URL("../src/api.ts",import.meta.url),"utf8");
-const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace(/import\.meta\.env\.VITE_PLAYER_MOCK/g,'"false"');
-const {api}=await import("data:text/javascript;base64,"+Buffer.from(js).toString("base64"));
+const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace(/import\.meta\.env\.VITE_PLAYER_MOCK/g,'"false"').replace(/^import .* from .*;$/gm,"");
+const {api}=await import("data:text/javascript;base64,"+Buffer.from("const { toQuery } = globalThis.__apiFilterDeps;\n"+js).toString("base64"));
+test("the wall query carries exactly the filters the server parses",async()=>{
+ const calls=[];
+ globalThis.fetch=async(path,init)=>{calls.push({path,init});return {ok:true,json:async()=>({items:[],has_more:false,total:0,category:"all"})};};
+ const filters={dateFrom:null,dateTo:null,minSeconds:30,maxSeconds:null,minBytes:null,maxBytes:null,hasCover:null,favorite:true,resumable:null,unwatched:null,sort:"largest",seed:null};
+ await api.videos("all",20,0,false,"",undefined,filters);
+ assert.deepEqual(Object.fromEntries(new URL(calls[0].path,"http://local").searchParams),
+  {category:"all",limit:"20",offset:"0",min_seconds:"30",favorite:"true",sort:"largest"});
+});
 test("library API uses only authenticated metadata GETs, keyset and contract field names",async()=>{
  const calls=[];const folder={id:"opaque",label:"批次",date:null,date_basis:"unknown",video_count:1};
  globalThis.fetch=async(path,init)=>{calls.push({path,init});return {ok:true,json:async()=>path.includes("/videos?")?{items:[{id:"a",duration_seconds:120,stream_url:"/local.mp4",favorite:false,category:"long",cover_url:"/api/v1/media/a/cover"}],has_more:true,next_cursor:"a",total:1,folder}:path.includes("/dates")?{items:[],total_videos:900}:{items:[folder],total:1}};};
