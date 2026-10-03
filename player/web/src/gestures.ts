@@ -1,13 +1,19 @@
+export type LevelAxis = "brightness" | "volume";
+
 export type GestureOptions = {
   isLongPressEnabled: () => boolean;
   isDragSeekEnabled: () => boolean;
   isDoubleTapEnabled?: () => boolean;
+  isLevelGestureEnabled?: () => boolean;
   fastForwardSpeed: () => number;
   currentTime: () => number;
   duration: () => number;
   onTap?: () => void;
   onDoubleTap?: (direction: "backward" | "forward") => void;
   onFastForward?: (speed: number | null) => void;
+  onLevelStart?: (axis: LevelAxis) => boolean | void;
+  onLevelMove?: (axis: LevelAxis, fraction: number) => void;
+  onLevelEnd?: (axis: LevelAxis) => void;
   onScrubStart?: () => boolean | void;
   onScrubMove?: (time: number, clientX: number) => void;
   onScrubEnd?: (time: number | null, resumePlayback: boolean) => void;
@@ -21,7 +27,9 @@ const DOUBLE_TAP_DISTANCE = 48;
  * Reels/Bilibili style gestures for a video surface:
  *  - short tap        -> onTap (play/pause)
  *  - long press       -> temporary fast-forward while held
- *  - horizontal drag  -> scrub; vertical movement is left to the scroller
+ *  - horizontal drag  -> scrub
+ *  - vertical drag    -> onLevel* when the surface opts in (brightness on the left half,
+ *                        volume on the right); otherwise left to the scroller
  */
 export function attachGestures(el: HTMLElement, opts: GestureOptions): () => void {
   let active = false;
@@ -29,6 +37,12 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
   let longActive = false;
   let scrubbing = false;
   let direction: "horizontal" | "vertical" | null = null;
+  // The opt-in level branch: the axis is decided once, at pointerdown, by which half of the
+  // surface the drag started in, and it holds for the whole gesture.
+  let levelAxis: LevelAxis | null = null;
+  let levelHeight = 0;
+  let levelTaken = false;
+  let levelDeclined = false;
   let startX = 0;
   let startY = 0;
   let startAt = 0;
@@ -53,6 +67,13 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
       opts.onFastForward?.(null);
     }
   };
+  const endLevel = () => {
+    if (!levelTaken || !levelAxis) return;
+    const axis = levelAxis;
+    levelTaken = false;
+    levelAxis = null;
+    opts.onLevelEnd?.(axis);
+  };
   const endScrub = (commit: boolean) => {
     if (!scrubbing) return;
     scrubbing = false;
@@ -72,6 +93,15 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     startY = event.clientY;
     startAt = Date.now();
     pointerId = event.pointerId;
+    levelAxis = null;
+    levelHeight = 0;
+    levelTaken = false;
+    levelDeclined = false;
+    if (opts.isLevelGestureEnabled?.()) {
+      const rect = el.getBoundingClientRect();
+      levelHeight = rect.height;
+      levelAxis = event.clientX < rect.left + rect.width / 2 ? "brightness" : "volume";
+    }
     if (opts.isLongPressEnabled()) {
       clearLong();
       longTimer = window.setTimeout(() => {
@@ -97,6 +127,26 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     if (!direction) {
       if (Math.abs(dy) > 12 && Math.abs(dy) >= Math.abs(dx)) direction = "vertical";
       else if (Math.abs(dx) > 12 && Math.abs(dx) > Math.abs(dy) * 1.2) direction = "horizontal";
+    }
+    // A vertical drag belongs to the caller only if it asked for it and still wants it: a
+    // refusal (a locked player, say) is remembered so the drag stays a native scroll.
+    if (levelAxis && direction === "vertical" && !levelTaken && !levelDeclined) {
+      if (opts.onLevelStart?.(levelAxis) === false) {
+        levelDeclined = true;
+      } else {
+        levelTaken = true;
+        try {
+          el.setPointerCapture(pointerId);
+        } catch {
+          /* ignore */
+        }
+      }
+    }
+    if (levelTaken && levelAxis) {
+      event.preventDefault();
+      const fraction = levelHeight > 0 ? (startY - event.clientY) / levelHeight : 0;
+      opts.onLevelMove?.(levelAxis, Math.min(1, Math.max(-1, fraction)));
+      return;
     }
     // Once native scrolling wins, this pointer cannot become a seek.
     if (direction !== "horizontal") return;
@@ -134,6 +184,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     active = false;
     clearLong();
     stopLong();
+    endLevel();
     if (wasScrub) endScrub(true);
     else if (!wasLong && !wasMoved && elapsed < 600) {
       const rect = el.getBoundingClientRect();
@@ -173,6 +224,7 @@ export function attachGestures(el: HTMLElement, opts: GestureOptions): () => voi
     active = false;
     clearLong();
     stopLong();
+    endLevel();
     endScrub(false);
     clearTap();
     if (el.hasPointerCapture?.(pointerId)) {

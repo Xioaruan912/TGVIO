@@ -11,7 +11,7 @@ const { outputText } = ts.transpileModule(readFileSync(new URL("../src/gestures.
 class FakeElement extends EventTarget {
   constructor(control = null) { super(); this.control = control; this.captures = new Set(); }
   closest(selector) { return this.control && selector.includes(this.control) ? this : null; }
-  getBoundingClientRect() { return { left: 0, width: 300 }; }
+  getBoundingClientRect() { return { left: 0, width: 300, height: 200 }; }
   setPointerCapture(id) { this.captures.add(id); }
   hasPointerCapture(id) { return this.captures.has(id); }
   releasePointerCapture(id) {
@@ -47,7 +47,8 @@ function setup(t, settings = {}) {
   const exports = {};
   vm.runInNewContext(outputText, { exports, window, document, Element: FakeElement, Date: { now: () => now } });
   const el = new FakeElement();
-  const calls = { taps: 0, doubles: [], speeds: [], starts: 0, moves: [], ends: [] };
+  const calls = { taps: 0, doubles: [], speeds: [], starts: 0, moves: [], ends: [],
+    levelStarts: [], levelAxes: [], levelMoves: [], levelEnds: [] };
   const dispose = exports.attachGestures(el, {
     isLongPressEnabled: () => true, isDragSeekEnabled: () => true,
     isDoubleTapEnabled: () => false, fastForwardSpeed: () => 2,
@@ -63,6 +64,13 @@ function setup(t, settings = {}) {
   const hide = () => { document.visibilityState = "hidden"; document.dispatchEvent(new Event("visibilitychange")); };
   return { el, calls, advance, tap, hide, dispose, timers };
 }
+/** The long player's opt-in branch: only these options make a vertical drag a level change. */
+const levelSpy = (calls) => ({
+  isLevelGestureEnabled: () => true,
+  onLevelStart: (axis) => { calls.levelStarts.push(axis); },
+  onLevelMove: (axis, fraction) => { calls.levelAxes.push(axis); calls.levelMoves.push(fraction); },
+  onLevelEnd: (axis) => { calls.levelEnds.push(axis); },
+});
 test("vertical movement cannot become horizontal seek", (t) => {
   const { el, calls, advance } = setup(t);
   el.send("pointerdown"); el.send("pointermove", { clientY: 125 });
@@ -166,4 +174,89 @@ test("disposal stops active long press and removes listeners", (t) => {
   assert.deepEqual(calls.speeds, [2, null]);
   el.send("pointerdown"); el.send("pointerup"); hide(); advance(500);
   assert.equal(calls.taps, 0); assert.deepEqual(calls.speeds, [2, null]);
+});
+
+test("a vertical drag stays native scrolling when the level gesture is off", (t) => {
+  const { el, calls, advance } = setup(t);
+  el.send("pointerdown", { clientX: 20, clientY: 200 });
+  const move = el.send("pointermove", { clientX: 20, clientY: 160 });
+  advance(500); el.send("pointerup", { clientX: 20 });
+  assert.equal(move.defaultPrevented, false);
+  assert.deepEqual(calls.levelStarts, []); assert.deepEqual(calls.levelMoves, []);
+});
+
+test("the half the drag starts in picks the axis and it holds across the midline", (t) => {
+  const spy = { levelStarts: [], levelAxes: [], levelMoves: [], levelEnds: [] };
+  const { el } = setup(t, levelSpy(spy));
+  el.send("pointerdown", { clientX: 20, clientY: 200 });
+  el.send("pointermove", { clientX: 20, clientY: 180 });
+  el.send("pointermove", { clientX: 280, clientY: 120 });
+  el.send("pointerup", { clientX: 280 });
+  assert.deepEqual(spy.levelStarts, ["brightness"]);
+  assert.deepEqual(spy.levelAxes, ["brightness", "brightness"]);
+  assert.deepEqual(spy.levelEnds, ["brightness"]);
+});
+
+test("the right half is volume and the fraction is positive upwards", (t) => {
+  const spy = { levelStarts: [], levelAxes: [], levelMoves: [], levelEnds: [] };
+  const { el } = setup(t, levelSpy(spy));
+  el.send("pointerdown", { clientX: 280, clientY: 200 });
+  el.send("pointermove", { clientX: 280, clientY: 150 });
+  el.send("pointermove", { clientX: 280, clientY: 250 });
+  el.send("pointerup", { clientX: 280 });
+  assert.deepEqual(spy.levelStarts, ["volume"]);
+  assert.deepEqual(spy.levelMoves, [0.25, -0.25]);
+});
+
+test("taking the level gesture prevents the native scroll and captures the pointer", (t) => {
+  const spy = { levelStarts: [], levelAxes: [], levelMoves: [], levelEnds: [] };
+  const { el } = setup(t, levelSpy(spy));
+  el.send("pointerdown", { clientX: 20, clientY: 200 });
+  const move = el.send("pointermove", { clientX: 20, clientY: 160 });
+  assert.equal(move.defaultPrevented, true);
+  assert.equal(el.hasPointerCapture(1), true);
+  el.send("pointerup", { clientX: 20 });
+  assert.equal(el.hasPointerCapture(1), false);
+});
+
+test("a declined level gesture leaves the drag native", (t) => {
+  const { el, calls } = setup(t, { isLevelGestureEnabled: () => true,
+    onLevelStart: () => false, onLevelMove: (axis) => calls.levelAxes.push(axis) });
+  el.send("pointerdown", { clientX: 20, clientY: 200 });
+  const move = el.send("pointermove", { clientX: 20, clientY: 160 });
+  assert.equal(move.defaultPrevented, false);
+  assert.deepEqual(calls.levelAxes, []);
+});
+
+for (const reason of ["pointercancel", "lostpointercapture", "hidden", "dispose"]) {
+  test(`${reason} ends the level gesture exactly once`, (t) => {
+    const spy = { levelStarts: [], levelAxes: [], levelMoves: [], levelEnds: [] };
+    const { el, hide, dispose } = setup(t, levelSpy(spy));
+    el.send("pointerdown", { clientX: 280, clientY: 200 });
+    el.send("pointermove", { clientX: 280, clientY: 160 });
+    if (reason === "hidden") hide(); else if (reason === "dispose") dispose(); else el.send(reason);
+    el.send("pointerup", { clientX: 280 });
+    assert.deepEqual(spy.levelEnds, ["volume"]);
+  });
+}
+
+test("a level drag leaks neither a tap nor a long press", (t) => {
+  const spy = { levelStarts: [], levelAxes: [], levelMoves: [], levelEnds: [] };
+  const { el, calls, advance } = setup(t, levelSpy(spy));
+  el.send("pointerdown", { clientX: 20, clientY: 200 });
+  el.send("pointermove", { clientX: 20, clientY: 180 }); advance(600); el.send("pointerup", { clientX: 20 }); advance(600);
+  assert.equal(calls.taps, 0); assert.deepEqual(calls.speeds, []);
+  assert.deepEqual(spy.levelStarts, ["brightness"]);
+});
+
+test("a mostly horizontal drag is still a scrub, not a level change", (t) => {
+  const spy = { levelStarts: [], levelAxes: [], levelMoves: [], levelEnds: [] };
+  const { el, calls } = setup(t, levelSpy(spy));
+  el.send("pointerdown", { clientX: 20, clientY: 100 });
+  el.send("pointermove", { clientX: 200, clientY: 104 });
+  el.send("pointerup", { clientX: 200 });
+  assert.deepEqual(spy.levelStarts, []);
+  assert.equal(calls.ends.length, 1);
+  assert.ok(Math.abs(calls.ends[0][0] - 90) < 1e-6, "the scrub landed at 90 seconds");
+  assert.equal(calls.ends[0][1], true);
 });
