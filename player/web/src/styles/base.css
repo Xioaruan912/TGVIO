@@ -1,40 +1,49 @@
-/* 深夜影院 palette. Tokens are the single source of truth; the legacy --sky* /
-   --muted / --line names are compatibility aliases only.
-   Surfaces express hierarchy with hairlines, not with elevation shadows. */
+/* 黑金 Pro. Tokens are the single source of truth; the legacy --sky* / --muted /
+   --line names are compatibility aliases only.
+   Hierarchy comes from gold-tinted hairlines, never from elevation shadows. */
 :root {
   color-scheme: dark;
 
-  /* Single accent: amber. --primary keeps its name so existing controls adopt
-     the new palette without a second implementation. */
-  --primary: #e8b45a;
-  --primary-hover: #f0c374;
-  --primary-bright: #f5d391;
-  --primary-soft: rgba(232, 180, 90, 0.14);
-  --accent: #e8b45a;
-  --accent-ink: #17130a;
-  --accent-soft: rgba(232, 180, 90, 0.14);
-  /* Text and icons drawn on the accent must use --accent-ink, never white. */
+  /* Metallic gold. --primary keeps its name so existing controls adopt the new
+     palette without a second implementation. */
+  --gold: #d4af37;
+  --gold-bright: #f2dc9b;
+  --gold-deep: #a8842c;
+  --gold-soft: rgba(212, 175, 55, 0.14);
+  --primary: var(--gold);
+  --primary-hover: #e3c25a;
+  --primary-bright: var(--gold-bright);
+  --primary-soft: var(--gold-soft);
+  --accent: var(--gold);
+  --accent-soft: var(--gold-soft);
+  --accent-ink: #1a1305;
+  /* Text and icons drawn on gold must use --accent-ink, never white. */
   --on-accent: var(--accent-ink);
+  /* Foil sweep for the few elements that should read as metal, not as paint. */
+  --gold-foil: linear-gradient(135deg, #f7e7b4 0%, #e3c25a 34%, #b8901f 62%, #f2dc9b 100%);
+  --gold-hairline: rgba(212, 175, 55, 0.16);
+  --gold-hairline-strong: rgba(212, 175, 55, 0.32);
+  --gold-ambient: radial-gradient(ellipse 120% 90% at 50% -20%, rgba(212, 175, 55, 0.07), transparent 62%);
 
-  --bg: #0b0d10;
-  --bg-deep: #070809;
-  --surface: #14181d;
-  --surface-raised: #1c2229;
-  --surface-sunken: #0e1114;
-  --surface-soft: #1c2229;
-  --surface-glass: rgba(20, 24, 29, 0.72);
+  --bg: #08070a;
+  --bg-deep: #050406;
+  --surface: #12100e;
+  --surface-raised: #1a1714;
+  --surface-sunken: #0c0a09;
+  --surface-soft: #1a1714;
+  --surface-glass: rgba(18, 16, 14, 0.76);
 
-  --text: #f2f4f7;
-  --text-secondary: #b6bfca;
-  /* 6.6:1 on --bg, 6.4:1 on --surface: 12px metadata stays WCAG AA. */
-  --text-muted: #8d97a4;
+  --text: #f6f1e6;
+  --text-secondary: #c9bda6;
+  /* 6.5:1 on --bg, 6.2:1 on --surface: 12px metadata stays WCAG AA. */
+  --text-muted: #9c917c;
 
-  --border: rgba(255, 255, 255, 0.09);
-  --border-strong: rgba(255, 255, 255, 0.16);
+  --border: var(--gold-hairline);
+  --border-strong: var(--gold-hairline-strong);
   --hairline: var(--border);
   --hairline-strong: var(--border-strong);
-  /* 3.3:1 on --surface: the unfilled slider range stays perceivable. */
-  --track: #696b6e;
+  /* 3.2:1 on --surface: the unfilled slider range stays perceivable. */
+  --track: #6b6355;
 
   --success: #3f9e74;
   --warning: #d99a3f;
@@ -43,8 +52,8 @@
   --danger-fill: #b8384f;
   --favorite: #e8799a;
 
-  --media-bg: #070809;
-  --privacy-cover: #0b0d10;
+  --media-bg: #050406;
+  --privacy-cover: #08070a;
 
   --radius-sm: 8px;
   --radius: 12px;
@@ -52,11 +61,11 @@
   --radius-panel: 20px;
   --radius-pill: 999px;
 
-  /* Depth on near-black reads as darkness, not as a card edge; the hairline
-     above is what actually separates floating layers. */
-  --shadow-sm: 0 2px 8px rgba(0, 0, 0, 0.4);
-  --shadow-card: 0 6px 18px rgba(0, 0, 0, 0.45);
-  --shadow-panel: 0 24px 64px rgba(0, 0, 0, 0.6);
+  /* On near-black a shadow reads as darkness; a faint gold ambience behind a
+     floating layer is what actually lifts it, so shadows stay black and quiet. */
+  --shadow-sm: 0 2px 10px rgba(0, 0, 0, 0.55);
+  --shadow-card: 0 8px 24px rgba(0, 0, 0, 0.6);
+  --shadow-panel: 0 28px 72px rgba(0, 0, 0, 0.72);
 
   --space-1: 4px;
   --space-2: 8px;
@@ -111,7 +120,7 @@ button { color: inherit; cursor: pointer; background: none; border: 0; padding: 
    at .48 blended to roughly 2:1 against the surface. */
 button:disabled { cursor: default; opacity: .6; }
 button:not(:disabled):active { translate: 0 1px; }
-button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--primary-bright); outline-offset: 2px; }
+button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--gold-bright); outline-offset: 2px; }
 input { min-width: 0; }
 /* An inert slider (no duration yet) must not advertise a draggable cursor. */
 input:disabled { cursor: default; }
@@ -119,7 +128,7 @@ input:disabled { cursor: default; }
 .icon-stack { position: relative; display: grid; place-items: center; }
 .icon-stack > .icon { grid-area: 1 / 1; }
 .icon-filled, .icon-muted, .ind-play, .ind-pause { display: none; }
-.logo { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: var(--radius); background: linear-gradient(145deg, var(--primary-bright), var(--primary)); color: var(--accent-ink); }
+.logo { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: var(--radius); background: var(--gold-foil); color: var(--accent-ink); }
 @keyframes sky-enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
 @keyframes sky-pulse { 50% { opacity: .45; } }
 @keyframes sky-shimmer { to { background-position: -200% 0; } }

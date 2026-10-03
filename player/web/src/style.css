@@ -7,9 +7,10 @@
 @import "./styles/sheet.css";
 @import "./styles/large.css";
 @import "./styles/settings.css";
-/* Motion tokens and the background grain are declared last so they win over the
+/* Motion tokens and the gold foil layer are declared last so they win over the
    component `background:` shorthands without editing every component file. */
 @import "./styles/motion.css";
+@import "./styles/foil.css";
 
 /* Attribute semantics always win over component and playback-state selectors. */
 [hidden] { display: none !important; }

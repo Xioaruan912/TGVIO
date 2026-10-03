@@ -5,6 +5,7 @@ import test from "node:test";
 const source = (path) => readFileSync(new URL("../src/" + path, import.meta.url), "utf8");
 const baseCss = source("styles/base.css");
 const motionCss = source("styles/motion.css");
+const foilCss = source("styles/foil.css");
 const styleEntry = source("style.css");
 const feed = source("feed.ts");
 const ui = source("ui.ts");
@@ -18,10 +19,21 @@ const rules = (css) => [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/([^{}]
 const body = (css, selector) => rules(css).filter((rule) => rule.selector === selector).map((rule) => rule.body).join("\n");
 
 /* Design tokens are the single source of truth, so the contrast contract is
-   checked against the token values themselves rather than a frozen hex. */
-const tokenTable = (css) => Object.fromEntries(
-  [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/--([a-z0-9-]+):\s*(#[0-9a-f]{6})\s*;/gi)]
-    .map(([, name, value]) => [name, value.toLowerCase()]));
+   checked against the token values themselves rather than a frozen hex.
+   var() indirection is followed, so an alias like --primary: var(--gold) still
+   yields a real colour for the ratio maths. */
+const tokenTable = (css) => {
+  const declared = Object.fromEntries(
+    [...css.replace(/\/\*[\s\S]*?\*\//g, "").matchAll(/--([a-z0-9-]+)\s*:\s*([^;]+);/gi)]
+      .map(([, name, value]) => [name, value.trim().replace(/\s+/g, " ")]));
+  const resolve = (name, depth = 0) => {
+    const value = declared[name];
+    if (value === undefined || depth > 4) return value;
+    const reference = /^var\(\s*(--[a-z0-9-]+)\s*\)$/i.exec(value);
+    return reference ? resolve(reference[1].slice(2), depth + 1) : value;
+  };
+  return Object.fromEntries(Object.keys(declared).map((name) => [name, resolve(name)]));
+};
 const channel = (value) => (value <= 0.03928 ? value / 12.92 : ((value + 0.055) / 1.055) ** 2.4);
 const luminance = (hex) => {
   const [r, g, b] = [1, 3, 5].map((index) => channel(parseInt(hex.slice(index, index + 2), 16) / 255));
@@ -65,6 +77,27 @@ test("the accent ink is the only label colour on an accent fill", () => {
   for (const [css, selector] of accentFilled) {
     assert.match(body(css, selector), /color:\s*var\(--accent-ink\)/, selector);
   }
+});
+
+test("the gold family is tokenised and drives the borders", () => {
+  assert.equal(tokens["primary"].toLowerCase(), "#d4af37", "--primary resolves to the gold hex");
+  assert.match(baseCss, /--gold-foil: linear-gradient\(/);
+  assert.match(baseCss, /--gold-hairline: rgba\(212, 175, 55/);
+  assert.match(baseCss, /--border: var\(--gold-hairline\)/);
+  assert.match(baseCss, /--gold-ambient: radial-gradient\(/);
+});
+
+test("foil is limited to metal surfaces and headings degrade to a visible colour", () => {
+  for (const selector of [".logo", ".transport-play", ".large-play", ".login-submit"]) {
+    assert.ok(foilCss.includes(selector), "foil covers " + selector);
+  }
+  // Clipped gradient text must never be able to end up invisible.
+  assert.match(foilCss, /@supports \(background-clip: text\)/);
+  assert.match(foilCss, /\.browse-title,[\s\S]*?\{\s*color: var\(--gold-bright\);\s*\}/);
+  assert.match(foilCss, /-webkit-text-fill-color: transparent/);
+  // The ambience and the grain are composed in exactly one place.
+  assert.match(foilCss, /background-image: var\(--gold-ambient\), var\(--grain\)/);
+  assert.doesNotMatch(motionCss, /background-image: var\(--grain\)/);
 });
 
 test("the motion scale is spring based and collapses under reduced motion", () => {

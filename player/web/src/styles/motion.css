@@ -50,14 +50,8 @@
   transition: translate var(--dur-base) var(--ease-spring), width var(--dur-base) var(--ease-spring), height var(--dur-base) var(--ease-spring);
 }
 
-/* Grain lives on the app background rather than as a full-viewport overlay, so
-   the chrome gets texture while the picture stays clean and screenshot pixel
-   sampling for contrast stays unaffected. Declared last so it wins over the
-   `background:` shorthands in shell/browse/large. */
-.app-shell, .browse-page, .large-player {
-  background-image: var(--grain);
-  background-repeat: repeat;
-}
+/* Grain and gold ambience are composed in foil.css, which owns the final
+   surface background for the app containers. */
 
 @media (prefers-reduced-motion: reduce) {
   /* Springs become plain linear so nothing overshoots or travels. The global
