@@ -86,3 +86,45 @@ class CoverSidecarTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(found.packages[0].covers, document(original))
         self.assertEqual(len(client.calls), 3)
         self.assertTrue(all(limit == 512 * 1024 for _, limit in client.calls))
+
+class CoverFingerprintTests(unittest.IsolatedAsyncioTestCase):
+    """The fingerprint is optional, additive, and never costs the cover it belongs to."""
+
+    def document_with(self, original, phash):
+        value = document(original)
+        value["covers"]["video.mp4"]["phash"] = phash
+        return value
+
+    async def test_a_valid_fingerprint_is_projected_with_the_cover(self):
+        original = candidate("package", "a" * 64)
+        value = replace(original, covers=self.document_with(original, "0123456789abcdef"))
+        with TemporaryDirectory() as tmp:
+            repo = PlayerCatalogRepositorySQLite(Path(tmp) / "player.sqlite3")
+            await repo.open()
+            try:
+                await CatalogSyncService(FakeArchiveCatalogSource(packages=[value]), repo).sync_once()
+                cover = await repo.active_cover("a" * 64)
+                self.assertEqual(cover["phash"], "0123456789abcdef")
+            finally:
+                await repo.close()
+
+    async def test_a_missing_or_broken_fingerprint_never_costs_the_cover(self):
+        for broken in (None, "0123456789ABCDEF", "0123456789abcde", "0123456789abcdeg", "", 17):
+            with self.subTest(phash=broken):
+                original = candidate("package", "a" * 64)
+                value = replace(original, covers=self.document_with(original, broken))
+                with TemporaryDirectory() as tmp:
+                    repo = PlayerCatalogRepositorySQLite(Path(tmp) / "player.sqlite3")
+                    await repo.open()
+                    try:
+                        await CatalogSyncService(FakeArchiveCatalogSource(packages=[value]), repo).sync_once()
+                        cover = await repo.active_cover("a" * 64)
+                        self.assertIsNotNone(cover, "the cover survives a fingerprint it cannot read")
+                        self.assertEqual(cover["phash"], None)
+                        self.assertEqual(
+                            repo._require().execute(
+                                "SELECT COUNT(*) FROM media_covers"
+                            ).fetchone()[0], 1,
+                        )
+                    finally:
+                        await repo.close()

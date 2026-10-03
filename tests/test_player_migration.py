@@ -48,7 +48,8 @@ class PlayerMigrationTests(unittest.TestCase):
                 [tuple(row) for row in connection.execute(
                     "SELECT version,name FROM player_schema_migrations ORDER BY version"
                 )],
-                [(9, "player_public_baseline"), (10, "media_covers"), (11, "player_collections")],
+                [(9, "player_public_baseline"), (10, "media_covers"), (11, "player_collections"),
+                 (12, "media_covers_phash")],
             )
             tables = {
                 str(row[0]) for row in connection.execute(
@@ -141,7 +142,7 @@ class PlayerMigrationTests(unittest.TestCase):
             self.assertEqual(applied[:8], list(LEGACY_ROWS))
             self.assertEqual(
                 [row[:2] for row in applied[8:]],
-                [(10, "media_covers"), (11, "player_collections")],
+                [(10, "media_covers"), (11, "player_collections"), (12, "media_covers_phash")],
             )
             settled = connection.total_changes
             run_migrations(connection, MIGRATIONS)

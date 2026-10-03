@@ -34,7 +34,14 @@ def parse_covers(package: CatalogPackage, document: Any) -> tuple[CatalogCover, 
                     or type(size) is not int or not 0 < size <= MAX_COVER_BYTES
                     or entry.get("mime_type") != "image/jpeg"):
                 continue
-            result.append(CatalogCover(parent, package.package_id, path, size, "image/jpeg", "bounded-frame-v2"))
+            phash = entry.get("phash")
+            if not (isinstance(phash, str) and len(phash) == 16
+                    and all(character in "0123456789abcdef" for character in phash)):
+                # A fingerprint this build cannot read is dropped; the cover it belongs
+                # to is not. The still is the substance, the hash is a hint.
+                phash = None
+            result.append(CatalogCover(parent, package.package_id, path, size, "image/jpeg",
+                                       "bounded-frame-v2", phash))
             covered.add(parent)
         except (TypeError, ValueError):
             continue

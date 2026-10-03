@@ -233,14 +233,15 @@ class PlayerCatalogRepositorySQLite(
                         """
                         INSERT INTO media_covers(
                             package_id, media_id, remote_relpath, size_bytes,
-                            mime_type, algorithm, active, last_seen_at
+                            mime_type, algorithm, phash, active, last_seen_at
                         )
-                        VALUES(?,?,?,?,?,?,1,CURRENT_TIMESTAMP)
+                        VALUES(?,?,?,?,?,?,?,1,CURRENT_TIMESTAMP)
                         ON CONFLICT(package_id, media_id) DO UPDATE SET
                             remote_relpath=excluded.remote_relpath,
                             size_bytes=excluded.size_bytes,
                             mime_type=excluded.mime_type,
                             algorithm=excluded.algorithm,
+                            phash=excluded.phash,
                             active=1,
                             last_seen_at=CURRENT_TIMESTAMP
                         """,
@@ -251,6 +252,7 @@ class PlayerCatalogRepositorySQLite(
                             cover.size_bytes,
                             cover.mime_type,
                             cover.algorithm,
+                            cover.phash,
                         ),
                     )
                 for media_item in package.media:
@@ -279,7 +281,7 @@ class PlayerCatalogRepositorySQLite(
         row = self._require().execute(
             """
             SELECT cp.package_id, cp.manifest_sha256, cp.remote_path,
-                   mc.remote_relpath, mc.size_bytes, mc.mime_type, mc.algorithm
+                   mc.remote_relpath, mc.size_bytes, mc.mime_type, mc.algorithm, mc.phash
             FROM media_covers mc
             JOIN catalog_packages cp ON cp.package_id=mc.package_id
             JOIN media ON media.media_id=mc.media_id

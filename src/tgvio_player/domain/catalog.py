@@ -71,6 +71,8 @@ class CatalogCover:
     size_bytes: int
     mime_type: str
     algorithm: str
+    # 16 lowercase hex digits, or None for "no similarity information".
+    phash: str | None = None
 
 
 @dataclass(frozen=True, slots=True)
