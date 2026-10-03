@@ -28,6 +28,8 @@ for (const [category, source] of [["short",shortPath],["long",mediaPath]]) {
 const bytes=(await stat(mediaPath)).size,shortBytes=(await stat(shortPath)).size;
 const fontPath="/mnt/c/Windows/Fonts/msyh.ttc";let hasCjkFont=false;try{hasCjkFont=(await stat(fontPath)).isFile();}catch{}
 let feedOffset=0;const favorites=new Set();const progress=new Map();const counters={requests:0,ranges:0,coverRequests:0,coverActive:0,coverPeak:0};
+// Session state for the idle-eject check: logout closes the API until a login.
+let sessionSignedOut=false;let logoutCalls=0;
 const mediaById=new Map();
 const item=(index,category="short")=>{const id=createHash("sha256").update(`local-test-media-${category}-${index}`).digest("hex");const media={id,width:category==="long"?320:240,height:category==="long"?180:426,duration_seconds:category==="long"?120:18,size_bytes:category==="long"?bytes:shortBytes,mime_type:"video/mp4",codec:"h264",stream_url:`/__acceptance__/media/${category}-${index}.mp4`,cover_url:index%12===0?null:index%12===1?"/__acceptance__/cover/broken":`/__acceptance__/cover/${category}-${index%3}`,favorite:favorites.has(id),deletable:false,category,groups:[],variants:[]};mediaById.set(id,media);return media;};
 const libraryFixture=createLibraryFixture(item);
@@ -55,11 +57,21 @@ const server=await createServer({configFile:false,root:fileURLToPath(new URL("..
   res.setHeader("Content-Length",String(end-start+1));if(req.method==="HEAD"){res.end();return;}
   const stream=createReadStream(selected,{start,end});res.on("close",()=>stream.destroy());stream.pipe(res);return;
  }
- if(pathname==="/__acceptance__/status"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({localOnly:true,...counters,favorites:favorites.size,libraryOriginals:libraryFixture.originals.length,testClipId:libraryFixture.testClipId,testFolderId:libraryFixture.testFolderId,multiMediaId:libraryFixture.multiMediaId,feedMediaId:libraryFixture.feedMedia.id}));return;}
+ if(pathname==="/__acceptance__/status"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({localOnly:true,...counters,signedOut:sessionSignedOut,logoutCalls,favorites:favorites.size,libraryOriginals:libraryFixture.originals.length,testClipId:libraryFixture.testClipId,testFolderId:libraryFixture.testFolderId,multiMediaId:libraryFixture.multiMediaId,feedMediaId:libraryFixture.feedMedia.id}));return;}
  if(!pathname.startsWith("/api/"))return next();
  // Discard test request bodies; never capture form or cookie contents.
  const chunks=[];for await(const chunk of req)chunks.push(chunk);let body={};try{body=JSON.parse(Buffer.concat(chunks).toString());}catch{}
  const send=payload=>{res.setHeader("Content-Type","application/json");res.setHeader("Cache-Control","no-store");res.end(JSON.stringify(payload));};
+ // Session gate first: after a logout every API call must be a 401 until a login,
+ // exactly like the real server. Placed here so no resource handler can answer
+ // before the session is checked.
+ if(pathname.startsWith("/api/v1/auth/")){
+  if(pathname==="/api/v1/auth/logout"){sessionSignedOut=true;logoutCalls++;res.setHeader("Set-Cookie","tgvio_player_session=; Path=/; Max-Age=0; HttpOnly; SameSite=Strict");return send({ok:true});}
+  if(pathname==="/api/v1/auth/login"){sessionSignedOut=false;return send({ok:true});}
+  return send({ok:true});
+ }
+ if(pathname==="/api/v1/diagnostics/playback-event")return send({ok:true});
+ if(sessionSignedOut){res.statusCode=401;res.setHeader("Content-Type","text/plain; charset=utf-8");res.end("authentication required");return;}
  if(pathname.startsWith("/api/v1/library/")){
   try { const payload=await libraryFixture.result(url); if(payload)return send(payload); }
   catch(error){res.statusCode=error.status??400;return send({error:"invalid_library_input"});}
@@ -72,7 +84,7 @@ const server=await createServer({configFile:false,root:fileURLToPath(new URL("..
  const match=/^\/api\/v1\/media\/([a-f0-9]+)\/(favorite|progress|prepare)$/.exec(pathname);
  if(match){const [,id,action]=match;if(action==="favorite"){req.method==="DELETE"?favorites.delete(id):favorites.add(id);return send({favorite:favorites.has(id),sync_status:"synced"});}if(action==="progress"){req.method==="DELETE"?progress.delete(id):progress.set(id,Number(body.position_seconds)||0);}return send({ok:true});}
  if(pathname==="/api/v1/settings/storage")return send({endpoint_url:"",player_root:"player",favorites_dir:"favorites",storage_configured:false,credentials_configured:false,revision:1,sync_status:"synced",pending_count:0,failed_count:0,last_success_at:null});
- if(pathname.startsWith("/api/v1/auth/")||pathname==="/api/v1/diagnostics/playback-event")return send({ok:true});
+ if(sessionSignedOut){res.statusCode=401;res.setHeader("Content-Type","text/plain; charset=utf-8");res.end("authentication required");return;}
  res.statusCode=404;send({error:"test_route_not_implemented"});
  });}}]});
 await server.listen();console.log(JSON.stringify({url:"http://127.0.0.1:"+server.httpServer.address().port,localOnly:true,realTestMedia:true,mediaSeconds:{short:18,long:120},bytes}));

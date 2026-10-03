@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import test from "node:test";
-import { IdlePrivacyController, IdleActivityWindow, attachIdleActivity } from "../.test-dist/idle-privacy.js";
+import { IdlePrivacyController, IdleActivityWindow, attachIdleActivity, createIdleEject } from "../.test-dist/idle-privacy.js";
 
 function manualClock() {
   let now = 0, id = 0; const timers = new Map();
@@ -99,4 +99,35 @@ test("activity adapter ignores media, hovering, modifiers and untrusted events",
 test("destroyed controller cannot rearm after a late callback",()=>{
  const f=fixture("long");f.idle.setEnabled(true);const late=[...f.timers.values()][0].fn;
  f.idle.destroy();f.idle.setEnabled(true);f.idle.setPlaying(true);f.advance(61000);late();assert.equal(f.locks,0);assert.equal(f.timers.size,0);
+});
+
+test("the idle eject only reloads once the session actually closed", async () => {
+  const events = [];
+  const eject = createIdleEject({
+    lock: () => events.push("lock"),
+    logout: () => Promise.reject(new Error("offline")),
+    notify: message => events.push("notify:" + message),
+    reload: () => events.push("reload"),
+  });
+  eject();
+  await Promise.resolve(); await Promise.resolve(); await Promise.resolve();
+  assert.equal(events[0], "lock", "the picture is covered before any network call");
+  assert.ok(!events.includes("reload"), "a failed logout must never reload: it would silently sign back in");
+  assert.ok(events.some(entry => entry.startsWith("notify:")), "the user is told the session could not be closed");
+});
+
+test("the idle eject reloads after a successful logout and never starts twice", async () => {
+  const events = [];
+  let release;
+  const eject = createIdleEject({
+    lock: () => events.push("lock"),
+    logout: () => new Promise(resolve => { release = resolve; }),
+    notify: message => events.push("notify:" + message),
+    reload: () => events.push("reload"),
+  });
+  eject(); eject();
+  assert.equal(events.filter(entry => entry === "lock").length, 1, "a second deadline must not start a second logout");
+  release();
+  await Promise.resolve(); await Promise.resolve();
+  assert.deepEqual(events.filter(entry => !entry.startsWith("notify:")), ["lock", "reload"]);
 });

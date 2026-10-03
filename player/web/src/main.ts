@@ -3,7 +3,7 @@ import { ApiError, api, beginPlaybackSession, MOCK_MODE, shortId } from "./api";
 import { AdaptiveCacheController } from "./adaptive-cache";
 import { requestAudioEnable } from "./audio-warning";
 import { FeedView } from "./feed";
-import { IdlePrivacyController, attachIdleActivity } from "./idle-privacy";
+import { IdlePrivacyController, attachIdleActivity, createIdleEject } from "./idle-privacy";
 import { exitPrivacyPresentation } from "./privacy-presentation";
 import { fillUniqueFeed } from "./feed-loading";
 import { favoriteMutations } from "./favorite-service";
@@ -128,10 +128,11 @@ let playback: PlaybackStateController | null = null;
 const unplayable = new Set<string>();
 const seenIds = new Set<string>();
 const errorRetries = new Map<string, number>();
-const shortIdle = new IdlePrivacyController({ mode: "short", onLock: () => {
-  lockPrivacyScreen();
-  if (shell) toast(shell, "一分钟无操作，已锁定并静音");
-} });
+const idleEject = createIdleEject({
+  lock: lockPrivacyScreen, logout: () => api.logout(), notify: message => { if (shell) toast(shell, message); },
+  reload: () => window.location.reload(),
+});
+const shortIdle = new IdlePrivacyController({ mode: "short", onLock: () => idleEject() });
 let soundRequestGeneration = 0;
 
 function silenceFeed(): void {
@@ -1115,7 +1116,7 @@ function openLongVideos(): void {
           shell?.root.classList.remove("privacy-locked");
           playback?.update({ privacyUnlocked: true, pausedByUser: false });
         },
-        onPrivacyLock: lockPrivacyScreen,
+        onPrivacyLock: reason => { if (reason === "idle") idleEject(); else lockPrivacyScreen(); },
         onProgress: (position, duration, force) =>
           saveLongVideoProgress(clip.id, position, duration, force),
         onDeleted: (result) => {

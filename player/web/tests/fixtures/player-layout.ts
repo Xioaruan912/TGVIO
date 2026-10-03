@@ -69,10 +69,12 @@ async function run() {
     addListener.call(this, type, listener, options);
   };
   let privacyFeedback = 0;
+  /** Reasons the long player reported, so the idle-only rule is pinned in the fixture. */
+  const lockReasons: string[] = [];
   let large: LargePlayer;
   try {
     large = new LargePlayer({...clip, category:"long", favorite:true}, () => undefined,
-      {privacyLocked:true, idleClock:clock, onPrivacyLock: () => { privacyFeedback++; }});
+      {privacyLocked:true, idleClock:clock, onPrivacyLock: (reason: string) => { privacyFeedback++; lockReasons.push(reason); }});
   } finally { EventTarget.prototype.addEventListener = addListener; }
   const trustedInput = (type: string, extra: Record<string, unknown> = {}) => {
     const listener = idleListeners.get(type);
@@ -235,6 +237,7 @@ async function run() {
   now += 1; document.dispatchEvent(new Event("visibilitychange"));
   check(large.root.classList.contains("privacy-locked") && privacyFeedback === 1,
     "visible check locks at 60 seconds despite repeated nonplaying events and throttled timer");
+  check(lockReasons.at(-1) === "idle", "the expired deadline reports itself as the idle reason");
   large.unlockPrivacy(true); video.dispatchEvent(new Event("playing"));
   const readyDescriptor = Object.getOwnPropertyDescriptor(video, "readyState");
   Object.defineProperty(video, "readyState", {configurable:true, get: () => 4});
@@ -251,6 +254,7 @@ async function run() {
   now += 1; internal.idlePrivacy.check();
   check(large.root.classList.contains("privacy-locked") && privacyFeedback === 2,
     "repeated pause does not extend grace and idle lock notifies parent");
+  check(lockReasons.filter(reason => reason === "idle").length === 2, "every deadline lock reports the idle reason, so only it can end the session");
   large.unlockPrivacy(false);
   check(video.muted && video.defaultMuted && video.hasAttribute("muted"), "unlock never restores audio");
   setPref("soundPromptFrequency", "every-time");

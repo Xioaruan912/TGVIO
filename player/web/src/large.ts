@@ -70,7 +70,7 @@ export class LargePlayer {
   private mediaErrorRetries = 0;
   private readonly onClose: () => void;
   private readonly onUnlock: () => void;
-  private readonly onPrivacyLock: () => void;
+  private readonly onPrivacyLock: (reason: "idle" | "explicit" | "background") => void;
   private readonly onDeleted: (result: { deletedCopies: number; failedCopies: number }) => void;
   private readonly onProgress?: (position: number, duration: number, force: boolean) => void;
   private readonly startAt: number;
@@ -109,7 +109,7 @@ export class LargePlayer {
       /** false adopts the shared deadline instead of restarting the minute on construction. */
       idleResetOnEnable?: boolean;
       onUnlock?: () => void;
-      onPrivacyLock?: () => void;
+      onPrivacyLock?: (reason: "idle" | "explicit" | "background") => void;
       onProgress?: (position: number, duration: number, force: boolean) => void;
       onDeleted?: (result: { deletedCopies: number; failedCopies: number }) => void;
       startAt?: number;
@@ -130,7 +130,7 @@ export class LargePlayer {
       onLock: () => {
         if (this.destroyed) return;
         this.lockPrivacy();
-        this.onPrivacyLock();
+        this.onPrivacyLock("idle");
       },
     });
     const view = buildLargePlayerView(clip.id, clip.duration);
@@ -151,7 +151,7 @@ export class LargePlayer {
     if (options.privacyLocked) this.root.classList.add("privacy-locked");
     this.playback.onTransition = (state) => this.applyState(state);
     view.back.addEventListener("click", () => this.onClose());
-    view.privacyLock.addEventListener("click", () => { this.lockPrivacy(); this.onPrivacyLock(); });
+    view.privacyLock.addEventListener("click", () => { this.lockPrivacy(); this.onPrivacyLock("explicit"); });
     this.privacyPlayButton.addEventListener("click", event => { event.stopPropagation(); this.togglePlay(); });
     this.root.classList.add("controls-visible");
     this.preview.el.classList.add("large-scrub"); this.root.append(this.preview.el); this.preview.attach(view.controls);
@@ -290,7 +290,7 @@ export class LargePlayer {
       this.pipButton.classList.remove("selected");
       if (document.hidden && !this.destroyed && !this.root.classList.contains("privacy-locked")) {
         this.lockPrivacy();
-        this.onPrivacyLock();
+        this.onPrivacyLock("background");
       }
     });
     this.video.addEventListener("loadedmetadata", () => {

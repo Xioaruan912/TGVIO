@@ -243,6 +243,41 @@ try {
   check(await evaluate("document.querySelector('.sheet-card')?.contains(document.activeElement)"),"settings constrains focus");
   for(const type of ["keyDown","keyUp"])await cdp("Input.dispatchKeyEvent",{type,key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
  }
+ // The one-minute idle deadline must end the session, not just cover the picture:
+ // a device put down has to come back to the access screen, muted. Time is faked
+ // for this one check so the minute does not have to pass for real.
+ await cdp("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:1,mobile:true});
+ const idleClock=await cdp("Page.addScriptToEvaluateOnNewDocument",{source:`(()=>{
+  let now=0;const sleeping=new Map();let nextId=1000000;
+  Date.now=()=>now;
+  const realSet=window.setTimeout.bind(window),realClear=window.clearTimeout.bind(window);
+  window.setTimeout=(fn,delay,...rest)=>{
+   if(typeof delay==="number"&&delay>=5000){const id=nextId++;sleeping.set(id,{fn,at:now+delay});return id;}
+   return realSet(fn,delay,...rest);
+  };
+  window.clearTimeout=id=>{ if(sleeping.delete(id))return; realClear(id); };
+  window.__advanceIdle=ms=>{now+=ms;for(const [id,item] of [...sleeping])if(item.at<=now){sleeping.delete(id);item.fn();}};
+ })();`});
+ await navigate("/");await wait("!!document.querySelector('.app-shell')","app for the idle check");
+ check(await evaluate("typeof window.__advanceIdle==='function'"),"idle clock is faked for this check");
+ check(!(await evaluate("!!document.querySelector('.login-input')")),"the app starts signed in");
+ // The deadline only counts once the feed is unlocked: that is when the app arms it.
+ // The unlock control appears once a frame is actually ready.
+ await wait("document.querySelector('.app-shell').classList.contains('privacy-ready')","feed ready to unlock");
+ await click(".gesture-play");
+ await wait("!document.querySelector('.app-shell').classList.contains('privacy-locked')","feed unlocked for the idle check");
+ await evaluate("localStorage.setItem('tgvio.player.muted','false');true");
+ await evaluate("window.__advanceIdle(60001);true");
+ await wait("!!document.querySelector('.login-input')","idle deadline returns to the access screen");
+ check(await evaluate("!document.querySelector('.app-shell')"),"the idle eject leaves the app instead of only covering it");
+ const afterIdle=await(await fetch(baseUrl+"/__acceptance__/status")).json();
+ check(afterIdle.signedOut===true&&afterIdle.logoutCalls>=1,"the idle eject closed the session on the server: "+afterIdle.logoutCalls);
+ check(await evaluate("localStorage.getItem('tgvio.player.muted')==='true'"),"a session that ended starts muted again");
+ // Sign back in so the remaining sections run against a live session - and so the
+ // way back in is exercised rather than assumed.
+ await evaluate("document.querySelector('.login-input').value='idle-test';document.querySelector('.login-form').requestSubmit();true");
+ await wait("!!document.querySelector('.app-shell')","signing back in after the idle eject");
+ await cdp("Page.removeScriptToEvaluateOnNewDocument",{identifier:idleClock.identifier});
  await cdp("Emulation.setDeviceMetricsOverride",{width:2560,height:1200,deviceScaleFactor:1,mobile:false});
  await navigate("/");await wait("!!document.querySelector('.app-shell')","wide app");await nav("favorites");
  await wait("!!document.querySelector('.favorites-page .cover-tile[data-cover-state=ready]')","wide static grid");
