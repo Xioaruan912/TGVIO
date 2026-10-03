@@ -21,6 +21,10 @@ covers.json 使用 tgvio.archive.covers/v2、bounded-frame-v2，包含 package_i
 manifest_sha256；covers 以原媒体相对路径为键，条目包含 media_sha256、
 JPEG sha256、size_bytes、mime_type 和 cover/backfill/<sha256>.jpg。
 每项 JPEG 至多 1,000,000 bytes；索引至多 512KiB、最多 4000 项。
+条目**可选**包含 `phash`：那一帧的 64-bit dHash，16 位小写 hex（bit 0 为最高位，逐行比较 9×8 盒式平均后的相邻列）。
+它从 worker **已经取到**的 32×32 灰度算出：不新增依赖、不新增 ffmpeg 进程。
+**schema 与 algorithm 串不得改动** —— Player 精确比较这两个值，升版会拒收整包封面；
+`phash` 只是加字段，缺失即“无相似信息”，不是错误。
 不接受无绑定 v1 侧文件或路径遍历、类型伪造、超预算、未知父视频等条目。
 不增加 schema migration；复用 media_covers 的已有投影与版本化鉴权 API。
 内容寻址路径参与已有 cover version，保证新图片使旧 URL 失效。
@@ -28,6 +32,8 @@ JPEG sha256、size_bytes、mime_type 和 cover/backfill/<sha256>.jpg。
 顺序：核验原包/源文件 → Range 取帧 → 再核验源文件 → 写 JPEG →
 确认远端大小与完整 JPEG SHA-256 → 再核验原包/源文件 → 最后写索引并读回验证。
 续跑验证已登记对象后跳过解码；其他视频条目必须合并保留。
+**回填指纹**：条目已登记、封面校验通过但**没有** `phash` 时不得跳过——重新取帧算哈希；
+若新帧 sha256 与索引一致，**只更新索引、不重写封面文件**（第二次运行应为 0 次取帧）。
 不重写已提交 manifest/_COMPLETE、不覆盖原视频或 renditions.json。
 不解码随机网络图，不伪造图片；黑/白空帧、有损/损坏样本或预算不足留作失败。
 
