@@ -215,6 +215,41 @@ Bot 未受影响。
 P1（服务端封面字节缓存）因此就是“把 WebDAV 里那 1007 张、共 12.5 MiB 的封面在 Player 侧镜像一份”——
 相对 17GB 的播放缓存是千分之一的体量，但仍需单独授权后实施。
 
+## 追加发布：卡顿修复（r5，当前运行版本）
+
+| 项目 | r5 值 |
+| --- | --- |
+| 发布提交 | `f94a569de2e184d62d463191b6efa93ce9f05f59` |
+| VPS snapshot | `/root/TGVIO-snapshots/f94a569d…/source` |
+| 传输包 SHA-256（镜像） | `c9126064405c936e035a8079dba00304929381cf233f20ec74ef14e4012db56e` |
+| VPS 导入镜像 ID | `sha256:6136c1555d21008ffc18395633dfc8d4fd2a311867d439210de0556b385dcbcb` |
+| Player 容器 | `edd4631bbcee862e5068a35417a8c90a1047ecceea2e84de14f99f71b6905faa`（running / healthy / restarts 0） |
+| 回滚链 | `c7a02688…`（r4）→ `1a7f9e71…`（r3）→ `07d112f4…`（r2）→ … |
+| Bot 容器 | `408fd4e67f…` restarts 0，切换前后一致 |
+
+公网后验：四个资源与候选镜像逐字节一致；服务端 CSS 中含基础规则的
+`animation-play-state: paused`（被暂停的转圈）、`animation-play-state: running`（仅一个合并后的开启门）、
+`@keyframes privacy-reveal{0%{opacity:0}…}`；`/healthz` 的 `cover_limit` 仍为 6。
+
+## “解锁并播放卡顿”——测量结论（含未能复现的部分）
+
+用户报告解锁时动效卡。**先测再改**，两个结论：
+
+- **被否证的假设**：主操作按钮上的金箔流光（`gold-sheen`，动 `background-position` 的重绘型无限动画）
+  看起来可疑，但关掉它前后测得的帧间隔完全一致 → 不是它。
+- **查到的事实**：一个完整 feed 里同时有 **23 个无限动画**，其中 `media-ring-turn` **20 个**，
+  而**只有 1 个看得见** —— 19 个跑在 `opacity:0 / visibility:hidden` 的加载层里。
+  `visibility:hidden` **不会停掉动画**，所以这些环每帧都在光栅/合成，白白和视频抢预算。
+  修后实测：视频播放中运行中的环 **20 → 0**，视觉零变化。
+
+第二处是解锁本身：遮罩是伪元素、随 class 一起消失，**无法做淡出**；改为让**画面**淡入
+（`privacy-reveal`，180ms，仅动 opacity）。隐私合同未变（遮罩仍实色、锁定时媒体仍 `visibility:hidden`）。
+
+**为什么仍不能宣称就是用户看到的那一下**：fixture 是无 GPU 的 headless，测不出真机重绘代价 ——
+改动前后都是 0 长任务、稳定 60fps。所以“19 个隐藏旋转”是有代码依据的事实，
+“它就是用户手感不流畅的原因”是**判断**，推理是“浪费的合成器/光栅工作是手机不跟手的常见原因”。
+若仍卡，下一步应当是确定**哪个界面 + 什么机型**，而不是继续猜。
+
 ## 未完成与清理候选
 
 - axe（黑金态、6 个页面）0 violation；唯一 remaining 是 `video-caption`（critical / incomplete）：
