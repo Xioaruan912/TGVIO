@@ -98,6 +98,8 @@ export function clipFromMedia(media: MediaDto): Clip {
     // Forward-compatible: the archive only starts emitting cover_url once its
     // packages carry a bounded, versioned cover. Absent stays null.
     coverUrl: media.cover_url ?? null,
+    phash: media.phash ?? null,
+    duplicate: media.duplicate ?? false,
     favorite: media.favorite,
     deletable: media.deletable ?? false,
     mimeType: media.mime_type ?? null,
@@ -187,6 +189,20 @@ class PlayerApi {
     if (cursor) params.set("cursor", cursor);
     const payload = await this.request<LibraryVideosResponse>(`/api/v1/library/videos?${params}`, { signal });
     return { items: payload.items.map(clipFromMedia), hasMore: payload.has_more, nextCursor: payload.next_cursor, total: payload.total, folder: payload.folder };
+  }
+
+  async similarMedia(
+    mediaId: string,
+    signal?: AbortSignal,
+  ): Promise<{ items: Clip[]; threshold: number; truncated: boolean }> {
+    const payload = await this.request<{
+      items: MediaDto[]; threshold: number; truncated: boolean;
+    }>(`/api/v1/media/${encodeURIComponent(mediaId)}/similar`, { signal });
+    return {
+      items: payload.items.map(clipFromMedia),
+      threshold: payload.threshold,
+      truncated: payload.truncated,
+    };
   }
 
   async favorites(): Promise<Clip[]> {

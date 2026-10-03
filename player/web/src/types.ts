@@ -17,6 +17,10 @@ export type MediaDto = {
   stream_url: string;
   /** Authenticated static frame, absent when the server has no generated cover. */
   cover_url?: string | null;
+  /** 64-bit cover fingerprint, present only when the active cover carries one. */
+  phash?: string | null;
+  /** Set by the similarity endpoint: this item is within the near-duplicate band. */
+  duplicate?: boolean;
   favorite: boolean;
   deletable?: boolean;
   mime_type?: string | null;
@@ -80,6 +84,10 @@ export type Clip = {
   variants: MediaVariant[];
   /** Optional versioned archive cover. Null means the on-demand preview stays the only affordance. */
   coverUrl: string | null;
+  /** The cover's fingerprint, or null when there is no similarity information. */
+  phash: string | null;
+  /** True when a similarity lookup found this item nearly identical. */
+  duplicate: boolean;
 };
 
 export type PreloadLevel = "strong" | "light" | "random" | "metadata";
