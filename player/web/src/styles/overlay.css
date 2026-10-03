@@ -15,30 +15,35 @@
 .progress-row { grid-area: progress; min-width: 0; min-height: 64px; display: grid; align-content: center; }
 .seek-track { min-width: 0; }
 .seek { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 48px; min-height: 48px; margin: 0; background: transparent; touch-action: none; --p: 0%; cursor: pointer; }
-.seek::-webkit-slider-runnable-track { height: 4px; border-radius: var(--radius-pill); background: linear-gradient(to right,var(--primary) var(--p),var(--track) var(--p)); }
-.seek::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 3px solid #fff; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
-.seek:active::-webkit-slider-thumb, .seek.dragging::-webkit-slider-thumb { box-shadow: 0 0 0 6px var(--primary-soft); }
-.seek::-moz-range-track { height: 4px; border-radius: var(--radius-pill); background: var(--track); }
-.seek::-moz-range-progress { height: 4px; background: var(--primary); }
-.seek::-moz-range-thumb { width: 10px; height: 10px; border: 3px solid #fff; border-radius: 50%; background: var(--primary); }
+.seek::-webkit-slider-runnable-track { height: 6px; border-radius: var(--radius-pill); background: linear-gradient(to right,var(--primary) var(--p),var(--track) var(--p)); transition: height var(--dur-fast) var(--ease); }
+.seek::-webkit-slider-thumb { -webkit-appearance: none; width: 16px; height: 16px; margin-top: -5px; border: 0; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 4px rgba(11, 13, 16, .92); transition: scale var(--dur-fast) var(--ease-spring), box-shadow var(--dur-fast) var(--ease); }
+/* The dragging class is owned by seek-control, so the grow state survives the
+   pointer leaving the thumb; :active still covers the immediate press. */
+.seek:active::-webkit-slider-runnable-track, .seek.dragging::-webkit-slider-runnable-track { height: 10px; }
+.seek:active::-webkit-slider-thumb, .seek.dragging::-webkit-slider-thumb { scale: 1.5; box-shadow: 0 0 0 10px var(--accent-soft); }
+.seek::-moz-range-track { height: 6px; border-radius: var(--radius-pill); background: var(--track); }
+.seek::-moz-range-progress { height: 6px; background: var(--primary); }
+.seek::-moz-range-thumb { width: 16px; height: 16px; border: 0; border-radius: 50%; background: var(--primary); }
 .timeline { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; line-height: 16px; margin-top: -8px; padding-bottom: 4px; }
 /* The primary action is the widest column so 5-character Chinese labels
    (「解锁并播放」) never break onto a second line at 360-390px. */
 .transport-row { grid-area: transport; display: grid; grid-template-columns: minmax(84px,1.35fr) repeat(3,minmax(0,1fr)); align-items: stretch; gap: 4px; min-width: 0; }
-.transport-play { min-height: 56px; min-width: 0; display: grid; place-content: center; justify-items: center; gap: 3px; padding: 6px; border-radius: var(--radius); color: var(--accent-ink); background: var(--primary); }
+.transport-play { min-height: 56px; min-width: 0; display: grid; place-content: center; justify-items: center; gap: 3px; padding: 6px; border-radius: var(--radius-pill); color: var(--accent-ink); background: var(--primary); transition: scale var(--dur-fast) var(--ease-spring), background var(--dur-fast) var(--ease); }
+.transport-play:not(:disabled):active { translate: none; scale: .94; }
 .transport-play .icon-pause { display: none; }
 .app-shell[data-playback-state="playing"]:not(.privacy-locked) .transport-play .icon-play { display: none; }
 .app-shell[data-playback-state="playing"]:not(.privacy-locked) .transport-play .icon-pause { display: block; }
 .transport-label { font-size: 12px; line-height: 14px; white-space: nowrap; }
-.action-btn { min-width: 0; min-height: 56px; display: grid; justify-items: center; align-content: center; gap: 4px; padding: 6px 4px; border-radius: var(--radius); color: var(--text-secondary); }
+.action-btn { min-width: 0; min-height: 56px; display: grid; justify-items: center; align-content: center; gap: 4px; padding: 6px 4px; border-radius: var(--radius-pill); color: var(--text-secondary); transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), scale var(--dur-fast) var(--ease-spring); }
+.action-btn:not(:disabled):active { translate: none; scale: .94; }
 .action-btn .icon { width: 22px; height: 22px; }
 .action-label { font-size: 12px; line-height: 14px; overflow-wrap: anywhere; word-break: keep-all; }
-.action-btn.selected { color: var(--favorite); background: rgba(232, 121, 154, .16); }
+.action-btn.selected { color: var(--favorite); background: rgba(232, 121, 154, .16); box-shadow: inset 0 0 0 1px rgba(232, 121, 154, .45); }
 .action-btn.selected .icon-outline, .action-btn.is-muted .icon-unmuted { display: none; }
 .action-btn.selected .icon-filled, .action-btn.is-muted .icon-muted { display: block; }
 .delete-action { color: var(--danger); }
 .media-actions { grid-area: actions; position: relative; align-self: stretch; }
-.media-actions-toggle { min-width: 48px; min-height: 56px; display: grid; place-content: center; justify-items: center; gap: 4px; padding: 6px 8px; border-radius: var(--radius); color: var(--text-secondary); cursor: pointer; list-style: none; font-size: 12px; }
+.media-actions-toggle { min-width: 48px; min-height: 56px; display: grid; place-content: center; justify-items: center; gap: 4px; padding: 6px 8px; border-radius: var(--radius-pill); color: var(--text-secondary); cursor: pointer; list-style: none; font-size: 12px; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease); }
 .media-actions-toggle::-webkit-details-marker { display: none; }
 .media-actions[open] .media-actions-toggle { background: var(--primary-soft); color: var(--primary); }
 .action-menu { position: absolute; z-index: 40; right: 0; bottom: calc(100% + 8px); width: min(280px,calc(100vw - 32px)); max-height: min(360px,calc(100dvh - 120px)); overflow-y: auto; display: grid; grid-template-columns: 1fr; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-panel); }
@@ -50,8 +55,11 @@
   .app-header-context { display: block; }
   .topbar-brand { display: none; }
   .topbar { padding-inline: 28px; }
-  .transport-row { grid-template-columns: 96px repeat(3,68px); justify-content: center; }
-  .transport-play { display: flex; justify-content: center; gap: 6px; min-height: 48px; }
+  .transport-row { grid-template-columns: 56px repeat(3,64px); justify-content: center; }
+  /* Desktop gets the round icon-only primary action; its accessible name still
+     comes from aria-label, and the locked case has the labelled centre button. */
+  .transport-play { display: grid; place-content: center; width: 52px; height: 52px; min-height: 52px; border-radius: 50%; }
+  .transport-play .transport-label { display: none; }
   .transport-label { font-size: 13px; }
   .media-actions-toggle { min-height: 48px; }
 }
@@ -94,8 +102,8 @@
 .audio-warning-frequency { color: var(--sky700); background: var(--sky100); }
 .audio-warning-confirm { color: var(--accent-ink); background: var(--sky700); }
 .delete-warning-confirm { color: #fff; background: var(--danger-fill); }
-.toast { position: absolute; z-index: 70; left: 50%; top: calc(72px + var(--safe-top)); transform: translate(-50%,-6px); width: max-content; max-width: calc(100% - 32px); padding: 10px 16px; border-radius: 14px; border: 1px solid var(--border-strong); background: var(--surface-raised); color: var(--text); font-size: 13px; text-align: center; opacity: 0; transition: opacity 190ms ease,transform 190ms var(--ease); pointer-events: none; }
-.toast.show { opacity: 1; transform: translate(-50%,0); }
+.toast { position: absolute; z-index: 70; left: 50%; top: calc(72px + var(--safe-top)); transform: translate(-50%,-22px) scale(.96); width: max-content; max-width: calc(100% - 32px); padding: 10px 16px; border-radius: 14px; border: 1px solid var(--border-strong); background: var(--surface-raised); color: var(--text); font-size: 13px; text-align: center; opacity: 0; transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease-spring); pointer-events: none; }
+.toast.show { opacity: 1; transform: translate(-50%,0) scale(1); }
 .debug { position: absolute; z-index: 35; left: 10px; top: 10px; max-width: calc(100% - 20px); padding: 5px 8px; border-radius: 6px; background: rgb(0 0 0 / 72%); color: #bde7ff; font: 10px ui-monospace,monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .feed-terminal { display: grid; place-items: center; background: var(--bg-deep); color: var(--text-secondary); text-align: center; }
 .feed-terminal p { max-width: 80%; }
@@ -103,4 +111,4 @@
 .gesture-guide strong { font-size: 22px; }
 .gesture-guide span { font-size: 14px; line-height: 1.7; }
 .gesture-guide small { margin-top: 16px; color: var(--primary); }
-@media (hover: hover) { .action-btn:hover, .nav-btn:hover, .topbar-settings:hover, .topbar-fullscreen:hover { background: var(--sky100); } .transport-play:hover { background: var(--primary-hover); } }
+@media (hover: hover) { .action-btn:hover, .nav-btn:hover, .topbar-settings:hover, .topbar-fullscreen:hover { background: var(--surface-raised); } .action-btn.selected:hover { background: rgba(232, 121, 154, .24); } .transport-play:hover { background: var(--primary-hover); } }

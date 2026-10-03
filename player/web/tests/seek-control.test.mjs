@@ -8,6 +8,12 @@ const { outputText } = ts.transpileModule(readFileSync(new URL("../src/seek-cont
 });
 class FakeRange extends EventTarget {
   value = "10"; min = "0"; max = "100"; disabled = false; captures = new Set();
+  classes = new Set();
+  classList = {
+    add: (name) => { this.classes.add(name); },
+    remove: (name) => { this.classes.delete(name); },
+    contains: (name) => this.classes.has(name),
+  };
   getBoundingClientRect() { return { left: 10, width: 200 }; }
   setPointerCapture(id) { this.captures.add(id); }
   hasPointerCapture(id) { return this.captures.has(id); }
@@ -36,10 +42,13 @@ function setup() {
 test("horizontal touch drag owns preview across timeupdate; final coordinate commits once", () => {
   const s = setup(); s.range.send("pointerdown", { clientX: 30 });
   assert.ok(s.range.hasPointerCapture(1));
+  // The class drives the grown track and thumb, so the drag state must be real.
+  assert.equal(s.range.classList.contains("dragging"), true, "pointerdown marks the drag");
   s.range.send("pointermove", { clientX: 150 }); s.timeupdate();
   assert.equal(Number(s.range.value), 70); assert.equal(s.commits.length, 0);
   s.range.send("pointerup", { clientX: 190 });
   assert.deepEqual(s.commits, [90]); assert.equal(s.control.isSeeking(), false);
+  assert.equal(s.range.classList.contains("dragging"), false, "release clears the drag mark");
 });
 test("concurrent native input/change never duplicates or overwrites pointer preview", () => {
   const s = setup(); s.range.send("pointerdown"); s.range.value = "3"; s.range.send("input");

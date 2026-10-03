@@ -1,6 +1,7 @@
 import { icon, type IconName } from "../icons";
 import { element } from "./dom";
 import { brandMark } from "./controls";
+import { createSlidingIndicator } from "./indicator";
 import type { ShellHandlers } from "../ui";
 export type NavSpec = { icon: IconName; label: string; action: string };
 
@@ -32,12 +33,15 @@ export function buildNavigation(handlers: ShellHandlers) {
   const bottomNav = element("nav", "bottom-nav");
   bottomNav.setAttribute("aria-label", "视频分区");
   const navButtons: HTMLButtonElement[] = [];
-  for (const [container, specs] of [[desktopLinks, DESKTOP_NAV], [bottomNav, MOBILE_NAV]] as const) {
+  const bottomButtons: HTMLButtonElement[] = [];
+  for (const [container, specs, sink] of [[desktopLinks, DESKTOP_NAV, navButtons], [bottomNav, MOBILE_NAV, bottomButtons]] as const) {
     for (const spec of specs) {
       const button = navButton(spec, handlers);
-      navButtons.push(button); container.append(button);
+      navButtons.push(button); sink.push(button); container.append(button);
     }
   }
+  const navIndicator = createSlidingIndicator();
+  bottomNav.prepend(navIndicator.el);
   desktopNav.append(brand, desktopLinks);
-  return { desktopNav, bottomNav, navButtons };
+  return { desktopNav, bottomNav, navButtons, bottomButtons, navIndicator };
 }

@@ -15,7 +15,8 @@
 .large-retry { position: absolute; z-index: 3; left: 50%; top: 50%; transform: translate(-50%,-50%); min-height: 48px; padding: 12px 18px; border-radius: 16px; border: 1px solid var(--border-strong); background: var(--surface-raised); color: var(--primary); font-size: 13px; }
 .large-controls { position: relative; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr); gap: 10px; padding: 12px 20px calc(16px + var(--safe-bottom)); background: var(--surface); border-top: 1px solid var(--border); }
 .large-action-row { display: flex; flex-wrap: wrap; align-items: center; justify-content: center; gap: 8px; min-width: 0; }
-.large-btn { width: auto; min-width: 48px; height: auto; flex: none; display: grid; place-items: center; border-radius: var(--radius); color: var(--text-secondary); background: transparent; min-height: 56px; padding: 6px 8px; gap: 4px; }
+.large-btn { width: auto; min-width: 48px; height: auto; flex: none; display: grid; place-items: center; border-radius: var(--radius-pill); color: var(--text-secondary); background: transparent; min-height: 56px; padding: 6px 8px; gap: 4px; transition: background var(--dur-fast) var(--ease), color var(--dur-fast) var(--ease), scale var(--dur-fast) var(--ease-spring); }
+.large-btn:not(:disabled):active { translate: none; scale: .94; }
 .large-btn.selected { color: var(--favorite); background: rgba(232, 121, 154, .16); }
 .large-delete { color: var(--danger); }
 .large-player.privacy-locked .large-pip { display: none; }
@@ -23,7 +24,7 @@
 .large-timeline { min-width: 0; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 0 8px; font-size: 12px; line-height: 18px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .large-time-row { display: flex; flex: 1 1 100%; justify-content: space-between; gap: 12px; }
 .large-progress { position: relative; flex: 1 1 100%; height: 48px; min-height: 48px; display: grid; align-items: center; --p: 0%; }
-.large-buffered { position: absolute; z-index: 0; left: 0; top: 50%; height: 8px; width: 0; transform: translateY(-50%); border-radius: 8px; background: var(--accent-soft); }
+.large-buffered { position: absolute; z-index: 0; left: 0; top: 50%; height: 6px; width: 0; transform: translateY(-50%); border-radius: 8px; background: var(--accent-soft); }
 .large-seek { position: relative; z-index: 1; height: 48px; min-height: 48px; --p: inherit; }
 /* Playback visibility hooks intentionally do not hide or disable these rows. */
 .double-tap-feedback { position: absolute; z-index: 5; top: 45%; padding: 12px 16px; border-radius: 999px; background: rgb(0 0 0 / 62%); color: #fff; font-size: 14px; pointer-events: none; animation: tap-feedback 650ms ease both; }
@@ -55,7 +56,10 @@
 .large-heading { display: grid; gap: 3px; min-width: 0; flex: 1; }
 .large-context { font-size: 12px; color: var(--text-muted); }
 .control-caption { font-size: 12px; line-height: 14px; }
-.large-play { min-width: 64px; background: var(--primary); color: var(--accent-ink); }
+.large-play { width: 56px; height: 56px; min-width: 56px; border-radius: 50%; background: var(--primary); color: var(--accent-ink); }
+/* The round action carries its own accessible name; a caption would unround it. */
+.large-play .control-caption { display: none; }
+@media (hover: hover) { .large-btn:not(:disabled):hover { background: var(--surface-raised); } .large-play:not(:disabled):hover { background: var(--primary-hover); } }
 .large-back .control-caption { display: none; }
 .large-quality { background: var(--surface-soft); }
 .large-more .media-actions-toggle { min-height: 56px; }

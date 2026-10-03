@@ -51,10 +51,15 @@ const idleJs = await transpile("idle-privacy.ts");
 const { IdlePrivacyController, attachIdleActivity } = await import("data:text/javascript;base64," + Buffer.from(idleJs).toString("base64"));
 const masonryJs = await transpile("components/cover-masonry.ts");
 const { bindCoverMasonry } = await import("data:text/javascript;base64," + Buffer.from(masonryJs).toString("base64"));
-globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry };
+const indicatorJs = await transpile("components/indicator.ts");
+const indicatorHost = { element };
+globalThis.__indicatorDeps = indicatorHost;
+const { createSlidingIndicator } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element } = globalThis.__indicatorDeps;\n" + indicatorJs).toString("base64"));
+globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator };
 const libraryJs = await transpile("library.ts");
 const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");

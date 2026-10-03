@@ -3,6 +3,7 @@ import { api, shortId } from "./api";
 import { element } from "./ui";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { bindCoverMasonry, type CoverMasonry } from "./components/cover-masonry";
+import { createSlidingIndicator } from "./components/indicator";
 import type { Clip, LibraryCategory, LibraryDate, LibraryFolder, LibraryVideosPage } from "./types";
 
 const BATCH = 20;
@@ -120,6 +121,11 @@ export class VideoLibraryPage {
   private datesScroll = 0;
   private foldersScroll = 0;
   private readonly tiles = new Map<string, CoverTileHandle>();
+  /** Persistent so the selection pill can slide between category tabs. */
+  private readonly segments = element("div", "library-segments");
+  private readonly segmentIndicator = createSlidingIndicator();
+  private readonly segmentButtons: HTMLButtonElement[] = [];
+  private readonly selectToggle = this.button("选择", () => this.setSelectMode(!this.selectMode));
   private readonly loadButton = this.button("加载更多", () => void this.loadMore());
   private automaticPages = 0;
 
@@ -229,21 +235,34 @@ export class VideoLibraryPage {
     void this.loadMore();
   }
   private renderVideoToolbar(): void {
-    this.toolbar.replaceChildren();
-    for (const [category, label] of [["all", "全部"], ["short", "短视频"], ["long", "长视频"]] as const) {
-      const button = this.button(label, () => {
-        if (category === this.controller.category) return;
-        this.generation++; this.controller.setCategory(category); this.automaticPages = 0;
-        this.resetList(); this.list.classList.add("cover-grid"); this.renderVideoToolbar(); void this.loadMore();
-      });
-      button.setAttribute("aria-pressed", String(category === this.controller.category));
-      this.toolbar.append(button);
+    this.buildSegments();
+    if (this.toolbar.firstElementChild !== this.segments) this.toolbar.replaceChildren(this.segments, this.selectToggle);
+    for (const button of this.segmentButtons) {
+      const active = button.dataset.category === this.controller.category;
+      button.setAttribute("aria-pressed", String(active));
+      if (active) this.segmentIndicator.moveTo(button);
     }
-    const toggle = this.button(this.selectMode ? "退出多选" : "选择", () => this.setSelectMode(!this.selectMode));
-    toggle.classList.add("library-select-toggle");
-    toggle.setAttribute("aria-pressed", String(this.selectMode));
-    this.toolbar.append(toggle);
+    this.selectToggle.textContent = this.selectMode ? "退出多选" : "选择";
+    this.selectToggle.setAttribute("aria-pressed", String(this.selectMode));
     this.renderSelection();
+  }
+  private buildSegments(): void {
+    if (this.segmentButtons.length) return;
+    this.segments.append(this.segmentIndicator.el);
+    for (const [category, label] of [["all", "全部"], ["short", "短视频"], ["long", "长视频"]] as const) {
+      const button = this.button(label, () => this.setCategory(category));
+      button.classList.add("library-segment");
+      button.dataset.category = category;
+      this.segmentButtons.push(button);
+      this.segments.append(button);
+    }
+    this.selectToggle.classList.add("library-select-toggle");
+  }
+  private setCategory(category: LibraryCategory): void {
+    if (category === this.controller.category) return;
+    this.generation += 1; this.controller.setCategory(category); this.automaticPages = 0;
+    this.resetList(); this.list.classList.add("cover-grid");
+    this.renderVideoToolbar(); void this.loadMore();
   }
   private setSelectMode(enabled: boolean): void {
     this.selectMode = enabled;
@@ -349,6 +368,7 @@ export class VideoLibraryPage {
   }
   destroy(): void {
     this.destroyed = true; this.generation++; this.indexRequest?.abort(); this.controller.dispose();
+    this.segmentIndicator.destroy();
     for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
     this.masonry?.destroy(); this.masonry = null;
     this.root.remove();

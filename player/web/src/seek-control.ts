@@ -46,6 +46,7 @@ export function bindSeekControl(range: HTMLInputElement, options: SeekControlOpt
     const id = pointer;
     pointer = null;
     active = false;
+    range.classList.remove("dragging");
     // Clear ownership before release: lostpointercapture may fire synchronously.
     release(id);
     range.value = before;
@@ -61,6 +62,7 @@ export function bindSeekControl(range: HTMLInputElement, options: SeekControlOpt
     before = range.value;
     source = options.getSourceId();
     active = true;
+    range.classList.add("dragging");
     range.min = "0";
     range.max = String(options.getDuration());
     options.onStart?.();
@@ -83,6 +85,7 @@ export function bindSeekControl(range: HTMLInputElement, options: SeekControlOpt
     const value = Number(preview), id = pointer;
     pointer = null;
     active = false;
+    range.classList.remove("dragging");
     release(id);
     if (Number.isFinite(value)) options.onCommit(value);
   };

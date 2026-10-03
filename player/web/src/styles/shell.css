@@ -6,9 +6,10 @@
 .player-panel { grid-area: panel; position: relative; z-index: 20; min-width: 0; display: grid; grid-template-columns: minmax(0,1fr) auto; grid-template-areas: "info cache" "progress progress" "transport actions"; gap: 0 8px; padding: 12px 16px 14px; background: var(--surface); border-top: 1px solid var(--border); }
 .desktop-nav { display: none; }
 .bottom-nav { position: relative; z-index: 50; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); padding: 4px 12px calc(4px + var(--safe-bottom)); gap: 8px; border-top: 1px solid var(--border); background: var(--surface); }
-.nav-btn { min-width: 0; min-height: 48px; display: grid; justify-items: center; align-content: center; gap: 3px; border-radius: var(--radius); color: var(--text-muted); }
+.nav-btn { position: relative; z-index: 1; min-width: 0; min-height: 48px; display: grid; justify-items: center; align-content: center; gap: 3px; border-radius: var(--radius-pill); color: var(--text-muted); transition: color var(--dur-fast) var(--ease); }
 .nav-label { font-size: 12px; font-weight: 600; }
-.nav-btn.active { color: var(--primary); background: var(--primary-soft); }
+/* The amber pill is the shared sliding indicator; only the label colour moves here. */
+.nav-btn.active { color: var(--primary); }
 .nav-btn.active .icon { stroke-width: 2.25; }
 .login-shell { position: fixed; inset: 0; display: grid; place-items: safe center; overflow-y: auto; padding: max(24px,var(--safe-top)) 20px max(24px,var(--safe-bottom)); background: radial-gradient(ellipse at 0 0,rgba(232,180,90,.10),transparent 52%),radial-gradient(ellipse at 100% 100%,rgba(232,180,90,.06),transparent 48%),var(--bg); }
 .sky-decoration { display: none; }
@@ -31,6 +32,7 @@
   .desktop-links { display: grid; gap: 10px; width: 100%; }
   .desktop-nav .nav-btn { min-height: 68px; gap: 6px; }
   .desktop-nav .nav-btn.active { background: var(--primary); color: var(--accent-ink); }
+  .desktop-nav .nav-btn { z-index: auto; }
   .bottom-nav { display: none; }
   .viewport { grid-template-rows: calc(72px + var(--safe-top)) minmax(0,1fr) auto; }
   .media-stage { margin: 0 24px; border-radius: var(--radius-lg) var(--radius-lg) 0 0; }

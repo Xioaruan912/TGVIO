@@ -6,7 +6,11 @@
 .browse-heading { min-width: 0; display: grid; gap: 4px; }
 .browse-eyebrow { font-size: 12px; line-height: 18px; color: var(--text-muted); }
 .browse-title { margin: 0; font-size: 22px; line-height: 30px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.library-toolbar { display: flex; flex-wrap: wrap; gap: 6px; padding: 14px 20px 10px; flex: none; align-items: center; }
+.library-toolbar { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 20px 10px; flex: none; align-items: center; }
+/* One segmented pill with a sliding selection, instead of three loose buttons. */
+.library-segments { position: relative; display: inline-flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-sunken); }
+.library-segment { position: relative; z-index: 1; min-height: 38px; padding: 0 16px; border: 0; border-radius: var(--radius-pill); background: transparent; color: var(--text-secondary); font-size: 13px; }
+.library-segment[aria-pressed="true"] { color: var(--primary); font-weight: 650; }
 .library-button { min-height: 44px; min-width: 44px; padding: 8px 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text-secondary); font-size: 13px; line-height: 20px; touch-action: manipulation; }
 .library-toolbar > .library-button:not(.library-select-toggle) { border-color: transparent; background: transparent; }
 .library-toolbar > .library-button[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); font-weight: 650; }

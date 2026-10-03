@@ -1,4 +1,5 @@
 import { buildSheet, closeSheet } from "./components/sheet";
+import type { SlidingIndicator } from "./components/indicator";
 import { icon } from "./icons";
 import { element } from "./components/dom";
 export { element } from "./components/dom";
@@ -44,6 +45,8 @@ export type Shell = {
   contextBackBtn: HTMLButtonElement;
   fullscreenBtn: HTMLButtonElement;
   navButtons: HTMLButtonElement[];
+  bottomNavButtons: HTMLButtonElement[];
+  navIndicator: SlidingIndicator;
   toast: HTMLElement;
   netSpeed: HTMLElement;
   pauseIndicator: HTMLElement;
@@ -68,7 +71,7 @@ export { buildLogin, buildError, humanizeError } from "./components/access-view"
 export function buildShell(handlers: ShellHandlers): Shell {
   const root = element("main", "app-shell sky-shell");
 
-  const { desktopNav, bottomNav, navButtons } = buildNavigation(handlers);
+  const { desktopNav, bottomNav, navButtons, bottomButtons, navIndicator } = buildNavigation(handlers);
 
   const stage = element("section", "stage sky-stage");
   const viewport = element("div", "viewport sky-viewport");
@@ -137,6 +140,8 @@ export function buildShell(handlers: ShellHandlers): Shell {
     contextBackBtn,
     fullscreenBtn,
     navButtons,
+    bottomNavButtons: bottomButtons,
+    navIndicator,
     toast,
     netSpeed,
     pauseIndicator,
@@ -227,6 +232,10 @@ export function setActiveNav(shell: Shell, action: string): void {
     if (button.dataset.action === action) button.setAttribute("aria-current", "page");
     else button.removeAttribute("aria-current");
   }
+  // The pill is decoration only: the active button keeps aria-current above.
+  shell.navIndicator.moveTo(
+    shell.bottomNavButtons.find((button) => button.dataset.action === action) ?? null,
+  );
 }
 
 export function paintSeek(seek: HTMLInputElement): void {

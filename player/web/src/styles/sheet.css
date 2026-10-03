@@ -23,8 +23,8 @@ button.sheet-row:active { background: var(--sky50); }
 .sheet-empty { display: grid; justify-items: center; gap: 10px; padding: 40px 20px; border: 1px dashed var(--border-strong); border-radius: 20px; text-align: center; background: var(--surface); }
 .sheet-empty-title { margin: 0; font-size: 16px; font-weight: 650; }
 .sheet-empty-sub { margin: 0; max-width: 22em; font-size: 13px; line-height: 1.7; color: var(--muted); }
-.switch { position: relative; width: 46px; height: 28px; flex: none; border-radius: 999px; background: var(--border-strong); transition: background var(--dur-fast) var(--ease); }
-.switch-knob { position: absolute; top: 3px; left: 3px; width: 22px; height: 22px; border-radius: 50%; background: var(--text-secondary); transition: transform var(--dur-base) var(--ease-spring); }
+.switch { position: relative; width: 40px; height: 22px; flex: none; border-radius: 999px; background: var(--border-strong); transition: background var(--dur-fast) var(--ease); }
+.switch-knob { position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--text-secondary); transition: transform var(--dur-base) var(--ease-spring), background var(--dur-fast) var(--ease); }
 .sheet-row-toggle[aria-checked="true"] .switch { background: var(--primary); }
 .sheet-row-toggle[aria-checked="true"] .switch-knob { background: var(--accent-ink); }
 .sheet-row-toggle[aria-checked="true"] .switch-knob { transform: translateX(18px); }
