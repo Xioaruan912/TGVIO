@@ -34,6 +34,6 @@ class LowContrastCoverTests(unittest.IsolatedAsyncioTestCase):
                 work = root/"work";work.mkdir()
                 cover = await sample(reader, "fixture/video.mp4", len(payload), work)
                 self.assertIsNotNone(cover, "low contrast does not mean no content")
-                self.assertTrue(cover.startswith(b"\xff\xd8") and cover.endswith(b"\xff\xd9"))
+                self.assertTrue(cover.payload.startswith(b"\xff\xd8") and cover.payload.endswith(b"\xff\xd9"))
                 self.assertLessEqual(reader.total, 12*1024**2)
-                self.assertLessEqual(len(cover), 1_000_000)
+                self.assertLessEqual(len(cover.payload), 1_000_000)

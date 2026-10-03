@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 import json
 
-from tgvio.domain.renditions import RenditionTask, canonical, safe_path
+from tgvio.domain.renditions import RenditionTask, SampledFrame, canonical, safe_path
 from tgvio.application.cover_backfill import (
     COVERS_INDEX_NAME,
     COVERS_SCHEMA,
@@ -140,7 +140,7 @@ class CoverBackfillRunner:
 class CommittedCoverPort(Protocol):
     async def read_json(self, path: str): ...
     async def exists(self, path: str, size: int) -> bool: ...
-    async def sample(self, path: str, size: int, work: Path) -> bytes | None: ...
+    async def sample(self, path: str, size: int, work: Path) -> SampledFrame | None: ...
     async def write_cover(self, path: str, payload: bytes) -> None: ...
     async def write_json(self, path: str, value) -> None: ...
 
@@ -181,17 +181,20 @@ class CommittedCoverBackfill:
         if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
             raise ValueError("cover source removed")
         payload = await self.port.sample(f"{root}/{source}", int(task.media["size_bytes"]), work)
-        if (not isinstance(payload, bytes) or not 0 < len(payload) <= 1_000_000
-                or not payload.startswith(b"\xff\xd8") or not payload.endswith(b"\xff\xd9")):
+        if (payload is None or not 0 < len(payload.payload) <= 1_000_000
+                or not payload.payload.startswith(b"\xff\xd8")
+                or not payload.payload.endswith(b"\xff\xd9")):
             raise ValueError("no usable frame within cover budget")
-        digest = hashlib.sha256(payload).hexdigest()
+        image, phash = payload.payload, payload.phash
+        digest = hashlib.sha256(image).hexdigest()
         path = f"cover/backfill/{digest}.jpg"
         await self._unchanged(task)
         if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
             raise ValueError("cover source removed during sample")
-        await self.port.write_cover(f"{root}/{path}", payload)
-        index["covers"][source] = {"path": path, "size_bytes": len(payload),
-                                   "media_sha256": parent, "sha256": digest, "mime_type": "image/jpeg"}
+        await self.port.write_cover(f"{root}/{path}", image)
+        index["covers"][source] = {"path": path, "size_bytes": len(image),
+                                   "media_sha256": parent, "sha256": digest,
+                                   "mime_type": "image/jpeg", "phash": phash}
         if len(canonical(index)) > 512 * 1024:
             raise ValueError("cover index exceeds reader budget")
         await self._unchanged(task)

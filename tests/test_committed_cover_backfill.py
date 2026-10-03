@@ -15,6 +15,7 @@ from tgvio.application.cover_backfill_runner import CommittedCoverBackfill
 from tgvio.domain.renditions import RenditionTask
 from tgvio.infrastructure.cover_frames import sample
 from tgvio.adapters.cover_archive import CoverArchivePort
+from tgvio.domain.renditions import SampledFrame
 from tgvio.infrastructure.rendition_state import MaintenanceState
 
 
@@ -29,6 +30,7 @@ class Port:
         self.calls = []
         self.failure = False
         self.image = b"\xff\xd8fixture\xff\xd9"
+        self.phash = "0123456789abcdef"
 
     async def read_json(self, path):
         return {"manifest.json": self.original.manifest, "_COMPLETE.json": self.original.complete,
@@ -37,7 +39,7 @@ class Port:
         return path.endswith("/video.mp4") or self.objects.get(path) == size
     async def sample(self, path, size, work):
         self.calls.append("sample")
-        return self.image
+        return SampledFrame(self.image, self.phash)
     async def write_cover(self, path, payload):
         self.calls.append("image")
         if self.failure: raise ValueError("fixture verification failure")
@@ -89,6 +91,15 @@ class CommittedCoverTests(unittest.IsolatedAsyncioTestCase):
                     await CommittedCoverBackfill(p).run(p.task, Path(tmp))
             self.assertEqual(p.calls, [])
 
+    async def test_the_index_entry_carries_the_frame_fingerprint(self):
+        p = Port()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(await CommittedCoverBackfill(p).run(p.task, Path(tmp)), 1)
+        entry = p.index["covers"]["video.mp4"]
+        self.assertEqual(entry["phash"], p.phash, "the fingerprint is stored with the cover it came from")
+        self.assertEqual(p.index["schema"], "tgvio.archive.covers/v2")
+        self.assertEqual(p.index["algorithm"], "bounded-frame-v2")
+
     async def test_source_removed_during_sample_does_not_publish(self):
         p = Port()
         async def exists(path, size):
@@ -128,10 +139,11 @@ class CoverFrameTests(unittest.IsolatedAsyncioTestCase):
                         f.seek(start);return f.read(end-start+1)
             reader=Reader()
             image=await sample(reader,"fixture.mp4",size,work)
-            self.assertIsNotNone(image);self.assertTrue(image.startswith(b"\xff\xd8"))
+            self.assertIsNotNone(image);self.assertTrue(image.payload.startswith(b"\xff\xd8"))
             self.assertLess(reader.used,size)
             self.assertLessEqual(reader.used,12*1024**2)
-            self.assertLessEqual(len(image),1_000_000)
+            self.assertLessEqual(len(image.payload),1_000_000)
+            self.assertEqual(len(image.phash), 16)
 
 
 class CoverRangeTests(unittest.IsolatedAsyncioTestCase):

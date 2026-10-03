@@ -19,6 +19,8 @@ async def command(*args: str) -> tuple[int, bytes]:
         raise
 
 
+from tgvio.domain.renditions import SampledFrame
+
 GRAY_EDGE = 32
 HASH_COLUMNS = 9
 HASH_ROWS = 8
@@ -74,7 +76,7 @@ def flat_extreme_frame(gray: bytes) -> bool:
 
 
 async def extract(source: Path, work: Path, *,
-                  positions: tuple[str, ...] = ("1", "0.1", "3", "0")) -> bytes | None:
+                  positions: tuple[str, ...] = ("1", "0.1", "3", "0")) -> SampledFrame | None:
     output = work / "frame.jpg"
     for position in positions:
         output.unlink(missing_ok=True)
@@ -102,11 +104,11 @@ async def extract(source: Path, work: Path, *,
             continue
         payload = output.read_bytes()
         if payload.startswith(b"\xff\xd8") and payload.endswith(b"\xff\xd9"):
-            return payload
+            return SampledFrame(payload, dhash_gray32(gray))
     return None
 
 
-async def sample(reader, path: str, size: int, work: Path) -> bytes | None:
+async def sample(reader, path: str, size: int, work: Path) -> SampledFrame | None:
     if type(size) is not int or not 0 < size <= 4 * 1024**3:
         raise ValueError("cover source outside size budget")
     source = work / "sample.bin"

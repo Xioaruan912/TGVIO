@@ -27,6 +27,18 @@ def safe_path(value: Any) -> str:
 
 
 @dataclass(frozen=True)
+class SampledFrame:
+    """One decoded still and the fingerprint computed from the same pixels.
+
+    The two travel together because they are derived from one frame: a caller cannot
+    hold a hash that belongs to a different picture than the bytes it stores.
+    """
+
+    payload: bytes
+    phash: str
+
+
+@dataclass(frozen=True)
 class RenditionTask:
     package_id: str
     root: str

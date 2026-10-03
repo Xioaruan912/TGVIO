@@ -30,7 +30,8 @@ class BrightFrameTests(unittest.IsolatedAsyncioTestCase):
             work = root / "sample";work.mkdir()
             cover = await sample(reader, "fixture/video.mp4", len(payload), work)
             self.assertIsNotNone(cover, "a bright frame containing real detail is not blank")
-            self.assertTrue(cover.startswith(b"\xff\xd8") and cover.endswith(b"\xff\xd9"))
+            self.assertTrue(cover.payload.startswith(b"\xff\xd8") and cover.payload.endswith(b"\xff\xd9"))
+            self.assertEqual(len(cover.phash), 16, "the fingerprint travels with the frame")
             self.assertLessEqual(reader.total, 12*1024**2)
 
 

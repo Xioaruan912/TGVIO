@@ -9,7 +9,7 @@ import time
 
 from tgvio.adapters.rendition_archive import RenditionArchivePort
 from tgvio.adapters.rendition_discovery import RenditionDiscovery
-from tgvio.domain.renditions import safe_path
+from tgvio.domain.renditions import SampledFrame, safe_path
 from tgvio.infrastructure.cover_frames import sample
 from tgvio.infrastructure.archive_retry import retry_archive
 
@@ -70,7 +70,7 @@ class CoverArchivePort(RenditionArchivePort):
         finally:
             conn.close()
 
-    async def sample(self, path: str, size: int, work: Path) -> bytes | None:
+    async def sample(self, path: str, size: int, work: Path) -> SampledFrame | None:
         safe_path(path)
         return await asyncio.wait_for(sample(self, path, size, work), 180)
 

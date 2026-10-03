@@ -68,7 +68,7 @@ class FrameTimeoutTests(unittest.IsolatedAsyncioTestCase):
                 (root/"frame.jpg").write_bytes(image)
                 return 0, b""
             with patch("tgvio.infrastructure.cover_frames.command", side_effect=command):
-                self.assertEqual(await extract(root/"source.mp4", root), image)
+                self.assertEqual((await extract(root/"source.mp4", root)).payload, image)
             self.assertEqual(positions, ["1", "0.1"])
 
     async def test_cancellation_never_starts_another_candidate(self):
