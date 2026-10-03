@@ -2609,3 +2609,9 @@ class PlayerCoverMirrorTests(unittest.IsolatedAsyncioTestCase):
         report = body["stream_capacity"]["cover_mirror"]
         self.assertFalse(report["enabled"])
         self.assertEqual((report["files"], report["bytes"], report["hits"], report["misses"]), (0, 0, 0, 0))
+
+    async def test_a_retired_cover_is_not_a_mirror_candidate(self) -> None:
+        rows = await self.repo.mirror_candidates()
+        self.assertEqual([row[2] for row in rows], [self.ADDRESSED], "the active cover is a candidate")
+        await self.repo.record_deleted_cover(self.media_id, "package-1")
+        self.assertEqual(await self.repo.mirror_candidates(), (), "a retired cover row is never warmed")

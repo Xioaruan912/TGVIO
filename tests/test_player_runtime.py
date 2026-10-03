@@ -37,7 +37,8 @@ class PlayerRuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.cover_mirror_bytes, 268435456)
         self.assertEqual(settings.cover_mirror_batch, 64)
         self.assertEqual(settings.cover_mirror_concurrency, 2)
-        self.assertEqual(settings.cover_mirror_interval_seconds, 900)
+        self.assertEqual(settings.cover_mirror_interval_seconds, 30,
+                         "the catch-up cadence the spec fixes, not the idle backoff")
         off = PlayerSettings.from_env(player_env(TGVIO_PLAYER_COVER_MIRROR="off"))
         self.assertFalse(off.cover_mirror)
         # This file's convention is fail-closed: a value off the list is an error, never a

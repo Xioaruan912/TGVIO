@@ -114,8 +114,8 @@ class PlayerSettings:
                          "COVER_MIRROR_BYTES", 1024**2, 8 * 1024**3),
             cls._integer(get("COVER_MIRROR_BATCH") or "64", "COVER_MIRROR_BATCH", 1, 1024),
             cls._integer(get("COVER_MIRROR_CONCURRENCY") or "2", "COVER_MIRROR_CONCURRENCY", 1, 8),
-            cls._integer(get("COVER_MIRROR_INTERVAL_SECONDS") or "900",
-                         "COVER_MIRROR_INTERVAL_SECONDS", 30, 86400),
+            cls._integer(get("COVER_MIRROR_INTERVAL_SECONDS") or "30",
+                         "COVER_MIRROR_INTERVAL_SECONDS", 5, 3600),
         )
 
     @staticmethod
@@ -320,7 +320,7 @@ async def run(settings: PlayerSettings) -> None:
                 concurrency=min(
                     settings.cover_mirror_concurrency, max(1, server.cover_lane_limit // 2)
                 ),
-                idle_seconds=settings.cover_mirror_interval_seconds,
+                catch_up_seconds=settings.cover_mirror_interval_seconds,
             )
             tasks.append(asyncio.create_task(warm_covers.run(stop)))
             _LOG.info(
