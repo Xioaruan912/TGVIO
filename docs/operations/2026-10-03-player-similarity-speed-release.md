@@ -63,3 +63,53 @@ Bot 容器全程未动。
 - **封面字节仍在 WebDAV**：本次未做本地封面镜像，每张首次封面仍是一次远端往返（慢的根因）。
   本地镜像/缓存另立 spec。
 - 移动端真机操作未在本次后验内重新验收；浏览器回归使用隔离夹具。
+
+## 追加发布：筛选/智能集合面板被裁切修复（r7，当前运行版本）
+
+用户报告「筛选 和智能集合 都有问题 前端不对」。定位与修复记录如下。
+
+### 根因（生产实测数字）
+
+- 手机视口 390×844 下：`.sheet-body` 宽 **388px**，而 `.filter-sheet` 宽 **431px** → 溢出 43px，
+  被 `.sheet-card { overflow: hidden }` 裁掉。
+- 原因：`.sheet-body` 是 `display: grid`，`auto` 轨道的**最小尺寸取子项 min-content**；日期/数字
+  `<input>` 固有宽度很大（实测 201px），`.filter-sheet` 没有 `min-width: 0`，轨道因此拒绝收缩。
+- 表现：每个区间行的**第二个输入框**、三态行的第三颗「否」、以及「条件」标题右半都被切掉。
+- 智能集合内嵌同一个面板 → 同一根因，两个报告是同一个 bug。
+
+### 修复
+
+- `.sheet-body > * { min-width: 0 }` 与 `.filter-sheet { min-width: 0 }`：面板永不超过所在 sheet。
+- `.filter-dates` / `.filter-tri` / `.filter-actions` 改为 `flex-wrap: wrap`：行内放不下就换行，不再溢出。
+- 新增三条浏览器检查（每个视口）：面板不超过 sheet、sheet 内无横向裁切、条件行右边缘在 sheet 内。
+  修复前三条**全部为红**（`the filter panel fits inside the sheet 360`）。
+
+### 顺带修正的两个夹具缺陷（它们此前掩盖了真相）
+
+- `sheetShot` 曾把视口临时改成 1400px 高，导致截图不能代表手机上的真实观感；现改为按真实视口截图，
+  并额外导出卡片 HTML，便于在合成层不重绘时用静态页截图取证。
+- 两个 smoke 启动 Chrome 时未给 `--window-size`，模拟视口高于默认窗口时会截到陈旧帧。
+
+### 发布事实
+
+| 项目 | 值 |
+|---|---|
+| 应用提交 | `3d3e0b52dc26a0ee3557743e4cd2a46918d0bca5` |
+| Release id / tag | `sheet-fit-20261004` / `tgvio-player:sheet-fit-20261004` |
+| 本地候选镜像 ID | `sha256:f39ea3e6c2c032afa58c3a24b4598078bf81ea3ff229454c0654c9edb5c4e012` |
+| VPS 导入镜像 ID | `sha256:686da23dfc2bafc3011a9bd7026ef3559131aa56683c29d5f546ac6937bceabb` |
+| 传输包 SHA-256 | `074805d8e1cf11a426cc103646a0017ee429182400d94deeaebbd95c4528a394`（两端一致） |
+| 新 Player 容器 | `9e82a46911ad11dc2f2cbc2736ed30fc1e3c336a48aed0794ebc0eb4282bb31f`（healthy / restarts 0） |
+| 回滚点 | `/root/tgvio-player/rollback-20261003T182653Z`（原 env、切换前库、原容器/镜像 ID `sha256:d5458354…`） |
+| Bot | `408fd4e6…` restarts 0，切换前后一致 |
+
+### 上线后验
+
+| 检查 | 结果 |
+|---|---|
+| 公网 `/` `/healthz` / 未登录 feed | 200 / 200 / 401 |
+| 线上 CSS 含修复规则 | `sheet-body>*{min-width:0}` 命中 1 次；`filter-dates{display:flex;flex-wrap:wrap;…}` |
+| 线上库 | 账本 `[1..8,10,11,12]` 未变、`quick_check=ok` |
+| 门禁 | `scripts/check.sh --browser` → `project_checks=passed`（前端 319/319、Python 1136/1136、布局 6 视口、封面回归 680 checks） |
+
+验证图（修复前/后、智能集合）见交付目录 `tgvio-shots/`。
