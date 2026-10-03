@@ -709,7 +709,6 @@ function lockPrivacyForBackground(): void {
   privacyUnlocked = false;
   paused = true;
   playback?.update({ privacyUnlocked: false, pausedByUser: true });
-  libraryPage?.lockPrivacy();
   const video = largePlayer?.currentVideo() ?? pool?.currentVideo() ?? null;
   if (largePlayer) largePlayer.lockPrivacy();
   else shell?.root.classList.add("privacy-locked");
@@ -730,7 +729,6 @@ function lockPrivacyScreen(): void {
   privacyUnlocked = false;
   paused = true;
   playback?.update({ privacyUnlocked: false, pausedByUser: true });
-  libraryPage?.lockPrivacy();
   const video = largePlayer?.currentVideo() ?? pool?.currentVideo() ?? null;
   shell?.root.classList.add("privacy-locked");
   pool?.currentVideo()?.pause();
@@ -1611,6 +1609,7 @@ function renderFeed(): void {
   };
   feedView.setClips(clips);
   feedPreview = new ThumbnailPreview();
+  feedPreview.attach(shell.playerPanel);
   shell.root.appendChild(feedPreview.el);
   feedMeter = new NetworkMeter(shell.netSpeed);
   feedMeter.onSample = (sample) => {

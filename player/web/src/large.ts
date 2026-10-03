@@ -154,7 +154,7 @@ export class LargePlayer {
     view.privacyLock.addEventListener("click", () => { this.lockPrivacy(); this.onPrivacyLock(); });
     this.privacyPlayButton.addEventListener("click", event => { event.stopPropagation(); this.togglePlay(); });
     this.root.classList.add("controls-visible");
-    this.preview.el.classList.add("large-scrub"); this.root.append(this.preview.el);
+    this.preview.el.classList.add("large-scrub"); this.root.append(this.preview.el); this.preview.attach(view.controls);
     this.playButton.addEventListener("click", () => this.togglePlay());
     this.clip.favorite = favoriteMutations.currentValue(this.clip.id, this.clip.favorite);
     this.syncFavoriteButton(this.clip.favorite); this.syncSoundButton();

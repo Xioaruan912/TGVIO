@@ -92,6 +92,8 @@ button:disabled { cursor: default; opacity: .6; }
 button:not(:disabled):active { translate: 0 1px; }
 button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--primary-bright); outline-offset: 2px; }
 input { min-width: 0; }
+/* An inert slider (no duration yet) must not advertise a draggable cursor. */
+input:disabled { cursor: default; }
 .icon { display: block; flex: none; }
 .icon-stack { position: relative; display: grid; place-items: center; }
 .icon-stack > .icon { grid-area: 1 / 1; }

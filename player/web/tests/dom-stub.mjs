@@ -8,7 +8,11 @@ export function installDom() {
     constructor(tag, className = "", text = "") {
       this.tagName = tag; this.className = className; this.text = text;
       this.children = []; this.events = new Map(); this.attributes = {};
-      this.style = {}; this.dataset = {};
+      this.style = {
+        setProperty(name, value) { this[name] = String(value); },
+        removeProperty(name) { delete this[name]; },
+        getPropertyValue(name) { return this[name] ?? ""; },
+      }; this.dataset = {};
       this.scrollTop = 0; this.checked = false; this.disabled = false;
       this.classList = {
         add: (...names) => { for (const name of names) if (!this.classList.contains(name)) this.className = `${this.className} ${name}`.trim(); },
@@ -55,7 +59,11 @@ export function installDom() {
     pause() { this.pauses = (this.pauses ?? 0) + 1; }
     load() { this.loads = (this.loads ?? 0) + 1; }
     play() { return Promise.resolve(); }
-    getContext() { return null; }
+    getContext() {
+      // Recording 2D context: lets canvas painting be asserted instead of
+      // silently skipped, without pulling a real canvas implementation in.
+      return this.__ctx ??= { fillStyle: "", fillRect() {}, clearRect() {}, drawImage() { this.draws = (this.draws ?? 0) + 1; } };
+    }
   }
   const all = node => node.children.flatMap(c => [c, ...all(c)]);
   const select = (node, selector) => {
@@ -73,7 +81,7 @@ export function installDom() {
   };
   const flush = async () => { for (let i = 0; i < 6; i++) await new Promise(resolve => setImmediate(resolve)); };
   const videos = { created: 0 };
-  globalThis.window = { setTimeout: (...args) => { const timer = setTimeout(...args); timer.unref(); return timer; }, clearTimeout, matchMedia: () => ({ matches: false }) };
+  globalThis.window = { innerWidth: 390, innerHeight: 844, setTimeout: (...args) => { const timer = setTimeout(...args); timer.unref(); return timer; }, clearTimeout, matchMedia: () => ({ matches: false }) };
   globalThis.document = Object.assign(new Node("document"), {
     hidden: false,
     createElement: tag => { if (tag === "video") videos.created++; return new Node(tag); },
