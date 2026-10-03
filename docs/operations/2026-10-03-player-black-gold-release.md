@@ -111,6 +111,68 @@ Vite 从 `public/` 复制到 `dist/` 根的其他文件既不在白名单、也�
 应用字体栈以 MiSans → HarmonyOS Sans SC → PingFang SC → Noto Sans SC → Microsoft YaHei 依次回退。
 截图里有意义的是拉丁部分：品牌标 `TGVIO` 已是 Playfair Display 字形，与字体加载事实一致。
 
+## 追加发布：品牌纠正（r3，当前运行版本）
+
+用户指出项目名是 **TGVIO**，不是 SKY TGVIO，要求全部改正。r2 上线后追加本次切换。
+
+改动范围（均在 `player/web`）：
+
+- 四处可见品牌字串 `SKY TGVIO` → `TGVIO`：手机顶栏、桌面侧栏、两个登录页。
+- 旧皮肤遗留标识全部清掉：`--sky50/100/500/700` 与 `--sky-50/…` 别名（十个调用点改用真实令牌
+  `--surface-soft` / `--primary-soft` / `--primary-bright` / `--primary`，别名声明块删除）；
+  无任何规则或读取方的死类 `sky-shell` / `sky-stage` / `sky-viewport` / `sky-login` /
+  `sky-login-card` / `.sky-decoration`；关键帧 `sky-enter` / `sky-pulse` / `sky-shimmer`
+  → `panel-enter` / `soft-pulse` / `skeleton-shimmer`。
+- DOM id `sky-access-secret` → `player-access-secret`（`label.htmlFor=input.id`，自动跟随）、
+  `sky-sheet-title` → `player-sheet-title`。后者被 `aria-labelledby` 引用，已在浏览器复验：
+  dialog 名称仍解析到「设置」，axe 仍为 0 violation。
+- 测试侧：截屏目录 `tgvio-sky-preview` → `tgvio-player-preview`、临时媒体目录
+  `tgvio-sky-media-` → `tgvio-player-media-`、注入的 CJK fixture 字体 `SkyFixtureCJK` →
+  `PlayerFixtureCJK`、孤立 fixture `sky-login.{html,ts}` → `login-layout.{html,ts}`（无引用方，
+  smoke 走的是 `cover-states.html?login`）、两个 fixture 标题去掉 SKY。
+- `site.webmanifest` 的 `background_color` / `theme_color` 还在用旧色 `#0b0d10`，一并改为 `#08070a`。
+- README 里描述「SKY mobile-first UI / light sky tokens」的小节改写为实际交付的内容。
+- 权威文档 `docs/development/PLAYER_FRONTEND.md` 同步：标题、品牌名、「旧 SKY 名为兼容别名」
+  （已不真）与「浅色令牌」（已不真）均已纠正，并顺手改回实测值：手机顶栏 58→**52px**、
+  桌面侧栏 92→**72px**。
+
+**故意不动**：`docs/refactor-v2/evidence/R2-21_PLAYER_SKY_UI_*`、
+`docs/superpowers/plans/2026-09-30-player-sky-ui-rebuild.md`、`docs/operations/2026-10-01-*`。
+它们描述的是当时真的以那些名字跑过的发布，VPS 上仍存有 `sky-cache-20261001-cc12f18`
+与 `sky-ui-*` 目录；改写它们会让记录失真。这 7 个文件全部在 `.dockerignore` 范围内，
+**不进入镜像**（已核实：快照里 7 个提及 sky 的文件，落在构建上下文内的为 0 个）。
+
+| 事实 | r3 值 |
+| --- | --- |
+| 发布提交 | `49800dce358a1dd4a59039aa2da8d451cf1feb06` |
+| VPS snapshot | `/root/TGVIO-snapshots/49800dce…/source`（563 文件；content_manifest `193d36fb2088f73d90bfe3c4c9ca464f7ec1f0500e83a5c8fdbc89c0675df781`） |
+| 源码 archive SHA-256 | `8df8893456c7d10191c16d8a88064dde62a85d30f0e64ac23e437a2a6ea3320b` |
+| 传输包 SHA-256（镜像） | `8c635122c2663eb83d3f3bdb059c87feeffcc999d4394c10ed7249a5e9076c6c` |
+| 本地候选镜像 ID | `sha256:e756bde77b4e307ff480d60e52f1005264df6e7654f7904ebc0007004c9b39f9` |
+| VPS 导入镜像 ID | `sha256:1a7f9e7174865ae687d4fe46518c4b6914f2b15402d567a8dc0dcaa362d792bb` |
+| Player 容器 | `e7d0e529a1e3a428d40ad358945c3b298db766c4a4e01f5c7f7ab78f778c0d8c`（running / healthy / restarts 0） |
+| OCI revision / version | `49800dce…` / `tgvio-brand-20261003` |
+| 回滚链 | `07d112f4…`（r2）→ `ac7d4d91…`（r1）→ `19edb34c…`（`covers-c740cfb`） |
+| Bot 容器 | `408fd4e67f…` restarts 0，切换前后一致 |
+
+后验（HTTPS，四个资源配置与镜像逐字节一致）：
+
+| 资源 | 字节 | SHA-256 |
+| --- | ---: | --- |
+| `/assets/index-DkccO_oD.js` | 173,816 | `80133f99818e9a91099b61d06189c72e8860c90f3a8afeae2550d56d8753b41b` |
+| `/assets/index-BcRPmqtd.css` | 58,741 | `2f7cabb2ccb2564d7a4ad35bf814325df5170fbed84466ecceefbc57193569e0` |
+| `/assets/index-C8ovYWoD.js` | 147,343 | `48b14e65e5dd85731a1e3922d64674b2578386c53cd223166eff686c814fb31f` |
+| `/assets/playfair-display-latin-BOwq7MWX.woff2` | 38,404 | `e0c764a8e9e1cce92163c55bac4b2ad6cd4cf8c696ce2289ab5c41565e65b7e2` |
+
+生产侧实测：首页 `sky_in_shell=0`、入口 JS `sky_in_js=0`、入口 CSS `sky_in_css=0`、
+`SKY TGVIO` 字面 0 处、`"TGVIO"` 字面 4 处；服务端 CSS 中 `--sky50` / `--sky100` /
+`--sky500` / `--sky700` / `sky-enter` / `sky-shimmer` / `sky-pulse` 均为 0；
+manifest 为 `TGVIO 私享播放器`。浏览器 DOM：登录页品牌 `TGVIO`、`login-shell` 类干净、
+输入框 id `player-access-secret`、sky 类与 id 均为空、字体仍加载。
+
+本次同样保留 r3 自己的 `rollback/`（0600 `player.env` + SQLite backup API 备份 + 上一镜像 ID），
+Player 库 `quick_check` 前后均为 ok，schema 未变，Bot 容器未动。
+
 ## 未完成与清理候选
 
 - axe（黑金态、6 个页面）0 violation；唯一 remaining 是 `video-caption`（critical / incomplete）：
@@ -119,6 +181,7 @@ Vite 从 `public/` 复制到 `dist/` 根的其他文件既不在白名单、也�
 - Firefox 未验收（无 View Transitions 与滚动驱动动画，均为渐进增强）。
 - Android/iOS 真机触摸、系统软键盘、生产各网络与真实媒体播放场景尚未验收。
 - 清理候选（未执行，需单独授权与只读 inventory）：
-  `/root/tgvio-player/incoming-black-gold-9756649/`（已被 r2 取代的传输包，约 61MB）、
-  本地 `/root/tgvio-player-black-gold-*.tar.gz` 与 `/root/tgvio-source-black-gold-*.tar.gz`。
+  `/root/tgvio-player/incoming-black-gold-9756649/`、`incoming-black-gold-d9c284f/`
+  已被后续版本取代的传输包（共约 122MB），以及本地 `/root/tgvio-player-*.tar.gz`、
+  `/root/tgvio-source-*.tar.gz`。
   VPS 根盘当前 81G/99G（86%），Docker 可回收镜像约 1.6GB、构建缓存约 1.0GB。
