@@ -209,6 +209,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         app.router.add_get("/api/v1/cache-stats", self._cache_stats)
         app.router.add_post("/api/v1/diagnostics/playback-event", self._playback_diagnostic)
         app.router.add_get("/api/v1/media/{media_id}", self._media)
+        app.router.add_get("/api/v1/media/{media_id}/similar", self._similar)
         if self._deleter is not None:
             app.router.add_delete("/api/v1/media/{media_id}", self._delete_media)
         app.router.add_get("/api/v1/media/{media_id}/stream", self._stream)

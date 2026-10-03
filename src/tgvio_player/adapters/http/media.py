@@ -10,6 +10,14 @@ from tgvio_player.application.favorite_backup import FavoriteBackupError
 from .client import _prefetch_requested
 from .diagnostics import fingerprint, log_event
 
+# A similarity request is a bounded read: a personal library can outgrow any one request's
+# budget, and a partial answer that says so beats a silent one.
+_MAX_SIMILAR_SCAN = 1000
+_MAX_SIMILAR_LIMIT = 60
+_SIMILAR_THRESHOLD_CEILING = 32
+_SIMILAR_THRESHOLD = 16
+_DUPLICATE_DISTANCE = 6
+
 
 class PlayerMediaHttpMixin:
     """Routes that concern exactly one catalog media item."""
@@ -19,6 +27,42 @@ class PlayerMediaHttpMixin:
         details = await self._media_details(request.match_info["media_id"])
         return web.json_response(
             await self._media_dto(details, digest, prefetch=_prefetch_requested(request))
+        )
+
+    async def _similar(self, request: web.Request) -> web.Response:
+        """What looks like this cover. The fingerprint never leaves the session."""
+        digest = await self._authenticate(request)
+        details = await self._media_details(request.match_info["media_id"])
+        media_id = str(details["media_id"])
+        try:
+            limit = int(request.query.get("limit", "24"))
+            threshold = int(request.query.get("threshold", str(_SIMILAR_THRESHOLD)))
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid similarity paging") from None
+        if not 1 <= limit <= _MAX_SIMILAR_LIMIT:
+            raise web.HTTPBadRequest(text="invalid similarity paging")
+        if not 0 <= threshold <= _SIMILAR_THRESHOLD_CEILING:
+            # A wider band stops meaning "similar" and starts meaning "everything".
+            raise web.HTTPBadRequest(text="invalid similarity paging")
+        cover = await self._repository.active_cover(media_id)
+        phash = cover.get("phash") if cover is not None else None
+        if not isinstance(phash, str) or not phash:
+            # No similarity information is an answer, not a failure.
+            return web.json_response({"items": [], "threshold": threshold, "truncated": False})
+        pairs, truncated = await self._repository.similar_cover_ids(
+            phash, media_id=media_id, threshold=threshold, limit=limit,
+            scan_limit=_MAX_SIMILAR_SCAN
+        )
+        items = []
+        for candidate, distance in pairs:
+            candidate_details = await self._repository.active_media_details(candidate)
+            if candidate_details is None:
+                continue
+            item = await self._media_dto(candidate_details, digest, prefetch=False)
+            items.append({**item, "distance": distance,
+                          "duplicate": distance <= _DUPLICATE_DISTANCE})
+        return web.json_response(
+            {"items": items, "threshold": threshold, "truncated": truncated}
         )
 
     async def _favorite(self, request: web.Request) -> web.Response:

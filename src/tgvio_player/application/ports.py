@@ -178,6 +178,10 @@ class PlayerCatalogRepository(Protocol):
 
     async def count_favorites(self, token_digest: str) -> int: ...
 
+    async def similar_cover_ids(
+        self, phash: str, *, media_id: str, threshold: int, limit: int, scan_limit: int
+    ) -> tuple[tuple[tuple[str, int], ...], bool]: ...
+
     async def list_long_video_progress(self) -> list[tuple[str, float]]: ...
 
     async def save_long_video_progress(

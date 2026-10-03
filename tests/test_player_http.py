@@ -2285,3 +2285,95 @@ class PlayerStreamCapacityFairnessTests(unittest.IsolatedAsyncioTestCase):
             caught.exception, asyncio.TimeoutError,
             "a short upstream stalled the client instead of failing the response",
         )
+
+
+class PlayerSimilarCoverTests(unittest.IsolatedAsyncioTestCase):
+    """What looks like this cover: bounded, authenticated, and deterministic."""
+
+    async def asyncSetUp(self) -> None:
+        self.tmp = TemporaryDirectory()
+        self.repo = PlayerCatalogRepositorySQLite(Path(self.tmp.name) / "player.sqlite3")
+        await self.repo.open()
+        self.target, self.close, self.far, self.plain = "1" * 64, "2" * 64, "3" * 64, "4" * 64
+        await self.repo.apply_package(CatalogPackage(
+            "package", "TGVIO/2026-10-03/1", "b" * 64, '"manifest"', '"complete"',
+            tuple(CatalogMedia(item, "video", 8, "video/mp4", 1080, 1920, 2.0)
+                  for item in (self.target, self.close, self.far, self.plain)),
+            tuple(CatalogLocation(item, "package", f"{item[0]}.mp4", '"etag"')
+                  for item in (self.target, self.close, self.far, self.plain)),
+            (
+                CatalogCover(self.target, "package", "t.jpg", 10, "image/jpeg",
+                             "bounded-frame-v2", "0000000000000000"),
+                CatalogCover(self.close, "package", "c.jpg", 10, "image/jpeg",
+                             "bounded-frame-v2", "0000000000000003"),
+                CatalogCover(self.far, "package", "f.jpg", 10, "image/jpeg",
+                             "bounded-frame-v2", "ffffffffffffffff"),
+            ),
+        ))
+        await self.repo.refresh_media_activity()
+        self.server = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            ReadOnlyWebDavAdapter(FakeReadClient()),
+            large_video_seconds=300,
+        )
+        self.client = TestClient(TestServer(self.server.application()))
+        await self.client.start_server()
+
+    async def asyncTearDown(self) -> None:
+        await self.client.close()
+        await self.repo.close()
+        self.tmp.cleanup()
+
+    async def _login(self) -> str:
+        response = await self.client.post("/api/v1/auth/login", json={"secret": "s" * 32})
+        self.assertEqual(response.status, 200)
+        return response.cookies["tgvio_player_session"].value
+
+    async def test_similar_is_authenticated_bounded_and_deterministic(self) -> None:
+        self.assertEqual(
+            (await self.client.get(f"/api/v1/media/{self.target}/similar")).status, 401
+        )
+        cookie = await self._login()
+        cookies = {"tgvio_player_session": cookie}
+        body = await (await self.client.get(
+            f"/api/v1/media/{self.target}/similar", cookies=cookies
+        )).json()
+        self.assertEqual([item["id"] for item in body["items"]], [self.close],
+                         "the far cover is outside the default band and the plain one has no hash")
+        self.assertEqual(body["threshold"], 16)
+        self.assertFalse(body["truncated"])
+        tightened = await (await self.client.get(
+            f"/api/v1/media/{self.target}/similar?threshold=1", cookies=cookies
+        )).json()
+        self.assertEqual(tightened["items"], [], "a threshold may only be tightened")
+        for query in ("threshold=99", "threshold=abc", "limit=0", "limit=61"):
+            self.assertEqual(
+                (await self.client.get(
+                    f"/api/v1/media/{self.target}/similar?{query}", cookies=cookies
+                )).status, 400, query,
+            )
+        self.assertEqual(
+            (await self.client.get(
+                f"/api/v1/media/{'9' * 64}/similar", cookies=cookies
+            )).status, 404,
+        )
+
+    async def test_a_cover_without_a_fingerprint_has_no_similar_list(self) -> None:
+        cookie = await self._login()
+        body = await (await self.client.get(
+            f"/api/v1/media/{self.plain}/similar",
+            cookies={"tgvio_player_session": cookie},
+        )).json()
+        self.assertEqual(body["items"], [], "no similarity information is not an error")
+        self.assertFalse(body["truncated"])
+
+    async def test_a_bounded_scan_says_when_it_stopped_early(self) -> None:
+        cookie = await self._login()
+        with patch("tgvio_player.adapters.http.media._MAX_SIMILAR_SCAN", 1):
+            body = await (await self.client.get(
+                f"/api/v1/media/{self.target}/similar",
+                cookies={"tgvio_player_session": cookie},
+            )).json()
+        self.assertTrue(body["truncated"], "the scan hit its ceiling and says so")

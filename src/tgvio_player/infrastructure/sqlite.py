@@ -22,6 +22,7 @@ from tgvio_player.infrastructure.video_query import build_video_count, build_vid
 
 _GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
 _MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
+_PHASH_RE = re.compile(r"^[0-9a-f]{16}$")
 _DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
@@ -340,6 +341,46 @@ class PlayerCatalogRepositorySQLite(
                     ) THEN 1 ELSE 0 END
                 """
             )
+
+    async def similar_cover_ids(
+        self, phash: str, *, media_id: str, threshold: int, limit: int, scan_limit: int
+    ) -> tuple[tuple[tuple[str, int], ...], bool]:
+        """Covers whose fingerprint is near this one, from a bounded scan.
+
+        The scan is capped because a personal library can grow past any single request's
+        budget; when the cap is hit the caller is told, rather than being handed a
+        silently partial answer. A row whose stored fingerprint is unreadable is skipped,
+        never compared.
+        """
+        if not _PHASH_RE.fullmatch(phash):
+            return (), False
+        rows = self._require().execute(
+            """
+            SELECT mc.media_id, mc.phash
+            FROM media_covers mc
+            JOIN media ON media.media_id=mc.media_id
+            WHERE mc.active=1 AND mc.phash IS NOT NULL AND media.active=1
+              AND media.kind='video' AND mc.media_id != ?
+            ORDER BY mc.media_id
+            LIMIT ?
+            """,
+            (media_id, max(1, int(scan_limit)) + 1),
+        ).fetchall()
+        truncated = len(rows) > max(1, int(scan_limit))
+        target = int(phash, 16)
+        nearest: dict[str, int] = {}
+        for row in rows[: max(1, int(scan_limit))]:
+            candidate = row["phash"]
+            if not isinstance(candidate, str) or not _PHASH_RE.fullmatch(candidate):
+                continue
+            distance = bin(target ^ int(candidate, 16)).count("1")
+            if distance > threshold:
+                continue
+            media_id = str(row["media_id"])
+            if distance < nearest.get(media_id, 65):
+                nearest[media_id] = distance
+        ordered = sorted(nearest.items(), key=lambda item: (item[1], item[0]))
+        return tuple(ordered[: max(1, int(limit))]), truncated
 
     async def count_active_videos(self) -> int:
         row = self._require().execute(
