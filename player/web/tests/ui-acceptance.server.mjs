@@ -81,6 +81,9 @@ const server=await createServer({configFile:false,root:fileURLToPath(new URL("..
  if(pathname==="/api/v1/videos"){const category=url.searchParams.get("category");const items=category==="short"?Array.from({length:8},(_,i)=>item(i+1)):category==="long"?Array.from({length:5},(_,i)=>item(i+101,"long")):[...Array.from({length:8},(_,i)=>item(i+1)),...Array.from({length:5},(_,i)=>item(i+101,"long"))];const search=url.searchParams.get("search")??"";const filtered=items.filter(x=>x.id.startsWith(search));const offset=Number(url.searchParams.get("offset"))||0;return send({items:filtered.slice(offset,offset+20),has_more:false,total:filtered.length,category});}
  if(pathname==="/api/v1/random")return send({items:Array.from({length:5},(_,i)=>item(i+51)),category:"short"});
  if(pathname==="/api/v1/favorites")return send({items:[...favorites].map(id=>({...mediaById.get(id),favorite:true})),next_cursor:null,has_more:false});
+ // What looks like this cover: a near-duplicate, a close one, and one with no cover at all.
+ const similar=pathname.match(/^\/api\/v1\/media\/[0-9a-f]{64}\/similar$/);
+ if(similar){const items=[{...item(1),duplicate:true},{...item(2),duplicate:false},{...item(12),duplicate:false}];return send({items,threshold:16,truncated:false});}
  // Collections: the builtin is the favourites set, a manual one keeps its own members.
  const collectionItem=(id,collection)=>({collection_id:id,name:collection.name,kind:collection.kind,rules_json:collection.rules_json,sort_order:collection.sort_order??0,count:collection.kind==="builtin"?favorites.size:collection.kind==="smart"?smartMembers(collection).length:collection.members.size,count_capped:false});
  // The fixture's own tiny smart-collection evaluator, so a saved condition set really

@@ -40,4 +40,3 @@ class PlayerSimilarRepositoryMixin:
         return nearest_fingerprints(
             scanned, phash, threshold=threshold, limit=limit
         ), truncated
-

@@ -351,6 +351,25 @@ try {
   await click(".library-similar-toggle");
   await delay(200);
   check(await evaluate("document.querySelector('.library-similar-toggle').getAttribute('aria-pressed')==='false'"),"the similar switch turns off again "+width);
+  // 和这张像的: one selected cover, the bounded answer in the page's sheet, and the
+  // sheet's own focus contract.
+  if(width===390){
+   await click(".library-page .library-select-toggle");
+   await click(".library-page .cover-tile-select");
+   await click(".library-page .similar-entry");
+   await wait("!!document.querySelector('.sheet .similar-item')","similarity sheet");
+   check(await evaluate("document.querySelectorAll('.sheet .cover-tile').length===3"),"the sheet lists every result");
+   check(await evaluate("(()=>{const t=[...document.querySelectorAll('.sheet .cover-tile-title')].map(n=>n.textContent);return t.includes('几乎相同')&&t.includes('相近')})()"),"the near-duplicate band is named");
+   check(await evaluate("(()=>{const c=[...document.querySelectorAll('.sheet .cover-tile')].find(n=>n.dataset.coverState==='missing');return !!c&&!c.querySelector('img')})()"),"a result with no cover stays missing");
+   check(await evaluate("document.querySelector('.sheet .similar-note').textContent.includes('以内')"),"the note states the threshold");
+   check(await evaluate("document.querySelector('.sheet-card').contains(document.activeElement)"),"the similarity sheet constrains focus");
+   for(const type of ["keyDown","keyUp"])await cdp("Input.dispatchKeyEvent",{type,key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+   await wait("document.querySelector('.sheet').hidden","Escape closes the similarity sheet");
+   check(await evaluate("document.activeElement.classList.contains('similar-entry')"),"closing the sheet returns focus to the entry");
+   // Hand the wall back exactly as it was found: the next blocks expect nothing selected.
+   await click(".library-page .cover-tile-select");
+   await click(".library-page .library-select-toggle");
+  }
   // The wall can put a cover into a collection, from select mode, without playing it.
   if(width===390){
    await click(".library-page .library-select-toggle");

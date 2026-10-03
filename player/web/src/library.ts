@@ -436,7 +436,10 @@ export class VideoLibraryPage {
     // needs a sheet to open in, so a page without one never offers it.
     if (this.sheet && clips.length === 1) {
       const similar = this.button("和这张像的", () => void openSimilarSheet({
-        sheet: this.sheet, alive: () => !this.destroyed,
+        // The query belongs to the wall: leaving it supersedes the request and its answer,
+        // so neither ever lands on another context.
+        sheet: this.sheet, alive: () => !this.destroyed && this.isGridStage(),
+        signal: this.indexRequest?.signal,
         say: message => { this.notice.textContent = message; },
         play: clip => this.play([clip]),
       }, clips[0]));
@@ -579,7 +582,7 @@ export class VideoLibraryPage {
     if (this.stage === "videos") {
       const hadSelection = this.controller.selectedClips.length > 0;
       this.beginIndex(); this.controller.clearSelection(); this.selectMode = false;
-      this.selectionBar.hidden = true; this.renderFolders(); this.renderVideoToolbarClear();
+      this.selectionBar.hidden = true; this.renderFolders(); this.toolbar.replaceChildren();
       if (hadSelection) this.notice.textContent = "已离开文件夹，选择已清空";
     } else if (this.stage === "folders" || this.stage === "wall") {
       this.beginIndex();
@@ -587,8 +590,6 @@ export class VideoLibraryPage {
       else void this.loadDates();
     } else this.onClose();
   }
-  /** Leaving the video stage drops the toolbar back to the index stages. */
-  private renderVideoToolbarClear(): void { this.toolbar.replaceChildren(); }
   private indexError(retry: () => void): void {
     this.notice.textContent = "目录暂时加载失败"; this.list.append(this.button("重试", retry));
   }

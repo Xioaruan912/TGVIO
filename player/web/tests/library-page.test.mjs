@@ -605,3 +605,47 @@ test("a similarity with nothing to show admits it instead of inventing covers", 
   assert.match(host.sheetBody.textContent, /没有找到相近的封面/);
   page.destroy();
 });
+
+test("a similarity answer that arrives after leaving the wall never opens a sheet", async () => {
+  const host = makeSheetHost();
+  const original = api.similarMedia;
+  let release = () => {};
+  similarReply = {
+    items: [{ id: "aaaaaaaa0000", category: "short", duration_seconds: 30, stream_url: "/x", cover_url: null, favorite: false, phash: "0000000000000000" }],
+    threshold: 16, truncated: false,
+  };
+  // The real client passes its signal through; an answer that has been superseded is
+  // rejected, and one that arrives late is still dropped by the page.
+  api.similarMedia = (mediaId, signal) => {
+    similarCalls.push(mediaId);
+    return new Promise((resolve, reject) => {
+      release = () => resolve({ ...similarReply, items: similarReply.items.map(clipFrom) });
+      signal?.addEventListener("abort", () => reject(new DOMException("aborted", "AbortError")));
+    });
+  };
+  const page = mount(new VideoLibraryPage(() => {}, () => {}, { sheet: host }));
+  try {
+    await flush();
+    page.applyFilters({ ...filtersModule.emptyFilters(), minSeconds: 30 });
+    await flush();
+    clickText(page.root, "选择");
+    tiles(page)[0].querySelector(".cover-tile-select").dispatch("click");
+    await flush();
+    clickText(page.root, "和这张像的");
+    await flush();
+    // The query belongs to the wall. Leaving it supersedes both the request and the answer.
+    clickText(page.root, "返回");
+    await flush();
+    release();
+    await flush();
+    await flush();
+    assert.equal(host.sheet.hidden, true, "a superseded answer never opens a sheet over the index");
+    assert.doesNotMatch(
+      byClass(page.root, "library-notice")[0].textContent, /失败/,
+      "an abandoned query does not report a failure that never happened",
+    );
+  } finally {
+    page.destroy();
+    api.similarMedia = original;
+  }
+});

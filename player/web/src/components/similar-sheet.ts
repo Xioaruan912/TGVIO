@@ -17,8 +17,10 @@ export type SimilarPage = { items: Clip[]; threshold: number; truncated: boolean
 /** What the query needs from the page: where the sheet goes, and how to report. */
 export type SimilarHost = {
   readonly sheet: SheetHost | null;
-  /** False once the page is gone, so a late answer never opens a sheet on nothing. */
+  /** False once the page moved on or went away, so a late answer opens nothing. */
   readonly alive: () => boolean;
+  /** The page's own lifecycle signal; leaving the wall aborts the query with it. */
+  readonly signal?: AbortSignal;
   say(message: string): void;
   play(clip: Clip): void;
 };
@@ -60,9 +62,11 @@ export async function openSimilarSheet(host: SimilarHost, subject: Clip): Promis
   host.say("正在比对封面指纹…");
   let page: SimilarPage;
   try {
-    page = await api.similarMedia(subject.id);
+    page = await api.similarMedia(subject.id, host.signal);
   } catch {
-    host.say("相似封面读取失败，请重试");
+    // An abandoned query is not a failure, and its message does not belong on whatever
+    // the viewer is looking at now.
+    if (host.alive()) host.say("相似封面读取失败，请重试");
     return;
   }
   if (!host.alive()) return;

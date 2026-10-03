@@ -2369,6 +2369,22 @@ class PlayerSimilarCoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["items"], [], "no similarity information is not an error")
         self.assertFalse(body["truncated"])
 
+    async def test_a_retired_cover_row_never_reaches_the_similar_list(self) -> None:
+        cookie = await self._login()
+        cookies = {"tgvio_player_session": cookie}
+        before = await (await self.client.get(
+            f"/api/v1/media/{self.target}/similar", cookies=cookies)).json()
+        self.assertEqual([item["id"] for item in before["items"]], [self.close])
+        # The row that carried the close fingerprint is retired. Its hash is still in the
+        # table, but it is no longer an active cover, so it may not be a neighbour either.
+        await self.repo.record_deleted_cover(self.close, "package")
+        after = await (await self.client.get(
+            f"/api/v1/media/{self.target}/similar", cookies=cookies)).json()
+        self.assertEqual(
+            [item["id"] for item in after["items"]], [],
+            "a retired cover row must not answer a similarity query",
+        )
+
     async def test_a_bounded_scan_says_when_it_stopped_early(self) -> None:
         cookie = await self._login()
         with patch("tgvio_player.adapters.http.media._MAX_SIMILAR_SCAN", 1):
