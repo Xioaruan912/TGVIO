@@ -291,6 +291,11 @@ class PlayerMediaHttpMixin:
             "size_bytes": details.get("size_bytes"),
             "stream_url": stream_url,
             "cover_url": None if cover is None else f"/api/v1/media/{media_id}/cover?v={cover['version']}",
+            # Only when the cover carries one: a missing fingerprint is "no similarity
+            # information", never a zero hash that a client could mistake for a match.
+            **({"phash": cover["phash"]}
+               if cover is not None and isinstance(cover.get("phash"), str) and cover["phash"]
+               else {}),
             "favorite": (
                 await self._repository.is_global_favorite(media_id)
                 if self._favorite_backup is not None

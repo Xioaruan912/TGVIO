@@ -1597,6 +1597,59 @@ class PlayerCoverRouteTests(unittest.IsolatedAsyncioTestCase):
             for index in range(4):
                 await self.server._release_stream(f"client-{index}")
 
+
+    async def test_the_dto_carries_a_fingerprint_only_when_the_cover_has_one(self) -> None:
+        cookie = await self._login()
+        cookies = {"tgvio_player_session": cookie}
+        with_cover = await (await self.client.get(f"/api/v1/media/{self.media_id}", cookies=cookies)).json()
+        self.assertNotIn("phash", with_cover, "a cover without a fingerprint says nothing")
+        self.assertNotIn(
+            "phash",
+            await (await self.client.get(f"/api/v1/media/{self.plain_id}", cookies=cookies)).json(),
+            "no cover, no fingerprint",
+        )
+        self.assertEqual(
+            (await self.client.get(f"/api/v1/media/{self.media_id}")).status, 401,
+            "the fingerprint needs a session, like the cover it belongs to",
+        )
+
+    async def test_a_retired_cover_row_never_leaks_its_fingerprint(self) -> None:
+        # The same video carries two covers; the retired package's row must not decide
+        # what the DTO reports.
+        await self.repo.apply_package(CatalogPackage(
+            "second", "TGVIO/2026-09-23/1", "c" * 64, '"m2"', '"c2"',
+            (CatalogMedia(self.media_id, "video", 8, "video/mp4", 1080, 1920, 2.0),),
+            (CatalogLocation(self.media_id, "second", "video.mp4", '"etag2"'),),
+            (
+                CatalogCover(
+                    media_id=self.media_id, package_id="second",
+                    remote_relpath="cover/second-cover.jpg", size_bytes=len(self.JPEG),
+                    mime_type="image/jpeg", algorithm="bounded-frame-v2",
+                    phash="0123456789abcdef",
+                ),
+            ),
+        ))
+        cookie = await self._login()
+        cookies = {"tgvio_player_session": cookie}
+        # The first package's cover is the active one, and it carries no fingerprint.
+        before = await (await self.client.get(f"/api/v1/media/{self.media_id}", cookies=cookies)).json()
+        self.assertNotIn("phash", before)
+        # Retire it: the hashed cover becomes the active one, so its fingerprint is served.
+        await self.repo.record_deleted_cover(self.media_id, "package")
+        active = await (await self.client.get(f"/api/v1/media/{self.media_id}", cookies=cookies)).json()
+        self.assertEqual(
+            active.get("phash"), "0123456789abcdef",
+            "the active cover's fingerprint is the one served",
+        )
+        # Retire that one too: no active cover, so no fingerprint and no cover url.
+        await self.repo.record_deleted_cover(self.media_id, "second")
+        after = await (await self.client.get(f"/api/v1/media/{self.media_id}", cookies=cookies)).json()
+        self.assertNotIn(
+            "phash", after,
+            "a retired cover row must not keep serving its fingerprint",
+        )
+        self.assertIsNone(after.get("cover_url"))
+
     async def test_cover_budget_is_bounded_and_fails_fast(self) -> None:
         cookie = await self._login()
         acquired = 0
