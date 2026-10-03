@@ -48,7 +48,7 @@ class PlayerMigrationTests(unittest.TestCase):
                 [tuple(row) for row in connection.execute(
                     "SELECT version,name FROM player_schema_migrations ORDER BY version"
                 )],
-                [(9, "player_public_baseline"), (10, "media_covers")],
+                [(9, "player_public_baseline"), (10, "media_covers"), (11, "player_collections")],
             )
             tables = {
                 str(row[0]) for row in connection.execute(
@@ -56,7 +56,8 @@ class PlayerMigrationTests(unittest.TestCase):
                 )
             }
             self.assertTrue(
-                {"media", "media_variants", "media_covers", "player_storage_settings", "favorite_sync"} <= tables
+                {"media", "media_variants", "media_covers", "player_storage_settings", "favorite_sync",
+                 "collections", "collection_items"} <= tables
             )
             settings = connection.execute(
                 "SELECT endpoint_url,player_root,favorites_dir FROM player_storage_settings"
@@ -128,7 +129,7 @@ class PlayerMigrationTests(unittest.TestCase):
                     "SELECT count(*) FROM player_schema_migrations"
                 ).fetchone()[0], 8)
 
-    def test_complete_legacy_ledger_receives_the_cover_migration_once(self) -> None:
+    def test_complete_legacy_ledger_receives_every_future_migration_once(self) -> None:
         """A complete legacy ledger needs no baseline work but still gets new migrations."""
         with closing(ledger_connection()) as connection:
             after_first = connection.total_changes
@@ -138,13 +139,17 @@ class PlayerMigrationTests(unittest.TestCase):
                 "SELECT version,name,checksum FROM player_schema_migrations ORDER BY version"
             )]
             self.assertEqual(applied[:8], list(LEGACY_ROWS))
-            self.assertEqual([row[:2] for row in applied[8:]], [(10, "media_covers")])
+            self.assertEqual(
+                [row[:2] for row in applied[8:]],
+                [(10, "media_covers"), (11, "player_collections")],
+            )
             settled = connection.total_changes
             run_migrations(connection, MIGRATIONS)
             self.assertEqual(connection.total_changes, settled, "the migration must apply exactly once")
-            self.assertIsNotNone(connection.execute(
-                "SELECT name FROM sqlite_master WHERE type='table' AND name='media_covers'"
-            ).fetchone())
+            for table in ("media_covers", "collections", "collection_items"):
+                self.assertIsNotNone(connection.execute(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (table,)
+                ).fetchone())
 
     def test_changed_legacy_checksum_fails_closed(self) -> None:
         rows = list(LEGACY_ROWS)

@@ -14,6 +14,7 @@ from typing import AsyncIterator
 
 from tgvio_player.domain.catalog import CatalogPackage
 from tgvio_player.infrastructure.migration import run_migrations
+from tgvio_player.infrastructure.sqlite_collections import PlayerCollectionRepositoryMixin
 from tgvio_player.infrastructure.sqlite_favorites import PlayerFavoriteRepositoryMixin
 from tgvio_player.infrastructure.sqlite_library import PlayerLibraryRepositoryMixin
 from tgvio_player.infrastructure.video_query import build_video_query
@@ -24,7 +25,11 @@ _MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 _DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
-class PlayerCatalogRepositorySQLite(PlayerFavoriteRepositoryMixin, PlayerLibraryRepositoryMixin):
+class PlayerCatalogRepositorySQLite(
+    PlayerCollectionRepositoryMixin,
+    PlayerFavoriteRepositoryMixin,
+    PlayerLibraryRepositoryMixin,
+):
     """Player-owned SQLite catalog. It never opens the Bot state database."""
 
     def __init__(self, path: Path, *, migrations_dir: Path | None = None) -> None:
