@@ -1154,6 +1154,57 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         ][0]
         self.assertEqual((row["name"], row["count"], row["count_capped"]), ("旅行", 1, False))
 
+    async def test_a_collection_can_be_reordered_over_http(self) -> None:
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        first = await self._create_collection(cookie, name="第一")
+        second = await self._create_collection(cookie, name="第二")
+        self.assertEqual(
+            [row["name"] for row in await self._collection_rows(cookie)][1:], ["第一", "第二"]
+        )
+        moved = await self.client.patch(
+            f"/api/v1/collections/{second['collection_id']}",
+            json={"sort_order": -1}, cookies=cookies,
+        )
+        self.assertEqual(moved.status, 200, await moved.text())
+        self.assertEqual(
+            [row["name"] for row in await self._collection_rows(cookie)][1:], ["第二", "第一"]
+        )
+        for body in ({"sort_order": "1"}, {"sort_order": True}, {"sort_order": 1.5}):
+            response = await self.client.patch(
+                f"/api/v1/collections/{first['collection_id']}", json=body, cookies=cookies
+            )
+            self.assertEqual(response.status, 400, body)
+
+    async def test_collection_items_never_hand_out_a_cursor_past_the_budget(self) -> None:
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        others = ("d" * 64, "e" * 64)
+        await self.repo.apply_package(CatalogPackage(
+            "package3", "TGVIO/2026-10-05/1", "f" * 64, '"m3"', '"c3"',
+            tuple(CatalogMedia(item, "video", 4, "video/mp4", 1080, 1920, 3.0) for item in others),
+            tuple(CatalogLocation(item, "package3", f"{item[0]}.mp4", '"etag3"') for item in others),
+        ))
+        await self.repo.refresh_media_activity()
+        created = await self._create_collection(cookie)
+        base = f"/api/v1/collections/{created['collection_id']}/items"
+        for media_id in (self.media_id, *others):
+            await self.client.put(f"{base}/{media_id}", cookies=cookies)
+        with patch("tgvio_player.adapters.http.library._MAX_ITEMS_OFFSET", 1):
+            first = await (await self.client.get(f"{base}?limit=1", cookies=cookies)).json()
+            self.assertEqual(first["next_cursor"], "1")
+            second = await (await self.client.get(f"{base}?limit=1&cursor=1", cookies=cookies)).json()
+        self.assertTrue(second["has_more"], "there is still a member behind it")
+        self.assertIsNone(second["next_cursor"], "and no cursor past the budget to ask for it")
+
+    async def test_the_builtin_count_is_capped_without_paging(self) -> None:
+        cookie = await self._login()
+        await self.repo.set_favorite(token_digest(cookie), self.media_id, enabled=True)
+        self.assertEqual((await self._collection_rows(cookie))[0]["count"], 1)
+        with patch("tgvio_player.adapters.http.library._MAX_COLLECTION_COUNT", 0):
+            capped = (await self._collection_rows(cookie))[0]
+        self.assertEqual((capped["count"], capped["count_capped"]), (0, True))
+
     async def test_unknown_collections_and_bad_names_are_rejected(self) -> None:
         cookie = await self._login()
         cookies = self._collection_cookies(cookie)

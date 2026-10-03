@@ -925,6 +925,19 @@ class PlayerCatalogRepositorySQLite(
         ).fetchall()
         return [str(row["media_id"]) for row in rows]
 
+    async def count_favorites(self, token_digest: str) -> int:
+        """The builtin collection's badge, without fetching a page of joined rows."""
+        row = self._require().execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM favorites
+            JOIN media ON media.media_id=favorites.media_id
+            WHERE favorites.token_digest=? AND media.active=1 AND media.kind='video'
+            """,
+            (token_digest,),
+        ).fetchone()
+        return int(row["count"])
+
     async def list_favorite_page(
         self,
         token_digest: str,

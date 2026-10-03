@@ -120,6 +120,57 @@ const NUMBER = /^\d+(\.\d+)?$/;
  * - an unknown key, a repeated key, a value of the wrong shape, a seed without a
  * random order - is the *empty* selection, never half of a request.
  */
+const SORT_LABELS: Record<SortOrder, string> = {
+  newest: "最新", longest: "最长", largest: "最大", random: "随机", resume: "续播优先",
+};
+
+const pad = (value: number): string => String(value).padStart(2, "0");
+const dayOf = (seconds: number): string => {
+  const at = new Date(seconds * 1000);
+  return `${at.getFullYear()}-${pad(at.getMonth() + 1)}-${pad(at.getDate())}`;
+};
+const megabytes = (bytes: number): number => Math.round(bytes / (1024 * 1024));
+const range = (low: number | null, high: number | null, unit: string): string => {
+  if (low !== null && high !== null) return `${low}–${high}${unit}`;
+  return low !== null ? `≥${low}${unit}` : `≤${high}${unit}`;
+};
+
+/**
+ * A stored condition set in words, for a collection row.
+ *
+ * Absolute seconds come back as the calendar days they were chosen as, and an empty
+ * set says so: "no conditions" is an empty collection, never the whole library, and a
+ * summary that read "全部视频" would promise the opposite.
+ */
+export function describeFilters(filters: LibraryFilters): string {
+  const parts: string[] = [];
+  if (filters.dateFrom !== null || filters.dateTo !== null) {
+    if (filters.dateFrom !== null && filters.dateTo !== null) {
+      parts.push(`${dayOf(filters.dateFrom)}–${dayOf(filters.dateTo)}`);
+    } else if (filters.dateFrom !== null) {
+      parts.push(`自 ${dayOf(filters.dateFrom)}`);
+    } else {
+      parts.push(`至 ${dayOf(filters.dateTo as number)}`);
+    }
+  }
+  if (filters.minSeconds !== null || filters.maxSeconds !== null) {
+    parts.push(range(filters.minSeconds, filters.maxSeconds, " 秒"));
+  }
+  if (filters.minBytes !== null || filters.maxBytes !== null) {
+    parts.push(range(
+      filters.minBytes === null ? null : megabytes(filters.minBytes),
+      filters.maxBytes === null ? null : megabytes(filters.maxBytes),
+      " MB",
+    ));
+  }
+  if (filters.hasCover !== null) parts.push(filters.hasCover ? "有封面" : "无封面");
+  if (filters.favorite !== null) parts.push(filters.favorite ? "已收藏" : "未收藏");
+  if (filters.resumable !== null) parts.push(filters.resumable ? "续播中" : "未续播");
+  if (filters.unwatched !== null) parts.push(filters.unwatched ? "未看过" : "看过");
+  if (filters.sort !== "newest") parts.push(SORT_LABELS[filters.sort]);
+  return parts.length ? parts.join(" · ") : "无条件";
+}
+
 export function parseQuery(search: string): LibraryFilters {
   const params = new URLSearchParams(search.startsWith("?") ? search.slice(1) : search);
   const keys = [...params.keys()];

@@ -538,11 +538,12 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
             raise web.HTTPBadRequest(text=str(error)) from None
         # A sort the client did not ask for keeps the order that was already in use, so
         # existing clients and the deck see no change.
+        requested_sort = filters.sort if "sort" in request.query else None
         query_kwargs = listing_query_kwargs(
             filters,
             category=category,
             large_video_seconds=self._large_video_seconds,
-            sort=filters.sort if "sort" in request.query else None,
+            sort=requested_sort,
             favorite_scope="global" if self._favorite_backup is not None else "session",
             favorite_token_digest=digest,
             media_id_prefix=search or None,
@@ -579,7 +580,19 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         else:
             total = None
         return web.json_response(
-            {"items": items, "has_more": has_more, "category": category, "total": total}
+            {
+                "items": items,
+                "has_more": has_more,
+                "category": category,
+                "total": total,
+                # A random order only repeats if the next page keeps the same seed, so
+                # the cursor states both. Any other order needs the offset alone.
+                "next_cursor": None if not has_more else (
+                    f"{filters.seed}:{offset + len(media_ids)}"
+                    if requested_sort == "random" and filters.seed is not None
+                    else str(offset + len(media_ids))
+                ),
+            }
         )
 
     async def _group_videos(self, request: web.Request) -> web.Response:

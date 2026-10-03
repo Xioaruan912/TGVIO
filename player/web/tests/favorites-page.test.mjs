@@ -69,9 +69,13 @@ globalThis.__sheetDeps = { element, icon: () => document.createElement("span"), 
 const sheetModule = await import("data:text/javascript;base64," + Buffer.from(
   "const { element, icon, activateDialog, animateArrival, flingOut, settleFromVelocity } = globalThis.__sheetDeps;\n" + await transpile("components/sheet.ts")).toString("base64"));
 const collectionsModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("collections.ts")).toString("base64"));
-globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref, createSlidingIndicator: densityIndicator, ...sheetModule, CollectionsController: collectionsModule.CollectionsController };
+const filtersModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("library-filters.ts")).toString("base64"));
+globalThis.__filterSheetDeps = { element, emptyFilters: filtersModule.emptyFilters, ...sheetModule };
+const filterSheet = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, sheetChoice, sheetNote, sheetSection, emptyFilters } = globalThis.__filterSheetDeps;\n" + await transpile("components/filter-sheet.ts")).toString("base64"));
+globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref, createSlidingIndicator: densityIndicator, buildFilterSheet: filterSheet, ...filtersModule, ...sheetModule, CollectionsController: collectionsModule.CollectionsController };
 const { FavoritesPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, sheetChoice, sheetNote, sheetRow, CollectionsController } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
+  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, sheetChoice, sheetNote, sheetRow, CollectionsController, buildFilterSheet, emptyFilters, filterCount, parseQuery, toQuery, describeFilters } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");
@@ -178,7 +182,7 @@ test("destroy aborts the in-flight request and drops every tile", async () => {
   assert.equal(document.body.contains(page.root), false);
 });
 
-test("manual paging stays reachable after the automatic request budget", async () => {
+test("scrolling keeps loading until the list is complete, without a page-count cap", async () => {
   const original = favorites.slice();
   let page;
   try {
@@ -188,12 +192,12 @@ test("manual paging stays reachable after the automatic request budget", async (
     const list = byClass(page.root, "library-list")[0];
     list.scrollTop = 900; list.clientHeight = 300; list.scrollHeight = 1200;
     for (let i = 0; i < 5; i++) { list.dispatch("scroll"); await flush(); }
-    assert.equal(tiles(page).length, 80, "only three automatic follow-up requests");
-    clickText(page.root, "加载更多"); await flush();
-    assert.equal(tiles(page).length, 100);
-    clickText(page.root, "加载更多"); await flush();
-    assert.equal(tiles(page).length, 120);
+    assert.equal(tiles(page).length, 120, "a scroll at the bottom keeps asking for the next page");
     assert.match(page.root.textContent, /共 120 个收藏/);
+    assert.equal(
+      byClass(page.root, "library-button").some(node => node.textContent === "加载更多"), false,
+      "a complete list offers no more pages",
+    );
   } finally { page?.destroy(); favorites.splice(0, favorites.length, ...original); }
 });
 
@@ -307,4 +311,29 @@ test("immersive entry stays available without replacing the grid", async () => {
   assert.equal(immersive, 1);
   assert.equal(byClass(page.root, "cover-tile").length, 20, "the immersive entry does not tear down the grid by itself");
   page.destroy();
+});
+
+test("the favourites grid keeps loading while the viewer scrolls", async () => {
+  const original = api.favoritePage;
+  const pages = [];
+  let served = 0;
+  api.favoritePage = async (limit, cursor) => {
+    pages.push(cursor);
+    served += 1;
+    return { items: [clip(served)], hasMore: true, nextCursor: `c${served}` };
+  };
+  try {
+    const page = mount(new FavoritesPage(() => {}, () => {}));
+    await flush();
+    const list = byClass(page.root, "library-list")[0];
+    list.clientHeight = 300;
+    list.scrollHeight = 1200;
+    for (let i = 0; i < 5; i++) {
+      list.scrollTop = 900;
+      list.dispatch("scroll");
+      await flush();
+    }
+    assert.ok(pages.length >= 5, `a scroll at the bottom keeps asking for the next page (asked ${pages.length})`);
+    page.destroy();
+  } finally { api.favoritePage = original; }
 });

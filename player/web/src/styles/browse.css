@@ -90,3 +90,5 @@
 .collection-row-builtin .collection-row-kind { background: var(--primary-soft); color: var(--primary); }
 .collection-name-form { display: grid; gap: 8px; }
 @media (hover: hover) { .collection-row:hover { border-color: var(--primary); background: var(--primary-soft); } }
+.collection-row-rules { grid-column: 1 / -1; font-size: 12px; line-height: 1.5; color: var(--muted); }
+.collection-create-smart { border-color: var(--primary); color: var(--primary); }

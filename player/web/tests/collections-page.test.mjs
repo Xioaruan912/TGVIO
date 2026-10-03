@@ -24,7 +24,7 @@ const { CollectionsController, BUILTIN_FAVORITES } = await import(
   "data:text/javascript;base64," + Buffer.from(await transpile("collections.ts")).toString("base64"));
 
 const row = (id, kind = "manual", count = 0, name = id) => ({
-  collection_id: id, name, kind, rules_json: null, count, count_capped: false,
+  collection_id: id, name, kind, rules_json: null, sort_order: 0, count, count_capped: false,
 });
 const makeSource = (overrides = {}) => {
   const calls = [];
@@ -36,7 +36,7 @@ const makeSource = (overrides = {}) => {
       calls.push(["create", name, kind, rulesJson]);
       return row("c2", kind, 0, name);
     },
-    updateCollection: async (id, patch) => { calls.push(["update", id, patch]); return row(id, "manual", 1, patch.name); },
+    updateCollection: async (id, patch) => { calls.push(["update", id, patch]); return row(id, "manual", 1, patch.name ?? id); },
     deleteCollection: async (id) => { calls.push(["delete", id]); },
     collectionItems: async (id, limit, cursor) => {
       calls.push(["items", id, limit, cursor]);
@@ -137,6 +137,11 @@ const { createSlidingIndicator } = await import("data:text/javascript;base64," +
 globalThis.__densityDeps = { element, createSlidingIndicator };
 const { buildCoverDensityControl, applyCoverDensity } = await import("data:text/javascript;base64," + Buffer.from(
   "const { element, createSlidingIndicator } = globalThis.__densityDeps;\n" + await transpile("components/cover-density.ts")).toString("base64"));
+// The filter vocabulary and the panel the wall already uses, reused by the collections page.
+const filtersModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("library-filters.ts")).toString("base64"));
+globalThis.__filterSheetDeps = { element, emptyFilters: filtersModule.emptyFilters, ...sheetModule };
+const { buildFilterSheet } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, sheetChoice, sheetNote, sheetSection, emptyFilters } = globalThis.__filterSheetDeps;\n" + await transpile("components/filter-sheet.ts")).toString("base64"));
 
 const clip = (index) => ({
   id: String(index).padStart(8, "0") + "f".repeat(56),
@@ -152,9 +157,9 @@ const api = {
     return { items: favorites.slice(0, limit), hasMore: false, nextCursor: null };
   },
   collections: async () => { calls.push(["list"]); return rows; },
-  createCollection: async (name, kind) => {
-    calls.push(["create", name, kind]);
-    const created = row("c2", kind, 0, name);
+  createCollection: async (name, kind, rulesJson) => {
+    calls.push(["create", name, kind, rulesJson]);
+    const created = { ...row("c2", kind, 0, name), rules_json: rulesJson ?? null };
     rows = [...rows, created];
     return created;
   },
@@ -178,10 +183,10 @@ const resetState = () => {
 globalThis.__favoritesDeps = {
   buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile,
   buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref, createSlidingIndicator,
-  ...sheetModule, CollectionsController,
+  buildFilterSheet, ...filtersModule, ...sheetModule, CollectionsController,
 };
 const { FavoritesPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, sheetChoice, sheetNote, sheetRow, CollectionsController } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
+  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, sheetChoice, sheetNote, sheetRow, CollectionsController, buildFilterSheet, emptyFilters, filterCount, parseQuery, toQuery, describeFilters } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
 
 const mount = (page) => { document.body.append(page.root); return page; };
 const tiles = (page) => byClass(page.root, "cover-tile");
@@ -298,4 +303,111 @@ test("the builtin favourites collection is read-only and opens the favourites gr
   assert.equal(byClass(page.root, "collection-delete").length, 0);
   assert.equal(calls.some(call => call[0] === "update" || call[0] === "delete"), false);
   page.destroy();
+});
+
+// --- smart collections and ordering (follow-up round) ---------------------------
+
+const triChoice = (root, label, text) => {
+  const node = byClass(root, "filter-tri").find(item => byClass(item, "filter-tri-label")[0]?.textContent === label);
+  return byClass(node, "filter-tri-button").find(button => button.textContent === text);
+};
+
+test("a smart collection is created from a condition set", async () => {
+  resetState();
+  const host = makeSheetHost();
+  const page = mount(new FavoritesPage(() => {}, () => {}, undefined, { sheet: host }));
+  await flush();
+  clickText(page.root, "集合");
+  await flush();
+  clickText(page.root, "新建智能集合");
+  const name = byClass(host.sheetBody, "collection-name-input")[0];
+  assert.equal(name.getAttribute("aria-label"), "集合名称");
+  assert.equal(byClass(host.sheetBody, "filter-sheet").length, 1, "the same filter panel the wall uses");
+  triChoice(host.sheetBody, "有封面", "是").dispatch("click");
+  name.value = "有封面的";
+  clickText(host.sheetBody, "应用");
+  await flush();
+  const created = calls.find(call => call[0] === "create" && call[1] === "有封面的");
+  assert.ok(created, "the condition set creates a collection");
+  assert.equal(created[2], "smart");
+  assert.equal(created[3], "has_cover=true&sort=newest", "the stored rules are the query fragment");
+  const listed = byClass(page.root, "collection-row").find(node => node.textContent.includes("有封面的"));
+  assert.equal(listed.dataset.kind, "smart");
+  assert.match(byClass(listed, "collection-row-rules")[0].textContent, /有封面/);
+  page.destroy();
+});
+
+test("a smart collection without a condition is refused", async () => {
+  resetState();
+  const host = makeSheetHost();
+  const page = mount(new FavoritesPage(() => {}, () => {}, undefined, { sheet: host }));
+  await flush();
+  clickText(page.root, "集合");
+  await flush();
+  clickText(page.root, "新建智能集合");
+  byClass(host.sheetBody, "collection-name-input")[0].value = "空的";
+  clickText(host.sheetBody, "应用");
+  await flush();
+  assert.equal(calls.some(call => call[0] === "create"), false, "no condition, no collection");
+  assert.match(host.sheetBody.textContent, /至少需要一个条件/);
+  assert.equal(host.sheet.hidden, false, "the panel stays open to fix it");
+  page.destroy();
+});
+
+test("the conditions of a smart collection can be edited", async () => {
+  resetState();
+  rows = [...rows, { ...row("c2", "smart", 3, "有封面的"), rules_json: "has_cover=true&sort=newest" }];
+  const host = makeSheetHost();
+  const page = mount(new FavoritesPage(() => {}, () => {}, undefined, { sheet: host }));
+  await flush();
+  clickText(page.root, "集合");
+  await flush();
+  byClass(page.root, "collection-row").find(node => node.dataset.collectionId === "c2").dispatch("click");
+  await flush();
+  clickText(page.root, "改条件");
+  const chosen = triChoice(host.sheetBody, "已收藏", "是");
+  assert.equal(chosen.getAttribute("aria-pressed"), "false", "the stored rules are read back into the panel");
+  chosen.dispatch("click");
+  clickText(host.sheetBody, "应用");
+  await flush();
+  const updated = calls.find(call => call[0] === "update" && call[1] === "c2");
+  assert.ok(updated, "editing the conditions patches the collection");
+  assert.match(updated[2].rules_json, /favorite=true/);
+  assert.match(updated[2].rules_json, /has_cover=true/);
+  page.destroy();
+});
+
+test("a collection moves up and down through its own order", async () => {
+  resetState();
+  rows = [...rows, { ...row("c2", "manual", 0, "第二"), }];
+  const host = makeSheetHost();
+  const page = mount(new FavoritesPage(() => {}, () => {}, undefined, { sheet: host }));
+  await flush();
+  clickText(page.root, "集合");
+  await flush();
+  byClass(page.root, "collection-row").find(node => node.dataset.collectionId === "c2").dispatch("click");
+  await flush();
+  clickText(page.root, "前移");
+  await flush();
+  const moved = calls.find(call => call[0] === "update" && call[1] === "c2");
+  assert.ok(moved, "moving patches the row's order");
+  assert.equal(moved[2].sort_order, -1, "it lands before its neighbour without renumbering the list");
+  assert.equal(byClass(page.root, "collection-move-up")[0].disabled, false);
+  page.destroy();
+});
+
+test("a sheet closed by its own control does not leave the page believing it is open", async () => {
+  resetState();
+  const host = makeSheetHost();
+  let closes = 0;
+  host.root.dispatchEvent = () => { closes += 1; };
+  const page = mount(new FavoritesPage(() => {}, () => {}, undefined, { sheet: host }));
+  await flush();
+  clickText(page.root, "集合");
+  await flush();
+  clickText(page.root, "新建集合");
+  sheetModule.closeSheet(host); // the X button, the backdrop and Escape all land here
+  assert.equal(closes, 1);
+  page.destroy();
+  assert.equal(closes, 1, "a page that reads the sheet's real state does not close it twice");
 });

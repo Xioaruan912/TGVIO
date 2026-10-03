@@ -103,6 +103,8 @@ export type CollectionDto = {
   name: string;
   kind: CollectionKind;
   rules_json: string | null;
+  /** The viewer's own order; a move swaps one row past its neighbour. */
+  sort_order: number;
   /** Members the list counted; a create/update answer carries none. */
   count: number;
   count_capped: boolean;

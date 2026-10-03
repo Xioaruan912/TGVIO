@@ -4,6 +4,15 @@ import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
 import { createSlidingIndicator } from "./components/indicator";
 import { closeSheet, openSheet, sheetChoice, sheetNote, sheetRow, type SheetHost } from "./components/sheet";
+import { buildFilterSheet } from "./components/filter-sheet";
+import {
+  describeFilters,
+  emptyFilters,
+  filterCount,
+  parseQuery,
+  toQuery,
+  type LibraryFilters,
+} from "./library-filters";
 import { CollectionsController } from "./collections";
 import { element } from "./ui";
 import { prefs, setPref } from "./settings";
@@ -42,7 +51,7 @@ export class FavoritesPage {
   private destroyed = false;
   private selectMode = false;
   private playbackActive = false;
-  private automaticPages = 0;
+  private playAllButton: HTMLButtonElement | null = null;
   private launchControl: HTMLElement | null = null;
   private readonly loadButton = this.button("加载更多", () => void this.loadMore());
   private readonly density = buildCoverDensityControl({ value: prefs.coverDensity, onSelect: value => this.setDensity(value) });
@@ -54,8 +63,6 @@ export class FavoritesPage {
   private scope: "favorites" | "collections" = "favorites";
   private collection: CollectionDto | null = null;
   private readonly sheet: SheetHost | null;
-  private sheetOpen = false;
-  private playAllButton: HTMLButtonElement | null = null;
 
   constructor(
     private readonly onPlay: (clips: Clip[], control?: HTMLElement) => void,
@@ -72,10 +79,11 @@ export class FavoritesPage {
     this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
     this.selectionBar.hidden = true;
     this.list.addEventListener("scroll", () => {
+      // Continuous loading, like the library wall: bounded by one in-flight request,
+      // `hasMore` and MAX_ROWS, never by a page count.
       if (!this.playbackActive && !this.loading && !this.error && this.hasMore &&
-          this.seen.size < MAX_ROWS && this.automaticPages < 3 &&
+          this.seen.size < MAX_ROWS &&
           this.list.scrollTop + this.list.clientHeight >= this.list.scrollHeight - 240) {
-        this.automaticPages += 1;
         void this.loadMore();
       }
     });
@@ -175,7 +183,9 @@ export class FavoritesPage {
     if (this.scope === "collections" && this.collection === null) {
       const create = this.button("新建集合", () => this.openNameSheet(null));
       create.classList.add("collection-create");
-      this.toolbar.append(create);
+      const smart = this.button("新建智能集合", () => this.openSmartSheet(null));
+      smart.classList.add("collection-create-smart");
+      this.toolbar.append(create, smart);
       this.playAllButton = null;
       this.syncSegments();
       this.renderSelection();
@@ -188,23 +198,39 @@ export class FavoritesPage {
     this.playAllButton = playAll;
     this.toolbar.append(playAll);
     // Managing a collection lives inside it. The builtin never opens here, so it can
-    // never be offered a rename or a delete.
+    // never be offered a rename, a reorder or a delete.
     if (this.collection !== null) {
       const rename = this.button("改名", () => this.openNameSheet(this.collection));
       rename.classList.add("collection-rename");
       const remove = this.button("删除", () => this.openDeleteSheet(this.collection!));
       remove.classList.add("collection-delete");
+      const up = this.button("前移", () => void this.moveCollection("up"));
+      up.classList.add("collection-move-up");
+      const down = this.button("后移", () => void this.moveCollection("down"));
+      down.classList.add("collection-move-down");
+      const index = this.collections.rows.findIndex(item => item.collection_id === this.collection!.collection_id);
+      up.disabled = index <= 0;
+      down.disabled = index < 0 || index >= this.collections.rows.length - 1;
       const back = this.button("返回集合", () => this.showCollections());
       back.classList.add("collection-back");
-      this.toolbar.append(rename, remove, back);
+      if (this.collection.kind === "smart") {
+        const rules = this.button("改条件", () => this.openSmartSheet(this.collection));
+        rules.classList.add("collection-rules");
+        this.toolbar.append(rules);
+      }
+      this.toolbar.append(rename, remove, up, down, back);
     } else if (this.onImmersive) {
       const immersive = this.button("沉浸播放", () => this.onImmersive?.());
       this.toolbar.append(immersive);
     }
-    const toggle = this.button(this.selectMode ? "退出多选" : "选择", () => this.setSelectMode(!this.selectMode));
-    toggle.setAttribute("aria-pressed", String(this.selectMode));
-    toggle.classList.add("library-select-toggle");
-    this.toolbar.append(toggle, this.density.el);
+    // A smart collection computes its own members, so there is nothing to hand-pick.
+    if (this.collection === null || this.collection.kind !== "smart") {
+      const toggle = this.button(this.selectMode ? "退出多选" : "选择", () => this.setSelectMode(!this.selectMode));
+      toggle.setAttribute("aria-pressed", String(this.selectMode));
+      toggle.classList.add("library-select-toggle");
+      this.toolbar.append(toggle);
+    }
+    this.toolbar.append(this.density.el);
     this.syncSegments();
     this.renderSelection();
   }
@@ -421,6 +447,13 @@ export class FavoritesPage {
         element("span", "collection-row-count", `${collection.count}${collection.count_capped ? "+" : ""}`),
         element("span", "collection-row-kind", collection.kind === "builtin" ? "内置" : collection.kind === "smart" ? "智能" : "手动"),
       );
+      if (collection.kind === "smart") {
+        // The conditions are the collection: show them, not just its kind.
+        row.append(element(
+          "span", "collection-row-rules",
+          describeFilters(parseQuery(collection.rules_json ?? "")),
+        ));
+      }
       row.addEventListener("click", () => {
         if (collection.kind === "builtin") { this.setScope("favorites"); return; }
         this.openCollection(collection);
@@ -440,14 +473,65 @@ export class FavoritesPage {
 
   private showSheet(title: string, body: Node[]): void {
     if (!this.sheet) return;
-    this.sheetOpen = true;
     openSheet(this.sheet, title, body);
   }
 
   private hideSheet(): void {
     if (!this.sheet) return;
-    this.sheetOpen = false;
     closeSheet(this.sheet);
+  }
+
+  private async moveCollection(direction: "up" | "down"): Promise<void> {
+    const collection = this.collection;
+    if (collection === null) return;
+    const moved = await this.collections.move(collection.collection_id, direction);
+    this.renderToolbar();
+    this.notice.textContent = moved
+      ? `已${direction === "up" ? "前移" : "后移"}「${collection.name}」`
+      : "已经到边界了";
+  }
+
+  /** The panel the wall already uses; on this page it becomes a collection's rules. */
+  private openSmartSheet(collection: CollectionDto | null): void {
+    const input = element("input", "filter-input collection-name-input");
+    input.type = "text";
+    input.maxLength = 60;
+    input.value = collection?.name ?? "";
+    input.placeholder = "集合名称";
+    input.setAttribute("aria-label", "集合名称");
+    const error = element("p", "sheet-note");
+    const form = element("div", "collection-name-form");
+    form.append(input, error);
+    const panel = buildFilterSheet({
+      value: collection?.rules_json ? parseQuery(collection.rules_json) : emptyFilters(),
+      onApply: next => { void this.saveSmart(collection, input.value.trim(), next, error); },
+    });
+    this.showSheet(collection === null ? "新建智能集合" : "改条件", [form, panel]);
+  }
+
+  private async saveSmart(
+    collection: CollectionDto | null,
+    name: string,
+    filters: LibraryFilters,
+    error: HTMLElement,
+  ): Promise<void> {
+    if (!name || name.length > 60) { error.textContent = "名称需要 1 到 60 个字符"; return; }
+    if (filterCount(filters) === 0) {
+      // An empty condition set selects nothing by design, so it is refused here rather
+      // than saved as a collection that could never show a video.
+      error.textContent = "至少需要一个条件";
+      return;
+    }
+    const rules = toQuery(filters);
+    const saved = collection === null
+      ? (await this.collections.create(name, "smart", rules)) !== null
+      : await this.collections.update(collection.collection_id, { name, rules_json: rules });
+    if (!saved) { error.textContent = "保存失败，请重试"; return; }
+    this.hideSheet();
+    this.renderCollections();
+    this.notice.textContent = collection === null
+      ? `已创建智能集合「${name}」`
+      : `已更新「${name}」的条件`;
   }
 
   private openNameSheet(collection: CollectionDto | null): void {
@@ -556,8 +640,9 @@ export class FavoritesPage {
     this.destroyed = true;
     this.generation += 1;
     this.request?.abort();
-    // A sheet this page opened must not outlive it.
-    if (this.sheet && this.sheetOpen) this.hideSheet();
+    // A sheet this page opened must not outlive it; the sheet's own hidden flag is the
+    // truth, so a panel the viewer closed themselves is never closed twice.
+    if (this.sheet && !this.sheet.sheet.hidden) closeSheet(this.sheet);
     this.segmentIndicator.destroy();
     for (const tile of this.tiles.values()) tile.destroy();
     this.tiles.clear();

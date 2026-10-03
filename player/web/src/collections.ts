@@ -10,7 +10,7 @@ export const BUILTIN_FAVORITES = "favorites";
 export type CollectionsSource = {
   collections(): Promise<CollectionDto[]>;
   createCollection(name: string, kind: "manual" | "smart", rulesJson?: string | null): Promise<CollectionDto>;
-  updateCollection(collectionId: string, patch: { name?: string; rules_json?: string | null }): Promise<CollectionDto>;
+  updateCollection(collectionId: string, patch: { name?: string; rules_json?: string | null; sort_order?: number }): Promise<CollectionDto>;
   deleteCollection(collectionId: string): Promise<void>;
   collectionItems(
     collectionId: string,
@@ -79,15 +79,26 @@ export class CollectionsController {
     }
   }
 
-  async rename(collectionId: string, name: string): Promise<boolean> {
+  async update(
+    collectionId: string,
+    patch: { name?: string; rules_json?: string | null },
+  ): Promise<boolean> {
     if (this.isBuiltin(collectionId)) return false;
     try {
-      await this.source.updateCollection(collectionId, { name });
+      await this.source.updateCollection(collectionId, patch);
       await this.load();
       return true;
     } catch {
       return false;
     }
+  }
+
+  async rename(collectionId: string, name: string): Promise<boolean> {
+    return this.update(collectionId, { name });
+  }
+
+  async setRules(collectionId: string, rulesJson: string | null): Promise<boolean> {
+    return this.update(collectionId, { rules_json: rulesJson });
   }
 
   async remove(collectionId: string): Promise<boolean> {
@@ -115,6 +126,30 @@ export class CollectionsController {
     if (this.isBuiltin(collectionId)) return false;
     try {
       await this.source.removeCollectionItem(collectionId, mediaId);
+      return true;
+    } catch {
+      return false;
+    }
+  }
+
+  /**
+   * Swap places with the neighbour in the list the server returned.
+   *
+   * One row's key moves; the list is never renumbered, because a partial renumbering
+   * is the kind of write that half-succeeds. Cost if wrong: two rows can share a key,
+   * and the tiebreaker behind it is their creation order.
+   */
+  async move(collectionId: string, direction: "up" | "down"): Promise<boolean> {
+    if (this.isBuiltin(collectionId)) return false;
+    const index = this.rows.findIndex((row) => row.collection_id === collectionId);
+    if (index < 0) return false;
+    const neighbour = this.rows[index + (direction === "up" ? -1 : 1)];
+    if (neighbour === undefined) return false;
+    try {
+      await this.source.updateCollection(collectionId, {
+        sort_order: neighbour.sort_order + (direction === "up" ? -1 : 1),
+      });
+      await this.load();
       return true;
     } catch {
       return false;

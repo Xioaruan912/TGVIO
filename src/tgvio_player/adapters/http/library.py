@@ -25,7 +25,7 @@ _MAX_ITEMS_PAGE = 60
 _DEFAULT_ITEMS_PAGE = 20
 
 _CREATE_FIELDS = frozenset({"name", "kind", "rules_json"})
-_PATCH_FIELDS = frozenset({"name", "rules_json"})
+_PATCH_FIELDS = frozenset({"name", "rules_json", "sort_order"})
 _UNSET = object()
 
 
@@ -97,6 +97,9 @@ class PlayerLibraryHttpMixin:
             "name": collection.name,
             "kind": collection.kind,
             "rules_json": collection.rules_json,
+            # The client reorders by moving one row past its neighbour, so it needs the
+            # neighbour's key on the wire.
+            "sort_order": collection.sort_order,
         }
 
     @staticmethod
@@ -130,18 +133,22 @@ class PlayerLibraryHttpMixin:
         return name, kind, rules
 
     @staticmethod
-    def _collection_patch_body(payload: dict[str, object]) -> tuple[object, object]:
+    def _collection_patch_body(payload: dict[str, object]) -> tuple[object, object, object]:
         if any(key not in _PATCH_FIELDS for key in payload):
             raise web.HTTPBadRequest(text="unknown collection field")
         name = payload.get("name", _UNSET)
         rules = payload.get("rules_json", _UNSET)
-        if name is _UNSET and rules is _UNSET:
+        order = payload.get("sort_order", _UNSET)
+        if name is _UNSET and rules is _UNSET and order is _UNSET:
             raise web.HTTPBadRequest(text="nothing to update")
         if name is not _UNSET and not isinstance(name, str):
             raise web.HTTPBadRequest(text="invalid collection name")
         if rules is not _UNSET and rules is not None and not isinstance(rules, str):
             raise web.HTTPBadRequest(text="invalid collection rules")
-        return name, rules
+        # bool is an int in Python, and a sort order is never a truth value.
+        if order is not _UNSET and (isinstance(order, bool) or not isinstance(order, int)):
+            raise web.HTTPBadRequest(text="invalid collection order")
+        return name, rules, order
 
     async def _favorite_page(
         self, digest: str, *, limit: int, before: tuple[int, str] | None
@@ -199,8 +206,10 @@ class PlayerLibraryHttpMixin:
     async def _collections(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
         self._library_query(request, set())
-        favorites = await self._favorite_page(
-            digest, limit=_MAX_COLLECTION_COUNT + 1, before=None
+        favorite_count = (
+            await self._repository.count_global_favorites()
+            if self._favorite_backup is not None
+            else await self._repository.count_favorites(digest)
         )
         items: list[dict[str, object]] = [
             {
@@ -208,8 +217,8 @@ class PlayerLibraryHttpMixin:
                 "name": BUILTIN_FAVORITES_NAME,
                 "kind": "builtin",
                 "rules_json": None,
-                "count": min(len(favorites), _MAX_COLLECTION_COUNT),
-                "count_capped": len(favorites) > _MAX_COLLECTION_COUNT,
+                "count": min(favorite_count, _MAX_COLLECTION_COUNT),
+                "count_capped": favorite_count > _MAX_COLLECTION_COUNT,
             }
         ]
         counted = await self._repository.counts()
@@ -234,7 +243,7 @@ class PlayerLibraryHttpMixin:
         collection_id = request.match_info["collection_id"]
         if collection_id == BUILTIN_FAVORITES_ID:
             raise web.HTTPBadRequest(text="the builtin collection is read-only")
-        name, rules = self._collection_patch_body(await self._json_object(request))
+        name, rules, order = self._collection_patch_body(await self._json_object(request))
         if await self._repository.get(collection_id) is None:
             raise web.HTTPNotFound(text="collection not found")
         try:
@@ -242,6 +251,8 @@ class PlayerLibraryHttpMixin:
                 await self._repository.rename(collection_id, name)
             if rules is not _UNSET:
                 await self._repository.set_rules(collection_id, rules)
+            if order is not _UNSET:
+                await self._repository.set_sort_order(collection_id, order)
         except ValueError as error:
             raise web.HTTPBadRequest(text=str(error)) from None
         updated = await self._repository.get(collection_id)
@@ -294,10 +305,13 @@ class PlayerLibraryHttpMixin:
             media_ids = list(await self._repository.items(collection_id, limit + 1, offset))
         has_more = len(media_ids) > limit
         media_ids = media_ids[:limit]
+        next_offset = offset + len(media_ids)
         return web.json_response({
             "items": await self._collection_dtos(media_ids, digest),
             "has_more": has_more,
-            "next_cursor": str(offset + len(media_ids)) if has_more else None,
+            # Past the budget there is no next page to ask for, so no cursor either:
+            # handing one out that the reader rejects would be a lie.
+            "next_cursor": str(next_offset) if has_more and next_offset <= _MAX_ITEMS_OFFSET else None,
         })
 
     async def _editable_collection(self, request: web.Request) -> str:

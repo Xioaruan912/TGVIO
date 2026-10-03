@@ -35,8 +35,7 @@ const item=(index,category="short")=>{const id=createHash("sha256").update(`loca
 const libraryFixture=createLibraryFixture(item);
 for(let index=0;index<8;index++)favorites.add(item(index).id);
 collections.set("favorites",{name:"收藏",kind:"builtin",rules_json:null,members:new Set()});
-collections.set("c-trip",{name:"旅行",kind:"manual",rules_json:null,members:new Set([...favorites].slice(0,2))});
-progress.set(item(101,"long").id,42);
+collections.set("c-trip",{name:"旅行",kind:"manual",rules_json:null,members:new Set([...favorites].slice(0,2))});progress.set(item(101,"long").id,42);
 progress.set(item(102,"long").id,64);
 const server=await createServer({configFile:false,root:fileURLToPath(new URL("../",import.meta.url)),server:{host:"127.0.0.1",port:Number(process.env.TGVIO_ACCEPTANCE_PORT??5179),strictPort:true},define:{"import.meta.env.VITE_PLAYER_MOCK":JSON.stringify("false")},plugins:[{name:"local-ui-acceptance",transformIndexHtml:html=>hasCjkFont?html.replace("</head>","<style>@font-face{font-family:PlayerFixtureCJK;src:url('/__acceptance__/font.ttf')}body{font-family:PlayerFixtureCJK,system-ui,sans-serif!important}</style></head>"):html,configureServer(vite){vite.middlewares.use(async(req,res,next)=>{
  const url=new URL(req.url,"http://127.0.0.1");const pathname=url.pathname;
@@ -83,7 +82,21 @@ const server=await createServer({configFile:false,root:fileURLToPath(new URL("..
  if(pathname==="/api/v1/random")return send({items:Array.from({length:5},(_,i)=>item(i+51)),category:"short"});
  if(pathname==="/api/v1/favorites")return send({items:[...favorites].map(id=>({...mediaById.get(id),favorite:true})),next_cursor:null,has_more:false});
  // Collections: the builtin is the favourites set, a manual one keeps its own members.
- const collectionItem=(id,collection)=>({collection_id:id,name:collection.name,kind:collection.kind,rules_json:collection.rules_json,count:collection.kind==="builtin"?favorites.size:collection.members.size,count_capped:false});
+ const collectionItem=(id,collection)=>({collection_id:id,name:collection.name,kind:collection.kind,rules_json:collection.rules_json,sort_order:collection.sort_order??0,count:collection.kind==="builtin"?favorites.size:collection.kind==="smart"?smartMembers(collection).length:collection.members.size,count_capped:false});
+ // The fixture's own tiny smart-collection evaluator, so a saved condition set really
+ // selects videos instead of returning an empty list.
+ const smartMembers=collection=>{
+  const rules=new URLSearchParams(collection.rules_json??"");
+  return [...mediaById.values()].filter(media=>{
+   const minSeconds=rules.get("min_seconds");
+   if(minSeconds!==null&&!(media.duration_seconds>Number(minSeconds)))return false;
+   const hasCover=rules.get("has_cover");
+   if(hasCover==="true"&&!media.cover_url)return false;
+   if(hasCover==="false"&&media.cover_url)return false;
+   if(rules.get("favorite")==="true"&&!favorites.has(media.id))return false;
+   return true;
+  }).map(media=>media.id);
+ };
  if(pathname==="/api/v1/collections"){
   if(req.method==="POST"){
    const id="c-"+createHash("sha256").update(String(body.name??"")+String(collections.size)).digest("hex").slice(0,8);
@@ -101,8 +114,8 @@ const server=await createServer({configFile:false,root:fileURLToPath(new URL("..
   if(mediaId&&req.method==="PUT"){collection.members.add(mediaId);res.statusCode=204;res.end();return;}
   if(mediaId&&req.method==="DELETE"){collection.members.delete(mediaId);res.statusCode=204;res.end();return;}
   if(!mediaId&&req.method==="DELETE"){collections.delete(id);res.statusCode=204;res.end();return;}
-  if(!mediaId&&req.method==="PATCH"){if(typeof body.name==="string")collection.name=body.name;return send(collectionItem(id,collection));}
-  const members=collection.kind==="builtin"?[...favorites]:[...collection.members];
+  if(!mediaId&&req.method==="PATCH"){if(typeof body.name==="string")collection.name=body.name;if(typeof body.rules_json==="string"||body.rules_json===null)collection.rules_json=body.rules_json;if(typeof body.sort_order==="number")collection.sort_order=body.sort_order;return send(collectionItem(id,collection));}
+  const members=collection.kind==="builtin"?[...favorites]:collection.kind==="smart"?smartMembers(collection):[...collection.members];
   const limit=Math.min(60,Number(url.searchParams.get("limit"))||20);const offset=Number(url.searchParams.get("cursor"))||0;
   const page=members.slice(offset,offset+limit);
   return send({items:page.map(member=>({...mediaById.get(member),favorite:favorites.has(member)})),has_more:offset+limit<members.length,next_cursor:offset+limit<members.length?String(offset+limit):null});

@@ -160,6 +160,30 @@ class PlayerCollectionRepositoryTests(unittest.IsolatedAsyncioTestCase):
             await self.repo.counts(), {first.collection_id: 1, second.collection_id: 0}
         )
 
+    async def test_sort_order_is_writable_and_orders_the_list(self) -> None:
+        first = await self.repo.create("旅行", "manual", None)
+        second = await self.repo.create("重看", "manual", None)
+        self.assertTrue(await self.repo.set_sort_order(second.collection_id, -1))
+        self.assertFalse(await self.repo.set_sort_order("no-such-collection", 0))
+        self.assertEqual(
+            [item.collection_id for item in await self.repo.list()],
+            [second.collection_id, first.collection_id],
+            "a lower sort_order wins, and it survives the rowid tiebreaker",
+        )
+
+    async def test_favorite_counts_do_not_need_a_page(self) -> None:
+        # The builtin collection's badge must not fetch a page of joined rows. The
+        # per-session half is covered end to end by the HTTP builtin-count test.
+        self.assertEqual(await self.repo.count_global_favorites(), 0)
+        await self.repo.set_global_favorite(self.media_id, True)
+        self.assertEqual(await self.repo.count_global_favorites(), 1)
+        await self.repo.record_deleted_location(self.media_id, "package", "a.mp4")
+        await self.repo.finalize_media_deletion(self.media_id)
+        self.assertEqual(
+            await self.repo.count_global_favorites(), 0,
+            "a retired video is not a favourite the page can show",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

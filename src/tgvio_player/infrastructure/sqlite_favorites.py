@@ -65,6 +65,18 @@ class PlayerFavoriteRepositoryMixin:
         ).fetchone()
         return row is not None
 
+    async def count_global_favorites(self) -> int:
+        """The builtin collection's badge, without fetching a page of joined rows."""
+        row = self._require().execute(
+            """
+            SELECT COUNT(*) AS count
+            FROM player_global_favorites favorite
+            JOIN media ON media.media_id=favorite.media_id
+            WHERE media.active=1 AND media.kind='video'
+            """
+        ).fetchone()
+        return int(row["count"])
+
     async def list_global_favorite_page(
         self, *, limit: int, before: tuple[int, str] | None
     ) -> list[tuple[str, int]]:

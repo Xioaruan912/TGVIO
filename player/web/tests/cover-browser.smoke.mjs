@@ -90,6 +90,17 @@ try {
   await delay(250);const image=await cdp("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
   await writeFile(path.join(output,name+".png"),Buffer.from(image.data,"base64"));
  };
+ // A sheet is taller than a phone leaves for the page behind it, so its own shot gets a
+ // tall viewport: the whole panel is the subject, not the grid under it.
+ const sheetShot=async (name,width,height)=>{
+  await cdp("Emulation.setDeviceMetricsOverride",{width,height:1400,deviceScaleFactor:1,mobile:true});
+  await evaluate("(()=>{const a=document.activeElement;if(a&&a.blur)a.blur();const b=document.querySelector('.sheet-body');if(b)b.scrollTop=0;return true})()");
+  await delay(500);
+  const image=await cdp("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
+  await writeFile(path.join(output,name+".png"),Buffer.from(image.data,"base64"));
+  await cdp("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:true});
+  await delay(400);
+ };
  const contrastAt = async point => {
   const shot=await cdp("Page.captureScreenshot",{format:"png",clip:{x:point.x,y:point.y,width:1,height:1,scale:1}});
   const png=Buffer.from(shot.data,"base64"),chunks=[];
@@ -218,6 +229,31 @@ try {
    await click(".sheet .sheet-row-choice");
    await wait("document.querySelector('.sheet').hidden","adding closes the picker");
    check(await evaluate("document.querySelectorAll('.large-player').length===0"),"adding a cover to a collection never starts playback");
+   // A smart collection is a saved condition set, built from the same panel the wall uses.
+   await click(".favorites-page .library-segment[data-scope=collections]");
+   await wait("!!document.querySelector('.favorites-page .collection-row')","collections list for the smart one");
+   await click(".favorites-page .collection-create-smart");
+   await wait("!!document.querySelector('.sheet .filter-sheet')","the filter panel becomes the rule editor");
+   await click('.sheet .filter-tri[data-filter="hasCover"] .filter-tri-button:nth-child(2)');
+   await evaluate("(()=>{document.querySelector('.sheet .collection-name-input').value='有封面的';return true})()");
+   await delay(500);
+   await sheetShot("collections-smart-sheet-390x844",width,height);
+   await click(".sheet .filter-apply");
+   await wait("!!document.querySelector('.favorites-page .collection-row[data-kind=smart]')","the smart collection is listed");
+   check(await evaluate("document.querySelector('.favorites-page .collection-row[data-kind=smart] .collection-row-rules').textContent.includes('有封面')"),"the row states its conditions");
+   await screenshot("collections-smart-list-"+width+"x"+height);
+   await click(".favorites-page .collection-row[data-kind=smart]");
+   await wait("!!document.querySelector('.favorites-page .cover-tile')","the conditions select real videos");
+   check(await evaluate("document.querySelectorAll('.favorites-page .cover-tile').length>0"),"a saved condition set evaluates to members");
+   check(await evaluate("!!document.querySelector('.favorites-page .collection-rules')"),"a smart collection offers to edit its conditions");
+   await screenshot("collections-smart-members-"+width+"x"+height);
+   await click(".favorites-page .collection-back");
+   await wait("!!document.querySelector('.favorites-page .collection-row')","back to the list");
+   await click(".favorites-page .library-segment[data-scope=favorites]");
+   await wait("!!document.querySelector('.favorites-page .cover-tile')","favourites grid after the smart detour");
+   // The detour re-rendered the grid, so the failed cover the next check focuses has
+   // to come back before it does.
+   await wait("!!document.querySelector('.favorites-page .cover-tile[data-cover-state=failed]')","the failed cover is back after the detour");
   }
   await click(".favorites-page .library-select-toggle");await click(".favorites-page .cover-tile-play");
   check(await evaluate("document.querySelectorAll('.favorites-page .cover-tile.is-selected').length===1&&!document.querySelector('.large-player')"),"select does not play");
@@ -273,6 +309,10 @@ try {
   await wait("!!document.querySelector('.library-page .cover-tile')","flat wall");
   await click(".library-filter");
   await wait("!!document.querySelector('.sheet .filter-sheet')","filter panel open");
+  if(width===390){
+   await delay(700);
+   await sheetShot("library-filter-panel-390x844",width,height);
+  }
   check(await evaluate("document.querySelectorAll('.sheet .filter-tri-button').length>=15"),"every filter condition is a control");
   await click('.sheet .filter-tri[data-filter="hasCover"] .filter-tri-button:nth-child(2)');
   await click(".sheet .filter-apply");

@@ -172,7 +172,6 @@ export class VideoLibraryPage {
   private readonly filterButton = this.button("筛选", () => this.openFilterSheet());
   private filters: LibraryFilters = emptyFilters();
   private readonly sheet: SheetHost | null;
-  private filterSheetOpen = false;
 
   constructor(private readonly onPlay: (clips: Clip[]) => void, private readonly onClose: () => void, options?: { mediaId?: string; sheet?: SheetHost }) {
     this.sheet = options?.sheet ?? null;
@@ -242,10 +241,9 @@ export class VideoLibraryPage {
   private openFilterSheet(): void {
     const sheet = this.sheet;
     if (!sheet) return;
-    this.filterSheetOpen = true;
     openSheet(sheet, "筛选", [buildFilterSheet({
       value: this.filters,
-      onApply: next => { this.filterSheetOpen = false; closeSheet(sheet); this.applyFilters(next); },
+      onApply: next => { closeSheet(sheet); this.applyFilters(next); },
     })]);
   }
   private isCurrent(generation: number): boolean { return !this.destroyed && generation === this.generation; }
@@ -490,9 +488,9 @@ export class VideoLibraryPage {
   }
   destroy(): void {
     this.destroyed = true; this.generation++; this.indexRequest?.abort(); this.controller.dispose();
-    // A sheet this page opened must not outlive it; the page owns its lifetime.
-    if (this.sheet && this.filterSheetOpen) closeSheet(this.sheet);
-    this.filterSheetOpen = false;
+    // A sheet this page opened must not outlive it; the sheet's own hidden flag is the
+    // truth, so a panel the viewer closed themselves is never closed twice.
+    if (this.sheet && !this.sheet.sheet.hidden) closeSheet(this.sheet);
     this.segmentIndicator.destroy();
     for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
     this.masonry?.destroy(); this.masonry = null;

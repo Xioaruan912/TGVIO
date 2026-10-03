@@ -176,6 +176,8 @@ class PlayerCatalogRepository(Protocol):
         before: tuple[int, str] | None,
     ) -> list[tuple[str, int]]: ...
 
+    async def count_favorites(self, token_digest: str) -> int: ...
+
     async def list_long_video_progress(self) -> list[tuple[str, float]]: ...
 
     async def save_long_video_progress(
@@ -193,6 +195,8 @@ class PlayerCatalogRepository(Protocol):
     async def list_global_favorite_page(
         self, *, limit: int, before: tuple[int, str] | None
     ) -> list[tuple[str, int]]: ...
+
+    async def count_global_favorites(self) -> int: ...
 
     async def enqueue_favorite_sync(
         self, media_id: str, operation: Literal["upload", "delete"]

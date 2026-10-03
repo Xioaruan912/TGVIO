@@ -162,6 +162,39 @@ class VideoFilterTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(response.status, 400, query)
 
+    async def test_the_response_carries_the_cursor_the_next_page_needs(self) -> None:
+        cookie = await self._login()
+        first = await self.client.get(
+            "/api/v1/videos?category=all&sort=random&seed=7&limit=1&offset=0",
+            cookies={"tgvio_player_session": cookie},
+        )
+        body = await first.json()
+        self.assertEqual(
+            body["next_cursor"], "7:1",
+            "a random page states the seed and the offset its order depends on",
+        )
+        second = await self.client.get(
+            "/api/v1/videos?category=all&sort=random&seed=7&limit=1&offset=1",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertNotEqual(
+            (await second.json())["items"][0]["id"], body["items"][0]["id"],
+            "following the cursor must not repeat a row",
+        )
+        middle = await self.client.get(
+            "/api/v1/videos?category=all&limit=1&offset=1",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual((await middle.json())["next_cursor"], "2")
+        last = await self.client.get(
+            "/api/v1/videos?category=all&limit=1&offset=2",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertIsNone(
+            (await last.json())["next_cursor"],
+            "the last page has no cursor to hand out",
+        )
+
     async def test_the_legacy_default_order_is_unchanged(self) -> None:
         # No sort parameter: this is what existing clients and the deck already rely on.
         cookie = await self._login()

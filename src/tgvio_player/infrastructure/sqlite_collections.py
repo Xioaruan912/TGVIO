@@ -121,6 +121,19 @@ class PlayerCollectionRepositoryMixin:
             )
             return cursor.rowcount > 0
 
+    async def set_sort_order(self, collection_id: str, sort_order: int) -> bool:
+        """The viewer's own order. Any integer is a legal key: a negative one simply
+        sorts before the default, which is how a row moves to the front."""
+        if isinstance(sort_order, bool) or not isinstance(sort_order, int):
+            raise ValueError("collection order must be an integer")
+        async with self._write_transaction() as conn:
+            cursor = conn.execute(
+                "UPDATE collections SET sort_order=?, updated_at=CURRENT_TIMESTAMP "
+                "WHERE collection_id=?",
+                (int(sort_order), collection_id),
+            )
+            return cursor.rowcount > 0
+
     async def delete(self, collection_id: str) -> bool:
         async with self._write_transaction() as conn:
             cursor = conn.execute(
