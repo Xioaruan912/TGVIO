@@ -538,18 +538,17 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
             raise web.HTTPBadRequest(text=str(error)) from None
         # A sort the client did not ask for keeps the order that was already in use, so
         # existing clients and the deck see no change.
+        query_kwargs = listing_query_kwargs(
+            filters,
+            category=category,
+            large_video_seconds=self._large_video_seconds,
+            sort=filters.sort if "sort" in request.query else None,
+            favorite_scope="global" if self._favorite_backup is not None else "session",
+            favorite_token_digest=digest,
+            media_id_prefix=search or None,
+        )
         media_ids = await self._repository.list_video_ids(
-            **listing_query_kwargs(
-                filters,
-                category=category,
-                large_video_seconds=self._large_video_seconds,
-                sort=filters.sort if "sort" in request.query else None,
-                favorite_scope="global" if self._favorite_backup is not None else "session",
-                favorite_token_digest=digest,
-                media_id_prefix=search or None,
-            ),
-            limit=limit + 1,
-            offset=offset,
+            **query_kwargs, limit=limit + 1, offset=offset
         )
         has_more = len(media_ids) > limit
         media_ids = media_ids[:limit]
@@ -566,12 +565,15 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
                 items.append(await self._media_dto(details, digest, prefetch=prefetch))
         count_method = getattr(self._repository, "count_video_ids", None)
         if callable(count_method):
-            count_options: dict[str, object] = {"media_id_prefix": search} if search else {}
-            if category == "long":
-                count_options["min_seconds"] = self._large_video_seconds
-            elif category == "short":
-                count_options["max_seconds"] = self._large_video_seconds
-            total = await count_method(**count_options)
+            # The total must describe the same set the page came from: same clauses.
+            # `order`/`sort`/`seed` say how to arrange the rows, not which rows.
+            total = await count_method(
+                **{
+                    key: value
+                    for key, value in query_kwargs.items()
+                    if key not in {"order", "sort", "seed"}
+                }
+            )
         elif category == "all" and not search:
             total = await self._repository.count_active_videos()
         else:

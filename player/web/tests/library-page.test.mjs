@@ -350,6 +350,7 @@ test("applying a filter reloads the grid from the first page", async () => {
  assert.equal(wallCalls.at(-1).minSeconds, 30);
  assert.equal(wallCalls.at(-1).offset, 0, "a new filter restarts paging");
  assert.equal(wallCalls.at(-1).category, "all");
+ assert.equal(wallCalls.at(-1).sort, "newest", "the wall always sends an order");
  assert.ok(tiles(page).length > 0, "the filtered wall renders its first page");
  page.destroy();
 });

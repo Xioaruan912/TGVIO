@@ -17,7 +17,7 @@ from tgvio_player.infrastructure.migration import run_migrations
 from tgvio_player.infrastructure.sqlite_collections import PlayerCollectionRepositoryMixin
 from tgvio_player.infrastructure.sqlite_favorites import PlayerFavoriteRepositoryMixin
 from tgvio_player.infrastructure.sqlite_library import PlayerLibraryRepositoryMixin
-from tgvio_player.infrastructure.video_query import build_video_query
+from tgvio_player.infrastructure.video_query import build_video_count, build_video_query
 
 
 _GROUP_ID_RE = re.compile(r"^[A-Za-z0-9_-]{1,128}$")
@@ -527,22 +527,35 @@ class PlayerCatalogRepositorySQLite(
         min_seconds: float | None = None,
         max_seconds: float | None = None,
         media_id_prefix: str | None = None,
+        date_from: int | None = None,
+        date_to: int | None = None,
+        min_bytes: int | None = None,
+        max_bytes: int | None = None,
+        has_cover: bool | None = None,
+        favorite: bool | None = None,
+        favorite_scope: str = "session",
+        favorite_token_digest: str | None = None,
+        resumable: bool | None = None,
+        unwatched: bool | None = None,
     ) -> int:
-        clauses = ["active=1", "kind='video'"]
-        params: list[object] = []
-        if min_seconds is not None:
-            clauses.append("duration_seconds > ?")
-            params.append(float(min_seconds))
-        if max_seconds is not None:
-            clauses.append("duration_seconds <= ?")
-            params.append(float(max_seconds))
-        if media_id_prefix is not None:
-            clauses.append("media_id LIKE ?")
-            params.append(f"{media_id_prefix}%")
-        row = self._require().execute(
-            f"SELECT COUNT(*) AS count FROM media WHERE {' AND '.join(clauses)}",
-            tuple(params),
-        ).fetchone()
+        # The same clause builder the page uses: a total that describes a different
+        # set than the page is a denominator that lies.
+        sql, params = build_video_count(
+            min_seconds=min_seconds,
+            max_seconds=max_seconds,
+            media_id_prefix=media_id_prefix,
+            date_from=date_from,
+            date_to=date_to,
+            min_bytes=min_bytes,
+            max_bytes=max_bytes,
+            has_cover=has_cover,
+            favorite=favorite,
+            favorite_scope=favorite_scope,
+            favorite_token_digest=favorite_token_digest,
+            resumable=resumable,
+            unwatched=unwatched,
+        )
+        row = self._require().execute(sql, tuple(params)).fetchone()
         return int(row["count"])
 
     async def list_long_video_progress(self) -> list[tuple[str, float]]:

@@ -137,6 +137,16 @@ class PlayerCatalogRepository(Protocol):
         min_seconds: float | None = None,
         max_seconds: float | None = None,
         media_id_prefix: str | None = None,
+        date_from: int | None = None,
+        date_to: int | None = None,
+        min_bytes: int | None = None,
+        max_bytes: int | None = None,
+        has_cover: bool | None = None,
+        favorite: bool | None = None,
+        favorite_scope: str = "session",
+        favorite_token_digest: str | None = None,
+        resumable: bool | None = None,
+        unwatched: bool | None = None,
     ) -> int: ...
 
     async def library_dates(self) -> dict[str, object]: ...

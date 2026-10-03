@@ -152,6 +152,86 @@ def build_video_query(
     seed: int | None = None,
 ) -> tuple[str, list[Any]]:
     """The statement and its parameters for one page of the wall."""
+    clauses, params = _filter_clauses(
+        min_seconds=min_seconds,
+        max_seconds=max_seconds,
+        media_id_prefix=media_id_prefix,
+        date_from=date_from,
+        date_to=date_to,
+        min_bytes=min_bytes,
+        max_bytes=max_bytes,
+        has_cover=has_cover,
+        favorite=favorite,
+        favorite_scope=favorite_scope,
+        favorite_token_digest=favorite_token_digest,
+        resumable=resumable,
+        unwatched=unwatched,
+    )
+    params.extend([max(1, int(limit)), max(0, int(offset))])
+    return (
+        f"SELECT media_id FROM media WHERE {' AND '.join(clauses)} "
+        f"ORDER BY {_order_sql(order, sort, seed)} LIMIT ? OFFSET ?",
+        params,
+    )
+
+
+def build_video_count(
+    *,
+    min_seconds: float | None = None,
+    max_seconds: float | None = None,
+    media_id_prefix: str | None = None,
+    date_from: int | None = None,
+    date_to: int | None = None,
+    min_bytes: int | None = None,
+    max_bytes: int | None = None,
+    has_cover: bool | None = None,
+    favorite: bool | None = None,
+    favorite_scope: str = "session",
+    favorite_token_digest: str | None = None,
+    resumable: bool | None = None,
+    unwatched: bool | None = None,
+) -> tuple[str, list[Any]]:
+    """The count of the same set a page of the wall came from.
+
+    A total that describes a different set than the page is worse than no total: the
+    wall renders it as a denominator. Both statements therefore share one clause
+    builder, and only the page adds its order and its LIMIT.
+    """
+    clauses, params = _filter_clauses(
+        min_seconds=min_seconds,
+        max_seconds=max_seconds,
+        media_id_prefix=media_id_prefix,
+        date_from=date_from,
+        date_to=date_to,
+        min_bytes=min_bytes,
+        max_bytes=max_bytes,
+        has_cover=has_cover,
+        favorite=favorite,
+        favorite_scope=favorite_scope,
+        favorite_token_digest=favorite_token_digest,
+        resumable=resumable,
+        unwatched=unwatched,
+    )
+    return f"SELECT COUNT(*) AS count FROM media WHERE {' AND '.join(clauses)}", params
+
+
+def _filter_clauses(
+    *,
+    min_seconds: float | None = None,
+    max_seconds: float | None = None,
+    media_id_prefix: str | None = None,
+    date_from: int | None = None,
+    date_to: int | None = None,
+    min_bytes: int | None = None,
+    max_bytes: int | None = None,
+    has_cover: bool | None = None,
+    favorite: bool | None = None,
+    favorite_scope: str = "session",
+    favorite_token_digest: str | None = None,
+    resumable: bool | None = None,
+    unwatched: bool | None = None,
+) -> tuple[list[str], list[Any]]:
+    """The WHERE fragments and their bound parameters, in one place."""
     clauses = list(_BASE_CLAUSES)
     params: list[Any] = []
     if min_seconds is not None:
@@ -193,9 +273,4 @@ def build_video_query(
     if unwatched is not None:
         watched = _watched_clause()
         clauses.append(f"NOT {watched}" if unwatched else watched)
-    params.extend([max(1, int(limit)), max(0, int(offset))])
-    return (
-        f"SELECT media_id FROM media WHERE {' AND '.join(clauses)} "
-        f"ORDER BY {_order_sql(order, sort, seed)} LIMIT ? OFFSET ?",
-        params,
-    )
+    return clauses, params

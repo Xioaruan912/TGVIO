@@ -168,6 +168,20 @@ class VideoFilterTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(await self._ids(cookie, "category=all"), [self.a, self.b, self.c])
         self.assertEqual(await self._ids(cookie, "category=long"), [self.c, self.b])
 
+    async def test_the_total_describes_the_same_filtered_set_as_the_page(self) -> None:
+        cookie = await self._login()
+        response = await self.client.get(
+            "/api/v1/videos?category=all&has_cover=true",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(response.status, 200, await response.text())
+        body = await response.json()
+        self.assertEqual([item["id"] for item in body["items"]], [self.b])
+        self.assertEqual(
+            body["total"], 1,
+            "a filtered page must not report the whole library as its total",
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

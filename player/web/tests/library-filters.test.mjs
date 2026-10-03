@@ -49,10 +49,10 @@ test("paging and the id-prefix search are not filters", () => {
 });
 
 test("toQuery emits only what is set, in one fixed order", () => {
-  assert.equal(toQuery(emptyFilters()), "");
+  assert.equal(toQuery(emptyFilters()), "sort=newest", "the wall always sends an order, and newest is the default");
   assert.equal(
     toQuery({ ...emptyFilters(), favorite: true, minBytes: 100, unwatched: false }),
-    "min_bytes=100&favorite=true&unwatched=false",
+    "min_bytes=100&favorite=true&unwatched=false&sort=newest",
   );
   assert.equal(toQuery({ ...emptyFilters(), sort: "resume" }), "sort=resume");
 });
@@ -60,6 +60,13 @@ test("toQuery emits only what is set, in one fixed order", () => {
 test("a random order without a seed fails at its source, not as a 400 later", () => {
   assert.throws(() => toQuery({ ...emptyFilters(), sort: "random" }), /seed/);
   assert.equal(toQuery({ ...emptyFilters(), sort: "random", seed: 7 }), "sort=random&seed=7");
+});
+
+test("a default filter set still asks for the newest order", () => {
+  // Omitting sort would leave the server on its legacy hash order while the panel
+  // shows 最新 as the active choice.
+  assert.equal(toQuery(emptyFilters()), "sort=newest");
+  assert.equal(parseQuery(toQuery(emptyFilters())).sort, "newest");
 });
 
 test("sameFilters compares every field, including the ones a range hides", () => {

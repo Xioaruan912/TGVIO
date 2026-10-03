@@ -105,7 +105,10 @@ export function toQuery(filters: LibraryFilters): string {
     const value = filters[field];
     if (typeof value === "boolean") params.set(wire, value ? "true" : "false");
   }
-  if (filters.sort !== "newest") params.set("sort", filters.sort);
+  // Always, including the default: the server keeps its legacy hash order when a
+  // request omits `sort`, and a panel that shows 最新 as the active choice must not
+  // leave the wall on an order nobody asked for.
+  params.set("sort", filters.sort);
   if (filters.seed !== null) params.set("seed", String(filters.seed));
   return params.toString();
 }
