@@ -229,6 +229,21 @@ try {
    if(density==="dense")check(!titled,"the last step drops the title to buy a column");
    else check(titled,`${density} keeps the title`);
   }
+  // The frame wall keeps filling while the viewer scrolls: one page in flight, bounded
+  // by MAX_ROWS, sharing the six-lane cover budget with everything else on screen.
+  check(await evaluate("(()=>{const t=[...document.querySelectorAll('.library-page .cover-tile')].find(c=>c.dataset.coverState==='missing');return !!t&&!t.querySelector('img')})()"),"a cover-less entry shows the missing state, never a fake image");
+  if(width===390){
+   const list=await evaluate("(()=>{const l=document.querySelector('.library-page .library-list');const r=l.getBoundingClientRect();return {x:r.x+r.width/2,y:r.y+r.height/2}})()");
+   let loaded=await evaluate("document.querySelectorAll('.library-page .cover-tile').length");
+   for(let i=0;i<24&&loaded<=60;i++){
+    await cdp("Input.dispatchMouseEvent",{type:"mouseWheel",x:list.x,y:list.y,deltaX:0,deltaY:6000});
+    await delay(400);
+    loaded=await evaluate("document.querySelectorAll('.library-page .cover-tile').length");
+   }
+   check(loaded>60,`the wall keeps loading while scrolling (${loaded} tiles)`);
+   const busy=await(await fetch(baseUrl+"/__acceptance__/status")).json();
+   check(busy.coverPeak<=6,`the wall never opens a second cover lane (peak ${busy.coverPeak})`);
+  }
   await screenshot("library-density-"+width+"x"+height);
   // The wall is the flat listing: filters reach it, the density steps still own the
   // column count, and applying a filter restarts from the first page.

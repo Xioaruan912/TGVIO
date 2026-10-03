@@ -80,6 +80,21 @@ test("the wall pages by offset, and a removed row does not make the next page sk
  assert.deepEqual(c.rows.map(x => x.id), ["b", "c"]);
 });
 
+test("the wall also keeps exactly one page in flight", async () => {
+ let resolve; let count = 0;
+ const c = new LibraryController({
+  libraryVideos: async () => page([]),
+  videos: () => { count++; return new Promise(r => resolve = r); },
+ });
+ c.openWall(emptyFilters());
+ const first = c.loadMore();
+ await c.loadMore();
+ assert.equal(count, 1, "a second scroll event must not open a second request");
+ resolve({ items: [clip("a")], hasMore: false, total: 1 });
+ await first;
+ assert.deepEqual(c.rows.map(x => x.id), ["a"]);
+});
+
 test("a wall page that claims more without advancing stops instead of looping", async () => {
  const c = new LibraryController({
   libraryVideos: async () => page([]),

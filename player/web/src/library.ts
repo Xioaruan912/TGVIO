@@ -173,7 +173,6 @@ export class VideoLibraryPage {
   private filters: LibraryFilters = emptyFilters();
   private readonly sheet: SheetHost | null;
   private filterSheetOpen = false;
-  private automaticPages = 0;
 
   constructor(private readonly onPlay: (clips: Clip[]) => void, private readonly onClose: () => void, options?: { mediaId?: string; sheet?: SheetHost }) {
     this.sheet = options?.sheet ?? null;
@@ -187,10 +186,12 @@ export class VideoLibraryPage {
     applyCoverDensity(this.root, prefs.coverDensity);
     this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
     this.selectionBar.hidden = true;
+    // Continuous loading: reaching the bottom asks for the next page. What bounds it
+    // is the controller's single in-flight request and MAX_ROWS, not a page count.
     this.list.addEventListener("scroll", () => {
       if (this.isGridStage() && !this.playbackActive && !this.controller.error &&
           this.list.scrollTop + this.list.clientHeight >= this.list.scrollHeight - 200) {
-        this.automaticPages++; void this.loadMore();
+        void this.loadMore();
       }
     });
     if (options?.mediaId) void this.loadFolders({ mediaId: options.mediaId });
@@ -227,7 +228,7 @@ export class VideoLibraryPage {
     this.beginIndex();
     this.filters = filters;
     this.controller.openWall(filters);
-    this.stage = "wall"; this.automaticPages = 0; this.selectMode = false;
+    this.stage = "wall"; this.selectMode = false;
     this.resetList(); this.list.classList.add("cover-grid");
     this.renderWallToolbar();
     this.notice.textContent = `${this.sourceLabel()} · 仅加载视频信息`;
@@ -325,7 +326,7 @@ export class VideoLibraryPage {
   }
   private openFolder(folder: LibraryFolder): void {
     this.indexRequest?.abort(); this.generation++; this.controller.open(folder);
-    this.stage = "videos"; this.automaticPages = 0; this.selectMode = false;
+    this.stage = "videos"; this.selectMode = false;
     this.resetList(); this.list.classList.add("cover-grid"); this.renderVideoToolbar();
     this.notice.textContent = `${folder.date ?? "未知日期"} · ${basisLabel(folder.date_basis)} · 仅加载视频信息`;
     void this.loadMore();
@@ -381,7 +382,7 @@ export class VideoLibraryPage {
   }
   private setCategory(category: LibraryCategory): void {
     if (category === this.controller.category) return;
-    this.generation += 1; this.controller.setCategory(category); this.automaticPages = 0;
+    this.generation += 1; this.controller.setCategory(category);
     this.resetList(); this.list.classList.add("cover-grid");
     this.renderGridToolbar(); void this.loadMore();
   }
