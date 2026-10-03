@@ -4,7 +4,9 @@
 
 承接 `2026-10-03-player-black-gold-motion.md` 的「未完成」清单，只改 `player/web`
 与 `docs/`，不碰后端 `src/`。本轮把批次 4 剩余、批次 6 收口、自托管标题字体、
-设计文档回填全部做完；**发布（推 GitHub + VPS）另起一节，需在 clean 且已推送的提交上执行**。
+设计文档回填全部做完，并已推 GitHub、已完成 VPS 发布（含一次因生产 404 而重做的切换）。
+发布事实单列在文末「发布（已执行）」一节，完整运维记录见
+`docs/operations/2026-10-03-player-black-gold-release.md`。
 
 ## 本轮实际修改
 
@@ -82,9 +84,10 @@ axe 判不了的 26 个 `color-contrast` 节点全部用真实像素复核过（
 ## 验证证据
 
 ```
-npm run test                    242 passed / 0 failed
-npm run build                   tsc 通过；JS 50.67KB gzip / CSS 12.70KB gzip
-                                字体子集 38,404 B 随 dist/fonts/ 发布
+npm run test                    243 passed / 0 failed
+npm run build                   tsc 通过；JS 50.67KB gzip / CSS 12.72KB gzip
+                                字体子集 38,404 B 由 Vite 产出为 dist/assets/playfair-display-latin-<hash>.woff2
+                                （不能放 public/，否则生产 404，见下文缺陷 5）
 npm run test:browser            9 档全通过：
   layout    360x800 129 / 390x844 129 / 430x932 129 / 768x1024 129
             / 1440x1000 130 / 844x390 126
@@ -102,17 +105,31 @@ axe（6 页面，黑金态）            0 violation
 共 6 张（360x800 / 390x844 / 430x932 / 768x1024 / 1440x1000 / 844x390），
 每张 3×2 拼 6 个界面（短片流 / 长片列表 / 收藏 / 片库 / 设置 / 长播放器）。
 
-## 发布（下一步执行）
+## 发布（已执行）
 
-前置：工作树 clean、提交已推送。随后按 `docs/operations/README.md` 的既有流程：
+已按 `docs/operations/README.md` 的流程完成，**切换了两次**：
 
-1. `scripts/player_release.sh` 构建候选 → 传输并校验 SHA-256；
-2. VPS 导入镜像，核对 image ID / OCI revision；
-3. 取发布锁 + 0600 Player 配置与 SQLite backup API 备份；
-4. **在 VPS 上**执行 `scripts/player_deploy.sh --env-file <player.env> --execute`；
-5. 后验 Player 容器 ID / health / restarts、**Bot 容器 ID 与 restart 计数不变**、
-   DB `quick_check`、HTTPS 首页与资源 SHA-256；
-6. 保留旧镜像与旧 release source 作回滚点，写 `docs/operations/2026-10-03-*.md`。
+1. `scripts/player_release.sh` 构建候选 → `docker save` → 传输并在两端校验 SHA-256；
+2. VPS 导入镜像，核对 image ID / OCI revision / 运行 UID；
+3. `git archive` 同步 release source 到独立 snapshot，核验 archive SHA-256 + 全文件 manifest；
+4. 取发布锁 + 0600 Player 配置与 SQLite backup API 备份（含切换前 `quick_check`）；
+5. **在 VPS 上**执行该 release source 自带的 `scripts/player_deploy.sh --env-file /root/tgvio-player/player.env --execute`；
+6. 后验 Player 容器 ID / health / restarts、**Bot 容器 ID 与 restart 计数不变**、
+   DB `quick_check`、HTTPS 首页与四个资源的长度 + SHA-256；
+7. 保留旧镜像与旧 release source 作回滚点。
+
+| 事实 | 值 |
+| --- | --- |
+| 发布提交 | `d9c284fc8a00d678a8fbe8f88afb9e4ec1846ad6` |
+| release | `black-gold-20261003-r2` |
+| VPS 镜像 ID | `sha256:07d112f4ec9b784a2ded1039fa157211aa36ced8ac9fa2f7201f94499d21cdaa` |
+| Player 容器 | `eeaa5d46e5d2cc4aa83a47cd8552d697316b85ac21d5ca0d3f255e0f92b2da89`（running / healthy / restarts 0） |
+| 回滚镜像 | `sha256:ac7d4d91…`（r1）→ `sha256:19edb34c…`（`covers-c740cfb`） |
+| Bot 容器 | `408fd4e67f…` 与 restarts 0，切换前后完全一致 |
+
+第一次切换（`black-gold-20261003`，提交 `9756649`）上线后，发布后验发现自托管字体在生产 404，
+遂修复并以 r2 重新切换；完整事实、后验证据与回滚点见
+[docs/operations/2026-10-03-player-black-gold-release.md](../operations/2026-10-03-player-black-gold-release.md)。
 
 专用密钥 `/root/.ssh/tgvio_hostdzire_ed25519`，固定 host key `deploy/hostdzire_known_hosts`。
 
