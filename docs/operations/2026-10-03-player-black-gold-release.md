@@ -100,8 +100,16 @@ Vite 从 `public/` 复制到 `dist/` 根的其他文件既不在白名单、也�
 - 源码时效：`git rev-parse HEAD` = `git ls-remote origin refs/heads/main` = `d9c284fc…`，工作树 clean。
 
 截图归档：`C:/Users/Administrator/TGVIO-frontend-rework-20261003/review/sheet-03-black-gold-<视口>.jpg`
-（6 张，每张 3×2 拼短片流/长片列表/收藏/片库/设置/长播放器）。
+（6 张，每张 3×2 拼短片流/长片列表/收藏/片库/设置/长播放器），
+以及生产登录页 `99-production-login-black-gold.png`。
 截图与帧来自 FFmpeg testsrc2 隔离合成测试媒体，不是生产片库内容。
+
+生产登录页截图里的中文显示为豆腐块，这是**验证主机的限制而非生产缺陷**：本机 WSL 只装了 24 个字体、
+`fc-list :lang=zh` 为 **0**，headless Chromium 没有可用 CJK 字体；
+隔离 fixture 的中文之所以正常，是因为 `tests/ui-acceptance.server.mjs` 注入了
+`/mnt/c/Windows/Fonts/msyh.ttc`。真机（Windows/macOS/Android/iOS）自带 CJK 字体，
+应用字体栈以 MiSans → HarmonyOS Sans SC → PingFang SC → Noto Sans SC → Microsoft YaHei 依次回退。
+截图里有意义的是拉丁部分：品牌标 `SKY TGVIO` 已是 Playfair Display 字形，与字体加载事实一致。
 
 ## 未完成与清理候选
 
