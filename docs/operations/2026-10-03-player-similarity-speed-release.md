@@ -171,3 +171,50 @@ Bot 容器全程未动。
 本轮先修错了对象：第一次报告时我从一张**不可信的无头截图**推断症状，修掉了真实但无关的
 「面板比 sheet 宽 43px 被裁切」。正确做法是先要用户的实际截图/控制台——拿到后 5 分钟就定位到根因。
 已在提交信息与本节记录该教训。
+
+## 追加发布：封面指纹回填（worker r9）
+
+`tgvio-covers` 维护 worker 换成带指纹的镜像，并让既有封面补上 `phash`，使已上线的
+「按相似排序」与「和这张像的」真正有数据。
+
+### 发布事实
+
+| 项目 | 值 |
+|---|---|
+| 应用提交 | `abd7ff1a2c6739f7d54f922ea6c982777711036e` |
+| worker 镜像 tag | `tgvio-covers:phash-abd7ff1` |
+| 本地构建镜像 ID | `sha256:57b773fb877d6baae0317712ed5a0feee7505e458fcc436c0b79bcee8369b628` |
+| VPS 导入镜像 ID | `sha256:754e98949872c1fdb2a4db7251e2b04c7f17e8fd40535f97210399f04e55ea4f` |
+| 传输包 SHA-256 | `dad08d942d8177eb0091d4c4c223c5e30764093ab59197bf015c9dba34601b85`（两端一致） |
+| 旧 worker 容器 / 镜像 | `b23a424e…` / `sha256:a58d62de…`（revision `eaa83cdb`） |
+| 新 worker 容器 | `7df6004274cf643bc67a6ca7bf236ab0973f215c770d5d0f798898082d0a532c`（running / restarts 0 / UID 65532） |
+| 回滚点 | `/root/tgvio-covers/rollback-20261003T191049Z`（容器/镜像/revision）、`/root/tgvio-covers/rollback-checkpoint-20261003T191731Z`（检查点副本） |
+| Bot / Player / renditions | 三者容器 ID 与重启次数切换前后一致 |
+
+镜像由 `Dockerfile.renditions` 从 clean、已推送提交构建（FFmpeg 维护环境，无 Telegram 身份）；
+容器由文档规定的 `scripts/covers_deploy.sh` 创建，env 复用 `/root/tgvio-renditions/archive.env`
+（只含 4 个归档字段），工作目录沿用 `/root/tgvio-covers/work`。
+
+### 为什么需要把"24 小时复验"提前
+
+`MaintenanceState.eligible()` 对 `status='done'` 的任务要求 `now - updated >= 86400`（周期性复验远端）。
+旧 worker 一直周期性复验，把 `updated` 刷到了刚刚，因此换镜像后新 worker 只会 scan、不会立刻补指纹。
+处理：**停 worker → 备份检查点 → `UPDATE tasks SET updated=0 WHERE status='done'`（1014 行）→ 重启**。
+只改检查点的一列，**归档与其它容器未被触碰**；这是把 worker 自己 24 小时后要做的事提前到现在。
+
+### 行为核实（与既定裁定逐条一致）
+
+- worker 把"有封面但无指纹"视为未完成工作（`cover_backfill_runner.py:187`），重取帧；
+  **同一帧时只更新索引、不重写封面**——日志中每条完成为 `{"event":"complete","written":0}` ✓
+- `covers.json` 只新增可选 `phash`，schema/algorithm 串不变；坏值由 Player 降级为"无相似信息"。
+- Player 侧 `sync_once()` 每轮遍历全部包并重新校验封面索引，`apply_package` 的 upsert 更新 `phash`
+  （`sqlite.py:246`），**无需 Player 改动**。
+- 实测传播：回填开始后 2 分钟，Player `media_covers.phash IS NOT NULL` 由 **0 → 6**。
+
+### 进度与观察
+
+- 速率约 4–5 个包/分钟，1014 个预计 **3.5–4 小时**；worker 有检查点、可中断续跑，
+  空闲磁盘低于阈值会等待，失败按 600s→6h 退避重试。
+- 已知失败（源 >4GiB、不可解码、超出取帧预算等）保持"无封面/无指纹"，**不伪造**；
+  本轮观察到 `failed` 由 75 增至 76（一个此前 done 的包本次无法取帧，其既有封面保留）。
+- 停止 worker 不影响 Bot/Player；已登记的封面与索引仍可使用。
