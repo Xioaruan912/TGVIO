@@ -42,6 +42,9 @@ export function buildLargePlayerView(id: string, duration: number) {
   privacyPlayButton.append(icon("play", 32), element("span", undefined, "解锁并播放"));
   stage.append(video, loading, retryButton, privacyPlayButton);
   const controls = element("div", "large-controls");
+  // A label needs a role to reach the accessibility tree at all: a bare div is
+  // not a permitted host for aria-label. Same idiom as the action rail.
+  controls.setAttribute("role", "group");
   controls.setAttribute("aria-label", "播放控制");
   const timeline = buildTimeline(duration, "long");
   const playButton = control("play", "播放", "large-play");

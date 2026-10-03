@@ -54,6 +54,18 @@
   }
 }
 
+/* The inlay headings carry the display face as well. It only covers latin and
+   digits, so a mixed CJK/latin heading keeps the sans stack for CJK through the
+   fallback in --font-display. */
+.browse-title,
+.sheet-title,
+.login-title,
+.desktop-brand strong,
+.brand-name,
+.app-header-context {
+  font-family: var(--font-display);
+}
+
 /* Hover states pick up the metal too, instead of a neutral grey wash. */
 @media (hover: hover) {
   .library-button:not(:disabled):hover { border-color: var(--gold-hairline-strong); }

@@ -40,8 +40,9 @@ try {
     const key=++id;const timer=setTimeout(()=>{pending.delete(key);reject(new Error("CDP timeout: "+method));},10000);
     pending.set(key,{resolve,reject,timer});socket.send(JSON.stringify({id:key,method,params}));
   });
-  for(const [width,height] of [[360,800],[390,844],[430,932],[768,1024],[1440,1000],[844,390]]) {
-    await cdp("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:width<900});
+  const runFixture=async(label,{width,height,scale=1,media=[]})=>{
+    await cdp("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:scale,mobile:width<900});
+    await cdp("Emulation.setEmulatedMedia",{features:media});
     await cdp("Page.navigate",{url:`http://127.0.0.1:${port}/tests/fixtures/player-layout.html?size=${width}`});
     let result;
     for(let i=0;i<100;i++) {
@@ -49,11 +50,25 @@ try {
       const value=await cdp("Runtime.evaluate",{expression:'document.querySelector("#regression-result")?.textContent',returnByValue:true});
       if(value.result?.value){result=JSON.parse(value.result.value);break;}
     }
-    if(!result)throw new Error("Browser fixture did not finish");
-    console.log(JSON.stringify(result));
-    if(!result.ok)throw new Error(result.error);
-    if(result.width!==width)throw new Error("Viewport mismatch");
+    if(!result)throw new Error(label+": browser fixture did not finish");
+    console.log(JSON.stringify({...result,label}));
+    if(!result.ok)throw new Error(label+": "+result.error);
+    if(result.width!==width)throw new Error(label+": viewport mismatch");
+  };
+  for(const [width,height] of [[360,800],[390,844],[430,932],[768,1024],[1440,1000],[844,390]]) {
+    await runFixture("layout "+width+"x"+height,{width,height});
   }
+  // The UI is sized in px, so it does not respond to a browser font-size
+  // preference; page zoom is the resize mechanism users actually have, and it is
+  // emulated by shrinking the layout viewport by 1.5 while painting 1.5x larger.
+  // The source widths keep the resulting CSS viewport at or above the 360px floor
+  // the rest of this suite covers.
+  for(const [width,height] of [[540,844],[1440,1000]]) {
+    await runFixture("zoom150 "+width+"x"+height,{width:Math.round(width/1.5),height:Math.round(height/1.5),scale:1.5});
+  }
+  // Reduced motion must leave the layout untouched while flattening the springs.
+  await runFixture("reduced-motion 390x844",{width:390,height:844,media:[{name:"prefers-reduced-motion",value:"reduce"}]});
+  await cdp("Emulation.setEmulatedMedia",{features:[]});
 } finally {
   socket?.close();
   if(chrome && chrome.exitCode===null) {

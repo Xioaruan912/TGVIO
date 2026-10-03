@@ -1,5 +1,5 @@
 import "../../src/style.css";
-import { buildShell, setControlsVisible, openSheet, type ShellHandlers } from "../../src/ui";
+import { buildShell, setActiveNav, setControlsVisible, openSheet, type ShellHandlers } from "../../src/ui";
 import { FeedView } from "../../src/feed";
 import { LargePlayer } from "../../src/large";
 import { LibraryPlayback } from "../../src/library-playback";
@@ -14,6 +14,19 @@ const visible = (el: Element) => { const s = getComputedStyle(el); return s.disp
 async function run() {
   const handlers = new Proxy({}, { get: () => () => undefined }) as ShellHandlers;
   const shell = buildShell(handlers); document.getElementById("app")!.append(shell.root);
+  setActiveNav(shell, "home");
+  // On a wide touch screen (no hover) the rail labels stop floating and sit inside
+  // the button, so the active one has to take --accent-ink off the gold fill.
+  if (innerWidth >= 900) {
+    for (const button of shell.root.querySelectorAll<HTMLElement>(".desktop-links .nav-btn.active")) {
+      const label = button.querySelector<HTMLElement>(".nav-label");
+      if (!label) continue;
+      const labelStyle = getComputedStyle(label);
+      if (labelStyle.backgroundColor !== "rgba(0, 0, 0, 0)") continue;
+      check(labelStyle.color === getComputedStyle(button).color, "rail label takes the active button's ink");
+      check(labelStyle.color !== getComputedStyle(document.documentElement).getPropertyValue("--text").trim(), "the rail label is not a fixed light tone");
+    }
+  }
   const clip: Clip = { id: "a".repeat(64), streamUrl: "", width: 640, height: 360, duration: 60, sizeBytes: 100,
     favorite: false, deletable: false, mimeType: "video/mp4", codec: null, category: "short", groups: [], variants: [{ id: "v480", height: 480, width: 854, stream_url: "/480" }, { id: "v720", height: 720, width: 1280, stream_url: "/720" }] };
   const feed = new FeedView(shell.feed); feed.setClips([clip]);
@@ -68,7 +81,33 @@ async function run() {
   };
   check(idleTimers.size === 0, "locked constructor does not arm idle timer");
   document.body.append(large.root); await pause();
+  // The long player's header floats on the picture: the media owns the top of the
+  // player and the header is painted across it. Landscape is the explicit
+  // exception - there the transport sits beside the picture, so an overlay would
+  // cover the controls, and the header keeps its own row.
+  const topbar = large.root.querySelector<HTMLElement>(".large-topbar")!;
+  const topbarBox = topbar.getBoundingClientRect();
+  const stageBox = large.root.querySelector<HTMLElement>(".large-stage")!.getBoundingClientRect();
+  const playerBox = large.root.getBoundingClientRect();
+  if (innerWidth > innerHeight && innerHeight <= 560) {
+    check(stageBox.top >= topbarBox.bottom - 1, "landscape keeps the header in its own row");
+  } else {
+    check(stageBox.top <= playerBox.top + 1, "long media starts at the top of the player");
+    check(topbarBox.bottom > stageBox.top + 1, "the floating header covers the picture");
+    const backBox = large.root.querySelector<HTMLElement>(".large-back")!.getBoundingClientRect();
+    const backHit = document.elementFromPoint(backBox.left + backBox.width / 2, backBox.top + backBox.height / 2);
+    check(backHit !== null && topbar.contains(backHit), "the floating header keeps its return control reachable");
+    check(document.elementFromPoint(playerBox.left + playerBox.width / 2, topbarBox.bottom + 12) !== topbar, "the floating header never swallows the picture's input");
+  }
   check(large.root.querySelector<HTMLElement>(".large-controls")!.inert, "privacy-locked long controls are inert");
+  // The reduced-motion pass re-runs this same fixture, so the contract is checked
+  // where the stylesheets are actually live rather than in a source assertion.
+  if (matchMedia("(prefers-reduced-motion: reduce)").matches) {
+    const playSurface = large.root.querySelector<HTMLElement>(".large-play")!;
+    check(getComputedStyle(playSurface).animationName === "none", "reduced motion stops the gold sheen");
+    check(getComputedStyle(playSurface).transitionDuration === "0s", "reduced motion stops transitions");
+    check(getComputedStyle(document.documentElement).getPropertyValue("--ease-spring").trim() === "linear", "reduced motion flattens the spring curves");
+  }
   const favoriteButton = large.root.querySelector<HTMLButtonElement>('.large-favorite')!;
   check(Boolean(favoriteButton) && favoriteButton.classList.contains("selected") && favoriteButton.getAttribute("aria-pressed") === "true", "long favorite initializes server truth and accessible state");
   check(getComputedStyle(large.currentVideo()).visibility === "hidden", "long privacy never reveals blurred video");

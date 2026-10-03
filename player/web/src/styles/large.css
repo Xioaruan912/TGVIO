@@ -1,7 +1,18 @@
 /* Long player: independent header, media, timeline and grouped transport. */
-.large-player { position: fixed; inset: 0; z-index: 55; height: 100vh; height: 100dvh; display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: calc(64px + var(--safe-top)) minmax(0,1fr) auto; background: var(--bg); color: var(--text); touch-action: pan-y; padding-inline: var(--safe-left) var(--safe-right); }
-.large-topbar { position: relative; z-index: 2; min-width: 0; display: flex; align-items: center; gap: 8px; padding: var(--safe-top) 12px 0; background: var(--surface); border-bottom: 1px solid var(--line); padding-inline: 20px; }
-.large-back, .large-privacy-lock { flex: 0 0 44px; width: 48px; height: 44px; display: grid; place-items: center; border-radius: 14px; color: var(--sky700); background: var(--sky50); min-width: 48px; min-height: 48px; padding: 4px; }
+.large-player { position: fixed; inset: 0; z-index: 55; height: 100vh; height: 100dvh; display: grid; grid-template-columns: minmax(0,1fr); grid-template-rows: minmax(0,1fr) auto; background: var(--bg); color: var(--text); touch-action: pan-y; padding-inline: var(--safe-left) var(--safe-right); }
+/* The header floats over the picture instead of owning a grid row, so the media
+   gets the whole stage. A top scrim keeps the title and the two controls legible
+   on any frame. It stays visible at all times: it is never bound to
+   control-visibility, which the layout tests enforce. The bar itself never takes
+   pointer input, so a double-tap on the upper picture still reaches the seek
+   gesture; only the two controls opt back in. */
+.large-topbar { position: absolute; z-index: 3; inset: 0 0 auto; min-width: 0; display: flex; align-items: center; gap: 8px; padding: var(--safe-top) 20px 44px; background: var(--media-scrim-top); pointer-events: none; }
+/* The two header controls are round glass chips. They are scoped to the topbar
+   so they outrank `.large-btn`, which is declared later and owns the shared
+   transport look. An icon-only round action carries its own accessible name
+   (see `large-player-view.ts`), and a caption would unround it. */
+.large-topbar .large-back, .large-topbar .large-privacy-lock { flex: 0 0 44px; width: 44px; height: 44px; display: grid; place-items: center; border-radius: 50%; color: var(--gold-bright); background: var(--glass-control); border: 1px solid var(--border-strong); min-width: 44px; min-height: 44px; padding: 0; gap: 0; pointer-events: auto; }
+.large-topbar .large-back .control-caption, .large-topbar .large-privacy-lock .control-caption { display: none; }
 .large-title { flex: 1; min-width: 0; overflow: hidden; white-space: nowrap; text-overflow: ellipsis; font-size: 15px; font-weight: 650; line-height: 22px; }
 .large-topbar .net-speed { flex: none; }
 .large-stage { position: relative; min-height: 0; min-width: 0; display: grid; place-items: center; overflow: hidden; background: var(--media-bg); isolation: isolate; }
@@ -47,7 +58,9 @@
 
 @media (max-height: 560px) and (orientation: landscape) {
   .large-player { grid-template-areas: "header header" "media controls"; grid-template-columns: minmax(0,1fr) minmax(260px,36%); grid-template-rows: calc(56px + var(--safe-top)) minmax(0,1fr); }
-  .large-topbar { grid-area: header; }
+  /* Landscape keeps the header as a real row: there the controls sit beside the
+     picture, so an overlay would cover the transport instead of the letterbox. */
+  .large-topbar { grid-area: header; position: relative; inset: auto; padding: var(--safe-top) 12px 0; padding-inline: 20px; background: var(--surface); border-bottom: 1px solid var(--border); }
   .large-stage { grid-area: media; }
   .large-controls { grid-area: controls; align-content: start; overflow-y: auto; padding: 8px 12px calc(8px + var(--safe-bottom)); }
 }

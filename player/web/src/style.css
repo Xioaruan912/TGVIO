@@ -1,3 +1,6 @@
+/* The self-hosted display face is declared first so no component can paint
+   before its @font-face rule exists. */
+@import "./styles/fonts.css";
 @import "./styles/base.css";
 @import "./styles/cover.css";
 @import "./styles/browse.css";

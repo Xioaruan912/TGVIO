@@ -4,6 +4,7 @@ import test from "node:test";
 
 const source = (path) => readFileSync(new URL("../src/" + path, import.meta.url), "utf8");
 const baseCss = source("styles/base.css");
+const fontsCss = source("styles/fonts.css");
 const motionCss = source("styles/motion.css");
 const foilCss = source("styles/foil.css");
 const styleEntry = source("style.css");
@@ -178,6 +179,92 @@ test("privacy lock uses opaque cover rather than revealing a blurred frame", () 
   assert.match(baseCss, /--privacy-cover:\s*#[0-9a-f]{6};/);
   assert.match(body(feedCss, ".app-shell.privacy-locked .video-host"), /visibility:\s*hidden/);
   assert.match(body(feedCss, ".app-shell.privacy-locked .media-stage::after"), /background:\s*var\(--privacy-cover\)/);
+});
+
+test("the display face ships inside the bundle instead of a third-party CDN", () => {
+  assert.ok(styleEntry.includes("fonts.css"), "the font face is imported by the entry stylesheet");
+  assert.match(fontsCss, /@font-face/);
+  assert.match(fontsCss, /src:\s*url\("\/fonts\/playfair-display-latin\.woff2"\)\s*format\("woff2"\)/);
+  assert.match(fontsCss, /font-display:\s*swap/);
+  assert.doesNotMatch(fontsCss, /https?:\/\//, "no remote font origin may be referenced");
+  // The subset has to actually be in the shipped directory, not just referenced.
+  const subset = readFileSync(new URL("../public/fonts/playfair-display-latin.woff2", import.meta.url));
+  assert.ok(subset.length > 1024, "the vendored subset is a real font file");
+  assert.ok(readFileSync(new URL("../public/fonts/OFL.txt", import.meta.url), "utf8").includes("SIL OPEN FONT LICENSE"), "the licence ships with the face");
+  // Latin and digits only: CJK has to keep falling through to the sans stack.
+  assert.match(baseCss, /--font-display:\s*"Playfair Display",\s*var\(--font-sans\)/);
+});
+
+test("ink on the gold foil clears AA on every stop, not just the mid tone", () => {
+  // The foil is a gradient, so a label sitting on it is only as legible as its
+  // darkest stop. axe cannot evaluate a gradient background, so this is asserted
+  // against the declared stops instead of a rendered pixel.
+  const stops = [...tokens["gold-foil"].matchAll(/#[0-9a-f]{6}/gi)].map(([hex]) => hex.toLowerCase());
+  assert.ok(stops.length >= 3, "the foil declares its stops");
+  for (const stop of stops) {
+    const ratio = contrast(tokens["accent-ink"], stop);
+    assert.ok(ratio >= 4.5, `--accent-ink on foil stop ${stop} is ${ratio.toFixed(2)}:1`);
+  }
+  // The inlay headings paint the foil as their *ink*, so its darkest stop has to
+  // stay readable on every dark surface a heading can sit on.
+  const darkest = stops.reduce((worst, stop) => (contrast("#ffffff", stop) < contrast("#ffffff", worst) ? stop : worst));
+  for (const surface of ["bg", "surface"]) {
+    const ratio = contrast(darkest, tokens[surface]);
+    assert.ok(ratio >= 4.5, `foil-stop ink ${darkest} on --${surface} is ${ratio.toFixed(2)}:1`);
+  }
+});
+
+test("the static rail label takes the button's ink, not a fixed light tone", () => {
+  // With no hover the rail labels stop being floating tooltips and sit inside the
+  // button. On the active item that is the gold fill, where the previous fixed
+  // light label measured 1.86:1.
+  const staticBranch = shellCss.slice(shellCss.indexOf("@media (hover: none) and (min-width: 900px)"));
+  const label = body(staticBranch, ".desktop-nav .nav-label");
+  assert.match(label, /background:\s*none/, "the static label brings no surface of its own");
+  assert.match(label, /color:\s*inherit/, "so it has to take the button's ink");
+  assert.doesNotMatch(shellCss, /\.desktop-nav \.nav-btn\.active \.nav-label/, "no fixed ink may override the inheritance");
+});
+
+test("the long player header floats on the picture instead of owning a grid row", () => {
+  assert.doesNotMatch(body(largeCss, ".large-player"), /calc\(64px \+ var\(--safe-top\)\)/, "no reserved header row");
+  const topbar = body(largeCss, ".large-topbar");
+  assert.match(topbar, /position:\s*absolute/, "the header is taken out of the flow");
+  assert.match(topbar, /inset:\s*0 0 auto/, "the header is pinned to the top of the player");
+  assert.match(topbar, /background:\s*var\(--media-scrim-top\)/, "the header paints its own scrim");
+  // The floating bar must not steal the picture: only its two controls opt back
+  // into pointer input, so a double-tap on the upper frame still seeks.
+  assert.match(topbar, /pointer-events:\s*none/);
+  for (const selector of [".large-topbar .large-back", ".large-topbar .large-privacy-lock"]) {
+    assert.match(body(largeCss, selector), /pointer-events:\s*auto/, selector);
+    assert.match(body(largeCss, selector), /background:\s*var\(--glass-control\)/, selector);
+  }
+});
+
+test("the header scrim keeps its text readable on the brightest frame", () => {
+  // The header owns a scrim, so its contrast cannot be checked against a flat
+  // token. Composite the declared gradient over pure white and walk the band the
+  // heading occupies; a scrim that fades out early fails here.
+  const stops = [...tokens["media-scrim-top"].matchAll(/rgba\((\d+), (\d+), (\d+), ([\d.]+)\)\s+([\d.]+)%/g)]
+    .map(([, r, g, b, alpha, at]) => ({ rgb: [+r, +g, +b], alpha: +alpha, at: +at / 100 }));
+  assert.ok(stops.length >= 2, "the scrim declares parseable stops");
+  const overWhite = (position) => {
+    const index = stops.findIndex((stop) => stop.at >= position);
+    const upper = stops[index === -1 ? stops.length - 1 : index];
+    const lower = stops[Math.max(0, (index === -1 ? stops.length : index) - 1)];
+    const span = upper.at - lower.at;
+    const mix = span === 0 ? 1 : Math.min(1, Math.max(0, (position - lower.at) / span));
+    const alpha = lower.alpha + (upper.alpha - lower.alpha) * mix;
+    return lower.rgb.map((value, channelIndex) => Math.round(alpha * (value + (upper.rgb[channelIndex] - value) * mix) + (1 - alpha) * 255));
+  };
+  const toHex = (rgb) => "#" + rgb.map((value) => value.toString(16).padStart(2, "0")).join("");
+  for (const position of [0, 0.1, 0.2, 0.3, 0.4, 0.475]) {
+    const background = overWhite(position);
+    for (const ink of ["text", "text-muted"]) {
+      const ratio = contrast(tokens[ink], toHex(background));
+      assert.ok(ratio >= 4.5, `--${ink} on the scrim at ${position * 100}% is ${ratio.toFixed(2)}:1`);
+    }
+  }
+  assert.deepEqual(overWhite(1), [255, 255, 255], "the scrim is fully transparent at its far edge");
 });
 
 test("long privacy lock also uses an opaque cover", () => {

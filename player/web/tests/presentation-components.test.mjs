@@ -53,6 +53,10 @@ test("one long view owns one stable video and separates destructive actions from
   assert.equal(view.seek.max,"95");
   assert.equal(view.timeTotal.textContent,"1:35");
   assert.ok(view.controls.contains(view.playButton));
+  // aria-label on a bare div never reaches the accessibility tree, so the
+  // labelled control cluster has to declare a role axe will accept.
+  assert.equal(view.controls.getAttribute("role"), "group");
+  assert.equal(view.controls.getAttribute("aria-label"), "播放控制");
   assert.ok(view.controls.contains(view.netSpeed));
   assert.ok(view.root.querySelector(".large-more").contains(view.deleteButton));
   assert.ok(!view.root.querySelector(".large-action-row").children.includes(view.deleteButton));

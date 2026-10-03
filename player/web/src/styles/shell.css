@@ -45,7 +45,6 @@
   }
   .desktop-nav .nav-btn:hover .nav-label,
   .desktop-nav .nav-btn:focus-visible .nav-label { opacity: 1; translate: 0 -50%; }
-  .desktop-nav .nav-btn.active .nav-label { color: var(--text); }
   .bottom-nav { display: none; }
   .viewport { grid-template-rows: calc(64px + var(--safe-top)) minmax(0,1fr) auto; }
   .media-stage { margin: 0; border-radius: 0; }
@@ -54,10 +53,13 @@
   .player-panel { margin: 0; border: 0; border-top: 1px solid var(--border); border-radius: 0; padding: 8px 24px; grid-template-columns: minmax(110px,170px) minmax(0,1fr) auto auto auto; grid-template-areas: "info progress transport actions cache"; align-items: center; gap: 0 20px; }
   .player-panel .progress-row { min-height: 56px; }
 }
-/* Without hover the floating rail labels would never appear, so they stay put. */
+/* Without hover the floating rail labels would never appear, so they stay put.
+   They also lose their own surface, so they must take the button's ink: on the
+   active item that ink is --accent-ink, and a fixed light label here measured
+   1.86:1 on the gold fill. */
 @media (hover: none) and (min-width: 900px) {
   .desktop-nav .nav-btn { min-height: 56px; gap: 3px; }
-  .desktop-nav .nav-label { position: static; opacity: 1; translate: none; padding: 0; border: 0; background: none; font-size: 10px; }
+  .desktop-nav .nav-label { position: static; opacity: 1; translate: none; padding: 0; border: 0; background: none; font-size: 10px; color: inherit; }
 }
 @media (max-width: 430px) { .brand-tagline { display: none; } }
 @media (max-height: 560px) and (orientation: landscape) {

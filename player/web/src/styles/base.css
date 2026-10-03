@@ -32,6 +32,15 @@
   --surface-sunken: #0c0a09;
   --surface-soft: #1a1714;
   --surface-glass: rgba(18, 16, 14, 0.76);
+  /* The long player's header floats on the picture, so it needs its own scrim
+     (the frame below it can be any brightness) and a glass fill for the two
+     controls that sit on top of that scrim. */
+  /* The scrim has to hold its strength across the whole header box - which
+     grows with the notch inset - and only fade below it, otherwise it is
+     weakest exactly where the title and the 12px context label sit. Measured
+     worst case (pure white frame): 17.8:1 and 5.9:1 for those two text rows. */
+  --media-scrim-top: linear-gradient(180deg, rgba(5, 4, 6, 0.96) 0%, rgba(5, 4, 6, 0.9) 55%, rgba(5, 4, 6, 0) 100%);
+  --glass-control: rgba(8, 7, 10, 0.62);
 
   --text: #f6f1e6;
   --text-secondary: #c9bda6;
