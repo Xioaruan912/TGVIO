@@ -2,9 +2,12 @@ import { buildBrowseFrame, browseButton } from "./components/browse-frame";
 import { api, shortId } from "./api";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
+import { createSlidingIndicator } from "./components/indicator";
+import { closeSheet, openSheet, sheetChoice, sheetNote, sheetRow, type SheetHost } from "./components/sheet";
+import { CollectionsController } from "./collections";
 import { element } from "./ui";
 import { prefs, setPref } from "./settings";
-import type { Clip } from "./types";
+import type { Clip, CollectionDto } from "./types";
 
 const BATCH = 20;
 const MAX_SELECTED = 100;
@@ -43,13 +46,24 @@ export class FavoritesPage {
   private launchControl: HTMLElement | null = null;
   private readonly loadButton = this.button("加载更多", () => void this.loadMore());
   private readonly density = buildCoverDensityControl({ value: prefs.coverDensity, onSelect: value => this.setDensity(value) });
+  private readonly segments = element("div", "library-segments");
+  private readonly segmentIndicator = createSlidingIndicator();
+  private readonly segmentButtons: HTMLButtonElement[] = [];
+  private readonly collections = new CollectionsController(api);
+  /** "favorites" is the grid; "collections" is the list and an open collection's members. */
+  private scope: "favorites" | "collections" = "favorites";
+  private collection: CollectionDto | null = null;
+  private readonly sheet: SheetHost | null;
+  private sheetOpen = false;
   private playAllButton: HTMLButtonElement | null = null;
 
   constructor(
     private readonly onPlay: (clips: Clip[], control?: HTMLElement) => void,
     private readonly onClose: () => void,
     private readonly onImmersive?: () => void,
+    options?: { sheet?: SheetHost },
   ) {
+    this.sheet = options?.sheet ?? null;
     const frame = buildBrowseFrame({ title: this.title, subtitle: "留住想再看的画面",
       kind: "favorites", onBack: () => this.onClose(), toolbar: this.toolbar, notice: this.notice,
       selection: this.selectionBar, list: this.list });
@@ -76,6 +90,8 @@ export class FavoritesPage {
 
   private async loadMore(): Promise<void> {
     if (this.destroyed || this.playbackActive || this.loading || !this.hasMore || this.seen.size >= MAX_ROWS) return;
+    // The collections *list* is not paged; only a collection's members are.
+    if (this.scope === "collections" && this.collection === null) return;
     const generation = this.generation;
     const request = new AbortController();
     this.request?.abort();
@@ -85,7 +101,9 @@ export class FavoritesPage {
     this.renderNotice();
     const timeout = window.setTimeout(() => request.abort(), 15_000);
     try {
-      const page = await api.favoritePage(BATCH, this.cursor, request.signal);
+      const page = this.collection !== null
+        ? await this.collections.items(this.collection.collection_id, BATCH, this.cursor, request.signal)
+        : await api.favoritePage(BATCH, this.cursor, request.signal);
       if (generation !== this.generation || this.destroyed) return;
       // Favorite cursors are opaque: detect repeats/cycles, not lexical order.
       // Stage rows before committing so malformed pages retry the last good key.
@@ -135,24 +153,51 @@ export class FavoritesPage {
       return;
     }
     if (!this.clips.length) {
-      this.list.append(element("p", "library-empty", "还没有收藏。在播放页点击收藏后会出现在这里。"));
-      this.notice.textContent = "收藏与备份状态分别记录";
+      const empty = this.collection !== null
+        ? "这个集合还没有成员。在多选模式下选择视频，再点「加入集合」。"
+        : "还没有收藏。在播放页点击收藏后会出现在这里。";
+      this.list.append(element("p", "library-empty", empty));
+      this.notice.textContent = this.collection !== null ? `集合「${this.collection.name}」暂无成员` : "收藏与备份状态分别记录";
       return;
     }
     const scope = this.hasMore ? `已加载 ${this.clips.length} 个` : `共 ${this.clips.length} 个`;
     const budget = this.hasMore && this.seen.size >= MAX_ROWS ? " · 本次浏览已达 1000 条信息预算" : "";
+    if (this.collection !== null) {
+      this.notice.textContent = `集合「${this.collection.name}」${scope}成员${budget}`;
+      return;
+    }
     this.notice.textContent = `${scope}收藏${budget} · WebDAV 备份状态见「设置 → 收藏与 WebDAV」`;
   }
 
   private renderToolbar(): void {
-    this.toolbar.replaceChildren();
+    this.buildSegments();
+    this.toolbar.replaceChildren(this.segments);
+    if (this.scope === "collections" && this.collection === null) {
+      const create = this.button("新建集合", () => this.openNameSheet(null));
+      create.classList.add("collection-create");
+      this.toolbar.append(create);
+      this.playAllButton = null;
+      this.syncSegments();
+      this.renderSelection();
+      return;
+    }
     const playAll = this.button(`播放已加载 (${this.clips.length})`, () => {
       if (this.clips.length) this.play(this.clips, playAll);
     });
     playAll.disabled = !this.clips.length;
     this.playAllButton = playAll;
     this.toolbar.append(playAll);
-    if (this.onImmersive) {
+    // Managing a collection lives inside it. The builtin never opens here, so it can
+    // never be offered a rename or a delete.
+    if (this.collection !== null) {
+      const rename = this.button("改名", () => this.openNameSheet(this.collection));
+      rename.classList.add("collection-rename");
+      const remove = this.button("删除", () => this.openDeleteSheet(this.collection!));
+      remove.classList.add("collection-delete");
+      const back = this.button("返回集合", () => this.showCollections());
+      back.classList.add("collection-back");
+      this.toolbar.append(rename, remove, back);
+    } else if (this.onImmersive) {
       const immersive = this.button("沉浸播放", () => this.onImmersive?.());
       this.toolbar.append(immersive);
     }
@@ -160,6 +205,7 @@ export class FavoritesPage {
     toggle.setAttribute("aria-pressed", String(this.selectMode));
     toggle.classList.add("library-select-toggle");
     this.toolbar.append(toggle, this.density.el);
+    this.syncSegments();
     this.renderSelection();
   }
 
@@ -190,9 +236,24 @@ export class FavoritesPage {
     const count = this.selected.size;
     const play = this.button(`播放选中 (${count}/${MAX_SELECTED})`, () => this.play([...this.selected.values()], play));
     play.disabled = count === 0;
+    const actions: HTMLButtonElement[] = [play];
+    // Adding to a collection is an explicit entry in select mode, never the cover's
+    // own click: a plain tap on a cover still only plays it.
+    if (this.collection !== null) {
+      const remove = this.button(`移出集合 (${count})`, () => void this.removeSelected());
+      remove.disabled = count === 0;
+      remove.classList.add("collection-remove");
+      actions.push(remove);
+    } else if (this.scope === "favorites") {
+      const add = this.button(`加入集合 (${count})`, () => void this.openCollectionPicker());
+      add.disabled = count === 0;
+      add.classList.add("collection-add");
+      actions.push(add);
+    }
     const clear = this.button("清空选择", () => this.clearSelection());
     clear.disabled = count === 0;
-    this.selectionBar.replaceChildren(play, clear);
+    actions.push(clear);
+    this.selectionBar.replaceChildren(...actions);
   }
 
   private clearSelection(): void {
@@ -272,10 +333,232 @@ export class FavoritesPage {
     this.renderNotice();
   }
 
+  private buildSegments(): void {
+    if (this.segmentButtons.length) return;
+    this.segments.append(this.segmentIndicator.el);
+    for (const [scope, label] of [["favorites", "收藏"], ["collections", "集合"]] as const) {
+      const button = this.button(label, () => this.setScope(scope));
+      button.classList.add("library-segment");
+      button.dataset.scope = scope;
+      this.segmentButtons.push(button);
+      this.segments.append(button);
+    }
+  }
+
+  private syncSegments(): void {
+    for (const button of this.segmentButtons) {
+      const active = button.dataset.scope === this.scope;
+      button.setAttribute("aria-pressed", String(active));
+      if (active) this.segmentIndicator.moveTo(button);
+    }
+  }
+
+  private setScope(scope: "favorites" | "collections"): void {
+    if (scope === this.scope && this.collection === null) return;
+    this.scope = scope;
+    this.collection = null;
+    this.resetGrid();
+    this.renderToolbar();
+    if (scope === "collections") { void this.loadCollections(); return; }
+    this.notice.textContent = "正在读取收藏…";
+    void this.loadMore();
+  }
+
+  private showCollections(): void { this.setScope("collections"); }
+
+  /** A scope change is a new context: nothing from the old one may be reused. */
+  private resetGrid(): void {
+    this.generation += 1;
+    this.request?.abort();
+    this.request = null;
+    this.loading = false;
+    for (const tile of this.tiles.values()) tile.destroy();
+    this.tiles.clear();
+    this.clips = [];
+    this.seen.clear();
+    this.removed.clear();
+    this.cursors.clear();
+    this.cursor = null;
+    this.hasMore = true;
+    this.error = false;
+    this.clearSelection();
+    this.list.replaceChildren();
+    const listing = this.scope === "collections" && this.collection === null;
+    this.list.classList.toggle("cover-grid", !listing);
+    this.list.classList.toggle("collection-list", listing);
+  }
+
+  private async loadCollections(): Promise<void> {
+    const generation = this.generation;
+    this.notice.textContent = "正在读取集合…";
+    await this.collections.load();
+    if (generation !== this.generation || this.destroyed) return;
+    if (this.scope !== "collections" || this.collection !== null) return;
+    if (this.collections.error) {
+      this.notice.textContent = "集合加载失败，已保留上次结果";
+      this.list.append(this.button("重试", () => void this.loadCollections()));
+      return;
+    }
+    this.renderCollections();
+  }
+
+  private renderCollections(): void {
+    this.list.replaceChildren();
+    const rows = this.collections.rows;
+    if (!rows.length) {
+      this.list.append(element("p", "library-empty", "还没有集合。点「新建集合」创建第一个。"));
+      this.notice.textContent = "收藏是内置集合，不能改名或删除";
+      return;
+    }
+    for (const collection of rows) {
+      const row = element("button", "collection-row");
+      row.type = "button";
+      row.dataset.collectionId = collection.collection_id;
+      row.dataset.kind = collection.kind;
+      if (collection.kind === "builtin") row.classList.add("collection-row-builtin");
+      row.append(
+        element("span", "collection-row-name", collection.name),
+        element("span", "collection-row-count", `${collection.count}${collection.count_capped ? "+" : ""}`),
+        element("span", "collection-row-kind", collection.kind === "builtin" ? "内置" : collection.kind === "smart" ? "智能" : "手动"),
+      );
+      row.addEventListener("click", () => {
+        if (collection.kind === "builtin") { this.setScope("favorites"); return; }
+        this.openCollection(collection);
+      });
+      this.list.append(row);
+    }
+    this.notice.textContent = "内置「收藏」不可改名或删除；智能集合的成员由条件决定";
+  }
+
+  private openCollection(collection: CollectionDto): void {
+    this.collection = collection;
+    this.resetGrid();
+    this.renderToolbar();
+    this.notice.textContent = `集合「${collection.name}」`;
+    void this.loadMore();
+  }
+
+  private showSheet(title: string, body: Node[]): void {
+    if (!this.sheet) return;
+    this.sheetOpen = true;
+    openSheet(this.sheet, title, body);
+  }
+
+  private hideSheet(): void {
+    if (!this.sheet) return;
+    this.sheetOpen = false;
+    closeSheet(this.sheet);
+  }
+
+  private openNameSheet(collection: CollectionDto | null): void {
+    const input = element("input", "filter-input collection-name-input");
+    input.type = "text";
+    input.maxLength = 60;
+    input.value = collection?.name ?? "";
+    input.placeholder = "集合名称";
+    input.setAttribute("aria-label", "集合名称");
+    const error = element("p", "sheet-note");
+    const submit = (): void => {
+      const name = input.value.trim();
+      if (!name || name.length > 60) { error.textContent = "名称需要 1 到 60 个字符"; return; }
+      void this.saveName(collection, name, error);
+    };
+    input.addEventListener("keydown", event => {
+      if ((event as KeyboardEvent).key === "Enter") submit();
+    });
+    const form = element("div", "collection-name-form");
+    form.append(input, error);
+    const actions = element("div", "filter-actions");
+    const save = this.button(collection === null ? "创建" : "改名", submit);
+    save.classList.add("filter-apply");
+    actions.append(this.button("取消", () => this.hideSheet()), save);
+    this.showSheet(collection === null ? "新建集合" : "改名", [form, actions]);
+  }
+
+  private async saveName(collection: CollectionDto | null, name: string, error: HTMLElement): Promise<void> {
+    const saved = collection === null
+      ? (await this.collections.create(name)) !== null
+      : await this.collections.rename(collection.collection_id, name);
+    if (!saved) { error.textContent = "保存失败，请重试"; return; }
+    this.hideSheet();
+    this.renderCollections();
+    this.notice.textContent = collection === null ? `已创建集合「${name}」` : `已改名「${name}」`;
+  }
+
+  private openDeleteSheet(collection: CollectionDto): void {
+    this.showSheet("删除集合", [
+      sheetNote(`删除集合「${collection.name}」？视频本身不会被删除。`),
+      sheetRow({ title: "删除集合", sub: "只删除集合与它的成员关系", onPick: () => { void this.deleteCollection(collection); } }),
+      sheetRow({ title: "取消", sub: "保留集合", onPick: () => this.hideSheet() }),
+    ]);
+  }
+
+  private async deleteCollection(collection: CollectionDto): Promise<void> {
+    const removed = await this.collections.remove(collection.collection_id);
+    this.hideSheet();
+    this.renderCollections();
+    this.notice.textContent = removed ? `已删除集合「${collection.name}」` : "删除失败，请重试";
+  }
+
+  private async openCollectionPicker(): Promise<void> {
+    // The favourites grid never had to know the collections; the picker is where it
+    // finds out, and only then.
+    if (!this.collections.rows.length) await this.collections.load();
+    const targets = this.collections.writable();
+    if (!targets.length) {
+      this.notice.textContent = "还没有可加入的集合，请先在「集合」里新建一个";
+      return;
+    }
+    this.showSheet("加入集合", [
+      sheetNote(`把选中的 ${this.selected.size} 个视频加入：`),
+      ...targets.map(collection => sheetChoice(
+        collection.name,
+        `${collection.count} 个成员`,
+        false,
+        () => { void this.addSelectedTo(collection); },
+      )),
+    ]);
+  }
+
+  private async addSelectedTo(collection: CollectionDto): Promise<void> {
+    const clips = [...this.selected.values()];
+    let added = 0;
+    for (const clip of clips) {
+      if (await this.collections.addItem(collection.collection_id, clip.id)) added += 1;
+    }
+    this.hideSheet();
+    this.clearSelection();
+    this.setSelectMode(false);
+    this.notice.textContent = `已把 ${added}/${clips.length} 个视频加入「${collection.name}」`;
+  }
+
+  private async removeSelected(): Promise<void> {
+    const collection = this.collection;
+    if (collection === null) return;
+    const clips = [...this.selected.values()];
+    let removed = 0;
+    for (const clip of clips) {
+      if (!await this.collections.removeItem(collection.collection_id, clip.id)) continue;
+      removed += 1;
+      this.removed.add(clip.id);
+      this.clips = this.clips.filter(item => item.id !== clip.id);
+      this.tiles.get(clip.id)?.destroy();
+      this.tiles.get(clip.id)?.root.remove();
+      this.tiles.delete(clip.id);
+    }
+    this.clearSelection();
+    this.renderToolbar();
+    this.renderNotice();
+    this.notice.textContent = `已从「${collection.name}」移出 ${removed}/${clips.length} 个视频`;
+  }
+
   destroy(): void {
     this.destroyed = true;
     this.generation += 1;
     this.request?.abort();
+    // A sheet this page opened must not outlive it.
+    if (this.sheet && this.sheetOpen) this.hideSheet();
+    this.segmentIndicator.destroy();
     for (const tile of this.tiles.values()) tile.destroy();
     this.tiles.clear();
     this.root.remove();

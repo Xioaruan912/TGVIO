@@ -27,13 +27,15 @@ for (const [category, source] of [["short",shortPath],["long",mediaPath]]) {
 }
 const bytes=(await stat(mediaPath)).size,shortBytes=(await stat(shortPath)).size;
 const fontPath="/mnt/c/Windows/Fonts/msyh.ttc";let hasCjkFont=false;try{hasCjkFont=(await stat(fontPath)).isFile();}catch{}
-let feedOffset=0;const favorites=new Set();const progress=new Map();const counters={requests:0,ranges:0,coverRequests:0,coverActive:0,coverPeak:0};
+let feedOffset=0;const favorites=new Set();const progress=new Map();const collections=new Map();const counters={requests:0,ranges:0,coverRequests:0,coverActive:0,coverPeak:0};
 // Session state for the idle-eject check: logout closes the API until a login.
 let sessionSignedOut=false;let logoutCalls=0;
 const mediaById=new Map();
 const item=(index,category="short")=>{const id=createHash("sha256").update(`local-test-media-${category}-${index}`).digest("hex");const media={id,width:category==="long"?320:240,height:category==="long"?180:426,duration_seconds:category==="long"?120:18,size_bytes:category==="long"?bytes:shortBytes,mime_type:"video/mp4",codec:"h264",stream_url:`/__acceptance__/media/${category}-${index}.mp4`,cover_url:index%12===0?null:index%12===1?"/__acceptance__/cover/broken":`/__acceptance__/cover/${category}-${index%3}`,favorite:favorites.has(id),deletable:false,category,groups:[],variants:[]};mediaById.set(id,media);return media;};
 const libraryFixture=createLibraryFixture(item);
 for(let index=0;index<8;index++)favorites.add(item(index).id);
+collections.set("favorites",{name:"收藏",kind:"builtin",rules_json:null,members:new Set()});
+collections.set("c-trip",{name:"旅行",kind:"manual",rules_json:null,members:new Set([...favorites].slice(0,2))});
 progress.set(item(101,"long").id,42);
 progress.set(item(102,"long").id,64);
 const server=await createServer({configFile:false,root:fileURLToPath(new URL("../",import.meta.url)),server:{host:"127.0.0.1",port:Number(process.env.TGVIO_ACCEPTANCE_PORT??5179),strictPort:true},define:{"import.meta.env.VITE_PLAYER_MOCK":JSON.stringify("false")},plugins:[{name:"local-ui-acceptance",transformIndexHtml:html=>hasCjkFont?html.replace("</head>","<style>@font-face{font-family:PlayerFixtureCJK;src:url('/__acceptance__/font.ttf')}body{font-family:PlayerFixtureCJK,system-ui,sans-serif!important}</style></head>"):html,configureServer(vite){vite.middlewares.use(async(req,res,next)=>{
@@ -80,6 +82,31 @@ const server=await createServer({configFile:false,root:fileURLToPath(new URL("..
  if(pathname==="/api/v1/videos"){const category=url.searchParams.get("category");const items=category==="short"?Array.from({length:8},(_,i)=>item(i+1)):category==="long"?Array.from({length:5},(_,i)=>item(i+101,"long")):[...Array.from({length:8},(_,i)=>item(i+1)),...Array.from({length:5},(_,i)=>item(i+101,"long"))];const search=url.searchParams.get("search")??"";const filtered=items.filter(x=>x.id.startsWith(search));const offset=Number(url.searchParams.get("offset"))||0;return send({items:filtered.slice(offset,offset+20),has_more:false,total:filtered.length,category});}
  if(pathname==="/api/v1/random")return send({items:Array.from({length:5},(_,i)=>item(i+51)),category:"short"});
  if(pathname==="/api/v1/favorites")return send({items:[...favorites].map(id=>({...mediaById.get(id),favorite:true})),next_cursor:null,has_more:false});
+ // Collections: the builtin is the favourites set, a manual one keeps its own members.
+ const collectionItem=(id,collection)=>({collection_id:id,name:collection.name,kind:collection.kind,rules_json:collection.rules_json,count:collection.kind==="builtin"?favorites.size:collection.members.size,count_capped:false});
+ if(pathname==="/api/v1/collections"){
+  if(req.method==="POST"){
+   const id="c-"+createHash("sha256").update(String(body.name??"")+String(collections.size)).digest("hex").slice(0,8);
+   const kind=body.kind==="smart"?"smart":"manual";
+   collections.set(id,{name:String(body.name??""),kind,rules_json:body.rules_json??null,members:new Set()});
+   return send(collectionItem(id,collections.get(id)));
+  }
+  return send({items:[...collections].map(([id,collection])=>collectionItem(id,collection))});
+ }
+ const collectionMatch=/^\/api\/v1\/collections\/([^/]+)(?:\/items(?:\/([a-f0-9]+))?)?$/.exec(pathname);
+ if(collectionMatch){
+  const [,id,mediaId]=collectionMatch;const collection=collections.get(id);
+  if(!collection){res.statusCode=404;return send({error:"collection_not_found"});}
+  if(collection.kind==="builtin"&&req.method!=="GET"){res.statusCode=400;return send({error:"builtin_read_only"});}
+  if(mediaId&&req.method==="PUT"){collection.members.add(mediaId);res.statusCode=204;res.end();return;}
+  if(mediaId&&req.method==="DELETE"){collection.members.delete(mediaId);res.statusCode=204;res.end();return;}
+  if(!mediaId&&req.method==="DELETE"){collections.delete(id);res.statusCode=204;res.end();return;}
+  if(!mediaId&&req.method==="PATCH"){if(typeof body.name==="string")collection.name=body.name;return send(collectionItem(id,collection));}
+  const members=collection.kind==="builtin"?[...favorites]:[...collection.members];
+  const limit=Math.min(60,Number(url.searchParams.get("limit"))||20);const offset=Number(url.searchParams.get("cursor"))||0;
+  const page=members.slice(offset,offset+limit);
+  return send({items:page.map(member=>({...mediaById.get(member),favorite:favorites.has(member)})),has_more:offset+limit<members.length,next_cursor:offset+limit<members.length?String(offset+limit):null});
+ }
  if(pathname==="/api/v1/long-progress")return send({items:[...progress].map(([id,position_seconds])=>({id,position_seconds})),recent_items:[...progress].filter(([id])=>mediaById.has(id)).map(([id,position_seconds])=>({...mediaById.get(id),position_seconds}))});
  const match=/^\/api\/v1\/media\/([a-f0-9]+)\/(favorite|progress|prepare)$/.exec(pathname);
  if(match){const [,id,action]=match;if(action==="favorite"){req.method==="DELETE"?favorites.delete(id):favorites.add(id);return send({favorite:favorites.has(id),sync_status:"synced"});}if(action==="progress"){req.method==="DELETE"?progress.delete(id):progress.set(id,Number(body.position_seconds)||0);}return send({ok:true});}

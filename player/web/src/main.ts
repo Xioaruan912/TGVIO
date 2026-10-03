@@ -1345,17 +1345,17 @@ function createCollectionPlayback(syncPage: (active: boolean) => void): {
 function openFavorites(): void {
   if (!shell) return;
   contentView.clear();
-  lockPrivacyScreen();
+  lockPrivacyScreen(); shortIdle.setEnabled(true);
   closeSheet(shell);
   const header = shell.root.querySelector<HTMLElement>(".app-header");
   const headerWasInert = header?.inert ?? false;
   if (header) header.inert = true;
   let page: FavoritesPage | null = null;
-  const playback = createCollectionPlayback(active => page?.setPlaybackActive(active));
+  const playback = createCollectionPlayback(active => { page?.setPlaybackActive(active); if (!active && favoritesPage === page) shortIdle.setEnabled(true); });
   page = new FavoritesPage(
     selected => playback.start(selected, clip => page?.removeMedia(clip.id)),
     () => contentView.clear(),
-    () => { contentView.clear(); void enterContext("favorites"); },
+    () => { contentView.clear(); void enterContext("favorites"); }, { sheet: shell },
   );
   favoritesPage = page;
   contentView.activate(() => {

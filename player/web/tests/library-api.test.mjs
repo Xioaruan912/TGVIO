@@ -11,9 +11,11 @@ globalThis.__apiFilterDeps=await import("data:text/javascript;base64,"+Buffer.fr
 const source=await readFile(new URL("../src/api.ts",import.meta.url),"utf8");
 const js=ts.transpileModule(source,{compilerOptions:{target:ts.ScriptTarget.ES2022,module:ts.ModuleKind.ESNext}}).outputText.replace(/import\.meta\.env\.VITE_PLAYER_MOCK/g,'"false"').replace(/^import .* from .*;$/gm,"");
 const {api}=await import("data:text/javascript;base64,"+Buffer.from("const { toQuery } = globalThis.__apiFilterDeps;\n"+js).toString("base64"));
+// api.ts reads the body as text so a 204 (a collection member write) parses as empty.
+const jsonResponse=payload=>({ok:true,text:async()=>JSON.stringify(payload)});
 test("the wall query carries exactly the filters the server parses",async()=>{
  const calls=[];
- globalThis.fetch=async(path,init)=>{calls.push({path,init});return {ok:true,json:async()=>({items:[],has_more:false,total:0,category:"all"})};};
+ globalThis.fetch=async(path,init)=>{calls.push({path,init});return jsonResponse({items:[],has_more:false,total:0,category:"all"});};
  const filters={dateFrom:null,dateTo:null,minSeconds:30,maxSeconds:null,minBytes:null,maxBytes:null,hasCover:null,favorite:true,resumable:null,unwatched:null,sort:"largest",seed:null};
  await api.videos("all",20,0,false,"",undefined,filters);
  assert.deepEqual(Object.fromEntries(new URL(calls[0].path,"http://local").searchParams),
@@ -21,10 +23,10 @@ test("the wall query carries exactly the filters the server parses",async()=>{
 });
 test("library API uses only authenticated metadata GETs, keyset and contract field names",async()=>{
  const calls=[];const folder={id:"opaque",label:"批次",date:null,date_basis:"unknown",video_count:1};
- globalThis.fetch=async(path,init)=>{calls.push({path,init});return {ok:true,json:async()=>path.includes("/videos?")?{items:[{id:"a",duration_seconds:120,stream_url:"/local.mp4",favorite:false,category:"long",cover_url:"/api/v1/media/a/cover"}],has_more:true,next_cursor:"a",total:1,folder}:path.includes("/dates")?{items:[],total_videos:900}:{items:[folder],total:1}};};
+ globalThis.fetch=async(path,init)=>{calls.push({path,init});return jsonResponse(path.includes("/videos?")?{items:[{id:"a",duration_seconds:120,stream_url:"/local.mp4",favorite:false,category:"long",cover_url:"/api/v1/media/a/cover"}],has_more:true,next_cursor:"a",total:1,folder}:path.includes("/dates")?{items:[],total_videos:900}:{items:[folder],total:1});};
  await api.libraryDates();await api.libraryFolders({date:"unknown"});await api.libraryFolders({mediaId:"abc"});
  const page=await api.libraryVideos("opaque","long",20,"before");
- assert.equal(page.items[0].duration,120);assert.equal(page.hasMore,true);assert.equal(page.nextCursor,"a");assert.equal(page.folder,folder);
+ assert.equal(page.items[0].duration,120);assert.equal(page.hasMore,true);assert.equal(page.nextCursor,"a");assert.deepEqual(page.folder,folder);
  assert.equal(page.items[0].coverUrl,"/api/v1/media/a/cover","an optional archive cover passes through unchanged");
  assert.equal(calls[0].path,"/api/v1/library/dates");
  assert.match(calls[1].path,/date=unknown/);assert.match(calls[2].path,/media_id=abc/);

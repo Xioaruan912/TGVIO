@@ -80,3 +80,13 @@
  .library-notice { padding-bottom: 6px; }
 }
 @media (hover: hover) { .library-button:not(:disabled):hover { border-color: var(--primary); color: var(--primary); background: var(--primary-soft); } }
+
+/* Collections: a list of names and counts, not a grid of covers. */
+.collection-list { display: grid; grid-template-columns: minmax(0, 1fr); gap: 10px; align-content: start; }
+.collection-row { display: grid; grid-template-columns: minmax(0, 1fr) auto auto; align-items: center; gap: 12px; min-height: 64px; padding: 14px 16px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); text-align: left; font-size: 14px; touch-action: manipulation; }
+.collection-row-name { min-width: 0; overflow-wrap: anywhere; font-weight: 600; }
+.collection-row-count { min-width: 44px; text-align: right; color: var(--primary); font-variant-numeric: tabular-nums; }
+.collection-row-kind { padding: 4px 10px; border-radius: var(--radius-pill); background: var(--surface-sunken); color: var(--text-secondary); font-size: 12px; }
+.collection-row-builtin .collection-row-kind { background: var(--primary-soft); color: var(--primary); }
+.collection-name-form { display: grid; gap: 8px; }
+@media (hover: hover) { .collection-row:hover { border-color: var(--primary); background: var(--primary-soft); } }

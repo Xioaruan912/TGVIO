@@ -4,7 +4,9 @@ import { readFile } from "node:fs/promises";
 import ts from "typescript";
 import { installDom } from "./dom-stub.mjs";
 
-const { all, byClass, clickText, flush, videos } = installDom();
+const { all, byClass, clickText, flush, videos, Node } = installDom();
+// sheet.ts asks whether a built row is a real button; the stub has one element class.
+globalThis.HTMLButtonElement = Node;
 
 async function transpile(source) {
   return ts.transpileModule(await readFile(new URL("../src/" + source, import.meta.url), "utf8"),
@@ -61,9 +63,15 @@ const { buildCoverDensityControl, applyCoverDensity } = await import("data:text/
   "const { element, createSlidingIndicator } = globalThis.__densityDeps;\n" + await transpile("components/cover-density.ts")).toString("base64"));
 const favoritesPrefs = { coverDensity: "comfortable" };
 const setPref = (key, value) => { favoritesPrefs[key] = value; };
-globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref };
+// The sheet and the collections controller are the real modules; only their imports
+// are stubbed here.
+globalThis.__sheetDeps = { element, icon: () => document.createElement("span"), activateDialog: () => () => {}, animateArrival: () => {}, flingOut: async () => {}, settleFromVelocity: async () => {} };
+const sheetModule = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, icon, activateDialog, animateArrival, flingOut, settleFromVelocity } = globalThis.__sheetDeps;\n" + await transpile("components/sheet.ts")).toString("base64"));
+const collectionsModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("collections.ts")).toString("base64"));
+globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref, createSlidingIndicator: densityIndicator, ...sheetModule, CollectionsController: collectionsModule.CollectionsController };
 const { FavoritesPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
+  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, sheetChoice, sheetNote, sheetRow, CollectionsController } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");

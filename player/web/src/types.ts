@@ -95,3 +95,19 @@ export type LibraryDatesResponse = { items: LibraryDate[]; total_videos: number 
 export type LibraryFoldersResponse = { items: LibraryFolder[]; total: number };
 export type LibraryVideosResponse = PagedMediaResponse & { total: number; folder: LibraryFolder };
 export type LibraryVideosPage = { items: Clip[]; hasMore: boolean; nextCursor: string | null; total: number; folder: LibraryFolder };
+
+/** "builtin" is the favourites projection; only the server may produce it. */
+export type CollectionKind = "manual" | "smart" | "builtin";
+export type CollectionDto = {
+  collection_id: string;
+  name: string;
+  kind: CollectionKind;
+  rules_json: string | null;
+  /** Members the list counted; a create/update answer carries none. */
+  count: number;
+  count_capped: boolean;
+};
+export type CollectionWriteResponse =
+  Omit<CollectionDto, "count" | "count_capped"> & Partial<Pick<CollectionDto, "count" | "count_capped">>;
+export type CollectionsResponse = { items: CollectionDto[] };
+export type CollectionPage = { items: Clip[]; hasMore: boolean; nextCursor: string | null };

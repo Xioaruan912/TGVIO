@@ -24,8 +24,11 @@ class PlayerContextFeedSourceTests(unittest.TestCase):
         self.assertNotIn("feedView.insertAfter", main)
         self.assertIn("new LibraryPlayback", main)
         self.assertIn("加载失败，点击重试", main)
-        # One shared owner hands playback back to whichever grid started it.
-        self.assertIn("const playback = createCollectionPlayback(active => page?.setPlaybackActive(active));", main)
+        # One shared owner hands playback back to whichever grid started it, and the
+        # idle minute is re-armed there too: a grid on screen is not an exemption.
+        self.assertEqual(
+            main.count("createCollectionPlayback(active => { page?.setPlaybackActive(active);"), 2
+        )
         self.assertIn("if (wasPlaying) syncPage(false);", main)
 
     def test_favorites_browse_uses_the_cover_grid_and_an_explicit_player(self) -> None:

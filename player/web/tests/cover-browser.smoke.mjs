@@ -198,6 +198,26 @@ try {
    await click(".favorites-page .cover-tile-retry:not([hidden])");
    await wait("!!document.querySelector('.favorites-page .cover-tile[data-cover-state=failed]')","bounded manual cover retry");
    check(await evaluate("document.querySelectorAll('.large-player').length===0"),"image retry doesn't launch playback");
+   // Collections live beside favourites, and adding a cover to one never plays it.
+   await click(".favorites-page .library-segment[data-scope=collections]");
+   await wait("!!document.querySelector('.favorites-page .collection-row')","collections list");
+   check(await evaluate("document.querySelector('.favorites-page .collection-row').textContent.includes('收藏')"),"the builtin favourites collection is listed first");
+   check(await evaluate("document.querySelectorAll('.favorites-page .cover-tile').length===0"),"the collections list is not a cover grid");
+   await click(".favorites-page .collection-create");
+   await wait("!!document.querySelector('.sheet .collection-name-input')","collection name sheet");
+   await evaluate("(()=>{const input=document.querySelector('.sheet .collection-name-input');input.value='浏览器集合';return true})()");
+   await click(".sheet .filter-apply");
+   await wait("!!document.querySelector('.favorites-page .collection-row[data-collection-id^=c-]')","the created collection is listed");
+   check(await evaluate("document.querySelector('.sheet').hidden"),"saving closes the sheet");
+   await click(".favorites-page .library-segment[data-scope=favorites]");
+   await wait("!!document.querySelector('.favorites-page .cover-tile')","favourites grid again");
+   await click(".favorites-page .library-select-toggle");
+   await click(".favorites-page .cover-tile-select");
+   await click(".favorites-page .collection-add");
+   await wait("!!document.querySelector('.sheet .sheet-row-choice')","collection picker");
+   await click(".sheet .sheet-row-choice");
+   await wait("document.querySelector('.sheet').hidden","adding closes the picker");
+   check(await evaluate("document.querySelectorAll('.large-player').length===0"),"adding a cover to a collection never starts playback");
   }
   await click(".favorites-page .library-select-toggle");await click(".favorites-page .cover-tile-play");
   check(await evaluate("document.querySelectorAll('.favorites-page .cover-tile.is-selected').length===1&&!document.querySelector('.large-player')"),"select does not play");

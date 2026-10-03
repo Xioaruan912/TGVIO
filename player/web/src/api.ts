@@ -1,4 +1,4 @@
-import type { LibraryCategory, LibraryDatesResponse, LibraryFoldersResponse, LibraryVideosResponse, LibraryVideosPage, ArchiveGroup, Clip, FeedResponse, GroupVideosResponse, LongVideoProgressResponse, MediaDto, PagedMediaResponse, PreloadLevel, RandomVideoListResponse, VideoListResponse } from "./types";
+import type { LibraryCategory, LibraryDatesResponse, LibraryFoldersResponse, LibraryVideosResponse, LibraryVideosPage, ArchiveGroup, Clip, CollectionDto, CollectionPage, CollectionWriteResponse, CollectionsResponse, FeedResponse, GroupVideosResponse, LongVideoProgressResponse, MediaDto, PagedMediaResponse, PreloadLevel, RandomVideoListResponse, VideoListResponse } from "./types";
 import { toQuery, type LibraryFilters } from "./library-filters";
 
 export const MOCK_MODE = import.meta.env.VITE_PLAYER_MOCK === "true";
@@ -193,6 +193,77 @@ class PlayerApi {
     if (MOCK_MODE) return [];
     const payload = await this.request<FeedResponse>("/api/v1/favorites");
     return payload.items.map(clipFromMedia);
+  }
+
+  /** POST/PATCH answer with the collection's own fields; only the list knows a count. */
+  private static collection(row: CollectionWriteResponse): CollectionDto {
+    return { ...row, count: row.count ?? 0, count_capped: row.count_capped ?? false };
+  }
+
+  async collections(): Promise<CollectionDto[]> {
+    if (MOCK_MODE) return [];
+    const payload = await this.request<CollectionsResponse>("/api/v1/collections");
+    return payload.items;
+  }
+
+  async createCollection(
+    name: string,
+    kind: "manual" | "smart",
+    rulesJson: string | null = null,
+  ): Promise<CollectionDto> {
+    const body: Record<string, unknown> = { name, kind };
+    if (rulesJson !== null) body.rules_json = rulesJson;
+    const created = await this.request<CollectionWriteResponse>("/api/v1/collections", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body),
+    });
+    return PlayerApi.collection(created);
+  }
+
+  async updateCollection(
+    collectionId: string,
+    patch: { name?: string; rules_json?: string | null },
+  ): Promise<CollectionDto> {
+    const updated = await this.request<CollectionWriteResponse>(
+      `/api/v1/collections/${encodeURIComponent(collectionId)}`,
+      { method: "PATCH", headers: { "Content-Type": "application/json" }, body: JSON.stringify(patch) },
+    );
+    return PlayerApi.collection(updated);
+  }
+
+  async deleteCollection(collectionId: string): Promise<void> {
+    await this.request<void>(`/api/v1/collections/${encodeURIComponent(collectionId)}`, { method: "DELETE" });
+  }
+
+  async collectionItems(
+    collectionId: string,
+    limit: number,
+    cursor: string | null,
+    signal?: AbortSignal,
+  ): Promise<CollectionPage> {
+    const params = new URLSearchParams({ limit: String(limit) });
+    if (cursor) params.set("cursor", cursor);
+    const payload = await this.request<PagedMediaResponse>(
+      `/api/v1/collections/${encodeURIComponent(collectionId)}/items?${params}`, { signal },
+    );
+    return {
+      items: payload.items.map(clipFromMedia),
+      hasMore: payload.has_more,
+      nextCursor: payload.next_cursor,
+    };
+  }
+
+  async addCollectionItem(collectionId: string, mediaId: string): Promise<void> {
+    await this.request<void>(
+      `/api/v1/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(mediaId)}`,
+      { method: "PUT" },
+    );
+  }
+
+  async removeCollectionItem(collectionId: string, mediaId: string): Promise<void> {
+    await this.request<void>(
+      `/api/v1/collections/${encodeURIComponent(collectionId)}/items/${encodeURIComponent(mediaId)}`,
+      { method: "DELETE" },
+    );
   }
 
   async groupVideos(
@@ -470,7 +541,10 @@ class PlayerApi {
       if (!response.ok) {
         throw new ApiError(response.status === 401 ? "unauthorized" : "unavailable");
       }
-      return await response.json() as T;
+      // A 204 (adding or removing a collection member) has no body to parse, and the
+      // caller ignores the result either way.
+      const body = await response.text();
+      return (body ? JSON.parse(body) : undefined) as T;
     } finally {
       window.clearTimeout(timer);
       callerSignal?.removeEventListener("abort", cancel);
