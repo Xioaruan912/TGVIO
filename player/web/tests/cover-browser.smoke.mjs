@@ -249,6 +249,20 @@ try {
    await screenshot("collections-smart-members-"+width+"x"+height);
    await click(".favorites-page .collection-back");
    await wait("!!document.querySelector('.favorites-page .collection-row')","back to the list");
+   // A manual collection's members take the same panel: the conditions narrow them.
+   await click(".favorites-page .collection-row[data-kind=manual]:not([data-collection-id=favorites])");
+   await wait("!!document.querySelector('.favorites-page .collection-filter')","a manual collection can be narrowed");
+   await click(".favorites-page .collection-filter");
+   await wait("!!document.querySelector('.sheet .filter-sheet')","the member filter panel");
+   await evaluate("(()=>{const input=document.querySelector('.sheet .filter-input[aria-label^=\"最短\"]');input.value='600';input.dispatchEvent(new Event('change',{bubbles:true}));return true})()");
+   await click(".sheet .filter-apply");
+   await wait("document.querySelector('.sheet').hidden","narrowing closes the panel");
+   check(await evaluate("document.querySelector('.favorites-page .collection-filter').textContent.includes('筛选 (1)')"),"the member panel counts its conditions");
+   check(await evaluate("document.querySelector('.favorites-page .library-notice').textContent.includes('1 个条件')"),"the members view states the narrowing");
+   await wait("document.querySelectorAll('.favorites-page .cover-tile').length===0","the narrowing really narrowed the members");
+   await screenshot("collections-members-narrowed-"+width+"x"+height);
+   await click(".favorites-page .collection-back");
+   await wait("!!document.querySelector('.favorites-page .collection-row')","back to the list after narrowing");
    await click(".favorites-page .library-segment[data-scope=favorites]");
    await wait("!!document.querySelector('.favorites-page .cover-tile')","favourites grid after the smart detour");
    // The detour re-rendered the grid, so the failed cover the next check focuses has
@@ -322,6 +336,17 @@ try {
   const wall=await layout("library wall "+width);
   check(wall.columns===densityColumns.comfortable[width],`the filtered wall keeps ${densityColumns.comfortable[width]} columns at ${width}, measured ${wall.columns}`);
   check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"the wall never decodes media "+width);
+  // The wall can put a cover into a collection, from select mode, without playing it.
+  if(width===390){
+   await click(".library-page .library-select-toggle");
+   await click(".library-page .cover-tile-select");
+   await click(".library-page .collection-add");
+   await wait("!!document.querySelector('.sheet .sheet-row-choice')","collection picker on the wall");
+   await click(".sheet .sheet-row-choice");
+   await wait("document.querySelector('.sheet').hidden","adding from the wall closes the picker");
+   check(await evaluate("document.querySelectorAll('.large-player').length===0"),"adding from the wall never starts playback");
+   check(await evaluate("document.querySelector('.library-notice').textContent.includes('加入')"),"the wall says what it added");
+  }
   await screenshot("library-wall-"+width+"x"+height);
   check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"listing metadata no preview decoding");
   check(await evaluate("document.querySelectorAll('.library-page .cover-tile-preview').length===0"),"covers expose no preview control "+width);

@@ -62,6 +62,8 @@ export class FavoritesPage {
   /** "favorites" is the grid; "collections" is the list and an open collection's members. */
   private scope: "favorites" | "collections" = "favorites";
   private collection: CollectionDto | null = null;
+  /** Conditions that narrow a manual collection's members; the wall's own vocabulary. */
+  private memberFilters: LibraryFilters = emptyFilters();
   private readonly sheet: SheetHost | null;
 
   constructor(
@@ -110,7 +112,13 @@ export class FavoritesPage {
     const timeout = window.setTimeout(() => request.abort(), 15_000);
     try {
       const page = this.collection !== null
-        ? await this.collections.items(this.collection.collection_id, BATCH, this.cursor, request.signal)
+        ? await this.collections.items(
+            this.collection.collection_id, BATCH, this.cursor,
+            // A smart collection's conditions are its filters; the panel is not offered
+            // there, and sending an empty set would only say nothing.
+            this.collection.kind === "smart" ? undefined : this.memberFilters,
+            request.signal,
+          )
         : await api.favoritePage(BATCH, this.cursor, request.signal);
       if (generation !== this.generation || this.destroyed) return;
       // Favorite cursors are opaque: detect repeats/cycles, not lexical order.
@@ -165,13 +173,15 @@ export class FavoritesPage {
         ? "这个集合还没有成员。在多选模式下选择视频，再点「加入集合」。"
         : "还没有收藏。在播放页点击收藏后会出现在这里。";
       this.list.append(element("p", "library-empty", empty));
-      this.notice.textContent = this.collection !== null ? `集合「${this.collection.name}」暂无成员` : "收藏与备份状态分别记录";
+      this.notice.textContent = this.collection !== null
+        ? `集合「${this.collection.name}」暂无成员${this.narrowedSuffix()}`
+        : "收藏与备份状态分别记录";
       return;
     }
     const scope = this.hasMore ? `已加载 ${this.clips.length} 个` : `共 ${this.clips.length} 个`;
     const budget = this.hasMore && this.seen.size >= MAX_ROWS ? " · 本次浏览已达 1000 条信息预算" : "";
     if (this.collection !== null) {
-      this.notice.textContent = `集合「${this.collection.name}」${scope}成员${budget}`;
+      this.notice.textContent = `集合「${this.collection.name}」${scope}成员${budget}${this.narrowedSuffix()}`;
       return;
     }
     this.notice.textContent = `${scope}收藏${budget} · WebDAV 备份状态见「设置 → 收藏与 WebDAV」`;
@@ -217,6 +227,14 @@ export class FavoritesPage {
         const rules = this.button("改条件", () => this.openSmartSheet(this.collection));
         rules.classList.add("collection-rules");
         this.toolbar.append(rules);
+      } else {
+        const narrow = this.button(
+          filterCount(this.memberFilters) ? `筛选 (${filterCount(this.memberFilters)})` : "筛选",
+          () => this.openMemberFilterSheet(),
+        );
+        narrow.classList.add("collection-filter");
+        narrow.setAttribute("aria-pressed", String(filterCount(this.memberFilters) > 0));
+        this.toolbar.append(narrow);
       }
       this.toolbar.append(rename, remove, up, down, back);
     } else if (this.onImmersive) {
@@ -465,10 +483,33 @@ export class FavoritesPage {
 
   private openCollection(collection: CollectionDto): void {
     this.collection = collection;
+    this.memberFilters = emptyFilters();
     this.resetGrid();
     this.renderToolbar();
     this.notice.textContent = `集合「${collection.name}」`;
     void this.loadMore();
+  }
+
+  private narrowedSuffix(): string {
+    const count = filterCount(this.memberFilters);
+    return count ? ` · ${count} 个条件` : "";
+  }
+
+  /** The wall's panel again, this time narrowing one manual collection's members. */
+  private openMemberFilterSheet(): void {
+    const sheet = this.sheet;
+    if (!sheet) return;
+    openSheet(sheet, "筛选成员", [buildFilterSheet({
+      value: this.memberFilters,
+      onApply: next => {
+        closeSheet(sheet);
+        this.memberFilters = next;
+        this.resetGrid();
+        this.renderToolbar();
+        this.notice.textContent = `集合「${this.collection?.name ?? ""}」${this.narrowedSuffix()}`;
+        void this.loadMore();
+      },
+    })]);
   }
 
   private showSheet(title: string, body: Node[]): void {

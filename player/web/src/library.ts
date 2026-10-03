@@ -5,8 +5,9 @@ import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
 import { bindCoverMasonry, type CoverMasonry } from "./components/cover-masonry";
 import { createSlidingIndicator } from "./components/indicator";
-import { closeSheet, openSheet, type SheetHost } from "./components/sheet";
+import { closeSheet, openSheet, sheetChoice, sheetNote, type SheetHost } from "./components/sheet";
 import { buildFilterSheet } from "./components/filter-sheet";
+import { CollectionsController } from "./collections";
 import { emptyFilters, filterCount, type LibraryFilters } from "./library-filters";
 import { prefs, setPref } from "./settings";
 import type { Clip, LibraryCategory, LibraryDate, LibraryFolder, LibraryVideosPage } from "./types";
@@ -171,6 +172,7 @@ export class VideoLibraryPage {
   private readonly allButton = this.button("浏览全部封面", () => this.openWall());
   private readonly filterButton = this.button("筛选", () => this.openFilterSheet());
   private filters: LibraryFilters = emptyFilters();
+  private readonly collections = new CollectionsController(api);
   private readonly sheet: SheetHost | null;
 
   constructor(private readonly onPlay: (clips: Clip[]) => void, private readonly onClose: () => void, options?: { mediaId?: string; sheet?: SheetHost }) {
@@ -401,9 +403,46 @@ export class VideoLibraryPage {
     const clips = this.controller.selectedClips;
     const play = this.button(`播放选中 (${clips.length}/${MAX_SELECTED})`, () => this.play(this.controller.selectedClips, play));
     play.disabled = !clips.length;
+    // Adding is the explicit entry, and it only exists in select mode: a plain tap on
+    // a cover still only plays it.
+    const add = this.button(`加入集合 (${clips.length})`, () => void this.openCollectionPicker());
+    add.disabled = !clips.length;
+    add.classList.add("collection-add");
     const clear = this.button("清空选择", () => this.clearSelection());
     clear.disabled = !clips.length;
-    this.selectionBar.replaceChildren(play, clear);
+    this.selectionBar.replaceChildren(play, add, clear);
+  }
+
+  private async openCollectionPicker(): Promise<void> {
+    if (!this.collections.rows.length) await this.collections.load();
+    const targets = this.collections.writable();
+    if (!targets.length) {
+      this.notice.textContent = "还没有可加入的集合，请先到收藏页新建一个";
+      return;
+    }
+    const sheet = this.sheet;
+    if (!sheet) return;
+    openSheet(sheet, "加入集合", [
+      sheetNote(`把选中的 ${this.controller.selectedClips.length} 个视频加入：`),
+      ...targets.map(collection => sheetChoice(
+        collection.name,
+        `${collection.count} 个成员`,
+        false,
+        () => { void this.addSelectedTo(collection.collection_id, collection.name); },
+      )),
+    ]);
+  }
+
+  private async addSelectedTo(collectionId: string, name: string): Promise<void> {
+    const clips = this.controller.selectedClips;
+    let added = 0;
+    for (const clip of clips) {
+      if (await this.collections.addItem(collectionId, clip.id)) added += 1;
+    }
+    if (this.sheet && !this.sheet.sheet.hidden) closeSheet(this.sheet);
+    this.clearSelection();
+    this.setSelectMode(false);
+    this.notice.textContent = `已把 ${added}/${clips.length} 个视频加入「${name}」`;
   }
   private async loadMore(): Promise<void> {
     if (!this.isGridStage() || this.playbackActive || this.destroyed || this.controller.loading) return;

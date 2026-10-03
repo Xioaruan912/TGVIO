@@ -9,6 +9,7 @@ from tgvio_player.domain.catalog import (
     CatalogMedia,
     CatalogPackage,
 )
+from tgvio_player.domain.library_filters import LibraryFilters
 from tgvio_player.infrastructure.sqlite import PlayerCatalogRepositorySQLite
 
 
@@ -158,6 +159,41 @@ class PlayerCollectionRepositoryTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(
             await self.repo.counts(), {first.collection_id: 1, second.collection_id: 0}
+        )
+
+    async def test_members_can_be_narrowed_by_the_same_filter_clauses(self) -> None:
+        collection = await self.repo.create("旅行", "manual", None)
+        await self.repo.add_item(collection.collection_id, self.media_id)
+        await self.repo.add_item(collection.collection_id, self.other_id)
+        self.assertEqual(
+            await self.repo.items(collection.collection_id, 50, 0), (self.media_id, self.other_id)
+        )
+        self.assertEqual(
+            await self.repo.items(
+                collection.collection_id, 50, 0, filters=LibraryFilters(min_seconds=100.0)
+            ),
+            (self.other_id,),
+            "the same clauses the wall uses narrow a collection's members",
+        )
+        self.assertEqual(
+            await self.repo.items(
+                collection.collection_id, 50, 0, filters=LibraryFilters(min_bytes=1500)
+            ),
+            (self.other_id,),
+        )
+        self.assertEqual(
+            await self.repo.items(
+                collection.collection_id, 50, 0, filters=LibraryFilters(has_cover=True)
+            ),
+            (),
+            "no member has a cover in this fixture",
+        )
+        self.assertEqual(
+            await self.repo.items(
+                collection.collection_id, 1, 1, filters=LibraryFilters(min_seconds=100.0)
+            ),
+            (),
+            "a narrowed page still pages by the narrowed set",
         )
 
     async def test_sort_order_is_writable_and_orders_the_list(self) -> None:

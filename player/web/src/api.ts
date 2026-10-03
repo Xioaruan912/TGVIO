@@ -238,10 +238,16 @@ class PlayerApi {
     collectionId: string,
     limit: number,
     cursor: string | null,
+    filters?: LibraryFilters,
     signal?: AbortSignal,
   ): Promise<CollectionPage> {
     const params = new URLSearchParams({ limit: String(limit) });
     if (cursor) params.set("cursor", cursor);
+    // A collection's members take the same conditions the wall does, so the panel is
+    // one panel with one vocabulary on both pages.
+    if (filters) {
+      for (const [key, value] of new URLSearchParams(toQuery(filters))) params.set(key, value);
+    }
     const payload = await this.request<PagedMediaResponse>(
       `/api/v1/collections/${encodeURIComponent(collectionId)}/items?${params}`, { signal },
     );

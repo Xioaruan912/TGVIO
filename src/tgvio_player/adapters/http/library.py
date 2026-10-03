@@ -8,8 +8,10 @@ from __future__ import annotations
 
 from aiohttp import web
 
+from dataclasses import fields
+
 from tgvio_player.domain.collection import SMART, Collection
-from tgvio_player.domain.library_filters import LibraryFilters, parse_rules
+from tgvio_player.domain.library_filters import InvalidFilters, LibraryFilters, parse_filters, parse_rules
 from tgvio_player.infrastructure.video_query import listing_query_kwargs
 
 BUILTIN_FAVORITES_ID = "favorites"
@@ -26,6 +28,10 @@ _DEFAULT_ITEMS_PAGE = 20
 
 _CREATE_FIELDS = frozenset({"name", "kind", "rules_json"})
 _PATCH_FIELDS = frozenset({"name", "rules_json", "sort_order"})
+# The filter vocabulary's wire names are its field names, so one set of keys is shared
+# with `/api/v1/videos` by construction. `sort`/`seed` are not here: a collection keeps
+# the order its viewer arranged.
+_FILTER_KEYS = frozenset(field.name for field in fields(LibraryFilters))
 _UNSET = object()
 
 
@@ -281,12 +287,26 @@ class PlayerLibraryHttpMixin:
         next_cursor = self._encode_favorite_cursor(rows[-1]) if has_more and rows else None
         return [media_id for media_id, _created_at in rows], next_cursor
 
+    @staticmethod
+    def _collection_item_filters(request: web.Request) -> LibraryFilters | None:
+        """The wall's own filter vocabulary, or None when the request narrows nothing."""
+        raw = {key: value for key, value in request.query.items() if key in _FILTER_KEYS}
+        if not raw:
+            return None
+        try:
+            return parse_filters(raw)
+        except InvalidFilters as error:
+            raise web.HTTPBadRequest(text=str(error)) from None
+
     async def _collection_items(self, request: web.Request) -> web.Response:
         digest = await self._authenticate(request)
-        self._library_query(request, {"limit", "cursor"})
+        self._library_query(request, {"limit", "cursor", *_FILTER_KEYS})
         limit = self._collection_page_limit(request)
+        filters = self._collection_item_filters(request)
         collection_id = request.match_info["collection_id"]
         if collection_id == BUILTIN_FAVORITES_ID:
+            if filters is not None:
+                raise web.HTTPBadRequest(text="the builtin collection is the favourites page")
             media_ids, next_cursor = await self._builtin_item_page(request, digest, limit)
             return web.json_response({
                 "items": await self._collection_dtos(media_ids, digest),
@@ -298,11 +318,21 @@ class PlayerLibraryHttpMixin:
             raise web.HTTPNotFound(text="collection not found")
         offset = self._collection_offset(request.query.get("cursor"))
         if collection.kind == SMART:
+            if filters is not None and filters != LibraryFilters.empty():
+                # Its stored conditions *are* the filters; a second, constraining set
+                # would be a request nobody could interpret. An empty set is what a
+                # generic client sends by default, and means nothing here.
+                raise web.HTTPBadRequest(text="a smart collection computes its own members")
             media_ids = await self._smart_member_ids(
                 collection.rules_json, digest, limit=limit + 1, offset=offset
             )
         else:
-            media_ids = list(await self._repository.items(collection_id, limit + 1, offset))
+            media_ids = list(await self._repository.items(
+                collection_id, limit + 1, offset,
+                filters=filters,
+                favorite_scope="global" if self._favorite_backup is not None else "session",
+                favorite_token_digest=digest,
+            ))
         has_more = len(media_ids) > limit
         media_ids = media_ids[:limit]
         next_offset = offset + len(media_ids)

@@ -11,6 +11,7 @@ globalThis.HTMLButtonElement = Node;
 const fixture = createLibraryFixture();
 const calls = [];
 const wallCalls = [];
+const collectionCalls = [];
 const clipFrom = m => ({
   id: m.id, category: m.category, duration: m.duration_seconds, streamUrl: m.stream_url,
   coverUrl: m.cover_url ?? null, favorite: Boolean(m.favorite),
@@ -29,6 +30,20 @@ const api = {
     wallCalls.push({ ...(filters ?? {}), category, limit, offset });
     return { items: fixture.originals.slice(0, 2).map(clipFrom), hasMore: false, total: fixture.originals.length };
   },
+  // Collections from the wall: the picker lists them and the add is idempotent.
+  collections: async () => {
+    collectionCalls.push(["list"]);
+    return [
+      { collection_id: "favorites", name: "收藏", kind: "builtin", rules_json: null, sort_order: 0, count: 2, count_capped: false },
+      { collection_id: "c1", name: "旅行", kind: "manual", rules_json: null, sort_order: 0, count: 1, count_capped: false },
+    ];
+  },
+  addCollectionItem: async (id, mediaId) => { collectionCalls.push(["add", id, mediaId]); },
+  createCollection: async () => { throw new Error("not used here"); },
+  updateCollection: async () => { throw new Error("not used here"); },
+  deleteCollection: async () => { throw new Error("not used here"); },
+  collectionItems: async () => ({ items: [], hasMore: false, nextCursor: null }),
+  removeCollectionItem: async () => { throw new Error("not used here"); },
 };
 
 async function transpile(source) {
@@ -77,6 +92,7 @@ const filtersModule = await import("data:text/javascript;base64," + Buffer.from(
 globalThis.__filterSheetDeps = { element, emptyFilters: filtersModule.emptyFilters, ...sheetModule };
 const { buildFilterSheet } = await import("data:text/javascript;base64," + Buffer.from(
   "const { element, sheetChoice, sheetNote, sheetSection, emptyFilters } = globalThis.__filterSheetDeps;\n" + await transpile("components/filter-sheet.ts")).toString("base64"));
+const collectionsModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("collections.ts")).toString("base64"));
 /** A page-owned sheet host, the way main.ts hands the page the real shell. */
 const makeSheetHost = () => {
   const root = element("div", "app-shell");
@@ -94,10 +110,10 @@ const triChoice = (root, label, text) => {
 };
 const libraryPrefs = { coverDensity: "comfortable" };
 const setPref = (key, value) => { libraryPrefs[key] = value; };
-globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref, openSheet: sheetModule.openSheet, closeSheet: sheetModule.closeSheet, buildFilterSheet, emptyFilters: filtersModule.emptyFilters, filterCount: filtersModule.filterCount };
+globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref, openSheet: sheetModule.openSheet, closeSheet: sheetModule.closeSheet, sheetChoice: sheetModule.sheetChoice, sheetNote: sheetModule.sheetNote, buildFilterSheet, emptyFilters: filtersModule.emptyFilters, filterCount: filtersModule.filterCount, CollectionsController: collectionsModule.CollectionsController };
 const libraryJs = await transpile("library.ts");
 const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref, openSheet, closeSheet, buildFilterSheet, emptyFilters, filterCount } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref, openSheet, closeSheet, sheetChoice, sheetNote, buildFilterSheet, emptyFilters, filterCount, CollectionsController } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");
@@ -431,4 +447,28 @@ test("a filter applied mid-flight wins over the response already in the air", as
    );
    assert.ok(tiles(page).length > 0, "the page that is actually current still lands");
  } finally { api.videos = original; page.destroy(); }
+});
+
+test("a cover can be added to a collection from the wall without playing it", async () => {
+  const host = makeSheetHost();
+  const opened = [];
+  const page = mount(new VideoLibraryPage(clips => opened.push(clips), () => {}, { sheet: host }));
+  await flush();
+  page.applyFilters({ ...filtersModule.emptyFilters(), minSeconds: 30 });
+  await flush();
+  clickText(page.root, "选择");
+  tiles(page)[0].querySelector(".cover-tile-select").dispatch("click");
+  clickText(page.root, "加入集合 (1)");
+  await flush();
+  assert.equal(byClass(host.sheetBody, "sheet-row-choice").length, 1, "only manual collections are targets");
+  collectionCalls.length = 0;
+  byClass(host.sheetBody, "sheet-row-choice")[0].dispatch("click");
+  await flush();
+  assert.deepEqual(
+    collectionCalls.filter(call => call[0] === "add").map(call => call[1]), ["c1"],
+    "the picker adds to the collection that was chosen",
+  );
+  assert.equal(opened.length, 0, "adding a cover to a collection never plays it");
+  assert.equal(host.sheet.hidden, true, "adding closes the picker");
+  page.destroy();
 });

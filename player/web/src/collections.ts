@@ -1,4 +1,5 @@
 import type { CollectionDto, CollectionPage } from "./types";
+import type { LibraryFilters } from "./library-filters";
 
 /** The builtin favourites collection: a projection of the favourites page. */
 export const BUILTIN_FAVORITES = "favorites";
@@ -16,6 +17,7 @@ export type CollectionsSource = {
     collectionId: string,
     limit: number,
     cursor: string | null,
+    filters?: LibraryFilters,
     signal?: AbortSignal,
   ): Promise<CollectionPage>;
   addCollectionItem(collectionId: string, mediaId: string): Promise<void>;
@@ -160,8 +162,9 @@ export class CollectionsController {
     collectionId: string,
     limit: number,
     cursor: string | null,
+    filters?: LibraryFilters,
     signal?: AbortSignal,
   ): Promise<CollectionPage> {
-    return this.source.collectionItems(collectionId, limit, cursor, signal);
+    return this.source.collectionItems(collectionId, limit, cursor, filters, signal);
   }
 }

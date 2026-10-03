@@ -1205,6 +1205,34 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             capped = (await self._collection_rows(cookie))[0]
         self.assertEqual((capped["count"], capped["count_capped"]), (0, True))
 
+    async def test_collection_items_can_be_narrowed_by_the_same_filters(self) -> None:
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        created = await self._create_collection(cookie)
+        base = f"/api/v1/collections/{created['collection_id']}/items"
+        await self.client.put(f"{base}/{self.media_id}", cookies=cookies)
+        body = await (await self.client.get(f"{base}?min_seconds=1", cookies=cookies)).json()
+        self.assertEqual([item["id"] for item in body["items"]], [self.media_id])
+        narrowed = await (await self.client.get(f"{base}?min_seconds=100", cookies=cookies)).json()
+        self.assertEqual(narrowed["items"], [])
+        self.assertIsNone(narrowed["next_cursor"])
+        for query in ("colour=red", "min_seconds=abc", "sort=random"):
+            response = await self.client.get(f"{base}?{query}", cookies=cookies)
+            self.assertEqual(response.status, 400, query)
+
+    async def test_a_smart_collection_is_not_filtered_by_the_panel(self) -> None:
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        created = await self._create_collection(
+            cookie, name="短片", kind="smart", rules_json='{"min_seconds": 1}'
+        )
+        base = f"/api/v1/collections/{created['collection_id']}/items"
+        response = await self.client.get(f"{base}?min_seconds=1", cookies=cookies)
+        self.assertEqual(
+            response.status, 400,
+            "a smart collection's conditions are its filters; a second set is a client bug",
+        )
+
     async def test_unknown_collections_and_bad_names_are_rejected(self) -> None:
         cookie = await self._login()
         cookies = self._collection_cookies(cookie)

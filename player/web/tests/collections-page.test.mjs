@@ -165,8 +165,8 @@ const api = {
   },
   updateCollection: async (id, patch) => { calls.push(["update", id, patch]); return row(id, "manual", 1, patch.name); },
   deleteCollection: async (id) => { calls.push(["delete", id]); rows = rows.filter(item => item.collection_id !== id); },
-  collectionItems: async (id, limit, cursor) => {
-    calls.push(["items", id, limit, cursor]);
+  collectionItems: async (id, limit, cursor, filters) => {
+    calls.push(["items", id, limit, cursor, filters]);
     return { items: members[id] ?? [], hasMore: false, nextCursor: null };
   },
   addCollectionItem: async (id, mediaId) => { calls.push(["add", id, mediaId]); },
@@ -410,4 +410,43 @@ test("a sheet closed by its own control does not leave the page believing it is 
   assert.equal(closes, 1);
   page.destroy();
   assert.equal(closes, 1, "a page that reads the sheet's real state does not close it twice");
+});
+
+test("a manual collection's members are narrowed by the same filter panel", async () => {
+  resetState();
+  const host = makeSheetHost();
+  const page = mount(new FavoritesPage(() => {}, () => {}, undefined, { sheet: host }));
+  await flush();
+  clickText(page.root, "集合");
+  await flush();
+  byClass(page.root, "collection-row").find(node => node.dataset.collectionId === "c1").dispatch("click");
+  await flush();
+  assert.equal(byClass(page.root, "collection-filter").length, 1, "a manual collection can be narrowed");
+  clickText(page.root, "筛选");
+  triChoice(host.sheetBody, "有封面", "是").dispatch("click");
+  clickText(host.sheetBody, "应用");
+  await flush();
+  const narrowed = calls.filter(call => call[0] === "items").at(-1);
+  assert.equal(narrowed[1], "c1");
+  assert.equal(narrowed[4]?.hasCover, true, "the members request carries the panel's conditions");
+  assert.match(byClass(page.root, "collection-filter")[0].textContent, /筛选 \(1\)/);
+  assert.match(page.root.textContent, /1 个条件/);
+  page.destroy();
+});
+
+test("a smart collection offers its conditions, never a second filter set", async () => {
+  resetState();
+  rows = [...rows, { ...row("c2", "smart", 3, "有封面的"), rules_json: "has_cover=true&sort=newest" }];
+  const host = makeSheetHost();
+  const page = mount(new FavoritesPage(() => {}, () => {}, undefined, { sheet: host }));
+  await flush();
+  clickText(page.root, "集合");
+  await flush();
+  byClass(page.root, "collection-row").find(node => node.dataset.collectionId === "c2").dispatch("click");
+  await flush();
+  assert.equal(byClass(page.root, "collection-filter").length, 0);
+  assert.equal(byClass(page.root, "collection-rules").length, 1);
+  const listed = calls.filter(call => call[0] === "items").at(-1);
+  assert.equal(listed[4], undefined, "a smart collection's members are computed from its rules");
+  page.destroy();
 });

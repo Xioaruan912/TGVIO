@@ -130,8 +130,7 @@ def listing_query_kwargs(
     }
 
 
-def build_video_query(
-    *,
+def build_video_query(    *,
     min_seconds: float | None = None,
     max_seconds: float | None = None,
     media_id_prefix: str | None = None,
@@ -152,7 +151,7 @@ def build_video_query(
     seed: int | None = None,
 ) -> tuple[str, list[Any]]:
     """The statement and its parameters for one page of the wall."""
-    clauses, params = _filter_clauses(
+    clauses, params = filter_clauses(
         min_seconds=min_seconds,
         max_seconds=max_seconds,
         media_id_prefix=media_id_prefix,
@@ -197,7 +196,7 @@ def build_video_count(
     wall renders it as a denominator. Both statements therefore share one clause
     builder, and only the page adds its order and its LIMIT.
     """
-    clauses, params = _filter_clauses(
+    clauses, params = filter_clauses(
         min_seconds=min_seconds,
         max_seconds=max_seconds,
         media_id_prefix=media_id_prefix,
@@ -215,7 +214,7 @@ def build_video_count(
     return f"SELECT COUNT(*) AS count FROM media WHERE {' AND '.join(clauses)}", params
 
 
-def _filter_clauses(
+def filter_clauses(
     *,
     min_seconds: float | None = None,
     max_seconds: float | None = None,
@@ -231,7 +230,12 @@ def _filter_clauses(
     resumable: bool | None = None,
     unwatched: bool | None = None,
 ) -> tuple[list[str], list[Any]]:
-    """The WHERE fragments and their bound parameters, in one place."""
+    """The WHERE fragments and their bound parameters, in one place.
+
+    Public because a second query shape needs the same conditions: a collection's
+    members are narrowed by exactly the clauses the wall uses, so the two cannot
+    disagree about what a filter means.
+    """
     clauses = list(_BASE_CLAUSES)
     params: list[Any] = []
     if min_seconds is not None:

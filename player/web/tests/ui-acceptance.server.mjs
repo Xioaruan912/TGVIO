@@ -115,7 +115,15 @@ const server=await createServer({configFile:false,root:fileURLToPath(new URL("..
   if(mediaId&&req.method==="DELETE"){collection.members.delete(mediaId);res.statusCode=204;res.end();return;}
   if(!mediaId&&req.method==="DELETE"){collections.delete(id);res.statusCode=204;res.end();return;}
   if(!mediaId&&req.method==="PATCH"){if(typeof body.name==="string")collection.name=body.name;if(typeof body.rules_json==="string"||body.rules_json===null)collection.rules_json=body.rules_json;if(typeof body.sort_order==="number")collection.sort_order=body.sort_order;return send(collectionItem(id,collection));}
-  const members=collection.kind==="builtin"?[...favorites]:collection.kind==="smart"?smartMembers(collection):[...collection.members];
+  const members=collection.kind==="builtin"?[...favorites]:collection.kind==="smart"?smartMembers(collection):[...collection.members].filter(id=>{
+   const media=mediaById.get(id);if(!media)return false;
+   const minSeconds=url.searchParams.get("min_seconds");
+   if(minSeconds!==null&&!(media.duration_seconds>Number(minSeconds)))return false;
+   const hasCover=url.searchParams.get("has_cover");
+   if(hasCover==="true"&&!media.cover_url)return false;
+   if(hasCover==="false"&&media.cover_url)return false;
+   return true;
+  });
   const limit=Math.min(60,Number(url.searchParams.get("limit"))||20);const offset=Number(url.searchParams.get("cursor"))||0;
   const page=members.slice(offset,offset+limit);
   return send({items:page.map(member=>({...mediaById.get(member),favorite:favorites.has(member)})),has_more:offset+limit<members.length,next_cursor:offset+limit<members.length?String(offset+limit):null});

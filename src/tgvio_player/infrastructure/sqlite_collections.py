@@ -18,6 +18,8 @@ import json
 import uuid
 
 from tgvio_player.domain.collection import Collection, KINDS
+from tgvio_player.domain.library_filters import LibraryFilters
+from tgvio_player.infrastructure.video_query import filter_clauses
 
 MAX_NAME_LENGTH = 60
 MAX_RULES_LENGTH = 4096
@@ -213,23 +215,42 @@ class PlayerCollectionRepositoryMixin:
             return cursor.rowcount > 0
 
     async def items(
-        self, collection_id: str, limit: int, offset: int = 0
+        self,
+        collection_id: str,
+        limit: int,
+        offset: int = 0,
+        *,
+        filters: LibraryFilters | None = None,
+        favorite_scope: str = "session",
+        favorite_token_digest: str | None = None,
     ) -> tuple[str, ...]:
         """Active members only, in the order they were added.
 
         Insertion order, not a rating: the user arranged nothing else, and the
-        position column is what keeps a re-added member at the end.
+        position column is what keeps a re-added member at the end. A filter set
+        narrows the members through the *same* clause builder the wall uses, so
+        "short films with a cover" cannot mean two things in one product.
         """
+        clauses, params = filter_clauses(
+            min_seconds=None if filters is None else filters.min_seconds,
+            max_seconds=None if filters is None else filters.max_seconds,
+            date_from=None if filters is None else filters.date_from,
+            date_to=None if filters is None else filters.date_to,
+            min_bytes=None if filters is None else filters.min_bytes,
+            max_bytes=None if filters is None else filters.max_bytes,
+            has_cover=None if filters is None else filters.has_cover,
+            favorite=None if filters is None else filters.favorite,
+            favorite_scope=favorite_scope,
+            favorite_token_digest=favorite_token_digest,
+            resumable=None if filters is None else filters.resumable,
+            unwatched=None if filters is None else filters.unwatched,
+        )
         rows = self._require().execute(
-            """
-            SELECT item.media_id
-            FROM collection_items item
-            JOIN media ON media.media_id=item.media_id
-            WHERE item.collection_id=? AND media.active=1 AND media.kind='video'
-            ORDER BY item.position, item.added_at, item.media_id
-            LIMIT ? OFFSET ?
-            """,
-            (collection_id, max(0, int(limit)), max(0, int(offset))),
+            "SELECT item.media_id FROM collection_items item "
+            "WHERE item.collection_id=? AND item.media_id IN "
+            f"(SELECT media_id FROM media WHERE {' AND '.join(clauses)}) "
+            "ORDER BY item.position, item.added_at, item.media_id LIMIT ? OFFSET ?",
+            (collection_id, *params, max(0, int(limit)), max(0, int(offset))),
         ).fetchall()
         return tuple(str(row["media_id"]) for row in rows)
 
