@@ -350,19 +350,22 @@ async function run() {
     setQuality: () => undefined, logout: async () => undefined,
   }));
   await pause();
-  const cards = [...shell.root.querySelectorAll<HTMLElement>(".settings-card")];
+  // The sheet is a body-level overlay now, so it is looked up from the shell's own sheet
+  // element rather than from the shell root.
+  const cards = [...shell.sheet.querySelectorAll<HTMLElement>(".settings-card")];
   check(cards.length === 5, "settings render five task groups");
   for (const group of [SETTINGS_GROUP_PLAYBACK, SETTINGS_GROUP_NETWORK, SETTINGS_GROUP_DEVICE, SETTINGS_GROUP_STORAGE, SETTINGS_GROUP_ACCESS]) {
     check(cards.some(card => card.textContent?.includes(group)), "settings group present: " + group);
   }
-  const sheet = shell.root.querySelector<HTMLElement>(".sheet")!;
+  const sheet = shell.sheet;
   check(sheet.getBoundingClientRect().right <= innerWidth + 1, "settings sheet fits the viewport");
-  for (const row of shell.root.querySelectorAll<HTMLElement>(".settings-card .sheet-row")) {
+  for (const row of shell.sheet.querySelectorAll<HTMLElement>(".settings-card .sheet-row")) {
     const box = row.getBoundingClientRect();
     if (box.width === 0) continue;
     check(box.height >= 43.9, "settings row keeps a 44px target: " + Math.round(box.height));
   }
   shell.root.remove();
+  shell.sheet.remove();
 }
 run().then(() => finish(true)).catch(error => finish(false, String(error)));
 function finish(ok:boolean, error?:string) {

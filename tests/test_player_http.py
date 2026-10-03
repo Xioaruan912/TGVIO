@@ -1613,6 +1613,16 @@ class PlayerCoverRouteTests(unittest.IsolatedAsyncioTestCase):
             "the fingerprint needs a session, like the cover it belongs to",
         )
 
+    async def test_the_policy_allows_the_inline_grain_the_design_uses(self) -> None:
+        # The foil surface paints a 2% grain from a data: URI on purpose, so the app never
+        # requests an asset for it. Without img-src the browser blocks it, the texture is
+        # missing and the console fills with violations.
+        response = await self.client.get("/healthz")
+        csp = response.headers["Content-Security-Policy"]
+        self.assertIn("img-src 'self' data:", csp)
+        self.assertIn("default-src 'self'", csp)
+        self.assertIn("object-src 'none'", csp)
+
     async def test_a_retired_cover_row_never_leaks_its_fingerprint(self) -> None:
         # The same video carries two covers; the retired package's row must not decide
         # what the DTO reports.

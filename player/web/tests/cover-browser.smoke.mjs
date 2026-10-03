@@ -103,9 +103,36 @@ try {
   await delay(400);
   const image=await cdp("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
   await writeFile(path.join(output,name+".png"),Buffer.from(image.data,"base64"));
+  check(await sheetPaintsOnTop(),name+" is painted above the page");
   const cardHtml=await evaluate("(()=>{const c=document.querySelector('.sheet-card');return c?c.outerHTML:null})()");
   if(cardHtml)await writeFile(path.join(output,name+"-card.html"),cardHtml);
   await delay(400);
+ };
+ const pixelAt=async (x,y)=>{
+  const shot=await cdp("Page.captureScreenshot",{format:"png",clip:{x,y,width:1,height:1,scale:1}});
+  const png=Buffer.from(shot.data,"base64"),chunks=[];
+  for(let offset=8;offset<png.length;){
+   const length=png.readUInt32BE(offset),kind=png.toString("ascii",offset+4,offset+8);
+   if(kind==="IDAT")chunks.push(png.subarray(offset+8,offset+8+length));
+   offset+=length+12;
+  }
+  const px=inflateSync(Buffer.concat(chunks));
+  return [px[1],px[2],px[3]].join(",");
+ };
+ // A sheet that exists, is unhidden and has geometry can still be painted under the page:
+ // the browse pages are fixed siblings of the shell with their own z-index. Mark the card
+ // with a colour nothing else uses and read the pixel back - the only honest test of "on top".
+ const sheetPaintsOnTop=async ()=>{
+  // Two deterministic questions, because a pixel at an arbitrary point can land on a row
+  // that has its own background: are the sheet and the page siblings, and is the sheet's
+  // z-index higher? Then prove it with a marker this test owns.
+  const structure=await evaluate("(()=>{const s=document.querySelector('.sheet'),p=document.querySelector('.browse-page');if(!s||!p)return {ok:false};return {ok:s.parentElement===p.parentElement&&Number(getComputedStyle(s).zIndex)>Number(getComputedStyle(p).zIndex),sheetZ:getComputedStyle(s).zIndex,pageZ:getComputedStyle(p).zIndex,sheetParent:s.parentElement.className||s.parentElement.tagName,pageParent:p.parentElement.className||p.parentElement.tagName}})()");
+  if(!structure?.ok)return false;
+  const box=await evaluate("(()=>{const b=document.querySelector('.sheet-body');const r=b.getBoundingClientRect();const m=document.createElement('div');m.id='paint-marker';m.style.cssText='position:fixed;width:24px;height:24px;background:rgb(255,0,255);left:'+Math.round(r.x+8)+'px;top:'+Math.round(r.y+8)+'px';b.appendChild(m);return {x:Math.round(r.x+20),y:Math.round(r.y+20)}})()");
+  await delay(300);
+  const seen=await pixelAt(box.x,box.y);
+  await evaluate("(()=>{document.getElementById('paint-marker')?.remove();return true})()");
+  return seen==="255,0,255";
  };
  const contrastAt = async point => {
   const shot=await cdp("Page.captureScreenshot",{format:"png",clip:{x:point.x,y:point.y,width:1,height:1,scale:1}});

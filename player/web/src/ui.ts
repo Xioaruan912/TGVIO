@@ -117,7 +117,13 @@ export function buildShell(handlers: ShellHandlers): Shell {
 
   const { sheet, sheetTitle, sheetBody } = buildSheet(() => closeSheet(shell));
 
-  root.append(desktopNav, stage, bottomNav, sheet);
+  root.append(desktopNav, stage, bottomNav);
+  // The sheet is a top-level overlay, on the body beside the large player, the audio
+  // warning and the privacy cover. The browse pages are fixed elements on the body with
+  // their own z-index, and the shell itself has none, so a sheet inside the shell's
+  // stacking context paints *under* an open 片库/收藏 page: the panel opens, has geometry,
+  // and is invisible. Keeping it here is what makes it cover the page it was opened from.
+  document.body.appendChild(sheet);
   const shell: Shell = {
     root,
     playBtn,

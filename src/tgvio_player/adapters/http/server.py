@@ -77,8 +77,10 @@ _LOGIN_FAILURE_LIMIT = 5
 _COVER_CACHE_CONTROL = "private, max-age=3600"
 _LOGIN_FAILURE_WINDOW_SECONDS = 10 * 60
 _LOGIN_LOCKOUT_SECONDS = 15 * 60
+# img-src admits data: because the foil surface paints its 2% grain from an inline SVG on
+# purpose, so the app never requests an asset for it. An SVG in an <img> cannot run script.
 _SECURITY_HEADERS = {
-    "Content-Security-Policy": "default-src 'self'; connect-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
+    "Content-Security-Policy": "default-src 'self'; img-src 'self' data:; connect-src 'self'; media-src 'self'; style-src 'self'; script-src 'self'; object-src 'none'; frame-ancestors 'none'; base-uri 'none'",
     "Referrer-Policy": "no-referrer",
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
