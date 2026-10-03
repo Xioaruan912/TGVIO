@@ -47,6 +47,13 @@
 .double-tap-feedback.backward { left: 10%; }
 .double-tap-feedback.forward { right: 10%; }
 @keyframes tap-feedback { 0% { opacity: 0; transform: scale(.85); } 25% { opacity: 1; transform: scale(1); } 100% { opacity: 0; } }
+/* The brightness/volume readout: same voice as the double-tap note, and it never takes a
+   touch either - the drag that opened it is still in progress. */
+.level-hud { position: absolute; z-index: 5; top: 40%; display: flex; align-items: center; gap: 8px; padding: 10px 14px; border-radius: 999px; background: rgb(0 0 0 / 62%); color: #fff; font-size: 13px; font-variant-numeric: tabular-nums; pointer-events: none; }
+.level-hud-label, .level-hud-note { color: rgb(255 255 255 / 78%); }
+.level-hud-value { min-width: 2ch; text-align: right; }
+.level-hud-bar { position: relative; width: 84px; height: 4px; border-radius: 999px; background: rgb(255 255 255 / 26%); overflow: hidden; }
+.level-hud-bar::after { content: ''; position: absolute; inset: 0 auto 0 0; width: var(--level, 100%); background: #fff; }
 .scrub-bubble { position: fixed; bottom: calc(190px + var(--safe-bottom)); left: 50%; transform: translateX(-50%); z-index: 60; display: grid; gap: 6px; justify-items: center; padding: 8px; border: 1px solid var(--border-strong); border-radius: 16px; color: var(--text); background: var(--surface-raised); box-shadow: var(--shadow-panel); pointer-events: none; }
 .scrub-frame { position: relative; width: 168px; height: 94px; border-radius: 10px; overflow: hidden; background: var(--media-bg); }
 /* A frame that is not decoded yet is an explicit state, never an empty dark box. */
