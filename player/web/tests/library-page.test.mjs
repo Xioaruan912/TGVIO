@@ -56,10 +56,16 @@ const indicatorHost = { element };
 globalThis.__indicatorDeps = indicatorHost;
 const { createSlidingIndicator } = await import("data:text/javascript;base64," + Buffer.from(
   "const { element } = globalThis.__indicatorDeps;\n" + indicatorJs).toString("base64"));
-globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator };
+// The page owns persistence, so the preference store is a plain object here.
+globalThis.__densityDeps = { element, createSlidingIndicator };
+const { buildCoverDensityControl, applyCoverDensity } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, createSlidingIndicator } = globalThis.__densityDeps;\n" + await transpile("components/cover-density.ts")).toString("base64"));
+const libraryPrefs = { coverDensity: "comfortable" };
+const setPref = (key, value) => { libraryPrefs[key] = value; };
+globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref };
 const libraryJs = await transpile("library.ts");
 const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");
@@ -288,7 +294,13 @@ test("a provided archive cover is lazy, single, ready on load and degrades on er
   page.destroy();
   const failedPage = mount(new VideoLibraryPage(() => {}, () => {}, {mediaId: fixture.testClipId})); await flush();
   const brokenImage = all(failedPage.root).find(node => node.tagName === "img");
-  brokenImage.dispatch("error"); brokenImage.dispatch("error");
+  const oldSet = window.setTimeout;
+  // Collapse the cover retry backoff; the delays themselves are pinned in
+  // cover-tile.test.mjs, and this test is about the visible end state.
+  window.setTimeout = (callback, delay) => (delay >= 20_000 ? 0 : (callback(), 0));
+  try {
+    brokenImage.dispatch("error"); brokenImage.dispatch("error"); brokenImage.dispatch("error");
+  } finally { window.setTimeout = oldSet; }
   assert.equal(tiles(failedPage)[0].dataset.coverState, "failed", "a broken cover degrades instead of retrying forever");
   assert.equal(tiles(failedPage)[0].querySelector(".cover-tile-retry").hidden, false);
   failedPage.destroy();

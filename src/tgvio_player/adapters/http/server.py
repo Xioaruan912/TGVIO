@@ -135,7 +135,15 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         self._probe_active = 0
         # Covers are decorative stills with their own tiny budget and they fail
         # fast, so a wall of thumbnails can never queue behind or block playback.
-        self._max_cover = max(2, max_streams // 4)
+        # Covers are decorative but they still cost one upstream round trip each,
+        # and one browse page opens six lanes at once
+        # (player/web/src/components/cover-load-queue.ts). The old ceiling of
+        # max(2, max_streams // 4) resolved to 2 on a 10-stream deployment and shed
+        # the other four as 503; an <img> error carries no status, so the grid showed
+        # a failure that was really just back-pressure. The floor keeps one page
+        # whole; halving the stream budget keeps covers from crowding playback on a
+        # large host. Playback keeps its own separate slots either way.
+        self._max_cover = max(6, max_streams // 2)
         self._cover_active = 0
         self._foreground_waiters = 0
         self._max_header_size = max_header_size
@@ -337,6 +345,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
                     "active_preload": self._preload_active,
                     "active_probe": self._probe_active,
                     "active_cover": self._cover_active,
+                    "cover_limit": self._max_cover,
                     "foreground_waiters": self._foreground_waiters,
                     "available": max(0, self._max_streams - occupied),
                     "saturated": occupied >= self._max_streams,

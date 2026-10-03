@@ -1,9 +1,15 @@
-/** One shared two-request budget for decorative images, separate from playback. */
+/** One shared budget for decorative images, separate from playback.
+ *
+ * Production covers average 13 KB (the whole catalog is ~12.5 MiB), so this
+ * budget governs how many upstream round trips may overlap, not how many bytes
+ * travel. Two lanes made a grid serialise behind the archive: a 24-tile surface
+ * took twelve sequential round trips before it filled. Six lanes keep a scroll
+ * ahead without touching the playback slots, which stay a separate pool. */
 type Job = { start(done: () => void): void; started: boolean; canceled: boolean; done: boolean };
 export class CoverLoadQueue {
   private readonly pending: Job[] = [];
   private active = 0;
-  constructor(private readonly limit = 2) {}
+  constructor(private readonly limit = 6) {}
 
   enqueue(start: Job["start"]): () => void {
     const job: Job = { start, started: false, canceled: false, done: false };

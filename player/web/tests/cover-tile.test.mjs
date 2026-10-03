@@ -68,6 +68,11 @@ test("duration is honest: a known value is tabular, an unknown one is never 0:00
 });
 
 test("a real cover url loads lazily, becomes ready, and a broken one degrades with a bounded retry", () => {
+  const oldSet = window.setTimeout;
+  // Collapse the retry backoff so this test reads as a state machine; the delay
+  // values themselves are pinned in the backoff test below.
+  window.setTimeout = (callback, delay) => (delay >= 20_000 ? 0 : (callback(), 0));
+  try {
   const tile = buildCoverTile({ media: media({ coverUrl: "/api/v1/media/x/cover" }), onPlay: () => undefined });
   const image = all(tile.root).find(node => node.tagName === "img");
   assert.ok(image, "a cover url produces one image");
@@ -82,15 +87,42 @@ test("a real cover url loads lazily, becomes ready, and a broken one degrades wi
   const broken = buildCoverTile({ media: media({ coverUrl: "/api/v1/media/y/cover" }), onPlay: () => undefined });
   const brokenImage = all(broken.root).find(node => node.tagName === "img");
   brokenImage.dispatch("error");
-  assert.equal(broken.coverState(), "loading", "one retry is attempted before failing");
+  assert.equal(broken.coverState(), "loading", "a failed attempt retries instead of failing immediately");
   brokenImage.dispatch("error");
-  assert.equal(broken.coverState(), "failed");
+  assert.equal(broken.coverState(), "loading", "the budget allows more than one retry");
+  brokenImage.dispatch("error");
+  assert.equal(broken.coverState(), "failed", "attempts stay bounded");
   assert.match(broken.root.textContent, /封面加载失败/);
   const retry = byClass(broken.root, "cover-tile-retry")[0];
   assert.equal(retry.hidden, false);
   retry.dispatch("click");
   assert.equal(broken.coverState(), "loading", "the retry re-enters loading instead of retrying forever");
   assert.equal(retry.hidden, true);
+  } finally { window.setTimeout = oldSet; }
+});
+
+test("cover retries back off between attempts and stop at a stable failure", () => {
+  const oldSet = window.setTimeout, oldClear = window.clearTimeout;
+  const scheduled = [];
+  window.setTimeout = (callback, delay) => { scheduled.push({ callback, delay }); return scheduled.length; };
+  window.clearTimeout = () => {};
+  try {
+    const tile = buildCoverTile({ media: media({ coverUrl: "/private-cover" }), onPlay: () => undefined });
+    const image = all(tile.root).find(node => node.tagName === "img");
+    // The per-attempt deadline is a 20s timer; anything shorter is a retry wait.
+    const retryDelays = () => scheduled.filter(entry => entry.delay < 20_000).map(entry => entry.delay);
+    const runRetry = () => { const entry = scheduled.filter(e => e.delay < 20_000).pop(); assert.ok(entry, "a retry was scheduled"); entry.callback(); };
+    assert.equal(image.attributes.src, "/private-cover");
+    image.dispatch("error");
+    assert.deepEqual(retryDelays(), [400], "the first retry waits before it tries the upstream again");
+    runRetry();
+    image.dispatch("error");
+    assert.deepEqual(retryDelays(), [400, 1200], "later retries back off further");
+    runRetry();
+    image.dispatch("error");
+    assert.equal(tile.coverState(), "failed", "a cover that keeps failing settles on failure");
+    assert.deepEqual(retryDelays(), [400, 1200], "a failed cover schedules no further attempt");
+  } finally { window.setTimeout = oldSet; window.clearTimeout = oldClear; }
 });
 
 test("browsing is a single play target: no nested button and no separate preview control", () => {

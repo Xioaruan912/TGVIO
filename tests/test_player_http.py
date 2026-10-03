@@ -1035,6 +1035,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
                     "active_preload": 0,
                     "active_probe": 0,
                     "active_cover": 0,
+                    "cover_limit": self.server._max_cover,
                     "foreground_waiters": 0,
                     "available": 0,
                     "saturated": True,
@@ -1363,6 +1364,20 @@ class PlayerCoverRouteTests(unittest.IsolatedAsyncioTestCase):
         response = await self.client.get("/healthz")
         self.assertEqual(response.status, 200)
         self.assertEqual((await response.json())["stream_capacity"]["active_cover"], 0)
+        # Covers run from their own pool, so the active count alone cannot tell an
+        # operator whether covers are being shed. The ceiling has to be visible.
+        self.assertEqual(
+            (await response.json())["stream_capacity"]["cover_limit"],
+            self.server._max_cover,
+        )
+
+    async def test_cover_ceiling_never_sheds_a_single_browse_page(self) -> None:
+        # One browse page opens six cover lanes
+        # (player/web/src/components/cover-load-queue.ts). The previous ceiling of
+        # max(2, max_streams // 4) resolved to 2 here and shed the rest as 503, and
+        # an <img> error carries no status, so a healthy grid painted
+        # "封面加载失败" instead of waiting its turn.
+        self.assertGreaterEqual(self.server._max_cover, 6)
 
 
 class VideoCategoryTests(unittest.IsolatedAsyncioTestCase):
