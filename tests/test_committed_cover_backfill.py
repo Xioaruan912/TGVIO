@@ -108,7 +108,10 @@ class CommittedCoverTests(unittest.IsolatedAsyncioTestCase):
         entry.pop("phash")  # an index written before this feature existed
         p.calls.clear()
         with tempfile.TemporaryDirectory() as tmp:
-            self.assertEqual(await CommittedCoverBackfill(p).run(p.task, Path(tmp)), 1)
+            self.assertEqual(
+                await CommittedCoverBackfill(p).run(p.task, Path(tmp)), 0,
+                "a fingerprint-only pass writes no cover, and the operator's count must say so",
+            )
         self.assertEqual(p.calls, ["sample", "index"], "the frame is re-read, the cover is not rewritten")
         self.assertEqual(p.index["covers"]["video.mp4"]["phash"], p.phash)
         self.assertEqual(p.index["covers"]["video.mp4"]["path"], entry["path"],

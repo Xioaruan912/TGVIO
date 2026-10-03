@@ -210,7 +210,9 @@ class CommittedCoverBackfill:
             if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
                 raise ValueError("cover source removed before index commit")
             await self.port.write_json(f"{root}/{COVERS_INDEX_NAME}", index)
-            return 1
+            # The return value is the count of cover *files* this run wrote, and the
+            # operator's report reads it: an index-only pass wrote none.
+            return 0
         await self._unchanged(task)
         if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
             raise ValueError("cover source removed during sample")
