@@ -51,12 +51,21 @@ const api = {
   }),
   longVideoProgress: async () => progress,
 };
+globalThis.__densityDeps = { element };
+const { createSlidingIndicator: densityIndicator } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element } = globalThis.__densityDeps;\n" + await transpile("components/indicator.ts")).toString("base64"));
+globalThis.__densityDeps.createSlidingIndicator = densityIndicator;
+const { buildCoverDensityControl, applyCoverDensity } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, createSlidingIndicator } = globalThis.__densityDeps;\n" + await transpile("components/cover-density.ts")).toString("base64"));
+const longPrefs = { cacheMode: "auto", coverDensity: "comfortable" };
+const setPref = (key, value) => { longPrefs[key] = value; };
 globalThis.__longDeps = {
-  buildBrowseFrame, api, element, prefs: { cacheMode: "auto" }, buildCoverTile, icon, resumableItems, omitResumableDuplicates,
+  buildBrowseFrame, api, element, prefs: longPrefs, setPref, buildCoverTile, icon, resumableItems, omitResumableDuplicates,
+  buildCoverDensityControl, applyCoverDensity,
   formatTime: seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds) % 60).padStart(2, "0")}`,
 };
 const { LongVideoPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, api, element, prefs, buildCoverTile, formatTime, icon, resumableItems, omitResumableDuplicates } = globalThis.__longDeps;\n" + await transpile("long.ts")).toString("base64"));
+  "const { buildBrowseFrame, api, element, prefs, setPref, buildCoverTile, formatTime, icon, resumableItems, omitResumableDuplicates, buildCoverDensityControl, applyCoverDensity } = globalThis.__longDeps;\n" + await transpile("long.ts")).toString("base64"));
 
 const tiles = page => byClass(page.root, "cover-tile");
 

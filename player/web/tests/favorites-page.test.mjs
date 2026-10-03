@@ -53,9 +53,17 @@ const api = {
     return { items, hasMore, nextCursor: hasMore ? items.at(-1).id : null };
   },
 };
-globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile };
+globalThis.__densityDeps = { element };
+const { createSlidingIndicator: densityIndicator } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element } = globalThis.__densityDeps;\n" + await transpile("components/indicator.ts")).toString("base64"));
+globalThis.__densityDeps.createSlidingIndicator = densityIndicator;
+const { buildCoverDensityControl, applyCoverDensity } = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, createSlidingIndicator } = globalThis.__densityDeps;\n" + await transpile("components/cover-density.ts")).toString("base64"));
+const favoritesPrefs = { coverDensity: "comfortable" };
+const setPref = (key, value) => { favoritesPrefs[key] = value; };
+globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref };
 const { FavoritesPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
+  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");

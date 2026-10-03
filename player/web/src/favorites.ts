@@ -1,7 +1,9 @@
 import { buildBrowseFrame, browseButton } from "./components/browse-frame";
 import { api, shortId } from "./api";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
+import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
 import { element } from "./ui";
+import { prefs, setPref } from "./settings";
 import type { Clip } from "./types";
 
 const BATCH = 20;
@@ -40,6 +42,7 @@ export class FavoritesPage {
   private automaticPages = 0;
   private launchControl: HTMLElement | null = null;
   private readonly loadButton = this.button("加载更多", () => void this.loadMore());
+  private readonly density = buildCoverDensityControl({ value: prefs.coverDensity, onSelect: value => this.setDensity(value) });
   private playAllButton: HTMLButtonElement | null = null;
 
   constructor(
@@ -51,6 +54,7 @@ export class FavoritesPage {
       kind: "favorites", onBack: () => this.onClose(), toolbar: this.toolbar, notice: this.notice,
       selection: this.selectionBar, list: this.list });
     this.root = frame.root; this.backButton = frame.back;
+    applyCoverDensity(this.root, prefs.coverDensity);
     this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
     this.selectionBar.hidden = true;
     this.list.addEventListener("scroll", () => {
@@ -155,8 +159,14 @@ export class FavoritesPage {
     const toggle = this.button(this.selectMode ? "退出多选" : "选择", () => this.setSelectMode(!this.selectMode));
     toggle.setAttribute("aria-pressed", String(this.selectMode));
     toggle.classList.add("library-select-toggle");
-    this.toolbar.append(toggle);
+    this.toolbar.append(toggle, this.density.el);
     this.renderSelection();
+  }
+
+  private setDensity(value: CoverDensityStep): void {
+    setPref("coverDensity", value);
+    applyCoverDensity(this.root, value);
+    this.density.setValue(value);
   }
 
   /** The scope label must follow what is actually loaded, never a guess. */

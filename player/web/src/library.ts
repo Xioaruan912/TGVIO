@@ -2,8 +2,10 @@ import { buildBrowseFrame, browseButton, fillDirectoryCard } from "./components/
 import { api, shortId } from "./api";
 import { element } from "./ui";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
+import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
 import { bindCoverMasonry, type CoverMasonry } from "./components/cover-masonry";
 import { createSlidingIndicator } from "./components/indicator";
+import { prefs, setPref } from "./settings";
 import type { Clip, LibraryCategory, LibraryDate, LibraryFolder, LibraryVideosPage } from "./types";
 
 const BATCH = 20;
@@ -126,6 +128,7 @@ export class VideoLibraryPage {
   private readonly segmentIndicator = createSlidingIndicator();
   private readonly segmentButtons: HTMLButtonElement[] = [];
   private readonly selectToggle = this.button("选择", () => this.setSelectMode(!this.selectMode));
+  private readonly density = buildCoverDensityControl({ value: prefs.coverDensity, onSelect: value => this.setDensity(value) });
   private readonly loadButton = this.button("加载更多", () => void this.loadMore());
   private automaticPages = 0;
 
@@ -134,6 +137,7 @@ export class VideoLibraryPage {
       kind: "library", onBack: () => this.back(), toolbar: this.toolbar, notice: this.notice,
       selection: this.selectionBar, list: this.list });
     this.root = frame.root; this.backButton = frame.back;
+    applyCoverDensity(this.root, prefs.coverDensity);
     this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
     this.selectionBar.hidden = true;
     this.list.addEventListener("scroll", () => {
@@ -236,7 +240,7 @@ export class VideoLibraryPage {
   }
   private renderVideoToolbar(): void {
     this.buildSegments();
-    if (this.toolbar.firstElementChild !== this.segments) this.toolbar.replaceChildren(this.segments, this.selectToggle);
+    if (this.toolbar.firstElementChild !== this.segments) this.toolbar.replaceChildren(this.segments, this.selectToggle, this.density.el);
     for (const button of this.segmentButtons) {
       const active = button.dataset.category === this.controller.category;
       button.setAttribute("aria-pressed", String(active));
@@ -257,6 +261,14 @@ export class VideoLibraryPage {
       this.segments.append(button);
     }
     this.selectToggle.classList.add("library-select-toggle");
+  }
+  private setDensity(value: CoverDensityStep): void {
+    setPref("coverDensity", value);
+    applyCoverDensity(this.root, value);
+    this.density.setValue(value);
+    // Tile widths change, but the masonry container's own box does not, so its
+    // ResizeObserver would never fire: re-pack the columns explicitly.
+    this.masonry?.layout();
   }
   private setCategory(category: LibraryCategory): void {
     if (category === this.controller.category) return;

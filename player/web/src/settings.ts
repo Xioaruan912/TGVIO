@@ -1,4 +1,9 @@
 export type CacheMode = "auto" | "speed" | "data-saving" | "off";
+/** How much of a browse grid is on screen at once. `comfortable` is the shipped
+ *  default: full-size cards, two columns on a phone. The other two steps trade
+ *  card text for how many covers fit in a view. */
+export type CoverDensity = "comfortable" | "compact" | "dense";
+const COVER_DENSITIES: CoverDensity[] = ["comfortable", "compact", "dense"];
 import type { QualitySelection } from "./types";
 
 export type PlayerPrefs = {
@@ -14,6 +19,7 @@ export type PlayerPrefs = {
   soundPromptFrequency: "every-time" | "once-per-open" | "continuous-sound";
   soundContinuousConfirmed: boolean;
   quality: QualitySelection;
+  coverDensity: CoverDensity;
 };
 
 const KEY = "tgvio.player.prefs";
@@ -31,6 +37,7 @@ const DEFAULTS: PlayerPrefs = {
   soundPromptFrequency: "continuous-sound",
   soundContinuousConfirmed: false,
   quality: 480,
+  coverDensity: "comfortable",
 };
 
 function parseQuality(value: unknown): QualitySelection {
@@ -69,6 +76,9 @@ export function loadPrefs(): PlayerPrefs {
       soundContinuousConfirmed:
         parsed.soundContinuousConfirmed === true,
       quality: parseQuality(parsed.quality),
+      coverDensity: COVER_DENSITIES.includes(parsed.coverDensity as CoverDensity)
+        ? parsed.coverDensity as CoverDensity
+        : DEFAULTS.coverDensity,
     };
   } catch {
     return { ...DEFAULTS };

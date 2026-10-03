@@ -1,6 +1,16 @@
 import test from "node:test";
 import assert from "node:assert/strict";
-import { masonryPlace } from "../.test-dist/components/cover-masonry.js";
+import { masonryPlace, measuredColumnWidth } from "../.test-dist/components/cover-masonry.js";
+
+test("the column pitch is the fractional box, not a rounded one", () => {
+  // A rounded pitch is multiplied by the column count: at twelve columns, half a
+  // pixel of rounding moved the last tile past the container and made the grid
+  // scroll sideways. The sub-pixel box is the measurement that keeps the row exact.
+  const tile = { offsetWidth: 96, getBoundingClientRect: () => ({ width: 95.4166 }) };
+  assert.equal(measuredColumnWidth(tile), 95.4166);
+  assert.equal(measuredColumnWidth({ offsetWidth: 96 }), 96, "a box-less environment still measures something");
+  assert.equal(measuredColumnWidth({ offsetWidth: 0 }), 0, "an unrendered tile contributes no pitch");
+});
 
 const noOverlap = (heights, placed, columns, gap) => {
   const bottoms = new Array(columns).fill(0);

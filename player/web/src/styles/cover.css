@@ -1,13 +1,51 @@
 /* Shared content covers: static frames, independent controls, no media decoding. */
 .cover-grid {
   display: grid;
-  grid-template-columns: repeat(auto-fill, minmax(min(100%, 142px), 1fr));
-  gap: 12px;
+  /* Tile width is the only knob the density steps move. The container queries
+     below raise the base for wider content instead of setting columns directly,
+     so each step keeps its own count at every breakpoint and `comfortable` still
+     resolves to exactly the shipped numbers. */
+  --cover-min-base: 142px;
+  --cover-min: calc(var(--cover-min-base) * var(--cover-scale, 1));
+  --cover-gap: 12px;
+  grid-template-columns: repeat(auto-fill, minmax(min(100%, var(--cover-min)), 1fr));
+  gap: var(--cover-gap);
   align-content: start;
   min-width: 0;
 }
 .cover-grid > :not(.cover-tile) { grid-column: 1 / -1; margin-top: 12px; }
-.cover-grid-wide { grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 14px; }
+.cover-grid-wide { --cover-min-base: 280px; --cover-gap: 14px; }
+
+/* Density steps. `comfortable` is the shipped default and declares nothing, so a
+   grid without an explicit density is byte-for-byte the old layout. The last step
+   drops the title to buy a fourth column on a phone; the accessible name still
+   comes from the play button, and the three cover states stay distinguishable. */
+.browse-page[data-density="compact"] .cover-grid { --cover-scale: .72; }
+.browse-page[data-density="dense"] .cover-grid { --cover-scale: .55; }
+/* A masonry grid takes its tile width from the column count, not from
+   `--cover-min`, so the steps have to move `--masonry-columns` as well. These
+   base values are the phone case; the container queries below override them on
+   wider content, where a wider grid fits more columns at the same step. */
+.browse-page[data-density="compact"] .cover-grid-masonry { --masonry-columns: 3; }
+.browse-page[data-density="dense"] .cover-grid-masonry { --masonry-columns: 4; }
+.browse-page[data-density="dense"] .cover-tile-title,
+.browse-page[data-density="dense"] .cover-tile-subtitle,
+.browse-page[data-density="dense"] .cover-tile-metadata > :not(.cover-tile-duration) { display: none; }
+.browse-page[data-density="dense"] .cover-tile-info { padding: 8px 8px 7px; }
+.browse-page[data-density="dense"] .cover-tile-scrim { background: linear-gradient(to bottom, transparent, rgba(7,13,22,.84) 22px, rgba(7,13,22,.95)); }
+/* The hover play ring is 44px, which is more than half a dense tile. */
+.browse-page[data-density="dense"] .cover-tile-hint { display: none; }
+.browse-page[data-density="dense"] .cover-tile-select { width: 44px; height: 44px; }
+.browse-page[data-density="dense"] .cover-tile-select-mark { width: 20px; height: 20px; }
+/* A dense tile is ~75px wide, which is narrower than the retry label plus its
+   padding: keep the button inside the frame it belongs to. */
+.browse-page[data-density="dense"] .cover-tile-retry { padding: 0 7px; font-size: 12px; }
+/* In a dense column a 16:9 tile is only ~42px tall, which is under the 44px touch
+   floor. The play button grows to 44px while the picture keeps its real ratio, so
+   the extra 2px is invisible target area rather than a stretched frame. */
+.browse-page[data-density="dense"] .cover-tile-play { min-height: 44px; }
+.browse-page[data-density="dense"] .cover-tile-fallback-mark > .icon { width: 20px; height: 20px; }
+.browse-page[data-density="dense"] .cover-tile-fallback-text { font-size: 11px; }
 
 /* Mixed short/long grids keep every tile at its own aspect ratio, so the tiles
    are placed by a measured column pass instead of by grid rows. CSS keeps the
@@ -28,13 +66,16 @@
 /* Container queries count available content width, including sidebars and padding. */
 .library-page, .long-page, .long-list { container-type: inline-size; }
 @container (min-width: 560px) {
-  .cover-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
-  .cover-grid-wide { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .cover-grid:not(.cover-grid-wide) { --cover-min-base: 180px; --cover-gap: 14px; }
   .cover-grid-masonry { --masonry-columns: 3; --masonry-gap: 14px; }
+  .browse-page[data-density="compact"] .cover-grid-masonry { --masonry-columns: 5; }
+  .browse-page[data-density="dense"] .cover-grid-masonry { --masonry-columns: 7; }
 }
 @container (min-width: 1080px) {
-  .cover-grid:not(.cover-grid-wide) { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .cover-grid:not(.cover-grid-wide) { --cover-min-base: 200px; }
   .cover-grid-masonry { --masonry-columns: 6; }
+  .browse-page[data-density="compact"] .cover-grid-masonry { --masonry-columns: 9; }
+  .browse-page[data-density="dense"] .cover-grid-masonry { --masonry-columns: 12; }
 }
 .cover-tile { position: relative; min-width: 0; transition: transform var(--duration-fast) var(--ease); }
 .cover-tile-play { position: relative; display: block; width: 100%; padding: 0; border-radius: var(--radius-lg); background: transparent; text-align: left; }

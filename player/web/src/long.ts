@@ -1,7 +1,8 @@
 import { api } from "./api";
 import { buildBrowseFrame } from "./components/browse-frame";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
-import { prefs } from "./settings";
+import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
+import { prefs, setPref } from "./settings";
 import { element, formatTime } from "./ui";
 import type { Clip } from "./types";
 import { omitResumableDuplicates, resumableItems } from "./long-video-list";
@@ -15,6 +16,8 @@ type ProgressState = Awaited<ReturnType<typeof api.longVideoProgress>>;
 export class LongVideoPage {
   readonly root: HTMLElement;
   private readonly list: HTMLElement;
+  private readonly toolbar = element("div", "library-toolbar");
+  private readonly density = buildCoverDensityControl({ value: prefs.coverDensity, onSelect: value => this.setDensity(value) });
   private readonly tiles: CoverTileHandle[] = [];
   private disposed = false;
   private readonly seen = new Set<string>();
@@ -40,8 +43,10 @@ export class LongVideoPage {
     this.list = element("div", "long-list");
     const title = element("h1", "long-title", "长片");
     const frame = buildBrowseFrame({ title, subtitle: "接着看，慢慢看",
-      kind: "long", onBack: () => this.onClose(), list: this.list });
+      kind: "long", onBack: () => this.onClose(), toolbar: this.toolbar, list: this.list });
     this.root = frame.root;
+    applyCoverDensity(this.root, prefs.coverDensity);
+    this.toolbar.append(this.density.el);
     this.loadButton.type = "button";
     this.loadButton.addEventListener("click", () => { this.automaticPages = 0; void this.loadMore(); });
     this.list.addEventListener("scroll", () => this.maybeLoadMore());
@@ -53,6 +58,12 @@ export class LongVideoPage {
     this.request?.abort();
     this.tiles.splice(0).forEach(tile => tile.destroy());
     this.root.remove();
+  }
+
+  private setDensity(value: CoverDensityStep): void {
+    setPref("coverDensity", value);
+    applyCoverDensity(this.root, value);
+    this.density.setValue(value);
   }
 
   async refreshProgress(): Promise<void> {

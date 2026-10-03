@@ -10,6 +10,20 @@ const FALLBACK_GAP = 14;
 
 export type MasonryPlacement = { column: number; y: number };
 
+/**
+ * Tile pitch for the column pass.
+ *
+ * The rendered box is sub-pixel, but `offsetWidth` is rounded to an integer, and
+ * that error is multiplied by the column count when it is used as the pitch: at
+ * twelve columns a tile rounded up by half a pixel pushed the last column past
+ * the container. The fractional box is the honest measurement, and `offsetWidth`
+ * is only the fallback for environments without a layout box.
+ */
+export function measuredColumnWidth(tile: { getBoundingClientRect?: () => { width: number }; offsetWidth?: number }): number {
+  const width = tile.getBoundingClientRect?.().width ?? 0;
+  return width > 0 ? width : tile.offsetWidth ?? 0;
+}
+
 /** Shortest-column-first packing; ties keep the leftmost column. */
 export function masonryPlace(heights: number[], columns: number, gap: number): { placed: MasonryPlacement[]; height: number } {
   const count = Math.max(1, Math.floor(columns) || 1);
@@ -41,7 +55,7 @@ export function bindCoverMasonry(grid: HTMLElement): CoverMasonry {
     }
     const style = typeof getComputedStyle === "function" ? getComputedStyle(grid) : null;
     const gap = Number.parseFloat(style?.getPropertyValue("--masonry-gap") ?? "") || FALLBACK_GAP;
-    const columnWidth = items[0].offsetWidth || 0;
+    const columnWidth = measuredColumnWidth(items[0]);
     const declared = Number.parseInt(style?.getPropertyValue("--masonry-columns") ?? "", 10);
     const columns = declared > 0
       ? declared

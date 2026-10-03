@@ -166,7 +166,7 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
     state = next;
     root.dataset.coverState = next;
     retryButton.hidden = next !== "failed";
-    retryButton.textContent = options.variant === "wide" ? "封面加载失败 · 重试" : "重试封面";
+    retryButton.textContent = "重试封面";
     fallbackText.textContent = next === "failed" ? "封面加载失败"
       : next === "loading" ? "封面加载中" : "暂无封面";
   };

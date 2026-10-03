@@ -123,6 +123,8 @@ try {
    if(title.bottom>duration.top+1)errors.push('title overlaps duration');
    const retry=card.querySelector('.cover-tile-retry');
    if(!retry.hidden){const q=retry.getBoundingClientRect();if(q.bottom>title.top)errors.push('retry overlaps title');if(q.height<44)errors.push('small retry target');}
+   const playTarget=card.querySelector('.cover-tile-play').getBoundingClientRect();
+   if(playTarget.width<44||playTarget.height<44)errors.push('small play target');
    for(const button of card.querySelectorAll('button:not(.cover-tile-play)')){
     if(button.hidden)continue;const q=button.getBoundingClientRect();if(q.width<44||q.height<44)errors.push('small secondary target');
    }
@@ -205,6 +207,26 @@ try {
   await wait("document.querySelectorAll('.library-page .cover-tile').length>=20","library grid");
   await wait("!!document.querySelector('.library-page .cover-tile[data-cover-state=\"ready\"]')","library frame");
   await layout("library "+width);await screenshot("library-"+width+"x"+height);
+  // The density steps have to actually change how much of the grid is on screen,
+  // so the column counts are measured and pinned instead of being left to the
+  // stylesheet to claim. A masonry grid takes its width from the column count,
+  // not from the tile minimum, which is why both knobs are checked here.
+  const densityColumns={
+    comfortable:{360:2,390:2,430:2,768:3,1440:6,844:3},
+    compact:{360:3,390:3,430:3,768:5,1440:9,844:5},
+    dense:{360:4,390:4,430:4,768:7,1440:12,844:7},
+  };
+  for(const density of ["compact","dense","comfortable"]){
+   await click(`.library-page .cover-density [data-density="${density}"]`);
+   const step=await layout(`library ${density} ${width}`);
+   check(step.columns===densityColumns[density][width],`${density} shows ${densityColumns[density][width]} columns at ${width}, measured ${step.columns}`);
+   check(await evaluate(`document.querySelector('.library-page').dataset.density==='${density}'`),`${density} reaches the grid root`);
+   check(await evaluate(`JSON.parse(localStorage.getItem('tgvio.player.prefs')).coverDensity==='${density}'`),`${density} is persisted for the next visit`);
+   const titled=await evaluate("(document.querySelector('.library-page .cover-tile-title')?.getClientRects().length??0)>0");
+   if(density==="dense")check(!titled,"the last step drops the title to buy a column");
+   else check(titled,`${density} keeps the title`);
+  }
+  await screenshot("library-density-"+width+"x"+height);
   check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"listing metadata no preview decoding");
   check(await evaluate("document.querySelectorAll('.library-page .cover-tile-preview').length===0"),"covers expose no preview control "+width);
   check(await evaluate("document.querySelectorAll('.library-page .cover-tile button button').length===0"),"no nested cover button "+width);
@@ -256,7 +278,11 @@ try {
  await evaluate("document.querySelector('.login-input').value='';true");
  const status=await(await fetch(baseUrl+"/__acceptance__/status")).json();
  check(status.localOnly&&status.ranges>0,"isolated HTTP Range used");
- check(status.coverRequests>0&&status.coverPeak<=2,"actual static image concurrency is bounded: "+status.coverPeak);
+ // The cover budget is six lanes (cover-load-queue.ts) and the server ceiling is
+ // max(6, max_streams // 2). Peak concurrency has to stay inside both: a burst
+ // that outruns the queue is what used to make a healthy grid look broken.
+ check(status.coverRequests>0&&status.coverPeak<=6,"actual static image concurrency stays inside the six-lane budget: "+status.coverPeak);
+ check(status.coverPeak>1,"more than one cover may be in flight, otherwise a grid serialises: "+status.coverPeak);
  await writeFile(path.join(output,"report.json"),JSON.stringify({ok:true,checks:checks.length,viewports:[[360,800],[390,844],[430,932],[768,1024],[1440,1000],[844,390]],extraViewport:[2560,1200],source:"FFmpeg testsrc2 MP4s and their decoded PNG frames; isolated fake API",rangeRequests:status.ranges,coverPeak:status.coverPeak,contrast:{portraitWhiteFrame:portraitContrast,wideWhiteFrame:wideContrast}},null,2));
  console.log(JSON.stringify({ok:true,checks:checks.length,screenshots:output,rangeRequests:status.ranges,coverPeak:status.coverPeak}));
 } finally {
