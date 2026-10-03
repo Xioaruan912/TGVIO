@@ -173,6 +173,48 @@ manifest 为 `TGVIO 私享播放器`。浏览器 DOM：登录页品牌 `TGVIO`�
 本次同样保留 r3 自己的 `rollback/`（0600 `player.env` + SQLite backup API 备份 + 上一镜像 ID），
 Player 库 `quick_check` 前后均为 ok，schema 未变，Bot 容器未动。
 
+## 追加发布：封面并发 + 密度三档 + 闲置踢出 + 清空续播（r4，当前运行版本）
+
+| 项目 | r4 值 |
+| --- | --- |
+| 发布提交 | `c853ba86f2fb61f108dc4777c4e669a057d99c25` |
+| VPS snapshot | `/root/TGVIO-snapshots/c853ba86…/source` |
+| 源码 archive SHA-256 | `f2e202c6f577525b455f43899b54fc3cc80ee54071dfb77e519531660b32c30a` |
+| 传输包 SHA-256（镜像） | `22811a28ef4ea5bfbe7ff96f0a7589ecff21f31587bdd1d55ef79def541e55d5` |
+| 本地候选镜像 ID | `sha256:20ebff59ffaf59bbb301b330b23dcb13af1b7284ef0cab91b47467b558f4efde` |
+| VPS 导入镜像 ID | `sha256:c7a026881704742ed529c00a9d56098320dc2d01d0b8fb6037f3f23e3343420b` |
+| Player 容器 | `b7933303712be404de26a0bf5ebb10bcc5687de48f730a22ea438c945ec010c0`（running / healthy / restarts 0） |
+| OCI revision / version | `c853ba86…` / `cover-density-20261003` |
+| 回滚链 | `1a7f9e71…`（r3）→ `07d112f4…`（r2）→ `ac7d4d91…`（r1）→ `19edb34c…`（`covers-c740cfb`） |
+| Bot 容器 | `408fd4e67f…` restarts 0，切换前后一致 |
+
+本轮是首个**同时包含后端改动**的前端发布（封面上限 + health 字段），因此重建了镜像并重启了 Player 容器；
+Bot 未受影响。
+
+公网后验（`https://csdn.im`）：`/` 200、`/healthz` 200、未登录 `/api/v1/feed` 401、未知路径 404；
+四个资源与候选镜像逐字节一致（`index-B-g9Qj2Y.js` 178,324 / `index-CXRuJ5Wp.css` 60,929 /
+`index-C8ovYWoD.js` 147,343 / `playfair-display-latin-BOwq7MWX.woff2` 38,404）；
+首页无 `/fonts/` 残留引用。
+
+**新行为已在生产包内核实**：`/healthz` 公开可读 `stream_capacity.cover_limit = 6`（新上限已生效）；
+线上 JS 含「清空记录」×2、「正在退出登录」×1、「继续观看」×2；线上 CSS 含
+`[data-density=compact]` 与 `[data-density=dense]`。
+
+## 封面字节到底在哪（只读核查）
+
+用户提示「或者可能是在 webdav 中」——**核实为真**：
+
+- 目录声明 `media_covers.remote_relpath = cover/backfill/<sha256>.jpg`，位于远端归档
+  `TGVIO_PLAYER_REMOTE_ROOT=115/Pron`，归档入口 `https://csdn.im/dav`。
+- **VPS 本地一张封面副本都没有**：Player 数据目录下 `.jpg` 文件数为 **0**。
+- VPS 上 17GB 的 `data/cache` 是**播放** range 缓存（4,356 个文件），里面不含任何图片；封面从未进入它。
+- `tgvio-covers` 维护容器负责**生成并上传** JPEG 到 WebDAV 的 `cover/backfill/`，Player 只是按需回读。
+
+所以「封面加载慢」的机制完全确认：**每张首次出现的封面都是一次到 WebDAV 的 range 往返**，
+之前后端并发上限为 2、前端通道也是 2，网格只能两两串行。
+P1（服务端封面字节缓存）因此就是“把 WebDAV 里那 1007 张、共 12.5 MiB 的封面在 Player 侧镜像一份”——
+相对 17GB 的播放缓存是千分之一的体量，但仍需单独授权后实施。
+
 ## 未完成与清理候选
 
 - axe（黑金态、6 个页面）0 violation；唯一 remaining 是 `video-caption`（critical / incomplete）：
