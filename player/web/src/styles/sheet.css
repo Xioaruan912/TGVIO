@@ -2,7 +2,9 @@
 .sheet { position: fixed; inset: 0; z-index: 70; display: flex; align-items: flex-end; justify-content: center; background: rgb(7 8 9 / 66%); backdrop-filter: blur(3px); }
 .sheet-card { width: 100%; max-height: 90dvh; display: flex; flex-direction: column; background: var(--surface); border: 1px solid var(--border-strong); border-radius: 20px 20px 0 0; overflow: hidden; box-shadow: 0 -12px 60px rgba(0, 0, 0, .6); animation: sheet-up 260ms var(--ease); }
 @keyframes sheet-up { from { transform: translateY(24px); opacity: .5; } to { transform: none; opacity: 1; } }
-.sheet-handle { width: 36px; height: 4px; flex: none; margin: 10px auto 0; border-radius: 3px; background: var(--border-strong); }
+.sheet-handle { width: 44px; height: 4px; flex: none; margin: 10px auto 0; border-radius: 3px; background: linear-gradient(90deg, transparent, var(--gold-hairline-strong), transparent); }
+/* While the sheet is being dragged its arrival transition must not fight it. */
+.sheet-card[data-dragging="on"] { transition: none; animation: none; will-change: transform; }
 .sheet-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 10px 20px 12px; border-bottom: 1px solid var(--line); }
 .sheet-title { margin: 0; font-size: 22px; font-weight: 700; }
 .sheet-close { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border-radius: 14px; color: var(--text-secondary); background: var(--surface-soft); }

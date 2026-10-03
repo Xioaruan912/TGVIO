@@ -1,11 +1,11 @@
 /* Shared browse layout. Header/tools stay put; only content scrolls. */
 .browse-page { position: fixed; inset: 0 0 calc(66px + var(--safe-bottom)); z-index: 45; min-width: 0; min-height: 0; display: flex; flex-direction: column; background: var(--bg); color: var(--text); padding-inline: var(--safe-left) var(--safe-right); }
-.browse-header { display: flex; align-items: center; gap: 14px; min-height: calc(88px + var(--safe-top)); padding: calc(14px + var(--safe-top)) 20px 14px; flex: none; background: var(--surface); border-bottom: 1px solid transparent; }
+.browse-header { display: flex; align-items: center; gap: 14px; min-height: calc(96px + var(--safe-top)); padding: calc(14px + var(--safe-top)) 20px 14px; flex: none; background: var(--surface); border-bottom: 1px solid transparent; }
 .browse-page.is-scrolled .browse-header { border-bottom-color: var(--border); }
 .browse-back { flex: 0 0 44px; width: 44px; height: 44px; padding: 0 !important; display: grid; place-items: center; border: 1px solid var(--border); border-radius: var(--radius); }
 .browse-heading { min-width: 0; display: grid; gap: 4px; }
-.browse-eyebrow { font-size: 12px; line-height: 18px; color: var(--text-muted); }
-.browse-title { margin: 0; font-size: 22px; line-height: 30px; font-weight: 700; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.browse-eyebrow { font-size: 12px; line-height: 18px; letter-spacing: .02em; color: var(--text-muted); }
+.browse-title { margin: 0; font-size: 26px; line-height: 34px; font-weight: 700; letter-spacing: -.02em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .library-toolbar { display: flex; flex-wrap: wrap; gap: 10px; padding: 14px 20px 10px; flex: none; align-items: center; }
 /* One segmented pill with a sliding selection, instead of three loose buttons. */
 .library-segments { position: relative; display: inline-flex; align-items: center; gap: 2px; padding: 3px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface-sunken); }
@@ -30,8 +30,8 @@
 .directory-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,280px),1fr)); align-content: start; gap: 12px; }
 /* Centered content keeps the 12px rhythm instead of dumping the leftover height
    of the minimum tap target into the gap above the count line. */
-.library-index-row { display: grid; grid-template-columns: 44px minmax(0,1fr); align-items: center; align-content: center; gap: 10px 12px; min-height: 120px; padding: 18px 20px; text-align: left; }
-.directory-mark { display: grid; place-items: center; width: 44px; height: 44px; background: var(--primary-soft); color: var(--primary); border-radius: var(--radius); }
+.library-index-row { display: grid; grid-template-columns: 44px minmax(0,1fr); align-items: center; align-content: center; gap: 10px 12px; min-height: 120px; padding: 18px 20px; text-align: left; box-shadow: inset 0 1px 0 rgba(212, 175, 55, .05); }
+.directory-mark { display: grid; place-items: center; width: 44px; height: 44px; background: var(--primary-soft); color: var(--primary); border-radius: var(--radius); box-shadow: inset 0 0 0 1px var(--border-strong); }
 .directory-text { min-width: 0; display: grid; gap: 4px; }
 .library-index-title { font-size: 15px; line-height: 22px; font-weight: 650; color: var(--text); overflow-wrap: anywhere; }
 .library-index-meta { font-size: 12px; line-height: 20px; color: var(--text-muted); overflow-wrap: anywhere; }
@@ -45,8 +45,8 @@
 .long-retry { justify-self: center; min-height: 48px; padding: 0 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--primary); font-size: 13px; }
 @media (min-width: 900px) {
  .browse-page { left: calc(92px + var(--safe-left)); bottom: 0; padding-inline: 28px; max-width: var(--library-max); margin-inline: auto; }
- .browse-header { min-height: calc(110px + var(--safe-top)); padding-inline: 0; background: transparent; }
- .browse-title { font-size: 24px; line-height: 34px; }
+ .browse-header { min-height: calc(118px + var(--safe-top)); padding-inline: 0; background: transparent; }
+ .browse-title { font-size: 34px; line-height: 44px; }
  .library-toolbar, .library-selection { padding-inline: 0; }
  .library-selection { padding-inline: 16px; border-radius: var(--radius); margin-bottom: 12px; }
  .library-notice { padding-inline: 0; }

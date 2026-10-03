@@ -38,7 +38,7 @@
 }
 .cover-tile { position: relative; min-width: 0; transition: transform var(--duration-fast) var(--ease); }
 .cover-tile-play { position: relative; display: block; width: 100%; padding: 0; border-radius: var(--radius-lg); background: transparent; text-align: left; }
-.cover-tile-media { position: relative; display: block; width: 100%; aspect-ratio: var(--cover-ratio); overflow: hidden; border-radius: var(--radius-lg); background: var(--media-bg); }
+.cover-tile-media { position: relative; display: block; width: 100%; aspect-ratio: var(--cover-ratio); overflow: hidden; border-radius: var(--radius-lg); background: var(--media-bg); /* Metallic inlay: a gold hairline inside the frame, no layout impact. */ outline: 1px solid var(--gold-hairline); outline-offset: -1px; }
 .cover-tile[data-variant="wide"] .cover-tile-media { aspect-ratio: 16 / 9; }
 .cover-tile-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; transition: transform var(--duration-normal) var(--ease); }
 .cover-tile-fallback { position: absolute; inset: 0; z-index: 1; display: grid; place-items: center; background: var(--surface-raised); color: var(--text-secondary); }
@@ -67,7 +67,7 @@
 .cover-tile-select.is-selected { color: #fff; }
 .cover-tile-select.is-selected .cover-tile-select-mark { background: var(--primary); }
 .cover-tile.is-select-mode .cover-tile-favorite { display: none; }
-.cover-tile.is-selected::after { content: ""; position: absolute; z-index: 4; inset: 0; border: 3px solid var(--primary-bright); border-radius: var(--radius-lg); pointer-events: none; }
+.cover-tile.is-selected::after { content: ""; position: absolute; z-index: 4; inset: 0; border: 3px solid var(--gold-bright); border-radius: var(--radius-lg); pointer-events: none; box-shadow: inset 0 0 0 1px rgba(5, 4, 6, .6); }
 .cover-tile-retry { position: absolute; z-index: 5; left: 50%; top: 48%; transform: translate(-50%,-50%); min-height: 48px; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--radius-pill); background: var(--surface); color: var(--primary); font-size: 13px; white-space: nowrap; }
 .cover-tile[data-variant="wide"] .cover-tile-retry { left: 10px; top: 8px; transform: none; min-height: 44px; }
 .cover-tile[data-cover-state="failed"] .cover-tile-hint,
