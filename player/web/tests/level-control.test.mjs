@@ -88,8 +88,22 @@ test("dragging the volume to zero mutes through the host", async () => {
   const { control, video, calls } = await make();
   control.start("volume"); control.move("volume", -5);
   assert.equal(control.values().volume, 0);
-  assert.equal(video.volume, 0);
   assert.equal(calls.muted, 1);
+  assert.ok(video.volume > 0, "the element keeps a level the sound button can return to");
+});
+
+test("a silent level leaves the element audible so the sound button cannot lie", async () => {
+  const createLevelControl = await loadControl();
+  const video = element("video");
+  const control = createLevelControl(video, element("div"), makeHost(video).value, { hudMs: 20 });
+  control.start("volume"); control.move("volume", -0.6);
+  assert.equal(video.volume, 0.4);
+  control.start("volume"); control.move("volume", -1);
+  assert.equal(control.values().volume, 0);
+  assert.equal(video.volume, 0.4, "zero is a level, not a zeroed element");
+  const nextVideo = element("video");
+  createLevelControl(nextVideo, element("div"), makeHost(nextVideo).value, { hudMs: 20 });
+  assert.equal(nextVideo.volume, 0.4, "and the next video opens at that same level");
 });
 
 test("raising the volume while muted asks the host and honours a refusal", async () => {
@@ -121,6 +135,34 @@ test("a muted drag asks once, not once per pointer move", async () => {
   assert.equal(calls.asked, 1);
 });
 
+test("one refusal silences the rest of the gesture without asking again", async () => {
+  const { control, video, stage, calls } = await make({ hudMs: 20 }, { requestAudio: async () => false });
+  video.muted = true;
+  control.start("volume");
+  control.move("volume", -0.1);
+  await flush();
+  control.move("volume", -0.2); control.move("volume", -0.3); control.move("volume", -0.4);
+  await flush();
+  assert.equal(calls.asked, 1, "a refusal is an answer for this gesture");
+  assert.equal(video.muted, true);
+  assert.match(stage.textContent, /静音中/);
+  control.end("volume");
+  control.start("volume");
+  control.move("volume", -0.5);
+  await flush();
+  assert.equal(calls.asked, 2, "but a new gesture may ask again");
+});
+
+test("a lock that lands mid gesture stops the levels", async () => {
+  let locked = false;
+  const { control } = await make({ hudMs: 20 }, { isLocked: () => locked });
+  control.start("volume"); control.move("volume", -0.2);
+  assert.equal(control.values().volume, 80);
+  locked = true;
+  control.move("volume", -0.6);
+  assert.equal(control.values().volume, 80, "the lock freezes the level where it was");
+});
+
 test("brightness touches the picture and nothing else", async () => {
   const { control, video, stage } = await make();
   control.start("brightness"); control.move("brightness", -0.2);
@@ -135,10 +177,21 @@ test("the hud names the axis, follows the level and removes itself", async () =>
   const hud = stage.querySelector(".level-hud");
   assert.ok(hud, "the hud appears while adjusting");
   assert.match(stage.textContent, /70/);
-  assert.equal(hud.getAttribute("role"), "status");
+  assert.equal(hud.getAttribute("aria-hidden"), "true", "the readout is for the eyes");
   control.end("brightness");
   await new Promise((resolve) => setTimeout(resolve, 60));
   assert.equal(stage.querySelector(".level-hud"), null, "and it leaves on its own");
+});
+
+test("the spoken line waits for the gesture to end", async () => {
+  const { control, stage } = await make();
+  control.start("brightness"); control.move("brightness", -0.3);
+  assert.equal(stage.querySelector(".level-status"), null, "nothing is announced mid gesture");
+  control.end("brightness");
+  const status = stage.querySelector(".level-status");
+  assert.equal(status.getAttribute("role"), "status");
+  assert.equal(status.getAttribute("aria-atomic"), "true");
+  assert.match(status.textContent, /亮度 70/);
 });
 
 test("a locked player ignores the gesture entirely", async () => {
