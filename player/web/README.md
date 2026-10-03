@@ -98,7 +98,7 @@ automatic snap and preload do not. Explicit playback unlocks the picture, but
 sound remains muted until enabled again. This is a web privacy lock, not an OS
 screen lock. Existing background privacy rules remain in force.
 
-### SKY mobile-first UI
+### Mobile-first UI
 
 The header, media stage, persistent playback panel and navigation are separate
 regions. Short/long progress controls share a 48px pointer-captured seek binder:
@@ -106,7 +106,7 @@ dragging previews, release commits once, cancel/background/source change does no
 seek. Time updates cannot replace a drag preview. Secondary screens have one
 lifecycle owner and switching tabs tears down the previous view.
 
-Light sky tokens, cards, grouped settings, accessible modal focus/Escape/backdrop
+Black-gold tokens, cards, grouped settings, accessible modal focus/Escape/backdrop
 handling and reduced-motion-aware animations use native TypeScript/CSS only.
 Privacy lock uses an opaque cover (not a blurred exposed frame); it does not
 rebuild video nodes or change normal buffering presentation.
@@ -207,7 +207,7 @@ TGVIO_SCREENSHOTS=/tmp/tgvio-preview npm run test:browser
 node tests/ui-acceptance.server.mjs
 # Loopback only: http://127.0.0.1:5179/
 # Login layout fixture (does not submit credentials):
-# http://127.0.0.1:5179/tests/fixtures/sky-login.html
+# http://127.0.0.1:5179/tests/fixtures/login-layout.html
 ```
 
 The automated runner selects an ephemeral loopback port and a temporary Chrome

@@ -69,12 +69,12 @@ let indicatorTimer = 0;
 export { buildLogin, buildError, humanizeError } from "./components/access-view";
 
 export function buildShell(handlers: ShellHandlers): Shell {
-  const root = element("main", "app-shell sky-shell");
+  const root = element("main", "app-shell");
 
   const { desktopNav, bottomNav, navButtons, bottomButtons, navIndicator } = buildNavigation(handlers);
 
-  const stage = element("section", "stage sky-stage");
-  const viewport = element("div", "viewport sky-viewport");
+  const stage = element("section", "stage");
+  const viewport = element("div", "viewport");
   const mediaStage = element("section", "media-stage");
   mediaStage.setAttribute("aria-label", "视频画面与手势区域");
   const feed = element("div", "feed");

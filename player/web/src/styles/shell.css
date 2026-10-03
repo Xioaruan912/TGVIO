@@ -14,7 +14,6 @@
 .nav-btn.active { color: var(--primary); }
 .nav-btn.active .icon { stroke-width: 2.25; }
 .login-shell { position: fixed; inset: 0; display: grid; place-items: safe center; overflow-y: auto; padding: max(24px,var(--safe-top)) 20px max(24px,var(--safe-bottom)); background: radial-gradient(ellipse at 0 0,rgba(232,180,90,.10),transparent 52%),radial-gradient(ellipse at 100% 100%,rgba(232,180,90,.06),transparent 48%),var(--bg); }
-.sky-decoration { display: none; }
 .login-panel { width: min(440px,100%); display: grid; gap: 14px; padding: clamp(24px,6vw,40px); background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius-panel); box-shadow: var(--shadow-panel); }
 .login-brand { display: flex; align-items: center; gap: 12px; color: var(--primary); font-size: 15px; letter-spacing: .08em; }
 .login-title { margin: 20px 0 0; font-size: 24px; line-height: 1.4; font-weight: 700; letter-spacing: -.02em; }

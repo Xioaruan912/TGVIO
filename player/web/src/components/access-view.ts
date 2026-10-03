@@ -10,16 +10,16 @@ export function humanizeError(reason: unknown, fallback: string): string {
 }
 
 export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLElement {
-  const shell = element("main", "login-shell sky-login");
-  const panel = element("section", "login-panel sky-login-card");
+  const shell = element("main", "login-shell");
+  const panel = element("section", "login-panel");
   const brand = element("div", "login-brand");
-  brand.append(brandMark(), element("strong", undefined, "SKY TGVIO"));
+  brand.append(brandMark(), element("strong", undefined, "TGVIO"));
   const title = element("h1", "login-title", "你的私人视频空间");
   const subtitle = element("p", "login-subtitle", "输入访问口令，继续观看与收藏。");
   const form = element("form", "login-form");
   const label = element("label", "login-label", "访问口令");
   const input = element("input", "login-input");
-  input.id = "sky-access-secret";
+  input.id = "player-access-secret";
   label.htmlFor = input.id;
   input.type = "password";
   input.inputMode = "text";
@@ -55,10 +55,10 @@ export function buildLogin(onSubmit: (secret: string) => Promise<void>): HTMLEle
 }
 
 export function buildError(message: string, onRetry: () => void): HTMLElement {
-  const shell = element("main", "login-shell sky-login");
-  const panel = element("section", "login-panel sky-login-card");
+  const shell = element("main", "login-shell");
+  const panel = element("section", "login-panel");
   const brand = element("div", "login-brand");
-  brand.append(brandMark(), element("strong", undefined, "SKY TGVIO"));
+  brand.append(brandMark(), element("strong", undefined, "TGVIO"));
   const text = element("p", "login-subtitle", message);
   const button = element("button", "login-submit", "重试");
   button.type = "button";

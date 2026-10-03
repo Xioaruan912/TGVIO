@@ -109,7 +109,7 @@ Vite 从 `public/` 复制到 `dist/` 根的其他文件既不在白名单、也�
 隔离 fixture 的中文之所以正常，是因为 `tests/ui-acceptance.server.mjs` 注入了
 `/mnt/c/Windows/Fonts/msyh.ttc`。真机（Windows/macOS/Android/iOS）自带 CJK 字体，
 应用字体栈以 MiSans → HarmonyOS Sans SC → PingFang SC → Noto Sans SC → Microsoft YaHei 依次回退。
-截图里有意义的是拉丁部分：品牌标 `SKY TGVIO` 已是 Playfair Display 字形，与字体加载事实一致。
+截图里有意义的是拉丁部分：品牌标 `TGVIO` 已是 Playfair Display 字形，与字体加载事实一致。
 
 ## 未完成与清理候选
 

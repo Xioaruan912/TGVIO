@@ -93,21 +93,21 @@
 .background-privacy-cover { position: fixed; z-index: 2147483647; inset: 0; display: none; width: 100%; height: 100%; padding: 24px; color: var(--text-secondary); background: var(--privacy-cover); pointer-events: none; user-select: none; }
 .background-privacy-cover.visible { display: grid; place-items: center; }
 .audio-warning { position: fixed; inset: 0; z-index: 100; display: grid; place-items: center; padding: 24px; background: rgb(7 8 9 / 72%); backdrop-filter: blur(8px); }
-.audio-warning-panel { width: min(400px,100%); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 28px; border: 1px solid var(--border-strong); border-radius: 24px; background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-panel); animation: sky-enter 220ms var(--ease); }
+.audio-warning-panel { width: min(400px,100%); max-height: calc(100dvh - 48px); overflow-y: auto; padding: 28px; border: 1px solid var(--border-strong); border-radius: 24px; background: var(--surface-raised); color: var(--text); box-shadow: var(--shadow-panel); animation: panel-enter 220ms var(--ease); }
 .audio-warning-panel h2 { margin: 0; font-size: 20px; line-height: 1.4; }
 .audio-warning-panel p { margin: 12px 0 24px; color: var(--muted); font-size: 14px; line-height: 1.7; }
 .audio-warning-actions { display: grid; gap: 10px; }
 .audio-warning-actions button { min-height: 48px; padding: 10px 14px; border-radius: 14px; font-weight: 650; font-size: 14px; }
-.audio-warning-cancel { border: 1px solid var(--line); background: var(--sky50); color: var(--text); }
-.audio-warning-frequency { color: var(--sky700); background: var(--sky100); }
-.audio-warning-confirm { color: var(--accent-ink); background: var(--sky700); }
+.audio-warning-cancel { border: 1px solid var(--line); background: var(--surface-soft); color: var(--text); }
+.audio-warning-frequency { color: var(--primary); background: var(--primary-soft); }
+.audio-warning-confirm { color: var(--accent-ink); background: var(--primary); }
 .delete-warning-confirm { color: #fff; background: var(--danger-fill); }
 .toast { position: absolute; z-index: 70; left: 50%; top: calc(72px + var(--safe-top)); transform: translate(-50%,-22px) scale(.96); width: max-content; max-width: calc(100% - 32px); padding: 10px 16px; border-radius: 14px; border: 1px solid var(--border-strong); background: var(--surface-raised); color: var(--text); font-size: 13px; text-align: center; opacity: 0; transition: opacity var(--dur-base) var(--ease), transform var(--dur-base) var(--ease-spring); pointer-events: none; }
 .toast.show { opacity: 1; transform: translate(-50%,0) scale(1); }
 .debug { position: absolute; z-index: 35; left: 10px; top: 10px; max-width: calc(100% - 20px); padding: 5px 8px; border-radius: 6px; background: rgb(0 0 0 / 72%); color: #bde7ff; font: 10px ui-monospace,monospace; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; pointer-events: none; }
 .feed-terminal { display: grid; place-items: center; background: var(--bg-deep); color: var(--text-secondary); text-align: center; }
 .feed-terminal p { max-width: 80%; }
-.gesture-guide { position: fixed; z-index: 80; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 28px; color: var(--text); text-align: center; background: rgb(7 8 9 / 94%); animation: sky-enter 220ms var(--ease); }
+.gesture-guide { position: fixed; z-index: 80; inset: 0; display: grid; place-content: center; justify-items: center; gap: 12px; padding: 28px; color: var(--text); text-align: center; background: rgb(7 8 9 / 94%); animation: panel-enter 220ms var(--ease); }
 .gesture-guide strong { font-size: 22px; }
 .gesture-guide span { font-size: 14px; line-height: 1.7; }
 .gesture-guide small { margin-top: 16px; color: var(--primary); }

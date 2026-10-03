@@ -78,13 +78,13 @@ export function buildSheet(onClose: () => void) {
   const sheetCard = element("section", "sheet-card");
   sheetCard.setAttribute("role", "dialog");
   sheetCard.setAttribute("aria-modal", "true");
-  sheetCard.setAttribute("aria-labelledby", "sky-sheet-title");
+  sheetCard.setAttribute("aria-labelledby", "player-sheet-title");
   sheetCard.tabIndex = -1;
   const handle = element("div", "sheet-handle");
   handle.setAttribute("aria-hidden", "true");
   const sheetHead = element("header", "sheet-head");
   const sheetTitle = element("h2", "sheet-title", "");
-  sheetTitle.id = "sky-sheet-title";
+  sheetTitle.id = "player-sheet-title";
   const sheetClose = element("button", "sheet-close");
   sheetClose.type = "button";
   sheetClose.setAttribute("aria-label", "关闭");

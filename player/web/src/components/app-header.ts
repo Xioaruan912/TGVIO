@@ -5,7 +5,7 @@ import type { ShellHandlers } from "../ui";
 export function buildAppHeader(handlers: ShellHandlers) {
   const topbar = element("header", "topbar app-header");
   const brandSmall = element("div", "topbar-brand");
-  brandSmall.append(brandMark(), element("strong", "brand-name", "SKY TGVIO"), element("small", "brand-tagline", "私人视频空间"));
+  brandSmall.append(brandMark(), element("strong", "brand-name", "TGVIO"), element("small", "brand-tagline", "私人视频空间"));
   const contextBackBtn = element("button", "context-back", "返回");
   contextBackBtn.type = "button";
   contextBackBtn.hidden = true;

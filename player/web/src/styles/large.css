@@ -52,7 +52,7 @@
 #feed { touch-action: pan-y; }
 .library-playback { display: contents; }
 .library-playback-nav { display: grid; grid-template-columns: auto minmax(24px,1fr) auto auto; gap: 6px; align-items: center; border-top: 1px solid var(--line); padding-top: 6px; }
-.library-playback-nav button { min-width: 44px; min-height: 44px; padding: 6px 10px; border-radius: 12px; color: var(--sky700); background: var(--sky50); font-size: 12px; }
+.library-playback-nav button { min-width: 44px; min-height: 44px; padding: 6px 10px; border-radius: 12px; color: var(--primary); background: var(--surface-soft); font-size: 12px; }
 .library-playback-nav button:disabled { opacity: .45; }
 .library-play-position { min-width: 0; font-size: 12px; color: var(--muted); text-align: center; }
 

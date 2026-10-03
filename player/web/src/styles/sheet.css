@@ -12,15 +12,15 @@
 .sheet-section { margin: 12px 4px 2px; font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--primary); }
 .sheet-note { margin: 4px; font-size: 12px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
 .sheet-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 14px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-raised); color: var(--text); text-align: left;  }
-button.sheet-row:active { background: var(--sky50); }
+button.sheet-row:active { background: var(--surface-soft); }
 .sheet-row-text { display: grid; gap: 4px; min-width: 0; flex: 1 1 auto; overflow-wrap: anywhere; }
 .sheet-row-title { font-size: 14px; font-weight: 650; line-height: 1.5; }
 .sheet-row-sub { font-size: 12px; line-height: 1.6; color: var(--muted); }
 .sheet-row-note { font-size: 11px; line-height: 1.5; color: var(--faint); }
 .sheet-choice-mark { width: 26px; height: 26px; display: grid; place-items: center; flex: none; border: 1px solid var(--line); border-radius: 50%; color: var(--accent-ink); font-weight: 800; }
 .sheet-row-choice[aria-pressed="true"] { border-color: var(--primary); background: var(--primary-soft); }
-.sheet-row-choice[aria-pressed="true"] .sheet-choice-mark { background: var(--sky700); border-color: var(--sky700); }
-.sheet-row-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 12px; color: var(--sky700); background: var(--sky100); }
+.sheet-row-choice[aria-pressed="true"] .sheet-choice-mark { background: var(--primary); border-color: var(--primary); }
+.sheet-row-icon { display: grid; place-items: center; width: 36px; height: 36px; flex: none; border-radius: 12px; color: var(--primary); background: var(--primary-soft); }
 .sheet-row-heart { display: grid; place-items: center; min-width: 20px; color: var(--favorite); }
 .sheet-empty { display: grid; justify-items: center; gap: 10px; padding: 40px 20px; border: 1px dashed var(--border-strong); border-radius: 20px; text-align: center; background: var(--surface); }
 .sheet-empty-title { margin: 0; font-size: 16px; font-weight: 650; }

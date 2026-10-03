@@ -8,7 +8,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { spawnSync } from "node:child_process";
 // Local-only real-media acceptance server. No production service or identity.
-const work=await mkdtemp(path.join(tmpdir(),"tgvio-sky-media-"));
+const work=await mkdtemp(path.join(tmpdir(),"tgvio-player-media-"));
 process.on("exit",()=>rmSync(work,{recursive:true,force:true}));
 const mediaPath=path.join(work,"sample.mp4"),shortPath=path.join(work,"portrait.mp4");
 for(const [filename,size,seconds] of [[mediaPath,"320x180",120],[shortPath,"240x426",18]]){
@@ -34,7 +34,7 @@ const libraryFixture=createLibraryFixture(item);
 for(let index=0;index<8;index++)favorites.add(item(index).id);
 progress.set(item(101,"long").id,42);
 progress.set(item(102,"long").id,64);
-const server=await createServer({configFile:false,root:fileURLToPath(new URL("../",import.meta.url)),server:{host:"127.0.0.1",port:Number(process.env.TGVIO_ACCEPTANCE_PORT??5179),strictPort:true},define:{"import.meta.env.VITE_PLAYER_MOCK":JSON.stringify("false")},plugins:[{name:"local-ui-acceptance",transformIndexHtml:html=>hasCjkFont?html.replace("</head>","<style>@font-face{font-family:SkyFixtureCJK;src:url('/__acceptance__/font.ttf')}body{font-family:SkyFixtureCJK,system-ui,sans-serif!important}</style></head>"):html,configureServer(vite){vite.middlewares.use(async(req,res,next)=>{
+const server=await createServer({configFile:false,root:fileURLToPath(new URL("../",import.meta.url)),server:{host:"127.0.0.1",port:Number(process.env.TGVIO_ACCEPTANCE_PORT??5179),strictPort:true},define:{"import.meta.env.VITE_PLAYER_MOCK":JSON.stringify("false")},plugins:[{name:"local-ui-acceptance",transformIndexHtml:html=>hasCjkFont?html.replace("</head>","<style>@font-face{font-family:PlayerFixtureCJK;src:url('/__acceptance__/font.ttf')}body{font-family:PlayerFixtureCJK,system-ui,sans-serif!important}</style></head>"):html,configureServer(vite){vite.middlewares.use(async(req,res,next)=>{
  const url=new URL(req.url,"http://127.0.0.1");const pathname=url.pathname;
  if(pathname.startsWith("/__acceptance__/cover/")) {
   const filename=covers.get(pathname.split("/").at(-1));

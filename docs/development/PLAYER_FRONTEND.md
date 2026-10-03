@@ -1,9 +1,9 @@
-# SKY TGVIO Player 前端设计与实现边界
+# TGVIO Player 前端设计与实现边界
 
 ## 产品与布局
 
 私人视频空间围绕观看、找片、收藏与续播组织。沿用原生 TypeScript/Vite、
-中文 SKY TGVIO 品牌及短片/长片/收藏/片库四区导航，设置独立。
+中文 TGVIO 品牌及短片/长片/收藏/片库四区导航，设置独立。
 不新增社交数字、作者资料、会员、营销 Hero 或推荐算法。
 
 展示组件与业务控制器分离。ui.ts 保留兼容导出与 shell 装配；
@@ -12,9 +12,9 @@ large-player-view、browse-frame、action-menu、cover-tile / cover-image 分别
 LargePlayer 只调用展示层提供的稳定 video/控件，媒体监听与播放意图不交给组件。
 短/长进度条共用 timeline 构建，交互仍由 seek-control 管理。
 
-浅色令牌统一在 player/web/src/styles/base.css，旧 SKY 名称为兼容别名。
+令牌统一在 player/web/src/styles/base.css，是唯一真源；
 Header、Media Stage、Player Panel、Navigation 独立占位。
-手机为 58px 顶栏与 66px 导航基线；桌面为 92px 侧栏与宽观看区，
+手机为 52px 顶栏与 66px 导航基线；桌面为 72px 图标侧栏与宽观看区，
 视频下方控制卡分别安排标识、进度、直接操作与缓存大小。
 缓存显示不再占用顶栏，原 netSpeed 偏好键兼容。更多菜单原生 details，
 Escape 收起并恢复焦点；长片永久删除/画中画与播放/声音/收藏分开。媒体用中性深色、

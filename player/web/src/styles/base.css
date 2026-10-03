@@ -1,5 +1,5 @@
-/* 黑金 Pro. Tokens are the single source of truth; the legacy --sky* / --muted /
-   --line names are compatibility aliases only.
+/* 黑金 Pro. Tokens are the single source of truth; the legacy --muted / --line /
+   --faint names are compatibility aliases only.
    Hierarchy comes from gold-tinted hairlines, never from elevation shadows. */
 :root {
   color-scheme: dark;
@@ -97,15 +97,6 @@
   --safe-left: env(safe-area-inset-left, 0px);
   --safe-right: env(safe-area-inset-right, 0px);
 
-  /* Compatibility aliases for the pre-existing SKY selectors. */
-  --sky50: var(--surface-soft);
-  --sky100: var(--primary-soft);
-  --sky500: var(--primary-bright);
-  --sky700: var(--primary);
-  --sky-50: var(--sky50);
-  --sky-100: var(--sky100);
-  --sky-500: var(--sky500);
-  --sky-700: var(--sky700);
   --muted: var(--text-secondary);
   --faint: var(--text-muted);
   --line: var(--border);
@@ -138,10 +129,10 @@ input:disabled { cursor: default; }
 .icon-stack > .icon { grid-area: 1 / 1; }
 .icon-filled, .icon-muted, .ind-play, .ind-pause { display: none; }
 .logo { width: 36px; height: 36px; flex: none; display: grid; place-items: center; border-radius: var(--radius); background: var(--gold-foil); color: var(--accent-ink); }
-@keyframes sky-enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
-@keyframes sky-pulse { 50% { opacity: .45; } }
-@keyframes sky-shimmer { to { background-position: -200% 0; } }
-.skeleton { border-radius: var(--radius); background: linear-gradient(100deg, var(--surface-raised) 30%, var(--surface) 48%, var(--surface-raised) 66%); background-size: 200% 100%; animation: sky-shimmer 1.6s linear infinite; min-height: 20px; }
+@keyframes panel-enter { from { opacity: 0; transform: translateY(10px); } to { opacity: 1; transform: none; } }
+@keyframes soft-pulse { 50% { opacity: .45; } }
+@keyframes skeleton-shimmer { to { background-position: -200% 0; } }
+.skeleton { border-radius: var(--radius); background: linear-gradient(100deg, var(--surface-raised) 30%, var(--surface) 48%, var(--surface-raised) 66%); background-size: 200% 100%; animation: skeleton-shimmer 1.6s linear infinite; min-height: 20px; }
 .card-grid { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(100%, 240px), 1fr)); gap: var(--space-3); }
 .tabs, .chips { display: flex; gap: var(--space-2); overflow-x: auto; padding: var(--space-1); }
 .tab, .chip { min-height: 44px; padding: 0 var(--space-4); border-radius: var(--radius-pill); background: var(--surface-soft); color: var(--text-secondary); }

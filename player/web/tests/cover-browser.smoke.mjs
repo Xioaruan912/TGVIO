@@ -6,7 +6,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 const root=fileURLToPath(new URL("../",import.meta.url));
 const delay=ms=>new Promise(resolve=>setTimeout(resolve,ms));
-const output=process.env.TGVIO_SCREENSHOTS||path.join(tmpdir(),"tgvio-sky-preview");
+const output=process.env.TGVIO_SCREENSHOTS||path.join(tmpdir(),"tgvio-player-preview");
 const profile=await mkdtemp(path.join(tmpdir(),"tgvio-cover-browser-"));
 await mkdir(output,{recursive:true});
 let chrome,socket,server,baseUrl; const checks=[],children=[];

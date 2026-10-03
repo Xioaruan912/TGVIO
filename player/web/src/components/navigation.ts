@@ -32,7 +32,7 @@ export function navButton(spec: NavSpec, handlers: ShellHandlers): HTMLButtonEle
 export function buildNavigation(handlers: ShellHandlers) {
   const desktopNav = element("aside", "desktop-nav");
   const brand = element("div", "desktop-brand");
-  brand.append(brandMark(), element("strong", undefined, "SKY TGVIO"));
+  brand.append(brandMark(), element("strong", undefined, "TGVIO"));
   const desktopLinks = element("nav", "desktop-links");
   desktopLinks.setAttribute("aria-label", "视频分区");
   const bottomNav = element("nav", "bottom-nav");
