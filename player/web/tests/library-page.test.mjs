@@ -92,6 +92,9 @@ const filtersModule = await import("data:text/javascript;base64," + Buffer.from(
 globalThis.__filterSheetDeps = { element, emptyFilters: filtersModule.emptyFilters, ...sheetModule };
 const { buildFilterSheet } = await import("data:text/javascript;base64," + Buffer.from(
   "const { element, sheetChoice, sheetNote, sheetSection, emptyFilters } = globalThis.__filterSheetDeps;\n" + await transpile("components/filter-sheet.ts")).toString("base64"));
+globalThis.__collectionSheetDeps = { element, buildFilterSheet, ...filtersModule, ...sheetModule };
+const collectionSheets = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, sheetChoice, sheetNote, sheetRow, buildFilterSheet, filterCount } = globalThis.__collectionSheetDeps;\n" + await transpile("components/collection-sheets.ts")).toString("base64"));
 const collectionsModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("collections.ts")).toString("base64"));
 /** A page-owned sheet host, the way main.ts hands the page the real shell. */
 const makeSheetHost = () => {
@@ -110,10 +113,10 @@ const triChoice = (root, label, text) => {
 };
 const libraryPrefs = { coverDensity: "comfortable" };
 const setPref = (key, value) => { libraryPrefs[key] = value; };
-globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref, openSheet: sheetModule.openSheet, closeSheet: sheetModule.closeSheet, sheetChoice: sheetModule.sheetChoice, sheetNote: sheetModule.sheetNote, buildFilterSheet, emptyFilters: filtersModule.emptyFilters, filterCount: filtersModule.filterCount, CollectionsController: collectionsModule.CollectionsController };
+globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref, openSheet: sheetModule.openSheet, closeSheet: sheetModule.closeSheet, buildFilterSheet, ...collectionSheets, emptyFilters: filtersModule.emptyFilters, filterCount: filtersModule.filterCount, CollectionsController: collectionsModule.CollectionsController };
 const libraryJs = await transpile("library.ts");
 const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref, openSheet, closeSheet, sheetChoice, sheetNote, buildFilterSheet, emptyFilters, filterCount, CollectionsController } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref, openSheet, closeSheet, buildPickerSheet, buildFilterSheet, emptyFilters, filterCount, CollectionsController } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");

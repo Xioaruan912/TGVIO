@@ -73,9 +73,12 @@ const filtersModule = await import("data:text/javascript;base64," + Buffer.from(
 globalThis.__filterSheetDeps = { element, emptyFilters: filtersModule.emptyFilters, ...sheetModule };
 const filterSheet = await import("data:text/javascript;base64," + Buffer.from(
   "const { element, sheetChoice, sheetNote, sheetSection, emptyFilters } = globalThis.__filterSheetDeps;\n" + await transpile("components/filter-sheet.ts")).toString("base64"));
-globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref, createSlidingIndicator: densityIndicator, buildFilterSheet: filterSheet, ...filtersModule, ...sheetModule, CollectionsController: collectionsModule.CollectionsController };
+globalThis.__collectionSheetDeps = { element, buildFilterSheet: filterSheet.buildFilterSheet, ...filtersModule, ...sheetModule };
+const collectionSheets = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, sheetChoice, sheetNote, sheetRow, buildFilterSheet, filterCount } = globalThis.__collectionSheetDeps;\n" + await transpile("components/collection-sheets.ts")).toString("base64"));
+globalThis.__favoritesDeps = { buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref, createSlidingIndicator: densityIndicator, buildFilterSheet: filterSheet.buildFilterSheet, ...filtersModule, ...sheetModule, ...collectionSheets, CollectionsController: collectionsModule.CollectionsController };
 const { FavoritesPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, sheetChoice, sheetNote, sheetRow, CollectionsController, buildFilterSheet, emptyFilters, filterCount, parseQuery, toQuery, describeFilters } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
+  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, CollectionsController, buildFilterSheet, emptyFilters, filterCount, parseQuery, toQuery, describeFilters, buildNameSheet, buildDeleteSheet, buildSmartSheet, buildPickerSheet } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");

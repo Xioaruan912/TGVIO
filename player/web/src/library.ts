@@ -5,8 +5,9 @@ import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
 import { bindCoverMasonry, type CoverMasonry } from "./components/cover-masonry";
 import { createSlidingIndicator } from "./components/indicator";
-import { closeSheet, openSheet, sheetChoice, sheetNote, type SheetHost } from "./components/sheet";
+import { closeSheet, openSheet, type SheetHost } from "./components/sheet";
 import { buildFilterSheet } from "./components/filter-sheet";
+import { buildPickerSheet } from "./components/collection-sheets";
 import { CollectionsController } from "./collections";
 import { emptyFilters, filterCount, type LibraryFilters } from "./library-filters";
 import { prefs, setPref } from "./settings";
@@ -422,15 +423,12 @@ export class VideoLibraryPage {
     }
     const sheet = this.sheet;
     if (!sheet) return;
-    openSheet(sheet, "加入集合", [
-      sheetNote(`把选中的 ${this.controller.selectedClips.length} 个视频加入：`),
-      ...targets.map(collection => sheetChoice(
-        collection.name,
-        `${collection.count} 个成员`,
-        false,
-        () => { void this.addSelectedTo(collection.collection_id, collection.name); },
-      )),
-    ]);
+    openSheet(sheet, "加入集合", [buildPickerSheet({
+      count: this.controller.selectedClips.length,
+      collections: targets,
+      onPick: collection => { void this.addSelectedTo(collection.collection_id, collection.name); },
+      onCancel: () => closeSheet(sheet),
+    })]);
   }
 
   private async addSelectedTo(collectionId: string, name: string): Promise<void> {

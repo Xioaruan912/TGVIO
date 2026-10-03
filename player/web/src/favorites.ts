@@ -3,8 +3,9 @@ import { api, shortId } from "./api";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
 import { createSlidingIndicator } from "./components/indicator";
-import { closeSheet, openSheet, sheetChoice, sheetNote, sheetRow, type SheetHost } from "./components/sheet";
+import { closeSheet, openSheet, type SheetHost } from "./components/sheet";
 import { buildFilterSheet } from "./components/filter-sheet";
+import { buildDeleteSheet, buildNameSheet, buildPickerSheet, buildSmartSheet } from "./components/collection-sheets";
 import {
   describeFilters,
   emptyFilters,
@@ -534,20 +535,11 @@ export class FavoritesPage {
 
   /** The panel the wall already uses; on this page it becomes a collection's rules. */
   private openSmartSheet(collection: CollectionDto | null): void {
-    const input = element("input", "filter-input collection-name-input");
-    input.type = "text";
-    input.maxLength = 60;
-    input.value = collection?.name ?? "";
-    input.placeholder = "集合名称";
-    input.setAttribute("aria-label", "集合名称");
-    const error = element("p", "sheet-note");
-    const form = element("div", "collection-name-form");
-    form.append(input, error);
-    const panel = buildFilterSheet({
+    this.showSheet(collection === null ? "新建智能集合" : "改条件", [buildSmartSheet({
+      name: collection?.name ?? "",
       value: collection?.rules_json ? parseQuery(collection.rules_json) : emptyFilters(),
-      onApply: next => { void this.saveSmart(collection, input.value.trim(), next, error); },
-    });
-    this.showSheet(collection === null ? "新建智能集合" : "改条件", [form, panel]);
+      onSubmit: (name, filters, error) => { void this.saveSmart(collection, name, filters, error); },
+    })]);
   }
 
   private async saveSmart(
@@ -556,13 +548,6 @@ export class FavoritesPage {
     filters: LibraryFilters,
     error: HTMLElement,
   ): Promise<void> {
-    if (!name || name.length > 60) { error.textContent = "名称需要 1 到 60 个字符"; return; }
-    if (filterCount(filters) === 0) {
-      // An empty condition set selects nothing by design, so it is refused here rather
-      // than saved as a collection that could never show a video.
-      error.textContent = "至少需要一个条件";
-      return;
-    }
     const rules = toQuery(filters);
     const saved = collection === null
       ? (await this.collections.create(name, "smart", rules)) !== null
@@ -576,28 +561,12 @@ export class FavoritesPage {
   }
 
   private openNameSheet(collection: CollectionDto | null): void {
-    const input = element("input", "filter-input collection-name-input");
-    input.type = "text";
-    input.maxLength = 60;
-    input.value = collection?.name ?? "";
-    input.placeholder = "集合名称";
-    input.setAttribute("aria-label", "集合名称");
-    const error = element("p", "sheet-note");
-    const submit = (): void => {
-      const name = input.value.trim();
-      if (!name || name.length > 60) { error.textContent = "名称需要 1 到 60 个字符"; return; }
-      void this.saveName(collection, name, error);
-    };
-    input.addEventListener("keydown", event => {
-      if ((event as KeyboardEvent).key === "Enter") submit();
-    });
-    const form = element("div", "collection-name-form");
-    form.append(input, error);
-    const actions = element("div", "filter-actions");
-    const save = this.button(collection === null ? "创建" : "改名", submit);
-    save.classList.add("filter-apply");
-    actions.append(this.button("取消", () => this.hideSheet()), save);
-    this.showSheet(collection === null ? "新建集合" : "改名", [form, actions]);
+    this.showSheet(collection === null ? "新建集合" : "改名", [buildNameSheet({
+      value: collection?.name ?? "",
+      submitLabel: collection === null ? "创建" : "改名",
+      onSubmit: (name, error) => { void this.saveName(collection, name, error); },
+      onCancel: () => this.hideSheet(),
+    })]);
   }
 
   private async saveName(collection: CollectionDto | null, name: string, error: HTMLElement): Promise<void> {
@@ -611,11 +580,11 @@ export class FavoritesPage {
   }
 
   private openDeleteSheet(collection: CollectionDto): void {
-    this.showSheet("删除集合", [
-      sheetNote(`删除集合「${collection.name}」？视频本身不会被删除。`),
-      sheetRow({ title: "删除集合", sub: "只删除集合与它的成员关系", onPick: () => { void this.deleteCollection(collection); } }),
-      sheetRow({ title: "取消", sub: "保留集合", onPick: () => this.hideSheet() }),
-    ]);
+    this.showSheet("删除集合", [buildDeleteSheet({
+      name: collection.name,
+      onConfirm: () => { void this.deleteCollection(collection); },
+      onCancel: () => this.hideSheet(),
+    })]);
   }
 
   private async deleteCollection(collection: CollectionDto): Promise<void> {
@@ -634,15 +603,12 @@ export class FavoritesPage {
       this.notice.textContent = "还没有可加入的集合，请先在「集合」里新建一个";
       return;
     }
-    this.showSheet("加入集合", [
-      sheetNote(`把选中的 ${this.selected.size} 个视频加入：`),
-      ...targets.map(collection => sheetChoice(
-        collection.name,
-        `${collection.count} 个成员`,
-        false,
-        () => { void this.addSelectedTo(collection); },
-      )),
-    ]);
+    this.showSheet("加入集合", [buildPickerSheet({
+      count: this.selected.size,
+      collections: targets,
+      onPick: collection => { void this.addSelectedTo(collection); },
+      onCancel: () => this.hideSheet(),
+    })]);
   }
 
   private async addSelectedTo(collection: CollectionDto): Promise<void> {
