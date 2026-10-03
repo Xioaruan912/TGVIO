@@ -14,6 +14,7 @@ let chrome, socket, stderr="";
 try {
   await server.listen(); const port=server.httpServer.address().port;
   chrome=spawn(process.env.CHROME_BIN||"google-chrome",["--headless","--no-sandbox","--disable-gpu","--disable-dev-shm-usage",
+    "--window-size=1440,1600",
     "--disable-background-networking","--no-first-run","--no-default-browser-check",`--user-data-dir=${profile}`,
     "--remote-debugging-port=0","--remote-debugging-address=127.0.0.1","about:blank"],{stdio:["ignore","ignore","pipe"]});
   chrome.stderr.on("data",x=>stderr=(stderr+x).slice(-2000));

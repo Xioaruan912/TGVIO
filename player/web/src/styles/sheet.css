@@ -9,6 +9,10 @@
 .sheet-title { margin: 0; font-size: 22px; font-weight: 700; }
 .sheet-close { width: 44px; height: 44px; flex: none; display: grid; place-items: center; border-radius: 14px; color: var(--text-secondary); background: var(--surface-soft); }
 .sheet-body { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 20px 20px calc(24px + var(--safe-bottom)); display: grid; gap: 10px; align-content: start; background: var(--bg); }
+/* A grid track will not shrink below its item's min-content on its own. A sheet child
+   that carries a date/number input would then push the panel wider than the sheet and get
+   silently clipped, so every child is told it may shrink. */
+.sheet-body > * { min-width: 0; }
 .sheet-section { margin: 12px 4px 2px; font-size: 12px; font-weight: 700; letter-spacing: .04em; color: var(--primary); }
 .sheet-note { margin: 4px; font-size: 12px; line-height: 1.7; color: var(--muted); overflow-wrap: anywhere; }
 .sheet-row { display: flex; align-items: center; gap: 12px; width: 100%; min-height: 64px; padding: 14px; border: 1px solid var(--border); border-radius: 16px; background: var(--surface-raised); color: var(--text); text-align: left;  }

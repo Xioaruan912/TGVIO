@@ -35,6 +35,9 @@ try {
   server.once("exit",code=>{clearTimeout(timer);reject(new Error("Fixture exited "+code+": "+log));});
  });
  chrome=spawn(process.env.CHROME_BIN||"google-chrome",["--headless","--no-sandbox","--disable-gpu","--disable-dev-shm-usage",
+  // The window must be at least as tall as any emulated viewport, or CDP screenshots of
+  // the offscreen part return stale frames and the sheet looks empty.
+  "--window-size=1440,1600",
   "--disable-background-networking","--no-first-run","--no-default-browser-check","--user-data-dir="+profile,
   "--remote-debugging-port=0","--remote-debugging-address=127.0.0.1","about:blank"],{stdio:["ignore","ignore","pipe"]});
  children.push(chrome);let chromeError;chrome.on("error",e=>{chromeError=e;});chrome.stderr.on("data",()=>{});
@@ -93,12 +96,15 @@ try {
  // A sheet is taller than a phone leaves for the page behind it, so its own shot gets a
  // tall viewport: the whole panel is the subject, not the grid under it.
  const sheetShot=async (name,width,height)=>{
-  await cdp("Emulation.setDeviceMetricsOverride",{width,height:1400,deviceScaleFactor:1,mobile:true});
+  // Capture at the real viewport: a taller override produced images that misrepresented the
+  // sheet. The card's markup is dumped too, so a static page can be screenshotted when a
+  // composited layer refuses to re-raster in this environment.
   await evaluate("(()=>{const a=document.activeElement;if(a&&a.blur)a.blur();const b=document.querySelector('.sheet-body');if(b)b.scrollTop=0;return true})()");
-  await delay(500);
+  await delay(400);
   const image=await cdp("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
   await writeFile(path.join(output,name+".png"),Buffer.from(image.data,"base64"));
-  await cdp("Emulation.setDeviceMetricsOverride",{width,height,deviceScaleFactor:1,mobile:true});
+  const cardHtml=await evaluate("(()=>{const c=document.querySelector('.sheet-card');return c?c.outerHTML:null})()");
+  if(cardHtml)await writeFile(path.join(output,name+"-card.html"),cardHtml);
   await delay(400);
  };
  const contrastAt = async point => {
@@ -328,6 +334,11 @@ try {
    await sheetShot("library-filter-panel-390x844",width,height);
   }
   check(await evaluate("document.querySelectorAll('.sheet .filter-tri-button').length>=15"),"every filter condition is a control");
+  // The panel must fit the sheet it lives in: a date/number input has a large intrinsic
+  // width and a grid track will not shrink below its content's minimum on its own.
+  check(await evaluate("(()=>{const b=document.querySelector('.sheet-body'),f=document.querySelector('.filter-sheet');if(!b||!f)return false;return f.getBoundingClientRect().width<=b.getBoundingClientRect().width+1})()"),"the filter panel fits inside the sheet "+width);
+  check(await evaluate("(()=>{const b=document.querySelector('.sheet-body');return b.scrollWidth<=b.clientWidth+1})()"),"no filter row is clipped off the sheet "+width);
+  check(await evaluate("(()=>{const row=document.querySelector('.filter-sheet .filter-tri');return row.getBoundingClientRect().right<=document.querySelector('.sheet-body').getBoundingClientRect().right+1})()"),"a condition row stays inside the sheet "+width);
   await click('.sheet .filter-tri[data-filter="hasCover"] .filter-tri-button:nth-child(2)');
   await click(".sheet .filter-apply");
   await wait("document.querySelector('.sheet').hidden","applying a filter closes the panel");
