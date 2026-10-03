@@ -106,3 +106,49 @@ export function confirmAudioEnable(
     animateArrival(panel);
   });
 }
+
+/**
+ * Clearing resume points asks first, like a delete does, but with its own copy:
+ * nothing leaves the archive, so the wording must not suggest that it does.
+ */
+export function confirmResumeClear(host: HTMLElement, count: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const overlay = element("div", "audio-warning resume-warning");
+    overlay.setAttribute("role", "alertdialog");
+    overlay.setAttribute("aria-modal", "true");
+    overlay.setAttribute("aria-labelledby", "resume-warning-title");
+    const panel = element("section", "audio-warning-panel");
+    const title = element("h2", undefined, "清空继续观看记录？");
+    title.id = "resume-warning-title";
+    const message = element(
+      "p",
+      undefined,
+      `将清除 ${count} 条续播位置。视频本身不会被删除，但下次打开会从头开始播放。`,
+    );
+    const actions = element("div", "audio-warning-actions");
+    const cancel = element("button", "audio-warning-cancel", "取消");
+    const confirm = element("button", "resume-warning-confirm", "清空记录");
+    cancel.type = "button";
+    confirm.type = "button";
+    let settled = false;
+    let releaseDialog: (() => void) | undefined;
+    const finish = (accepted: boolean) => {
+      if (settled) return;
+      settled = true;
+      releaseDialog?.();
+      overlay.remove();
+      resolve(accepted);
+    };
+    cancel.addEventListener("click", () => finish(false));
+    confirm.addEventListener("click", () => finish(true));
+    overlay.addEventListener("click", (event) => {
+      if (event.target === overlay) finish(false);
+    });
+    actions.append(cancel, confirm);
+    panel.append(title, message, actions);
+    overlay.appendChild(panel);
+    host.appendChild(overlay);
+    releaseDialog = activateDialog(overlay, () => finish(false), cancel);
+    animateArrival(panel);
+  });
+}

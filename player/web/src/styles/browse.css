@@ -42,6 +42,11 @@
 .long-resume-section, .long-library-section { display: grid; min-width: 0; gap: 14px; align-content: start; }
 .long-resume-heading, .long-library-heading { margin: 0; font-size: 16px; font-weight: 650; color: var(--text); }
 .long-resume-heading::before { content: ""; display: inline-block; width: 3px; height: 14px; margin-right: 8px; border-radius: 4px; background: var(--accent); }
+/* The section that can empty itself owns the control that empties it. */
+.long-resume-head { display: flex; align-items: center; justify-content: space-between; gap: 12px; min-width: 0; }
+.long-resume-clear { flex: none; min-height: 44px; padding: 0 14px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text-secondary); font-size: 13px; }
+.long-resume-notice { margin: 0; font-size: 12px; line-height: 1.6; color: var(--text-muted); }
+@media (hover: hover) { .long-resume-clear:not(:disabled):hover { border-color: var(--primary); color: var(--primary); } }
 .long-retry { justify-self: center; min-height: 48px; padding: 0 24px; background: var(--surface); border: 1px solid var(--border); border-radius: var(--radius); color: var(--primary); font-size: 13px; }
 @media (min-width: 900px) {
  .browse-page { left: calc(92px + var(--safe-left)); bottom: 0; padding-inline: 28px; max-width: var(--library-max); margin-inline: auto; }

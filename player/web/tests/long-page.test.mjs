@@ -59,13 +59,15 @@ const { buildCoverDensityControl, applyCoverDensity } = await import("data:text/
   "const { element, createSlidingIndicator } = globalThis.__densityDeps;\n" + await transpile("components/cover-density.ts")).toString("base64"));
 const longPrefs = { cacheMode: "auto", coverDensity: "comfortable" };
 const setPref = (key, value) => { longPrefs[key] = value; };
+let confirmAnswer = true, confirmCalls = 0, askedCount = 0;
+let confirmResumeClear = async (_host, count) => { confirmCalls++; askedCount = count; return confirmAnswer; };
 globalThis.__longDeps = {
   buildBrowseFrame, api, element, prefs: longPrefs, setPref, buildCoverTile, icon, resumableItems, omitResumableDuplicates,
-  buildCoverDensityControl, applyCoverDensity,
+  buildCoverDensityControl, applyCoverDensity, confirmResumeClear: (...args) => confirmResumeClear(...args),
   formatTime: seconds => `${Math.floor(seconds / 60)}:${String(Math.floor(seconds) % 60).padStart(2, "0")}`,
 };
 const { LongVideoPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, api, element, prefs, setPref, buildCoverTile, formatTime, icon, resumableItems, omitResumableDuplicates, buildCoverDensityControl, applyCoverDensity } = globalThis.__longDeps;\n" + await transpile("long.ts")).toString("base64"));
+  "const { buildBrowseFrame, api, element, prefs, setPref, buildCoverTile, formatTime, icon, resumableItems, omitResumableDuplicates, buildCoverDensityControl, applyCoverDensity, confirmResumeClear } = globalThis.__longDeps;\n" + await transpile("long.ts")).toString("base64"));
 
 const tiles = page => byClass(page.root, "cover-tile");
 
@@ -213,4 +215,53 @@ test("a late resume response cannot restore a removed video's cover", async () =
     assert.equal(byClass(page.root,"long-resume-section").length,0);
     page.destroy();
   } finally {api.longVideoProgress=original;}
+});
+
+test("clearing continue watching asks first and deletes exactly what the section listed", async () => {
+  const deleted = [];
+  api.clearLongVideoProgress = async mediaId => { deleted.push(mediaId); };
+  progress = {
+    positions: new Map([[clips[3].id, 600], [clips[7].id, 900]]),
+    recent: [{ clip: clips[3], position: 600 }, { clip: clips[7], position: 900 }],
+  };
+  confirmCalls = 0; askedCount = 0; confirmAnswer = false;
+  const page = new LongVideoPage(() => undefined, () => undefined);
+  document.body.append(page.root);
+  await flush();
+  const button = byClass(page.root, "long-resume-clear")[0];
+  assert.ok(button, "the continue-watching heading offers a clear control");
+  assert.match(button.getAttribute("aria-label") ?? button.textContent, /清空/);
+
+  button.dispatch("click"); await flush();
+  assert.equal(confirmCalls, 1, "clearing asks before it deletes anything");
+  assert.equal(askedCount, 2, "the question states how many records are at stake");
+  assert.deepEqual(deleted, [], "a declined confirmation deletes nothing");
+  assert.equal(byClass(page.root, "long-resume-section").length, 1, "the section survives a decline");
+
+  confirmAnswer = true;
+  button.dispatch("click"); await flush(); await flush();
+  assert.deepEqual(deleted.sort(), [clips[3].id, clips[7].id].sort(), "exactly the listed records are cleared");
+  assert.equal(byClass(page.root, "long-resume-section").length, 0, "an emptied section disappears");
+  page.destroy();
+});
+
+test("a record that could not be cleared stays visible and is reported", async () => {
+  api.clearLongVideoProgress = async mediaId => {
+    if (mediaId === clips[7].id) throw new Error("offline");
+  };
+  progress = {
+    positions: new Map([[clips[3].id, 600], [clips[7].id, 900]]),
+    recent: [{ clip: clips[3], position: 600 }, { clip: clips[7], position: 900 }],
+  };
+  confirmAnswer = true;
+  const page = new LongVideoPage(() => undefined, () => undefined);
+  document.body.append(page.root);
+  await flush();
+  byClass(page.root, "long-resume-clear")[0].dispatch("click");
+  await flush(); await flush();
+  const sections = byClass(page.root, "long-resume-section");
+  assert.equal(sections.length, 1, "a partial failure keeps the section");
+  assert.equal(byClass(sections[0], "cover-tile").length, 1, "only the record that failed is left");
+  assert.match(page.root.textContent, /1 条未清除/, "the page says how many records survived");
+  page.destroy();
 });

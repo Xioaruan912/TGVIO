@@ -57,7 +57,7 @@ const server=await createServer({configFile:false,root:fileURLToPath(new URL("..
   res.setHeader("Content-Length",String(end-start+1));if(req.method==="HEAD"){res.end();return;}
   const stream=createReadStream(selected,{start,end});res.on("close",()=>stream.destroy());stream.pipe(res);return;
  }
- if(pathname==="/__acceptance__/status"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({localOnly:true,...counters,signedOut:sessionSignedOut,logoutCalls,favorites:favorites.size,libraryOriginals:libraryFixture.originals.length,testClipId:libraryFixture.testClipId,testFolderId:libraryFixture.testFolderId,multiMediaId:libraryFixture.multiMediaId,feedMediaId:libraryFixture.feedMedia.id}));return;}
+ if(pathname==="/__acceptance__/status"){res.setHeader("Content-Type","application/json");res.end(JSON.stringify({localOnly:true,...counters,signedOut:sessionSignedOut,logoutCalls,progressCount:progress.size,favorites:favorites.size,libraryOriginals:libraryFixture.originals.length,testClipId:libraryFixture.testClipId,testFolderId:libraryFixture.testFolderId,multiMediaId:libraryFixture.multiMediaId,feedMediaId:libraryFixture.feedMedia.id}));return;}
  if(!pathname.startsWith("/api/"))return next();
  // Discard test request bodies; never capture form or cookie contents.
  const chunks=[];for await(const chunk of req)chunks.push(chunk);let body={};try{body=JSON.parse(Buffer.concat(chunks).toString());}catch{}

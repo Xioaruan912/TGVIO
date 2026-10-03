@@ -239,10 +239,36 @@ try {
   check(await evaluate("(()=>{const e=document.querySelector('.large-controls .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.large-controls').getBoundingClientRect();return r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside long panel "+width);
   check(await evaluate("document.querySelector('.large-quality').textContent==='原画'&&document.querySelector('.large-quality').disabled"),"no fake low quality for original-only media "+width);
   await screenshot("long-player-"+width+"x"+height);
-  await click(".large-back");await nav("home");await click(".topbar-settings");await screenshot("settings-"+width+"x"+height);
+  await click(".large-back");
+  await nav("home");
+  await nav("home");await click(".topbar-settings");await screenshot("settings-"+width+"x"+height);
   check(await evaluate("document.querySelector('.sheet-card')?.contains(document.activeElement)"),"settings constrains focus");
   for(const type of ["keyDown","keyUp"])await cdp("Input.dispatchKeyEvent",{type,key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
  }
+ // Clearing continue watching runs once, after the viewport loop: it empties records
+ // the earlier iterations need, and the fixture is shared across them.
+ await cdp("Emulation.setDeviceMetricsOverride",{width:390,height:844,deviceScaleFactor:1,mobile:true});
+ await navigate("/");await wait("!!document.querySelector('.app-shell')","app for the clear check");
+ await nav("long");await wait("!!document.querySelector('.long-resume-section .cover-tile')","resume records to clear");
+ const beforeClear=(await(await fetch(baseUrl+"/__acceptance__/status")).json()).progressCount;
+ const listedResume=await evaluate("document.querySelectorAll('.long-resume-section .cover-tile').length");
+ check(await evaluate("!!document.querySelector('.long-resume-clear')"),"the section offers a way to clear itself");
+ await click(".long-resume-clear");
+ await wait("!!document.querySelector('.resume-warning-confirm')","clear confirmation");
+ check(await evaluate("document.querySelector('.resume-warning').getAttribute('role')==='alertdialog'"),"clearing asks in a dialog before it deletes");
+ const settlePanel=async()=>evaluate("(async()=>{const p=document.querySelector('.resume-warning-panel');if(p)await Promise.all(p.getAnimations().map(a=>a.finished.catch(()=>0)));return true})()");
+ await settlePanel();
+ await click(".audio-warning-cancel");
+ check(await evaluate("!!document.querySelector('.long-resume-section')"),"a declined clear keeps the section");
+ await click(".long-resume-clear");
+ await wait("!!document.querySelector('.resume-warning-confirm')","clear confirmation again");
+ await settlePanel();
+ await click(".resume-warning-confirm");
+ await wait("!document.querySelector('.long-resume-section')","an emptied section disappears");
+ const afterClear=(await(await fetch(baseUrl+"/__acceptance__/status")).json()).progressCount;
+ check(listedResume>0&&afterClear<=beforeClear-listedResume,`only the listed records were cleared: listed ${listedResume} of ${beforeClear}, left ${afterClear}`);
+ await screenshot("long-resume-cleared-390");
+
  // The one-minute idle deadline must end the session, not just cover the picture:
  // a device put down has to come back to the access screen, muted. Time is faked
  // for this one check so the minute does not have to pass for real.

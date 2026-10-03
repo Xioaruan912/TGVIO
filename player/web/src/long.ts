@@ -1,6 +1,7 @@
 import { api } from "./api";
 import { buildBrowseFrame } from "./components/browse-frame";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
+import { confirmResumeClear } from "./components/confirmations";
 import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
 import { prefs, setPref } from "./settings";
 import { element, formatTime } from "./ui";
@@ -8,6 +9,8 @@ import type { Clip } from "./types";
 import { omitResumableDuplicates, resumableItems } from "./long-video-list";
 
 const BATCH = 20;
+/** Bounded lanes for clearing resume points, so a long history does not fire at once. */
+const CLEAR_LANES = 3;
 const MAX_ROWS = 1000;
 const EMPTY_PROGRESS = { positions: new Map<string, number>(), recent: [] as Array<{ clip: Clip; position: number }> };
 type ProgressState = Awaited<ReturnType<typeof api.longVideoProgress>>;
@@ -26,6 +29,9 @@ export class LongVideoPage {
   private request: AbortController | null = null;
   private error = false;
   private automaticPages = 0;
+  private clearing = false;
+  /** Survives the re-render that follows a partial clear. */
+  private resumeNotice: string | null = null;
   private returnFocus: string | null = null;
   private offset = 0;
   private loading = false;
@@ -168,10 +174,56 @@ export class LongVideoPage {
     if (!items.length) return;
     const section = element("section", "long-resume-section");
     section.setAttribute("aria-label", "继续观看");
-    section.appendChild(element("h2", "long-resume-heading", "继续观看"));
+    const head = element("div", "long-resume-head");
+    head.appendChild(element("h2", "long-resume-heading", "继续观看"));
+    const clear = element("button", "long-resume-clear", "清空记录");
+    clear.type = "button";
+    clear.setAttribute("aria-label", `清空继续观看记录（${items.length} 条）`);
+    clear.addEventListener("click", () => void this.clearResume(items, clear));
+    head.appendChild(clear);
+    section.appendChild(head);
+    if (this.resumeNotice) section.appendChild(element("p", "long-resume-notice", this.resumeNotice));
     section.appendChild(this.grid(items.map(({ clip }) => clip), (clip) =>
       items.find((item) => item.clip.id === clip.id)?.position));
     this.list.appendChild(section);
+  }
+
+  /**
+   * Clear exactly the records this section listed. Videos stay untouched, so the
+   * copy must not read like a delete, and a record that could not be cleared stays
+   * where it is: reporting a partial success as a whole one is the one thing worse
+   * than the failure itself.
+   */
+  private async clearResume(items: Array<{ clip: Clip; position: number }>, button: HTMLButtonElement): Promise<void> {
+    if (this.clearing) return;
+    if (!await confirmResumeClear(this.root, items.length)) return;
+    this.clearing = true;
+    button.disabled = true;
+    button.textContent = "正在清空…";
+    const section = this.list.querySelector(".long-resume-section");
+    section?.classList.add("is-clearing");
+    const pending = items.map(({ clip }) => clip.id);
+    const failed = new Set<string>();
+    const worker = async (): Promise<void> => {
+      for (let id = pending.shift(); id !== undefined; id = pending.shift()) {
+        try { await api.clearLongVideoProgress(id); }
+        catch { failed.add(id); }
+      }
+    };
+    await Promise.all(Array.from({ length: Math.min(CLEAR_LANES, items.length) }, worker));
+    // Let the cards leave before the list is rebuilt underneath them.
+    const leaving = section ? [...section.querySelectorAll<HTMLElement>(".cover-tile")] : [];
+    const animations = leaving.flatMap(tile =>
+      typeof tile.getAnimations === "function" ? tile.getAnimations() : []);
+    if (animations.length) await Promise.all(animations.map(animation => animation.finished.catch(() => undefined)));
+    for (const { clip } of items) {
+      if (failed.has(clip.id)) continue;
+      this.progressState.positions.delete(clip.id);
+      this.progressState.recent = this.progressState.recent.filter(item => item.clip.id !== clip.id);
+    }
+    this.resumeNotice = failed.size ? `有 ${failed.size} 条未清除，可重试` : null;
+    this.clearing = false;
+    this.renderItems();
   }
 
   /** Cover cards with a real resume bar; browsing never starts a video. */

@@ -143,6 +143,15 @@ button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visibl
   to { opacity: 1; transform: none; }
 }
 
+/* 7. Clearing continue watching. The cards leave before the section does, so the
+   list never jumps out from under the pointer. Compositor-only properties, and the
+   global reduced-motion switch turns this into an instant swap. */
+.long-resume-section.is-clearing .cover-tile {
+  animation: cover-leave var(--dur-base) var(--ease-in-quiet) both;
+  pointer-events: none;
+}
+@keyframes cover-leave { to { opacity: 0; transform: translateY(10px) scale(.96); } }
+
 @media (prefers-reduced-motion: reduce) {
   /* Springs become plain linear so nothing overshoots or travels. The global
      transition/animation kill switch stays in style.css. */
