@@ -2,18 +2,11 @@ import { buildBrowseFrame, browseButton } from "./components/browse-frame";
 import { api, shortId } from "./api";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
 import { applyCoverDensity, buildCoverDensityControl, type CoverDensityStep } from "./components/cover-density";
-import { createSlidingIndicator } from "./components/indicator";
 import { closeSheet, openSheet, type SheetHost } from "./components/sheet";
-import { buildFilterSheet } from "./components/filter-sheet";
-import { buildDeleteSheet, buildNameSheet, buildPickerSheet, buildSmartSheet } from "./components/collection-sheets";
-import {
-  describeFilters,
-  emptyFilters,
-  filterCount,
-  parseQuery,
-  toQuery,
-  type LibraryFilters,
-} from "./library-filters";
+import { buildPickerSheet } from "./components/collection-sheets";
+import { moveCollection, openDeleteSheet, openNameSheet, openSmartSheet, type CollectionAdminHost } from "./components/collection-admin";
+import { buildCollectionList, buildMemberFilterSheet, buildScopeSegments, syncScopeSegments, type CollectionScope, type ScopeSegments } from "./components/collection-list";
+import { emptyFilters, filterCount, type LibraryFilters } from "./library-filters";
 import { CollectionsController } from "./collections";
 import { element } from "./ui";
 import { prefs, setPref } from "./settings";
@@ -56,12 +49,20 @@ export class FavoritesPage {
   private launchControl: HTMLElement | null = null;
   private readonly loadButton = this.button("加载更多", () => void this.loadMore());
   private readonly density = buildCoverDensityControl({ value: prefs.coverDensity, onSelect: value => this.setDensity(value) });
-  private readonly segments = element("div", "library-segments");
-  private readonly segmentIndicator = createSlidingIndicator();
-  private readonly segmentButtons: HTMLButtonElement[] = [];
+  private readonly segments: ScopeSegments = buildScopeSegments("favorites", scope => this.setScope(scope));
   private readonly collections = new CollectionsController(api);
+  /** The flows that create, retype, reorder and delete a collection, over this page. */
+  private readonly admin: CollectionAdminHost = {
+    controller: this.collections,
+    current: () => this.collection,
+    show: (title, body) => this.showSheet(title, body),
+    hide: () => this.hideSheet(),
+    refreshList: () => this.renderCollections(),
+    refreshChrome: () => this.renderToolbar(),
+    report: message => { this.notice.textContent = message; },
+  };
   /** "favorites" is the grid; "collections" is the list and an open collection's members. */
-  private scope: "favorites" | "collections" = "favorites";
+  private scope: CollectionScope = "favorites";
   private collection: CollectionDto | null = null;
   /** Conditions that narrow a manual collection's members; the wall's own vocabulary. */
   private memberFilters: LibraryFilters = emptyFilters();
@@ -189,12 +190,11 @@ export class FavoritesPage {
   }
 
   private renderToolbar(): void {
-    this.buildSegments();
-    this.toolbar.replaceChildren(this.segments);
+    this.toolbar.replaceChildren(this.segments.el);
     if (this.scope === "collections" && this.collection === null) {
-      const create = this.button("新建集合", () => this.openNameSheet(null));
+      const create = this.button("新建集合", () => openNameSheet(this.admin, null));
       create.classList.add("collection-create");
-      const smart = this.button("新建智能集合", () => this.openSmartSheet(null));
+      const smart = this.button("新建智能集合", () => openSmartSheet(this.admin, null));
       smart.classList.add("collection-create-smart");
       this.toolbar.append(create, smart);
       this.playAllButton = null;
@@ -211,13 +211,13 @@ export class FavoritesPage {
     // Managing a collection lives inside it. The builtin never opens here, so it can
     // never be offered a rename, a reorder or a delete.
     if (this.collection !== null) {
-      const rename = this.button("改名", () => this.openNameSheet(this.collection));
+      const rename = this.button("改名", () => openNameSheet(this.admin, this.collection));
       rename.classList.add("collection-rename");
-      const remove = this.button("删除", () => this.openDeleteSheet(this.collection!));
+      const remove = this.button("删除", () => openDeleteSheet(this.admin, this.collection!));
       remove.classList.add("collection-delete");
-      const up = this.button("前移", () => void this.moveCollection("up"));
+      const up = this.button("前移", () => void moveCollection(this.admin, "up"));
       up.classList.add("collection-move-up");
-      const down = this.button("后移", () => void this.moveCollection("down"));
+      const down = this.button("后移", () => void moveCollection(this.admin, "down"));
       down.classList.add("collection-move-down");
       const index = this.collections.rows.findIndex(item => item.collection_id === this.collection!.collection_id);
       up.disabled = index <= 0;
@@ -225,7 +225,7 @@ export class FavoritesPage {
       const back = this.button("返回集合", () => this.showCollections());
       back.classList.add("collection-back");
       if (this.collection.kind === "smart") {
-        const rules = this.button("改条件", () => this.openSmartSheet(this.collection));
+        const rules = this.button("改条件", () => openSmartSheet(this.admin, this.collection));
         rules.classList.add("collection-rules");
         this.toolbar.append(rules);
       } else {
@@ -378,27 +378,11 @@ export class FavoritesPage {
     this.renderNotice();
   }
 
-  private buildSegments(): void {
-    if (this.segmentButtons.length) return;
-    this.segments.append(this.segmentIndicator.el);
-    for (const [scope, label] of [["favorites", "收藏"], ["collections", "集合"]] as const) {
-      const button = this.button(label, () => this.setScope(scope));
-      button.classList.add("library-segment");
-      button.dataset.scope = scope;
-      this.segmentButtons.push(button);
-      this.segments.append(button);
-    }
-  }
-
   private syncSegments(): void {
-    for (const button of this.segmentButtons) {
-      const active = button.dataset.scope === this.scope;
-      button.setAttribute("aria-pressed", String(active));
-      if (active) this.segmentIndicator.moveTo(button);
-    }
+    syncScopeSegments(this.segments, this.scope);
   }
 
-  private setScope(scope: "favorites" | "collections"): void {
+  private setScope(scope: CollectionScope): void {
     if (scope === this.scope && this.collection === null) return;
     this.scope = scope;
     this.collection = null;
@@ -455,30 +439,13 @@ export class FavoritesPage {
       this.notice.textContent = "收藏是内置集合，不能改名或删除";
       return;
     }
-    for (const collection of rows) {
-      const row = element("button", "collection-row");
-      row.type = "button";
-      row.dataset.collectionId = collection.collection_id;
-      row.dataset.kind = collection.kind;
-      if (collection.kind === "builtin") row.classList.add("collection-row-builtin");
-      row.append(
-        element("span", "collection-row-name", collection.name),
-        element("span", "collection-row-count", `${collection.count}${collection.count_capped ? "+" : ""}`),
-        element("span", "collection-row-kind", collection.kind === "builtin" ? "内置" : collection.kind === "smart" ? "智能" : "手动"),
-      );
-      if (collection.kind === "smart") {
-        // The conditions are the collection: show them, not just its kind.
-        row.append(element(
-          "span", "collection-row-rules",
-          describeFilters(parseQuery(collection.rules_json ?? "")),
-        ));
-      }
-      row.addEventListener("click", () => {
+    this.list.append(...buildCollectionList({
+      rows,
+      onOpen: collection => {
         if (collection.kind === "builtin") { this.setScope("favorites"); return; }
         this.openCollection(collection);
-      });
-      this.list.append(row);
-    }
+      },
+    }));
     this.notice.textContent = "内置「收藏」不可改名或删除；智能集合的成员由条件决定";
   }
 
@@ -500,7 +467,7 @@ export class FavoritesPage {
   private openMemberFilterSheet(): void {
     const sheet = this.sheet;
     if (!sheet) return;
-    openSheet(sheet, "筛选成员", [buildFilterSheet({
+    openSheet(sheet, "筛选成员", [buildMemberFilterSheet({
       value: this.memberFilters,
       onApply: next => {
         closeSheet(sheet);
@@ -521,77 +488,6 @@ export class FavoritesPage {
   private hideSheet(): void {
     if (!this.sheet) return;
     closeSheet(this.sheet);
-  }
-
-  private async moveCollection(direction: "up" | "down"): Promise<void> {
-    const collection = this.collection;
-    if (collection === null) return;
-    const moved = await this.collections.move(collection.collection_id, direction);
-    this.renderToolbar();
-    this.notice.textContent = moved
-      ? `已${direction === "up" ? "前移" : "后移"}「${collection.name}」`
-      : "已经到边界了";
-  }
-
-  /** The panel the wall already uses; on this page it becomes a collection's rules. */
-  private openSmartSheet(collection: CollectionDto | null): void {
-    this.showSheet(collection === null ? "新建智能集合" : "改条件", [buildSmartSheet({
-      name: collection?.name ?? "",
-      value: collection?.rules_json ? parseQuery(collection.rules_json) : emptyFilters(),
-      onSubmit: (name, filters, error) => { void this.saveSmart(collection, name, filters, error); },
-    })]);
-  }
-
-  private async saveSmart(
-    collection: CollectionDto | null,
-    name: string,
-    filters: LibraryFilters,
-    error: HTMLElement,
-  ): Promise<void> {
-    const rules = toQuery(filters);
-    const saved = collection === null
-      ? (await this.collections.create(name, "smart", rules)) !== null
-      : await this.collections.update(collection.collection_id, { name, rules_json: rules });
-    if (!saved) { error.textContent = "保存失败，请重试"; return; }
-    this.hideSheet();
-    this.renderCollections();
-    this.notice.textContent = collection === null
-      ? `已创建智能集合「${name}」`
-      : `已更新「${name}」的条件`;
-  }
-
-  private openNameSheet(collection: CollectionDto | null): void {
-    this.showSheet(collection === null ? "新建集合" : "改名", [buildNameSheet({
-      value: collection?.name ?? "",
-      submitLabel: collection === null ? "创建" : "改名",
-      onSubmit: (name, error) => { void this.saveName(collection, name, error); },
-      onCancel: () => this.hideSheet(),
-    })]);
-  }
-
-  private async saveName(collection: CollectionDto | null, name: string, error: HTMLElement): Promise<void> {
-    const saved = collection === null
-      ? (await this.collections.create(name)) !== null
-      : await this.collections.rename(collection.collection_id, name);
-    if (!saved) { error.textContent = "保存失败，请重试"; return; }
-    this.hideSheet();
-    this.renderCollections();
-    this.notice.textContent = collection === null ? `已创建集合「${name}」` : `已改名「${name}」`;
-  }
-
-  private openDeleteSheet(collection: CollectionDto): void {
-    this.showSheet("删除集合", [buildDeleteSheet({
-      name: collection.name,
-      onConfirm: () => { void this.deleteCollection(collection); },
-      onCancel: () => this.hideSheet(),
-    })]);
-  }
-
-  private async deleteCollection(collection: CollectionDto): Promise<void> {
-    const removed = await this.collections.remove(collection.collection_id);
-    this.hideSheet();
-    this.renderCollections();
-    this.notice.textContent = removed ? `已删除集合「${collection.name}」` : "删除失败，请重试";
   }
 
   private async openCollectionPicker(): Promise<void> {
@@ -650,7 +546,7 @@ export class FavoritesPage {
     // A sheet this page opened must not outlive it; the sheet's own hidden flag is the
     // truth, so a panel the viewer closed themselves is never closed twice.
     if (this.sheet && !this.sheet.sheet.hidden) closeSheet(this.sheet);
-    this.segmentIndicator.destroy();
+    this.segments.indicator.destroy();
     for (const tile of this.tiles.values()) tile.destroy();
     this.tiles.clear();
     this.root.remove();

@@ -146,6 +146,14 @@ globalThis.__collectionSheetDeps = { element, buildFilterSheet, ...filtersModule
 const collectionSheets = await import("data:text/javascript;base64," + Buffer.from(
   "const { element, sheetChoice, sheetNote, sheetRow, buildFilterSheet, filterCount } = globalThis.__collectionSheetDeps;\n" + await transpile("components/collection-sheets.ts")).toString("base64"));
 
+// The list and the admin flows are their own modules; wire them the same way.
+globalThis.__collectionListDeps = { element, browseButton, createSlidingIndicator, buildFilterSheet, ...filtersModule };
+const collectionList = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, browseButton, createSlidingIndicator, buildFilterSheet, describeFilters, parseQuery } = globalThis.__collectionListDeps;\n" + await transpile("components/collection-list.ts")).toString("base64"));
+globalThis.__collectionAdminDeps = { ...collectionSheets, ...filtersModule };
+const collectionAdmin = await import("data:text/javascript;base64," + Buffer.from(
+  "const { buildDeleteSheet, buildNameSheet, buildSmartSheet, emptyFilters, parseQuery, toQuery } = globalThis.__collectionAdminDeps;\n" + await transpile("components/collection-admin.ts")).toString("base64"));
+
 const clip = (index) => ({
   id: String(index).padStart(8, "0") + "f".repeat(56),
   duration: 90, category: "short", coverUrl: null, favorite: true, streamUrl: `/media/${index}.mp4`,
@@ -187,9 +195,10 @@ globalThis.__favoritesDeps = {
   buildBrowseFrame, browseButton, api, element, shortId: id => id.slice(0, 8), buildCoverTile,
   buildCoverDensityControl, applyCoverDensity, prefs: favoritesPrefs, setPref, createSlidingIndicator,
   buildFilterSheet, ...filtersModule, ...sheetModule, ...collectionSheets, CollectionsController,
+  ...collectionList, ...collectionAdmin,
 };
 const { FavoritesPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, CollectionsController, buildFilterSheet, emptyFilters, filterCount, parseQuery, toQuery, describeFilters, buildNameSheet, buildDeleteSheet, buildSmartSheet, buildPickerSheet } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
+  "const { buildBrowseFrame, browseButton, api, element, shortId, buildCoverTile, buildCoverDensityControl, applyCoverDensity, prefs, setPref, createSlidingIndicator, openSheet, closeSheet, CollectionsController, buildFilterSheet, emptyFilters, filterCount, parseQuery, toQuery, describeFilters, buildNameSheet, buildDeleteSheet, buildSmartSheet, buildPickerSheet, buildCollectionList, buildMemberFilterSheet, buildScopeSegments, syncScopeSegments, openNameSheet, openSmartSheet, openDeleteSheet, moveCollection } = globalThis.__favoritesDeps;\n" + await transpile("favorites.ts")).toString("base64"));
 
 const mount = (page) => { document.body.append(page.root); return page; };
 const tiles = (page) => byClass(page.root, "cover-tile");
