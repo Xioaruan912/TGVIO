@@ -19,6 +19,45 @@ async def command(*args: str) -> tuple[int, bytes]:
         raise
 
 
+GRAY_EDGE = 32
+HASH_COLUMNS = 9
+HASH_ROWS = 8
+
+
+def _box_mean(gray: bytes, row: int, column: int) -> int:
+    """The mean of the source block this hash cell covers, as an integer.
+
+    Box-averaging (rather than an extra ffmpeg resize) keeps the fingerprint a pure
+    function of bytes we already have, so the same frame always yields the same bits.
+    """
+    rows = range(row * GRAY_EDGE // HASH_ROWS, (row + 1) * GRAY_EDGE // HASH_ROWS)
+    columns = range(
+        column * GRAY_EDGE // HASH_COLUMNS, (column + 1) * GRAY_EDGE // HASH_COLUMNS
+    )
+    total = sum(gray[r * GRAY_EDGE + c] for r in rows for c in columns)
+    return total // (len(rows) * len(columns))
+
+
+def dhash_gray32(gray: bytes) -> str:
+    """A 64-bit difference hash of one 32x32 gray frame, as 16 lowercase hex digits.
+
+    Bit 0 is the most significant bit: row 0's leftmost comparison. A frame this build
+    cannot read is a programming error, never a fingerprint of zero.
+    """
+    if len(gray) != GRAY_EDGE * GRAY_EDGE:
+        raise ValueError("cover hash needs a 32x32 gray frame")
+    grid = [
+        [_box_mean(gray, row, column) for column in range(HASH_COLUMNS)]
+        for row in range(HASH_ROWS)
+    ]
+    value = 0
+    for row in range(HASH_ROWS):
+        for column in range(HASH_COLUMNS - 1):
+            if grid[row][column] > grid[row][column + 1]:
+                value |= 1 << (63 - (row * 8 + column))
+    return f"{value:016x}"
+
+
 def flat_extreme_frame(gray: bytes) -> bool:
     """Reject featureless black/white, without discarding bright or dark detail."""
     count = len(gray)
