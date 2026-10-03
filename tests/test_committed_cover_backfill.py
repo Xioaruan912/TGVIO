@@ -100,6 +100,33 @@ class CommittedCoverTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(p.index["schema"], "tgvio.archive.covers/v2")
         self.assertEqual(p.index["algorithm"], "bounded-frame-v2")
 
+    async def test_a_cover_without_a_fingerprint_is_resampled_and_not_rewritten(self):
+        p = Port()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(await CommittedCoverBackfill(p).run(p.task, Path(tmp)), 1)
+        entry = p.index["covers"]["video.mp4"]
+        entry.pop("phash")  # an index written before this feature existed
+        p.calls.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(await CommittedCoverBackfill(p).run(p.task, Path(tmp)), 1)
+        self.assertEqual(p.calls, ["sample", "index"], "the frame is re-read, the cover is not rewritten")
+        self.assertEqual(p.index["covers"]["video.mp4"]["phash"], p.phash)
+        self.assertEqual(p.index["covers"]["video.mp4"]["path"], entry["path"],
+                         "the verified cover stays exactly where it was")
+        p.calls.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(await CommittedCoverBackfill(p).run(p.task, Path(tmp)), 0)
+        self.assertEqual(p.calls, [], "a backfilled fingerprint makes the next run a no-op")
+
+    async def test_a_cover_that_already_has_a_fingerprint_is_left_alone(self):
+        p = Port()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(await CommittedCoverBackfill(p).run(p.task, Path(tmp)), 1)
+        p.calls.clear()
+        with tempfile.TemporaryDirectory() as tmp:
+            self.assertEqual(await CommittedCoverBackfill(p).run(p.task, Path(tmp)), 0)
+        self.assertEqual(p.calls, [])
+
     async def test_source_removed_during_sample_does_not_publish(self):
         p = Port()
         async def exists(path, size):

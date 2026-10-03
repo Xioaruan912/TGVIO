@@ -145,6 +145,12 @@ class CommittedCoverPort(Protocol):
     async def write_json(self, path: str, value) -> None: ...
 
 
+def _is_phash(value: object) -> bool:
+    """16 lowercase hex digits, and nothing else: what the Player is willing to store."""
+    return (isinstance(value, str) and len(value) == 16
+            and all(character in "0123456789abcdef" for character in value))
+
+
 class CommittedCoverBackfill:
     """Single-writer v2 projection; never rewrites committed manifest or marker."""
 
@@ -168,6 +174,7 @@ class CommittedCoverBackfill:
                 or not isinstance(index.get("covers"), dict)):
             raise ValueError("cover index conflict")
         existing = index["covers"].get(source)
+        verified_digest: str | None = None
         if isinstance(existing, dict) and existing.get("media_sha256") == parent:
             digest = str(existing.get("sha256", ""))
             path = existing.get("path")
@@ -177,7 +184,12 @@ class CommittedCoverBackfill:
                     and type(size) is int and 0 < size <= 1_000_000
                     and existing.get("mime_type") == "image/jpeg"
                     and await self.port.exists(f"{root}/{path}", size)):
-                return 0
+                # A verified cover that predates the fingerprint is not finished work:
+                # adding the hash is what this run is for. A verified cover that already
+                # carries one is finished, and must not cost a decode.
+                if _is_phash(existing.get("phash")):
+                    return 0
+                verified_digest = digest
         if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
             raise ValueError("cover source removed")
         payload = await self.port.sample(f"{root}/{source}", int(task.media["size_bytes"]), work)
@@ -188,6 +200,17 @@ class CommittedCoverBackfill:
         image, phash = payload.payload, payload.phash
         digest = hashlib.sha256(image).hexdigest()
         path = f"cover/backfill/{digest}.jpg"
+        if verified_digest == digest:
+            # The same frame as the verified cover: the image stays where it is and only
+            # the index learns the fingerprint.
+            index["covers"][source] = {**existing, "phash": phash}
+            if len(canonical(index)) > 512 * 1024:
+                raise ValueError("cover index exceeds reader budget")
+            await self._unchanged(task)
+            if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
+                raise ValueError("cover source removed before index commit")
+            await self.port.write_json(f"{root}/{COVERS_INDEX_NAME}", index)
+            return 1
         await self._unchanged(task)
         if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
             raise ValueError("cover source removed during sample")
