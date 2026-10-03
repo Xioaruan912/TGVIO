@@ -53,6 +53,96 @@
 /* Grain and gold ambience are composed in foil.css, which owns the final
    surface background for the app containers. */
 
+/* ── 华丽动效层 ─────────────────────────────────────────────────────────────
+   Every effect below animates only compositor-friendly properties. Nothing here
+   animates width/height/top/left, so a lavish gesture never costs a layout. */
+
+/* 1. View Transitions: the outgoing view sinks and fades, the incoming lifts in
+   on the soft spring. Firefox has no View Transitions, and there the swap simply
+   happens; the CSS state change still transitions, so the fallback is a plain
+   crossfade rather than nothing. */
+/* The transition overlay must never swallow input: a user who clicks again
+   during the 280ms swap still hits the control they aimed at. */
+::view-transition,
+::view-transition-group(*),
+::view-transition-old(*),
+::view-transition-new(*) { pointer-events: none; }
+::view-transition-old(root) {
+  animation: vt-leave var(--dur-base) var(--ease-spring-soft) both;
+}
+::view-transition-new(root) {
+  animation: vt-enter var(--dur-base) var(--ease-spring-soft) both;
+}
+@keyframes vt-leave { to { opacity: 0; transform: scale(.986) translateY(-8px); } }
+@keyframes vt-enter { from { opacity: 0; transform: scale(1.014) translateY(10px); } }
+
+/* 2. A slow gold glint crossing the metal. background-position is paint-only and
+   the elements are small, and the long hold keeps it a glint rather than a
+   constant shimmer. */
+.logo, .transport-play, .large-play, .login-submit, .large-privacy-play {
+  background-size: 220% 100%;
+  animation: gold-sheen 6s var(--ease-out-quint) infinite;
+}
+@keyframes gold-sheen {
+  0%, 58% { background-position: 130% 0; }
+  100% { background-position: -70% 0; }
+}
+
+/* 3. Spotlight: a gold glow that follows the pointer across a cover. The glow
+   lives on the media box so it can never wash out the title. */
+@media (hover: hover) {
+  .cover-tile-media::after {
+    content: ""; position: absolute; inset: 0; z-index: 2; pointer-events: none;
+    background: radial-gradient(210px circle at var(--spot-x, 50%) var(--spot-y, 0%), rgba(212, 175, 55, .26), transparent 62%);
+    opacity: 0; transition: opacity var(--dur-fast) var(--ease);
+  }
+  .cover-tile[data-spotlight="on"] .cover-tile-media::after { opacity: 1; }
+}
+
+/* 4. Privacy cover irises shut. The video host is hidden instantly by the
+   existing rule, so this is purely how the opaque cover arrives - the picture is
+   never visible through it, and the cover stays fully opaque. */
+.app-shell.privacy-locked .media-stage::after,
+.large-player.privacy-locked .large-stage::after {
+  animation: privacy-iris var(--dur-slow) var(--ease-spring-soft) both;
+}
+@keyframes privacy-iris {
+  from { clip-path: circle(0% at 50% 50%); }
+  to { clip-path: circle(150% at 50% 50%); }
+}
+
+/* 5. A lavish focus ring: gold outline plus a soft halo, for keyboard users. */
+button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible {
+  outline-color: var(--gold-bright);
+  box-shadow: 0 0 0 6px rgba(212, 175, 55, .18);
+}
+
+/* 6. Scroll-driven chrome and tile entrances. Where the browser supports scroll
+   timelines the motion is tied to the actual scroll position; the JS reveal is
+   only the fallback (see motion.ts supportsScrollTimeline). */
+@supports (animation-timeline: scroll()) {
+  #feed { scroll-timeline-name: --feed; }
+  .topbar {
+    animation: topbar-chrome linear both;
+    animation-timeline: --feed;
+    animation-range: 0 72px;
+  }
+}
+@keyframes topbar-chrome {
+  to { background-color: var(--surface-glass); border-bottom-color: var(--border); backdrop-filter: blur(14px); }
+}
+@supports (animation-timeline: view()) {
+  .cover-grid .cover-tile {
+    animation: tile-enter linear both;
+    animation-timeline: view();
+    animation-range: entry 0% entry 55%;
+  }
+}
+@keyframes tile-enter {
+  from { opacity: 0; transform: translateY(20px) scale(.97); }
+  to { opacity: 1; transform: none; }
+}
+
 @media (prefers-reduced-motion: reduce) {
   /* Springs become plain linear so nothing overshoots or travels. The global
      transition/animation kill switch stays in style.css. */

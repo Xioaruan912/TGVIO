@@ -62,7 +62,13 @@ try {
  const wait=async(expression,label)=>{
   for(let i=0;i<100;i++){if(await evaluate(expression))return;await delay(100);}throw new Error("Timed out: "+label);
  };
+ // A running View Transition is not returned by elementFromPoint, so the hit
+ // probe must wait it out. Real pointer input is not blocked - only the probe.
+ const settleTransitions=async()=>{
+  await evaluate("(async()=>{const a=document.getAnimations().filter(x=>String(x.effect&&x.effect.pseudoElement||\"\").includes(\"view-transition\"));if(a.length)await Promise.all(a.map(x=>x.finished.catch(()=>{})));return true})()");
+ };
  const click=async selector=>{
+  await settleTransitions();
   const box=await evaluate("(()=>{const el=[...document.querySelectorAll("+JSON.stringify(selector)+")].find(e=>e.getClientRects().length&&!e.closest('[inert]'));if(!el)return null;el.scrollIntoView({block:'nearest',inline:'nearest'});const r=el.getBoundingClientRect(),sc=el.closest('.library-list,.long-list'),clip=sc?sc.getBoundingClientRect():{top:0,bottom:innerHeight};const x=r.x+r.width/2,y=(Math.max(r.top,clip.top)+Math.min(r.bottom,clip.bottom,innerHeight))/2;return {x,y,hit:el.contains(document.elementFromPoint(x,y)),rect:{left:r.left,top:r.top,width:r.width,height:r.height},hitElement:document.elementFromPoint(x,y)?.outerHTML.slice(0,240),viewport:{width:innerWidth,height:innerHeight,scale:visualViewport?.scale},scroll:{x:scrollX,y:scrollY}};})()");
   check(box?.hit,"pointer can reach "+selector+" "+JSON.stringify(box));
   await cdp("Input.dispatchMouseEvent",{type:"mousePressed",button:"left",clickCount:1,x:box.x,y:box.y});
@@ -71,6 +77,7 @@ try {
  const nav=action=>click('.nav-btn[data-action="'+action+'"]');
  // Drag along a control without releasing, so mid-gesture layout can be read.
  const dragHold=async(selector,fractions)=>{
+  await settleTransitions();
   const box=await evaluate("(()=>{const el=document.querySelector("+JSON.stringify(selector)+");if(!el)return null;const r=el.getBoundingClientRect();return {left:r.left,top:r.top,width:r.width,height:r.height};})()");
   check(box&&box.width>0,"draggable "+selector);
   const y=box.top+box.height/2;

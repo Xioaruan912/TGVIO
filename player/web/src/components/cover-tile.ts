@@ -78,6 +78,18 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
   play.type = "button";
 
   const mediaBox = element("span", "cover-tile-media");
+  // Spotlight: a gold glow that tracks the pointer across this cover. Written as
+  // custom properties instead of a transform so it never fights the hover lift,
+  // and only while a real pointer is over the tile.
+  mediaBox.addEventListener("pointermove", (event) => {
+    if (disposed || event.pointerType === "touch") return;
+    const box = mediaBox.getBoundingClientRect();
+    if (!box.width || !box.height) return;
+    mediaBox.style.setProperty("--spot-x", `${((event.clientX - box.left) / box.width) * 100}%`);
+    mediaBox.style.setProperty("--spot-y", `${((event.clientY - box.top) / box.height) * 100}%`);
+    root.dataset.spotlight = "on";
+  });
+  mediaBox.addEventListener("pointerleave", () => { delete root.dataset.spotlight; });
   const image = media.coverUrl ? document.createElement("img") : null;
   if (image) {
     image.className = "cover-tile-image";
@@ -208,6 +220,7 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
     destroy() {
       if (disposed) return;
       disposed = true;
+      delete root.dataset.spotlight;
       coverImage.destroy();
     },
   };

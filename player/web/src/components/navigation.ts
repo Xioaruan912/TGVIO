@@ -2,6 +2,7 @@ import { icon, type IconName } from "../icons";
 import { element } from "./dom";
 import { brandMark } from "./controls";
 import { createSlidingIndicator } from "./indicator";
+import { withViewTransition } from "../motion";
 import type { ShellHandlers } from "../ui";
 export type NavSpec = { icon: IconName; label: string; action: string };
 
@@ -20,7 +21,11 @@ export function navButton(spec: NavSpec, handlers: ShellHandlers): HTMLButtonEle
   button.setAttribute("aria-label", spec.label);
   const caption = element("small", "nav-label", spec.label);
   button.append(icon(spec.icon, 24), caption);
-  button.addEventListener("click", () => handlers.onNav(spec.action));
+  // The navigation control owns the transition of the navigation it triggers,
+  // so one View Transition covers every page swap (tabs, favorites, library,
+  // long videos). Where the browser has no View Transitions the swap just
+  // happens, and the incoming page still plays its own CSS entrance.
+  button.addEventListener("click", () => withViewTransition(() => handlers.onNav(spec.action)));
   return button;
 }
 

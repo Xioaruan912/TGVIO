@@ -1,8 +1,76 @@
 import { element } from "./dom";
 import { icon, type IconName } from "../icons";
 import { activateDialog, animateArrival } from "./dialog";
+import { flingOut, settleFromVelocity } from "../motion";
 import type { Shell } from "../ui";
 const sheetDialogs = new WeakMap<Shell, () => void>();
+
+/** Past this drag distance or release speed the sheet is on its way out. */
+const DISMISS_DISTANCE = 88;
+const DISMISS_VELOCITY = 700;
+
+/**
+ * Drag-to-dismiss for the phone bottom sheet.
+ *
+ * The drag only starts on the handle and header, never on the scrollable body,
+ * so list scrolling is untouched. On release the release *velocity* decides:
+ * a flick throws the sheet out, a slow drag springs it back. A CSS transition
+ * cannot do that - it always restarts from rest, so both gestures would settle
+ * identically.
+ */
+function attachSheetDrag(card: HTMLElement, handles: HTMLElement[], onDismiss: () => void): void {
+  for (const handle of handles) {
+    let pointerId: number | null = null;
+    let startY = 0;
+    let offsetY = 0;
+    let lastY = 0;
+    let lastAt = 0;
+    let velocity = 0;
+    const phoneSheet = () => typeof getComputedStyle === "function" && getComputedStyle(handle).display !== "none";
+    const finish = (dismissable: boolean) => {
+      if (pointerId === null) return;
+      pointerId = null;
+      delete card.dataset.dragging;
+      const travelled = offsetY;
+      const speed = velocity;
+      offsetY = 0;
+      velocity = 0;
+      if (!dismissable) { card.style.removeProperty("transform"); return; }
+      if (travelled > DISMISS_DISTANCE || speed > DISMISS_VELOCITY) {
+        void flingOut(card, { y: travelled }, onDismiss);
+      } else {
+        void settleFromVelocity(card, { y: travelled }, { y: speed });
+      }
+    };
+    handle.addEventListener("pointerdown", (event) => {
+      const e = event as PointerEvent;
+      if (pointerId !== null || e.isPrimary === false || e.button !== 0 || !phoneSheet()) return;
+      pointerId = e.pointerId;
+      startY = e.clientY;
+      lastY = e.clientY;
+      lastAt = Date.now();
+      offsetY = 0;
+      velocity = 0;
+      card.dataset.dragging = "on";
+      try { handle.setPointerCapture(pointerId); } catch { pointerId = null; delete card.dataset.dragging; }
+    });
+    handle.addEventListener("pointermove", (event) => {
+      const e = event as PointerEvent;
+      if (pointerId !== e.pointerId) return;
+      const now = Date.now();
+      const elapsed = now - lastAt;
+      if (elapsed > 0) velocity = ((e.clientY - lastY) / elapsed) * 1000;
+      lastY = e.clientY;
+      lastAt = now;
+      // Downward only: dragging up must not detach the sheet from the edge.
+      offsetY = Math.max(0, e.clientY - startY);
+      card.style.transform = `translateY(${offsetY}px)`;
+    });
+    handle.addEventListener("pointerup", () => finish(true));
+    handle.addEventListener("pointercancel", () => finish(false));
+    handle.addEventListener("lostpointercapture", () => finish(false));
+  }
+}
 
 export function buildSheet(onClose: () => void) {
   const sheet = element("div", "sheet");
@@ -28,6 +96,8 @@ export function buildSheet(onClose: () => void) {
 
   sheetClose.addEventListener("click", onClose);
   sheet.addEventListener("click", event => { if (event.target === sheet) onClose(); });
+  // Drag lives on the handle and header so the scrollable body keeps its scroll.
+  attachSheetDrag(sheetCard, [handle, sheetHead], onClose);
   return { sheet, sheetTitle, sheetBody };
 }
 
