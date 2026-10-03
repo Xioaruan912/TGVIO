@@ -124,10 +124,11 @@ explicit and never faked:
   cover never claims the video itself is unplayable.
 - `ready` — the decoded picture.
 
-Browsing is metadata-only: the lists create zero `<video>` elements, one preview
-video at most runs at a time, and a preview is always an explicit action. The
-library video stage is a two-column cover grid on phones (container-aware
-180/200px minima on wider content areas); long videos use the 16:9 `cover-grid-wide` variant.
+Browsing is metadata-only: the lists create zero `<video>` elements and never
+start media requests of their own. The library video stage is a two-column
+cover grid on phones (container-aware 180/200px minima on wider content areas);
+the mixed short/long grid lays each tile out at its own aspect ratio in a
+masonry pass, and the long-only view uses the 16:9 `cover-grid-wide` variant.
 
 Image requests enter one shared two-slot queue only near the viewport. Leaving
 the viewport cancels waiting jobs; page disposal cancels active jobs, observers
@@ -211,7 +212,8 @@ node tests/ui-acceptance.server.mjs
 
 The automated runner selects an ephemeral loopback port and a temporary Chrome
 profile. It checks 360/390/430/768/1440 and 844x390, state fallbacks, 150% text,
-keyboard, pointer hit-testing, privacy, previews, sound confirmation and login
+keyboard, pointer hit-testing, privacy, the drag-scrub bubble, sound
+confirmation and login
 resize. Screenshots are synthetic test-video frames, not production catalog
 content. The fixture includes deliberately missing/broken covers.
 
