@@ -93,23 +93,15 @@ test("a real cover url loads lazily, becomes ready, and a broken one degrades wi
   assert.equal(retry.hidden, true);
 });
 
-test("browsing plays; a separate preview control is a sibling and never nested in the play target", () => {
+test("browsing is a single play target: no nested button and no separate preview control", () => {
   let played = 0;
-  let previewed = 0;
-  const tile = buildCoverTile({
-    media: media(),
-    onPlay: () => { played += 1; },
-    onPreview: () => { previewed += 1; },
-  });
-  assert.ok(tile.previewButton);
-  assert.equal(tile.previewButton.parentElement, tile.root, "the preview control is a sibling of the play target");
-  assert.equal(all(tile.playButton).includes(tile.previewButton), false);
-  assert.equal(tile.previewButton.getAttribute("aria-label"), "预览视频 #a1b2c3d4");
+  const tile = buildCoverTile({ media: media(), onPlay: () => { played += 1; } });
+  assert.equal(tile.previewButton, undefined, "the cover exposes no preview control");
+  assert.equal(tile.root.querySelector(".cover-tile-preview"), null);
+  assert.equal(all(tile.playButton).filter((node) => node.tagName === "button").length, 0, "no nested button");
+  assert.equal(all(tile.root).filter((node) => node.tagName === "button" && !node.hidden).length, 1, "the cover exposes one visible button");
   tile.playButton.dispatch("click");
   assert.equal(played, 1);
-  tile.previewButton.dispatch("click");
-  assert.equal(previewed, 1);
-  assert.equal(played, 1, "preview never starts the main video");
 });
 
 test("select mode turns the whole cover into a selection toggle and never starts playback", () => {
@@ -210,15 +202,10 @@ test("a loading deadline starts near the viewport, and disposal cancels observat
   }
 });
 
-test("explicit preview state is discoverable and destroyed controls cannot start playback", () => {
-  let played = 0, previewed = 0;
-  const tile = buildCoverTile({media: media(), onPlay() {played++;}, onPreview() {previewed++;}});
-  tile.setPreviewing(true);
-  assert.equal(tile.previewButton.getAttribute("aria-pressed"), "true");
-  assert.match(tile.previewButton.getAttribute("aria-label"), /结束预览/);
-  tile.setPreviewing(false);
-  assert.equal(tile.previewButton.getAttribute("aria-pressed"), "false");
+test("a destroyed cover cannot start playback", () => {
+  let played = 0;
+  const tile = buildCoverTile({media: media(), onPlay() {played++;}});
   tile.destroy();
-  tile.playButton.dispatch("click"); tile.previewButton.dispatch("click");
-  assert.equal(played + previewed, 0);
+  tile.playButton.dispatch("click");
+  assert.equal(played, 0);
 });

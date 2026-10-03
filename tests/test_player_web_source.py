@@ -111,9 +111,11 @@ class PlayerCoverTileSourceTests(unittest.TestCase):
         self.assertIn("bindCoverImage(", tile)
         # An unknown duration is never rendered as 0:00.
         self.assertIn('return "时长未知";', tile)
-        # Selection is its own control: a button must never nest another button.
+        # Selection and retry are their own controls: a button must never nest another button.
         self.assertIn('element("button", "cover-tile-select")', tile)
-        self.assertIn('element("button", "cover-tile-preview")', tile)
+        # Browsing is one play target; the cover exposes no inline preview control.
+        self.assertNotIn("cover-tile-preview", tile)
+        self.assertNotIn("onPreview", tile)
         for module in ("library.ts", "favorites.ts", "long.ts"):
             source = (ROOT / "player/web/src" / module).read_text(encoding="utf-8")
             self.assertIn("buildCoverTile", source, f"{module} must reuse the shared cover unit")
@@ -123,9 +125,15 @@ class PlayerCoverTileSourceTests(unittest.TestCase):
         self.assertIn('this.list.classList.add("cover-grid")', library)
         self.assertIn("setSelectMode", library)
         self.assertIn('this.selectionBar.hidden = !this.selectMode;', library)
-        # The on-demand preview is the only video the list may create.
-        self.assertEqual(library.count('createElement("video")'), 1)
-        self.assertIn('video.preload = "none"', library)
+        # Browsing never builds a video element at all.
+        self.assertEqual(library.count('createElement("video")'), 0)
+        # A mixed short/long grid keeps every cover at its own aspect ratio and
+        # packs it through the measured masonry pass instead of grid rows.
+        self.assertIn('variant: clip.category === "long" ? "wide" : "portrait"', library)
+        self.assertIn("bindCoverMasonry(", library)
+        masonry = (ROOT / "player/web/src/components/cover-masonry.ts").read_text(encoding="utf-8")
+        self.assertIn("export function masonryPlace(", masonry)
+        self.assertIn("export function bindCoverMasonry(", masonry)
 
 
 if __name__ == "__main__":

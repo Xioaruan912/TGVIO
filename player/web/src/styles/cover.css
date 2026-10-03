@@ -6,16 +6,35 @@
   align-content: start;
   min-width: 0;
 }
-.cover-grid > :not(.cover-tile) { grid-column: 1 / -1; }
+.cover-grid > :not(.cover-tile) { grid-column: 1 / -1; margin-top: 12px; }
 .cover-grid-wide { grid-template-columns: repeat(auto-fill, minmax(min(100%, 280px), 1fr)); gap: 14px; }
+
+/* Mixed short/long grids keep every tile at its own aspect ratio, so the tiles
+   are placed by a measured column pass instead of by grid rows. CSS keeps the
+   responsive column count, gap and gutter; cover-masonry only reads the columns
+   and gap. The gutter is applied here rather than as container padding, because
+   an absolutely positioned tile is offset from the padding box, not the content
+   box. */
+.cover-grid-masonry { position: relative; display: flow-root; min-height: var(--masonry-height, 0px); padding-inline: 0; --masonry-columns: 2; --masonry-gap: 12px; --masonry-pad: 20px; }
+.cover-grid-masonry > .cover-tile {
+  position: absolute;
+  top: 0;
+  left: 0;
+  width: calc((100% - (var(--masonry-columns) - 1) * var(--masonry-gap) - 2 * var(--masonry-pad)) / var(--masonry-columns));
+  translate: calc(var(--masonry-x, 0px) + var(--masonry-pad)) var(--masonry-y, 0px);
+}
+.cover-grid-masonry > :not(.cover-tile) { position: relative; margin-top: var(--masonry-height, 0px); }
+.cover-grid-masonry > .library-button { display: block; width: fit-content; margin-inline: auto; }
 /* Container queries count available content width, including sidebars and padding. */
 .library-page, .long-page, .long-list { container-type: inline-size; }
 @container (min-width: 560px) {
   .cover-grid { grid-template-columns: repeat(auto-fill, minmax(180px, 1fr)); gap: 14px; }
   .cover-grid-wide { grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); }
+  .cover-grid-masonry { --masonry-columns: 3; --masonry-gap: 14px; }
 }
 @container (min-width: 1080px) {
   .cover-grid:not(.cover-grid-wide) { grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
+  .cover-grid-masonry { --masonry-columns: 6; }
 }
 .cover-tile { position: relative; min-width: 0; transition: transform var(--duration-fast) var(--ease); }
 .cover-tile-play { position: relative; display: block; width: 100%; padding: 0; border-radius: var(--radius-lg); background: transparent; text-align: left; }
@@ -26,6 +45,7 @@
 .cover-tile[data-cover-state="ready"] .cover-tile-fallback { display: none; }
 .cover-tile-fallback-mark { display: grid; justify-items: center; gap: 8px; transform: translateY(-22px); }
 .cover-tile-fallback-text { font-size: 12px; line-height: 1.5; }
+.cover-tile-fallback-mark > .icon { width: 28px; height: 28px; opacity: .7; }
 .cover-tile[data-cover-state="loading"] .cover-tile-fallback { background: #263749; }
 .cover-tile[data-cover-state="failed"] .cover-tile-fallback-mark { transform: translateY(-60px); }
 /* The scrim follows real information height, including larger fonts, and fades
@@ -42,8 +62,6 @@
 .cover-tile-progress { position: absolute; z-index: 4; inset: auto 0 0; height: 3px; border-radius: 0 0 var(--radius-lg) var(--radius-lg); background: rgba(9,16,26,.45); pointer-events: none; overflow: hidden; }
 .cover-tile-progress-fill { display: block; height: 100%; background: var(--accent); }
 .cover-tile-favorite { position: absolute; z-index: 4; top: 10px; left: 10px; display: grid; place-items: center; width: 28px; height: 28px; border-radius: 50%; color: #fff; background: rgba(14,23,36,.55); pointer-events: none; }
-.cover-tile-preview { position: absolute; z-index: 4; top: 8px; right: 8px; display: flex; align-items: center; justify-content: center; gap: 4px; min-width: 44px; width: auto; height: 44px; padding: 0 10px; border-radius: var(--radius-pill); color: #fff; background: rgba(10,18,30,.56); border: 1px solid rgba(255,255,255,.35); }
-.cover-tile-preview[aria-pressed="true"] { background: var(--primary); border-color: #fff; }
 .cover-tile-select { position: absolute; z-index: 5; top: 0; left: 0; display: grid; place-items: center; width: 48px; height: 48px; color: transparent; }
 .cover-tile-select-mark { display: grid; place-items: center; width: 26px; height: 26px; border: 2px solid #fff; border-radius: 50%; background: rgba(12,20,32,.6); }
 .cover-tile-select.is-selected { color: #fff; }
@@ -59,17 +77,16 @@
   .cover-tile:hover { transform: translateY(-1px); }
   .cover-tile-play:hover .cover-tile-image { transform: scale(1.025); }
   .cover-tile-play:hover .cover-tile-hint { opacity: 1; }
-  .cover-tile-preview:hover { background: rgba(10,18,30,.78); }
   .cover-tile-retry:hover { background: var(--primary-soft); }
 }
 .cover-tile-play:focus-visible .cover-tile-hint { opacity: 1; }
 .cover-tile-play:focus-visible { outline: 3px solid var(--primary-bright); outline-offset: 3px; }
-@media (max-width: 359px) { .cover-grid { gap: 8px; } .cover-tile-info { padding: 10px; } }
+@media (max-width: 359px) { .cover-grid { gap: 8px; } .cover-grid-masonry { --masonry-gap: 8px; --masonry-pad: 14px; } .cover-tile-info { padding: 10px; } }
+/* Mirrors the browse list's own inline padding so the masonry gutter matches. */
+@media (min-width: 900px) { .cover-grid-masonry { --masonry-pad: 0px; } }
 .cover-tile[data-variant="wide"] .cover-tile-title { -webkit-line-clamp: 1; }
 .cover-tile[data-variant="wide"] .cover-tile-subtitle { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 
-.cover-preview-caption { font-size: 12px; line-height: 1.4; }
-.cover-tile-fallback-mark > .icon { width: 28px; height: 28px; opacity: .7; }
 .cover-tile[data-variant="wide"] .cover-tile-info { padding-inline: 14px; }
 
 @media (prefers-reduced-motion: reduce) {

@@ -49,10 +49,12 @@ const { buildCoverTile } = await import("data:text/javascript;base64," + Buffer.
   "const { element, icon, bindCoverImage } = globalThis.__coverDeps; const enqueueCover = start => { start(() => {}); return () => {}; };\n" + coverJs).toString("base64"));
 const idleJs = await transpile("idle-privacy.ts");
 const { IdlePrivacyController, attachIdleActivity } = await import("data:text/javascript;base64," + Buffer.from(idleJs).toString("base64"));
-globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile };
+const masonryJs = await transpile("components/cover-masonry.ts");
+const { bindCoverMasonry } = await import("data:text/javascript;base64," + Buffer.from(masonryJs).toString("base64"));
+globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry };
 const libraryJs = await transpile("library.ts");
 const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");
@@ -88,17 +90,16 @@ test("current media auto-opens exactly one folder, multiple memberships keep pic
  assert.equal(byClass(multi.root, "library-index-row").length, 2); multi.destroy();
 });
 
-test("metadata rendering creates zero videos; preview is lazy and never more than one", async () => {
+test("metadata rendering creates zero videos and browsing never builds one", async () => {
  videos.created = 0;
  const page = new VideoLibraryPage(() => {}, () => {}, {mediaId:fixture.testClipId}); await flush();
  for(let i=0;i<29;i++) { clickText(page.root, "加载更多"); await flush(); }
  assert.equal(tiles(page).length, 600);
  assert.equal(videos.created, 0);
  assert.equal(all(page.root).filter(node => node.tagName === "video").length, 0, "browsing never builds a video element");
- const previews = byClass(page.root, "cover-tile-preview"); previews[0].dispatch("click");
- assert.equal(all(page.root).filter(c => c.tagName === "video").length, 1);
- previews[1].dispatch("click"); assert.equal(all(page.root).filter(c => c.tagName === "video").length, 1);
- page.lockPrivacy(); assert.equal(all(page.root).filter(c => c.tagName === "video").length, 0);
+ assert.equal(byClass(page.root, "cover-tile-preview").length, 0, "no preview control is rendered");
+ assert.equal(byClass(page.root, "library-preview-video").length, 0);
+ assert.equal(all(page.root).filter(c => c.tagName === "video").length, 0);
  page.destroy();
 });
 
@@ -137,17 +138,14 @@ test("select mode is explicit: browsing shows no check control and only a mode s
  page.destroy();
 });
 
-test("single play returns to its visible launch control without selecting or restarting preview", async () => {
+test("single play returns to its visible launch control without selecting", async () => {
  let page;
  try {
   const played=[];
   page=mount(new VideoLibraryPage(clips=>{played.push(clips);leaveForPlayback(page);},()=>{}, {mediaId:fixture.testClipId}));await flush();
   const list=byClass(page.root,"library-list")[0];list.scrollTop=333;
   const rows=tiles(page), launch=rows[3].querySelector(".cover-tile-play");
-  byClass(page.root,"cover-tile-preview")[3].dispatch("click");
-  const preview=all(page.root).find(node=>node.tagName==="video");
   launch.dispatch("click");assert.equal(played[0].length,1);
-  assert.equal(preview.parent,null);assert.equal(preview.src,undefined);
   page.setPlaybackActive(false);
   assert.equal(document.activeElement,launch);assert.deepEqual(launch.focusOptions,{preventScroll:true});
   assert.equal(page.root.inert,false);assert.equal(list.scrollTop,333);
@@ -209,58 +207,30 @@ function fakeTime() {
  return { timers, advance(ms) { now+=ms; for(const [key,timer] of [...timers]) if(timer.at<=now){timers.delete(key);timer.fn();} },
   restore() { Date.now = originalNow; globalThis.window = originalWindow; document.hidden = false; } };
 }
-test("paused preview frame hides at 60s; media/hover/synthetic events do not count as activity", async () => {
+test("the mixed grid keeps each cover at its own ratio and packs by column", async () => {
+ const page = mount(new VideoLibraryPage(() => {}, () => {}, {mediaId: fixture.testClipId})); await flush();
+ const list = byClass(page.root, "library-list")[0];
+ assert.equal(list.classList.contains("cover-grid-masonry"), true, "the mixed view uses the masonry grid");
+ const rows = tiles(page);
+ assert.equal(rows.some(tile => tile.dataset.variant === "wide"), true, "long covers keep 16:9");
+ assert.equal(rows.some(tile => tile.dataset.variant === "portrait"), true, "short covers keep 9:16");
+ clickText(page.root, "长视频"); await flush();
+ assert.equal(list.classList.contains("cover-grid-masonry"), false, "a uniform grid drops the masonry pass");
+ assert.equal(list.classList.contains("cover-grid-wide"), true, "the long-only grid uses 16:9 column sizing");
+ assert.equal(tiles(page).every(tile => tile.dataset.variant === "wide"), true);
+ page.destroy();
+});
+
+test("metadata browsing registers no media timers, videos or activity listeners", async () => {
  const time=fakeTime();let page;
  try {
   page=new VideoLibraryPage(()=>{},()=>{}, {mediaId:fixture.testClipId});await flush();
-  assert.equal(time.timers.size,0);
-  byClass(page.root,"cover-tile-preview")[0].dispatch("click");
-  assert.equal(time.timers.size,1);
-  const video=all(page.root).find(node=>node.tagName==="video");video.dispatch("loadeddata");
-  time.advance(59999);
-  for(const event of ["timeupdate","loadeddata","playing","pause"])video.dispatch(event,{isTrusted:true});
-  page.root.dispatch("scroll",{isTrusted:true});page.root.dispatch("pointermove",{isTrusted:true,buttons:0,pointerType:"mouse"});
-  page.root.dispatch("keydown",{isTrusted:true,key:"Shift"});page.root.dispatch("pointerdown",{isTrusted:false});
-  assert.equal(all(page.root).filter(node=>node.tagName==="video").length,1);
-  time.advance(1);assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);
-  assert.equal(video.src,undefined);assert.equal(video.parent,null);assert.ok(video.pauses>=2);assert.ok(video.loads>=2);assert.equal(time.timers.size,0);
-  page.root.dispatch("pointerdown",{isTrusted:true});time.advance(60000);
-  assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);assert.equal(time.timers.size,0);
-  // Only an explicit new preview unlocks it and starts a fresh deadline.
-  byClass(page.root,"cover-tile-preview")[0].dispatch("click");time.advance(59999);
-  assert.equal(all(page.root).filter(node=>node.tagName==="video").length,1);time.advance(1);
+  assert.equal(time.timers.size,0,"metadata browsing schedules no media timer");
   assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);
- } finally {page?.destroy();time.restore();}
-});
-test("trusted preview activity resets deadline; stop/switch/overlay/destroy clear timers and listeners", async () => {
- const time=fakeTime();let page;
- const visibilityListeners=()=>document.events.get("visibilitychange")?.length??0;
- const initialListeners=visibilityListeners();
- try {
-  page=new VideoLibraryPage(()=>{},()=>{}, {mediaId:fixture.testClipId});await flush();
-  const previews=byClass(page.root,"cover-tile-preview");previews[0].dispatch("click");
-  time.advance(59000);page.root.dispatch("wheel",{isTrusted:true});time.advance(59000);
-  assert.equal(all(page.root).filter(node=>node.tagName==="video").length,1);time.advance(1000);
+  for(const name of ["pointerdown","pointerup","pointermove","wheel","keydown","input"])assert.equal(page.root.events.get(name)?.length??0,0,"no media activity listener for "+name);
+  page.setPlaybackActive(true);page.setPlaybackActive(false);
   assert.equal(time.timers.size,0);
-  previews[0].dispatch("click");const late=[...time.timers.values()][0].fn;
-  time.advance(59000);previews[1].dispatch("click");assert.equal(time.timers.size,1);time.advance(1000);
-  assert.equal(all(page.root).filter(node=>node.tagName==="video").length,1);
-  page.setPlaybackActive(true);assert.equal(time.timers.size,0);page.setPlaybackActive(false);assert.equal(time.timers.size,0);
-  previews[0].dispatch("click");page.lockPrivacy();assert.equal(time.timers.size,0);
-  previews[0].dispatch("click");document.hidden=true;document.dispatch("visibilitychange");
-  assert.equal(time.timers.size,0);assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);
-  document.hidden=false;document.dispatch("visibilitychange");assert.equal(time.timers.size,0);
-  previews[0].dispatch("click");page.destroy();late();assert.equal(time.timers.size,0);
-  assert.equal(visibilityListeners(),initialListeners);
-  for(const name of ["pointerdown","pointerup","pointermove","wheel","keydown","input"])assert.equal(page.root.events.get(name)?.length??0,0);
- } finally {page?.destroy();time.restore();}
-});
-test("visibility resume checks elapsed time when timers were throttled", async () => {
- const time=fakeTime();let page;
- try {
-  page=new VideoLibraryPage(()=>{},()=>{}, {mediaId:fixture.testClipId});await flush();byClass(page.root,"cover-tile-preview")[0].dispatch("click");
-  time.timers.clear();time.advance(61000);document.dispatch("visibilitychange");
-  assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);assert.equal(time.timers.size,0);
+  assert.equal(all(page.root).filter(node=>node.tagName==="video").length,0);
  } finally {page?.destroy();time.restore();}
 });
 test("pagination protocol failures show retry, no auto retry storm or false completion", async () => {

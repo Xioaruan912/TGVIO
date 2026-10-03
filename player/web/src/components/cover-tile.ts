@@ -32,7 +32,6 @@ export type CoverTileOptions = {
   /** Secondary line inside the scrim (e.g. an exact resume position). */
   subtitle?: string;
   onPlay: () => void;
-  onPreview?: () => void;
   onSelect?: (selected: boolean) => void;
 };
 
@@ -41,13 +40,11 @@ export type CoverTileHandle = {
   playButton: HTMLButtonElement;
   /** The overflow-hidden cover box; the single on-demand preview mounts here. */
   mediaBox: HTMLElement;
-  previewButton: HTMLButtonElement | null;
   selectButton: HTMLButtonElement | null;
   setSelected(selected: boolean): void;
   setSelectMode(enabled: boolean): void;
   setFavorite(active: boolean): void;
   coverState(): CoverState;
-  setPreviewing(active: boolean): void;
   destroy(): void;
 };
 
@@ -133,21 +130,6 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
 
   play.append(mediaBox, info);
 
-  // Preview is a secondary, explicit action. It is always reachable by pointer
-  // and keyboard; it is never the only way to see the cover.
-  const previewButton = options.onPreview
-    ? (() => {
-        const button = element("button", "cover-tile-preview");
-        button.type = "button";
-        button.setAttribute("aria-label", `预览视频 #${shortId}`);
-        button.title = "预览（静音）";
-        button.setAttribute("aria-pressed", "false");
-        button.append(icon("preview", 18), element("span", "cover-preview-caption", "预览"));
-        button.addEventListener("click", () => { if (!disposed) options.onPreview?.(); });
-        return button;
-      })()
-    : null;
-
   const selectButton = options.onSelect
     ? (() => {
         const button = element("button", "cover-tile-select");
@@ -200,7 +182,7 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
     else options.onPlay();
   });
 
-  root.append(...[play, previewButton, selectButton, favoriteMark, progress, retryButton].filter((node): node is HTMLElement => Boolean(node)));
+  root.append(...[play, selectButton, favoriteMark, progress, retryButton].filter((node): node is HTMLElement => Boolean(node)));
   syncMode();
   favoriteMark.hidden = !media.favorite;
 
@@ -208,7 +190,6 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
     root,
     playButton: play,
     mediaBox,
-    previewButton,
     selectButton,
     setSelected(next: boolean) {
       selected = next;
@@ -224,12 +205,6 @@ export function buildCoverTile(options: CoverTileOptions): CoverTileHandle {
       syncSelection();
     },
     coverState: () => state,
-    setPreviewing(active: boolean) {
-      if (disposed) return;
-      root.classList.toggle("is-previewing", active);
-      previewButton?.setAttribute("aria-pressed", String(active));
-      previewButton?.setAttribute("aria-label", `${active ? "结束预览" : "预览"}视频 #${shortId}`);
-    },
     destroy() {
       if (disposed) return;
       disposed = true;

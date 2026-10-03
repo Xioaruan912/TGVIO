@@ -69,6 +69,16 @@ try {
   await cdp("Input.dispatchMouseEvent",{type:"mouseReleased",button:"left",clickCount:1,x:box.x,y:box.y});await delay(250);
  };
  const nav=action=>click('.nav-btn[data-action="'+action+'"]');
+ // Drag along a control without releasing, so mid-gesture layout can be read.
+ const dragHold=async(selector,fractions)=>{
+  const box=await evaluate("(()=>{const el=document.querySelector("+JSON.stringify(selector)+");if(!el)return null;const r=el.getBoundingClientRect();return {left:r.left,top:r.top,width:r.width,height:r.height};})()");
+  check(box&&box.width>0,"draggable "+selector);
+  const y=box.top+box.height/2;
+  await cdp("Input.dispatchMouseEvent",{type:"mousePressed",button:"left",clickCount:1,x:box.left+box.width*fractions[0],y});
+  for(const fraction of fractions.slice(1))await cdp("Input.dispatchMouseEvent",{type:"mouseMoved",button:"left",x:box.left+box.width*fraction,y});
+  await delay(400);
+  return {y,x:box.left+box.width*fractions[fractions.length-1]};
+ };
  const screenshot=async name=>{
   await delay(250);const image=await cdp("Page.captureScreenshot",{format:"png",captureBeyondViewport:false});
   await writeFile(path.join(output,name+".png"),Buffer.from(image.data,"base64"));
@@ -93,10 +103,14 @@ try {
   const page=document.querySelector('.library-page'),list=page?.querySelector('.library-list');
   if(!list)return {error:'no cover list'};
   const r=list.getBoundingClientRect(),cards=[...list.querySelectorAll('.cover-tile')],errors=[],rows=new Map();
+  const boxes=[];
   for(const card of cards){
    const b=card.getBoundingClientRect(),media=card.querySelector('.cover-tile-media').getBoundingClientRect();
+   boxes.push(b);
    if(b.left<r.left-1||b.right>r.right+1)errors.push('column overflow');
-   if(Math.abs(media.height/media.width-16/9)>.02)errors.push('portrait ratio');
+   // Each tile keeps its own declared ratio: portrait is 9:16, wide is 16:9.
+   const ratio=card.dataset.variant==='wide'?9/16:16/9;
+   if(Math.abs(media.height/media.width-ratio)>.02)errors.push('cover ratio '+card.dataset.variant);
    const key=Math.round(b.top);rows.set(key,[...(rows.get(key)||[]),b]);
    const title=card.querySelector('.cover-tile-title').getBoundingClientRect(),duration=card.querySelector('.cover-tile-duration').getBoundingClientRect();
    if(title.bottom>duration.top+1)errors.push('title overlaps duration');
@@ -107,8 +121,12 @@ try {
    }
    if(card.querySelector('button button'))errors.push('nested button');
   }
+  // Tiles may sit at different heights per column, but they must never overlap.
+  for(let i=0;i<boxes.length;i++)for(let j=i+1;j<boxes.length;j++){
+   const a=boxes[i],b=boxes[j];
+   if(a.left<b.right-1&&b.left<a.right-1&&a.top<b.bottom-1&&b.top<a.bottom-1)errors.push('tile overlap');
+  }
   const positions=[...rows.keys()].sort((a,b)=>a-b);
-  for(let i=1;i<positions.length;i++)if(rows.get(positions[i-1]).some(b=>b.bottom>positions[i]))errors.push('row collision');
   return {errors,columns:rows.get(positions[0])?.length,count:cards.length,overflow:list.scrollWidth>list.clientWidth+1,states:cards.map(c=>c.dataset.coverState)};
  };
  const layout=async label=>{
@@ -132,6 +150,11 @@ try {
   check(await evaluate("(()=>{const e=document.querySelector('.player-panel .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.player-panel').getBoundingClientRect();return !/KB.s|缓冲 [0-9]+s/.test(e.textContent)&&r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside short panel "+width);
   check(await evaluate("(()=>{const e=document.querySelector('.topbar-settings'),r=e.getBoundingClientRect();return e.contains(document.elementFromPoint(r.x+r.width/2,r.y+r.height/2))})()"),"cache readout leaves settings reachable "+width);
   await screenshot("short-"+width+"x"+height);
+  // The scrub bubble must stay over the picture and never cover the control panel.
+  const scrub=await dragHold(".player-panel .seek",[0.2,0.35,0.5]);
+  check(await evaluate("(()=>{const b=document.querySelector('.app-shell .scrub-bubble'),p=document.querySelector('.player-panel'),s=document.querySelector('.media-stage');if(b.hidden)return true;const br=b.getBoundingClientRect(),pr=p.getBoundingClientRect(),sr=s.getBoundingClientRect();const beside=pr.left>=innerWidth*0.5;const inside=br.top>=0&&br.bottom<=innerHeight+1;return inside&&(beside?br.right<=pr.left+1:br.bottom<=pr.top+1)})()"),"scrub bubble stays over the picture "+width);
+  await cdp("Input.dispatchMouseEvent",{type:"mouseReleased",button:"left",clickCount:1,x:scrub.x,y:scrub.y});await delay(250);
+  check(await evaluate("document.querySelector('.app-shell .scrub-bubble').hidden"),"scrub bubble hides on release "+width);
   if(width===390){
    await click(".player-panel .action-btn.is-muted");
    await wait("!!document.querySelector('.audio-warning-cancel')","sound confirmation");
@@ -175,12 +198,10 @@ try {
   await wait("!!document.querySelector('.library-page .cover-tile[data-cover-state=\"ready\"]')","library frame");
   await layout("library "+width);await screenshot("library-"+width+"x"+height);
   check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"listing metadata no preview decoding");
-  await click(".library-page .cover-tile-preview");await wait("document.querySelector('.cover-tile-preview[aria-pressed=\"true\"]')!==null","explicit preview");
-  check(await evaluate("document.querySelectorAll('.library-preview-video').length===1&&!document.querySelector('.large-player')"),"one explicit preview");
-  await click(".library-page .cover-tile-preview[aria-pressed=\"false\"]");await wait("document.querySelector('.cover-tile-preview[aria-pressed=\"true\"]')!==null","next preview");
-  check(await evaluate("document.querySelectorAll('.library-preview-video').length===1"),"switch releases preview");
+  check(await evaluate("document.querySelectorAll('.library-page .cover-tile-preview').length===0"),"covers expose no preview control "+width);
+  check(await evaluate("document.querySelectorAll('.library-page .cover-tile button button').length===0"),"no nested cover button "+width);
   await nav("long");await wait("!!document.querySelector('.long-resume-section .cover-tile')","real resume");
-  check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"leave stops preview");await screenshot("long-list-"+width+"x"+height);
+  check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"no preview decoding anywhere");await screenshot("long-list-"+width+"x"+height);
   await click(".long-resume-section .cover-tile-play");await click(".large-privacy-play");
   await wait("document.querySelector('.large-video')?.readyState>=2","decoded long");
   check(await evaluate("document.querySelector('.large-video').currentTime>=40"),"long resumes real position");

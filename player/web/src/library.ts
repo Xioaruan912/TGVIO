@@ -2,7 +2,7 @@ import { buildBrowseFrame, browseButton, fillDirectoryCard } from "./components/
 import { api, shortId } from "./api";
 import { element } from "./ui";
 import { buildCoverTile, type CoverTileHandle } from "./components/cover-tile";
-import { IdlePrivacyController, attachIdleActivity } from "./idle-privacy";
+import { bindCoverMasonry, type CoverMasonry } from "./components/cover-masonry";
 import type { Clip, LibraryCategory, LibraryDate, LibraryFolder, LibraryVideosPage } from "./types";
 
 const BATCH = 20;
@@ -115,16 +115,8 @@ export class VideoLibraryPage {
   /** The visible control that last started playback; focus returns here when the player closes. */
   private launchControl: HTMLElement | null = null;
   private readonly backButton: HTMLButtonElement;
-  private preview: HTMLVideoElement | null = null;
-  private previewButton: HTMLButtonElement | null = null;
-  private previewTile: CoverTileHandle | null = null;
-  private readonly previewIdle = new IdlePrivacyController({ mode: "short", onLock: () => this.stopPreview() });
-  private readonly detachPreviewActivity: () => void;
-  private readonly onPreviewVisibility = () => {
-    if (document.hidden) this.stopPreview();
-    else this.previewIdle.check(); // Catch throttled timers without treating visibility as activity.
-  };
   private focusedRow: string | null = null;
+  private masonry: CoverMasonry | null = null;
   private datesScroll = 0;
   private foldersScroll = 0;
   private readonly tiles = new Map<string, CoverTileHandle>();
@@ -136,8 +128,6 @@ export class VideoLibraryPage {
       kind: "library", onBack: () => this.back(), toolbar: this.toolbar, notice: this.notice,
       selection: this.selectionBar, list: this.list });
     this.root = frame.root; this.backButton = frame.back;
-    this.detachPreviewActivity = attachIdleActivity(this.root, this.previewIdle);
-    document.addEventListener("visibilitychange", this.onPreviewVisibility);
     this.notice.setAttribute("role", "status"); this.notice.setAttribute("aria-live", "polite");
     this.selectionBar.hidden = true;
     this.list.addEventListener("scroll", () => {
@@ -153,14 +143,25 @@ export class VideoLibraryPage {
     return browseButton(text, action);
   }
   private beginIndex(): { signal: AbortSignal; generation: number } {
-    this.indexRequest?.abort(); this.controller.cancel(); this.stopPreview();
+    this.indexRequest?.abort(); this.controller.cancel();
     this.indexRequest = new AbortController();
     return { signal: this.indexRequest.signal, generation: ++this.generation };
   }
   private isCurrent(generation: number): boolean { return !this.destroyed && generation === this.generation; }
   private resetList(): void {
+    this.masonry?.destroy(); this.masonry = null;
     this.list.replaceChildren(); this.list.scrollTop = 0; for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
-    this.list.classList.remove("cover-grid", "directory-grid");
+    this.list.classList.remove("cover-grid", "cover-grid-wide", "cover-grid-masonry");
+    this.list.style.removeProperty("--masonry-height");
+  }
+  /** A long-only grid uses the 16:9 column sizing; the mixed grid packs per ratio. */
+  private syncGrid(): void {
+    const mixed = this.controller.category === "all";
+    this.list.classList.toggle("cover-grid-wide", this.controller.category === "long");
+    this.list.classList.toggle("cover-grid-masonry", mixed);
+    if (!mixed) { this.masonry?.destroy(); this.masonry = null; return; }
+    this.masonry ??= bindCoverMasonry(this.list);
+    this.masonry.layout();
   }
   private async loadDates(): Promise<void> {
     this.stage = "dates"; this.membership = false;
@@ -221,7 +222,7 @@ export class VideoLibraryPage {
     this.list.scrollTop = this.foldersScroll;
   }
   private openFolder(folder: LibraryFolder): void {
-    this.indexRequest?.abort(); this.generation++; this.stopPreview(); this.controller.open(folder);
+    this.indexRequest?.abort(); this.generation++; this.controller.open(folder);
     this.stage = "videos"; this.automaticPages = 0; this.selectMode = false;
     this.resetList(); this.list.classList.add("cover-grid"); this.renderVideoToolbar();
     this.notice.textContent = `${folder.date ?? "未知日期"} · ${basisLabel(folder.date_basis)} · 仅加载视频信息`;
@@ -232,7 +233,7 @@ export class VideoLibraryPage {
     for (const [category, label] of [["all", "全部"], ["short", "短视频"], ["long", "长视频"]] as const) {
       const button = this.button(label, () => {
         if (category === this.controller.category) return;
-        this.generation++; this.stopPreview(); this.controller.setCategory(category); this.automaticPages = 0;
+        this.generation++; this.controller.setCategory(category); this.automaticPages = 0;
         this.resetList(); this.list.classList.add("cover-grid"); this.renderVideoToolbar(); void this.loadMore();
       });
       button.setAttribute("aria-pressed", String(category === this.controller.category));
@@ -283,6 +284,7 @@ export class VideoLibraryPage {
     this.loadButton.disabled = false;
     this.loadButton.textContent = this.controller.error ? "加载失败，重试" : "加载更多";
     if (this.controller.hasMore && this.controller.rows.length < MAX_ROWS) this.list.append(this.loadButton);
+    this.syncGrid();
     if (this.controller.rows.length >= MAX_ROWS) this.notice.textContent = "本次浏览已达 1000 条信息预算，请使用类型筛选缩小范围";
     else if (this.controller.error) this.notice.textContent = "分页加载失败，已保留当前视频与选择，请点击重试";
     else if (!this.controller.hasMore) this.notice.textContent = `${this.controller.folder?.date ?? "未知日期"} · ${basisLabel(this.controller.folder!.date_basis)} · ${this.controller.rows.length ? "已加载全部" : "该类型暂无视频"}`;
@@ -292,12 +294,13 @@ export class VideoLibraryPage {
     const handle = buildCoverTile({
       media: { id: clip.id, duration: clip.duration, category: clip.category, coverUrl: clip.coverUrl, favorite: clip.favorite },
       title: `视频 #${shortId(clip.id)}`,
+      // A long cover is 16:9 and a short one 9:16; the tile keeps its own ratio.
+      variant: clip.category === "long" ? "wide" : "portrait",
       // Only a mixed short/long grid needs the type label on the cover.
       showCategory: this.controller.category === "all",
       selected: this.controller.isSelected(clip.id),
       selectMode: this.selectMode,
       onPlay: () => { this.focusedRow = clip.id; this.play([clip], handle.playButton); },
-      onPreview: () => this.showPreview(clip, handle),
       onSelect: (selected) => this.setSelected(clip, selected),
     });
     return handle;
@@ -317,44 +320,11 @@ export class VideoLibraryPage {
   private play(clips: Clip[], control?: HTMLElement): void {
     if (!clips.length || this.playbackActive || this.destroyed) return;
     this.launchControl = control ?? null;
-    this.stopPreview(); this.onPlay([...clips]); // Parent retains this page and owns player lifetime.
-  }
-  private showPreview(clip: Clip, handle: CoverTileHandle): void {
-    const button = handle.previewButton;
-    if (!button || this.playbackActive || this.destroyed || document.hidden) return;
-    if (handle === this.previewTile) { this.stopPreview(); return; }
-    this.stopPreview();
-    const video = document.createElement("video"); // Never constructed during metadata rendering.
-    this.preview = video; this.previewTile = handle; this.previewButton = button;
-    // Only this explicit preview gesture unlocks a fresh short-idle deadline.
-    // Pause/loadeddata/playing never extend it: even a still frame disappears.
-    this.previewIdle.setEnabled(true);
-    video.className = "library-preview-video"; video.muted = true; video.defaultMuted = true;
-    video.playsInline = true; video.preload = "none"; video.setAttribute("aria-hidden", "true");
-    video.addEventListener("loadeddata", () => {
-      if (this.preview !== video) return;
-      video.pause(); handle.setPreviewing(true);
-    }, { once: true });
-    video.addEventListener("error", () => {
-      if (this.preview !== video) return;
-      this.stopPreview(); this.notice.textContent = "预览暂不可用，可尝试播放";
-    }, { once: true });
-    handle.mediaBox.append(video); video.src = clip.streamUrl; video.load();
-    void video.play().catch(() => undefined);
-  }
-  private stopPreview(): void {
-    this.previewIdle.setEnabled(false);
-    if (!this.preview) return;
-    const video = this.preview; this.preview = null;
-    video.pause(); video.removeAttribute("src"); video.load(); video.remove();
-    this.previewTile?.setPreviewing(false);
-    this.previewButton = null;
-    this.previewTile = null;
+    this.onPlay([...clips]); // Parent retains this page and owns player lifetime.
   }
   setPlaybackActive(active: boolean): void {
     this.playbackActive = active; this.root.inert = active;
-    if (active) this.stopPreview();
-    else {
+    if (!active) {
       // Restore focus to the control that started playback, then to a visible
       // selected tile, then to the visible back control. Never focus <body>.
       const launch = this.launchControl; this.launchControl = null;
@@ -369,7 +339,6 @@ export class VideoLibraryPage {
   public removeMedia(mediaId: string): void {
     this.controller.removeMedia(mediaId);
     const tile = this.tiles.get(mediaId);
-    if (this.previewButton && tile?.root.contains(this.previewButton)) this.stopPreview();
     const scroll = this.list.scrollTop;
     tile?.destroy(); tile?.root.remove(); this.tiles.delete(mediaId);
     if (this.focusedRow === mediaId) this.focusedRow = null;
@@ -378,12 +347,10 @@ export class VideoLibraryPage {
       this.renderSelection(); this.list.scrollTop = scroll;
     }
   }
-  lockPrivacy(): void { this.stopPreview(); }
   destroy(): void {
     this.destroyed = true; this.generation++; this.indexRequest?.abort(); this.controller.dispose();
-    this.stopPreview(); this.detachPreviewActivity(); this.previewIdle.destroy();
     for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
-    document.removeEventListener("visibilitychange", this.onPreviewVisibility);
+    this.masonry?.destroy(); this.masonry = null;
     this.root.remove();
   }
   private back(): void {
