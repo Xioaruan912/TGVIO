@@ -26,7 +26,7 @@ JPEG sha256、size_bytes、mime_type 和 cover/backfill/<sha256>.jpg。
 **schema 与 algorithm 串不得改动** —— Player 精确比较这两个值，升版会拒收整包封面；
 `phash` 只是加字段，缺失即“无相似信息”，不是错误。
 不接受无绑定 v1 侧文件或路径遍历、类型伪造、超预算、未知父视频等条目。
-不增加 schema migration；复用 media_covers 的已有投影与版本化鉴权 API。
+不增加 covers.json schema migration；复用 media_covers 的已有投影与版本化鉴权 API（`phash` 列由 Player 侧 `0012` 迁移追加，属 Player 的库，不属本提交合同）。
 内容寻址路径参与已有 cover version，保证新图片使旧 URL 失效。
 
 顺序：核验原包/源文件 → Range 取帧 → 再核验源文件 → 写 JPEG →
