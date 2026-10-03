@@ -11,10 +11,14 @@ globalThis.HTMLButtonElement = Node;
 const fixture = createLibraryFixture();
 const calls = [];
 const wallCalls = [];
+const similarCalls = [];
+/** The similarity endpoint's answer for the next call; a test sets it before tapping. */
+let similarReply = { items: [], threshold: 16, truncated: false };
 const collectionCalls = [];
 const clipFrom = m => ({
   id: m.id, category: m.category, duration: m.duration_seconds, streamUrl: m.stream_url,
   coverUrl: m.cover_url ?? null, favorite: Boolean(m.favorite),
+  phash: m.phash ?? null, duplicate: Boolean(m.duplicate),
 });
 const api = {
   libraryDates: async () => { calls.push("dates"); return fixture.result(new URL("http://local/api/v1/library/dates")); },
@@ -30,6 +34,9 @@ const api = {
     wallCalls.push({ ...(filters ?? {}), category, limit, offset });
     return { items: fixture.originals.slice(0, 2).map(clipFrom), hasMore: false, total: fixture.originals.length };
   },
+  // The bounded "what looks like this cover" query. The page owns the request; this
+  // fake owns the answer, so a test can pin a duplicate, a cap or nothing at all.
+  similarMedia: async (mediaId) => { similarCalls.push(mediaId); return { ...similarReply, items: similarReply.items.map(clipFrom) }; },
   // Collections from the wall: the picker lists them and the add is idempotent.
   collections: async () => {
     collectionCalls.push(["list"]);
@@ -96,6 +103,10 @@ globalThis.__collectionSheetDeps = { element, buildFilterSheet, ...filtersModule
 const collectionSheets = await import("data:text/javascript;base64," + Buffer.from(
   "const { element, sheetChoice, sheetNote, sheetRow, buildFilterSheet, filterCount } = globalThis.__collectionSheetDeps;\n" + await transpile("components/collection-sheets.ts")).toString("base64"));
 const collectionsModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("collections.ts")).toString("base64"));
+const similarityModule = await import("data:text/javascript;base64," + Buffer.from(await transpile("cover-similarity.ts")).toString("base64"));
+globalThis.__similarSheetDeps = { element, buildCoverTile, sheetNote: sheetModule.sheetNote, api, openSheet: sheetModule.openSheet, closeSheet: sheetModule.closeSheet };
+const similarSheet = await import("data:text/javascript;base64," + Buffer.from(
+  "const { element, buildCoverTile, sheetNote, api, openSheet, closeSheet } = globalThis.__similarSheetDeps;\n" + await transpile("components/similar-sheet.ts")).toString("base64"));
 /** A page-owned sheet host, the way main.ts hands the page the real shell. */
 const makeSheetHost = () => {
   const root = element("div", "app-shell");
@@ -113,10 +124,10 @@ const triChoice = (root, label, text) => {
 };
 const libraryPrefs = { coverDensity: "comfortable" };
 const setPref = (key, value) => { libraryPrefs[key] = value; };
-globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref, openSheet: sheetModule.openSheet, closeSheet: sheetModule.closeSheet, buildFilterSheet, ...collectionSheets, emptyFilters: filtersModule.emptyFilters, filterCount: filtersModule.filterCount, CollectionsController: collectionsModule.CollectionsController };
+globalThis.__libraryDeps = { buildBrowseFrame, browseButton, fillDirectoryCard, IdlePrivacyController, attachIdleActivity, api, element, shortId: id => id.slice(0, 8), buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs: libraryPrefs, setPref, openSheet: sheetModule.openSheet, closeSheet: sheetModule.closeSheet, buildFilterSheet, ...collectionSheets, emptyFilters: filtersModule.emptyFilters, filterCount: filtersModule.filterCount, CollectionsController: collectionsModule.CollectionsController, similarOrder: similarityModule.similarOrder, ...similarSheet };
 const libraryJs = await transpile("library.ts");
 const { VideoLibraryPage } = await import("data:text/javascript;base64," + Buffer.from(
-  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref, openSheet, closeSheet, buildPickerSheet, buildFilterSheet, emptyFilters, filterCount, CollectionsController } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
+  "const { buildBrowseFrame, browseButton, fillDirectoryCard, api, element, shortId, IdlePrivacyController, attachIdleActivity, buildCoverTile, bindCoverMasonry, createSlidingIndicator, buildCoverDensityControl, applyCoverDensity, prefs, setPref, openSheet, closeSheet, buildPickerSheet, buildFilterSheet, emptyFilters, filterCount, CollectionsController, similarOrder, openSimilarSheet } = globalThis.__libraryDeps;\n" + libraryJs).toString("base64"));
 
 const mount = page => { document.body.append(page.root); return page; };
 const tiles = page => byClass(page.root, "cover-tile");
@@ -473,5 +484,124 @@ test("a cover can be added to a collection from the wall without playing it", as
   );
   assert.equal(opened.length, 0, "adding a cover to a collection never plays it");
   assert.equal(host.sheet.hidden, true, "adding closes the picker");
+  page.destroy();
+});
+
+// --- the two similarity entries on the wall (stage 4) ----------------------------
+
+/** The loaded covers in DOM order, so a re-order is read from the list itself. */
+const tileIds = page => tiles(page).map(tile => tile.dataset.mediaId);
+/** A wall page whose covers carry the fingerprints the test wants to sort by. */
+const withWall = async (media, run) => {
+  const original = api.videos;
+  api.videos = async () => ({ items: media.map(clipFrom), hasMore: false, total: media.length });
+  try {
+    const page = mount(new VideoLibraryPage(() => {}, () => {}));
+    await flush();
+    page.applyFilters({ ...filtersModule.emptyFilters(), minSeconds: 30 });
+    await flush();
+    await run(page);
+    page.destroy();
+  } finally { api.videos = original; }
+};
+
+test("按相似排序 re-orders the loaded covers and never asks for another page", async () => {
+  const media = [
+    { id: "a", category: "short", duration_seconds: 30, stream_url: "/a", favorite: false, phash: "0000000000000000" },
+    { id: "b", category: "short", duration_seconds: 30, stream_url: "/b", favorite: false, phash: null },
+    { id: "c", category: "short", duration_seconds: 30, stream_url: "/c", favorite: false, phash: "0000000000000003" },
+  ];
+  await withWall(media, async page => {
+    assert.deepEqual(tileIds(page), ["a", "b", "c"], "the wall starts in the order it loaded");
+    assert.equal(byClass(page.root, "library-similar-toggle").length, 1);
+    const before = wallCalls.length;
+    clickText(page.root, "按相似排序");
+    await flush();
+    assert.equal(byClass(page.root, "library-similar-toggle")[0].getAttribute("aria-pressed"), "true");
+    assert.deepEqual(tileIds(page), ["a", "c", "b"], "the neighbour comes next, the unknown last");
+    assert.equal(wallCalls.length, before, "the switch re-orders what is loaded; it is not a new page");
+    clickText(page.root, "按相似排序");
+    await flush();
+    assert.equal(byClass(page.root, "library-similar-toggle")[0].getAttribute("aria-pressed"), "false");
+    assert.deepEqual(tileIds(page), ["a", "b", "c"], "turning it off restores the loaded order");
+    assert.equal(wallCalls.length, before);
+  });
+});
+
+test("和这张像的 appears for exactly one selected cover and lists what looks like it", async () => {
+  const host = makeSheetHost();
+  similarReply = {
+    items: [
+      { id: "aaaaaaaa0000", category: "short", duration_seconds: 30, stream_url: "/x", cover_url: "/api/v1/media/aaaaaaaa0000/cover", favorite: false, phash: "0000000000000000", duplicate: true },
+      { id: "bbbbbbbb0000", category: "short", duration_seconds: 31, stream_url: "/y", cover_url: null, favorite: false, phash: "0000000000000003", duplicate: false },
+    ],
+    threshold: 16, truncated: false,
+  };
+  const page = mount(new VideoLibraryPage(() => {}, () => {}, { sheet: host }));
+  await flush();
+  page.applyFilters({ ...filtersModule.emptyFilters(), minSeconds: 30 });
+  await flush();
+  similarCalls.length = 0;
+  clickText(page.root, "选择");
+  assert.equal(byClass(page.root, "similar-entry").length, 0, "nothing is selected, so nothing looks like it");
+  tiles(page)[0].querySelector(".cover-tile-select").dispatch("click");
+  await flush();
+  assert.equal(byClass(page.root, "similar-entry").length, 1, "one selected cover offers the entry");
+  tiles(page)[1].querySelector(".cover-tile-select").dispatch("click");
+  await flush();
+  assert.equal(byClass(page.root, "similar-entry").length, 0, "two selected covers have no single subject");
+  tiles(page)[1].querySelector(".cover-tile-select").dispatch("click");
+  await flush();
+  clickText(page.root, "和这张像的");
+  await flush();
+  assert.deepEqual(similarCalls, [tiles(page)[0].dataset.mediaId], "it asks about the selected cover");
+  assert.equal(host.sheet.hidden, false, "the results open in the page's sheet");
+  assert.equal(byClass(host.sheetBody, "cover-tile").length, 2, "every result is a real cover tile");
+  assert.deepEqual(
+    byClass(host.sheetBody, "cover-tile-title").map(node => node.textContent),
+    ["几乎相同", "相近"], "the near-duplicate band is named, the rest is merely close",
+  );
+  assert.match(byClass(host.sheetBody, "similar-note")[0].textContent, /16/, "the note states the threshold");
+  assert.deepEqual(
+    byClass(host.sheetBody, "cover-tile").map(tile => tile.dataset.coverState),
+    ["loading", "missing"], "a result without a cover is still missing, never a fabricated frame",
+  );
+  page.destroy();
+});
+
+test("a capped similarity scan says what it did not compare", async () => {
+  const host = makeSheetHost();
+  similarReply = {
+    items: [{ id: "aaaaaaaa0000", category: "short", duration_seconds: 30, stream_url: "/x", cover_url: null, favorite: false, phash: "0000000000000001" }],
+    threshold: 16, truncated: true,
+  };
+  const page = mount(new VideoLibraryPage(() => {}, () => {}, { sheet: host }));
+  await flush();
+  page.applyFilters({ ...filtersModule.emptyFilters(), minSeconds: 30 });
+  await flush();
+  clickText(page.root, "选择");
+  tiles(page)[0].querySelector(".cover-tile-select").dispatch("click");
+  await flush();
+  clickText(page.root, "和这张像的");
+  await flush();
+  assert.match(host.sheetBody.textContent, /只比对了前 1000 张封面/, "the cap is disclosed, not hidden");
+  page.destroy();
+});
+
+test("a similarity with nothing to show admits it instead of inventing covers", async () => {
+  const host = makeSheetHost();
+  similarReply = { items: [], threshold: 16, truncated: false };
+  const page = mount(new VideoLibraryPage(() => {}, () => {}, { sheet: host }));
+  await flush();
+  page.applyFilters({ ...filtersModule.emptyFilters(), minSeconds: 30 });
+  await flush();
+  clickText(page.root, "选择");
+  tiles(page)[0].querySelector(".cover-tile-select").dispatch("click");
+  await flush();
+  clickText(page.root, "和这张像的");
+  await flush();
+  assert.equal(host.sheet.hidden, false);
+  assert.equal(byClass(host.sheetBody, "cover-tile").length, 0, "no result, no fabricated tile");
+  assert.match(host.sheetBody.textContent, /没有找到相近的封面/);
   page.destroy();
 });

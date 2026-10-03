@@ -8,6 +8,8 @@ import { createSlidingIndicator } from "./components/indicator";
 import { closeSheet, openSheet, type SheetHost } from "./components/sheet";
 import { buildFilterSheet } from "./components/filter-sheet";
 import { buildPickerSheet } from "./components/collection-sheets";
+import { openSimilarSheet } from "./components/similar-sheet";
+import { similarOrder } from "./cover-similarity";
 import { CollectionsController } from "./collections";
 import { emptyFilters, filterCount, type LibraryFilters } from "./library-filters";
 import { prefs, setPref } from "./settings";
@@ -172,6 +174,9 @@ export class VideoLibraryPage {
   /** The flat wall's entry points: the whole library, and the filters over it. */
   private readonly allButton = this.button("浏览全部封面", () => this.openWall());
   private readonly filterButton = this.button("筛选", () => this.openFilterSheet());
+  /** The wall's similarity switch: a re-order of what is loaded, never a new page. */
+  private readonly similarToggle = this.button("按相似排序", () => this.setSimilarSort(!this.similarSort));
+  private similarSort = false;
   private filters: LibraryFilters = emptyFilters();
   private readonly collections = new CollectionsController(api);
   private readonly sheet: SheetHost | null;
@@ -181,6 +186,7 @@ export class VideoLibraryPage {
     this.filterButton.disabled = this.sheet === null;
     this.allButton.classList.add("library-browse-all");
     this.filterButton.classList.add("library-filter");
+    this.similarToggle.classList.add("library-similar-toggle");
     const frame = buildBrowseFrame({ title: this.title, subtitle: "日期 / 文件夹 / 视频",
       kind: "library", onBack: () => this.back(), toolbar: this.toolbar, notice: this.notice,
       selection: this.selectionBar, list: this.list });
@@ -252,6 +258,8 @@ export class VideoLibraryPage {
   private isCurrent(generation: number): boolean { return !this.destroyed && generation === this.generation; }
   private resetList(): void {
     this.masonry?.destroy(); this.masonry = null;
+    // A new context is a new order, so the switch never carries over to it.
+    this.similarSort = false;
     this.list.replaceChildren(); this.list.scrollTop = 0; for (const tile of this.tiles.values()) tile.destroy(); this.tiles.clear();
     this.list.classList.remove("cover-grid", "cover-grid-wide", "cover-grid-masonry");
     this.list.style.removeProperty("--masonry-height");
@@ -337,14 +345,32 @@ export class VideoLibraryPage {
     if (this.toolbar.firstElementChild !== this.segments) this.toolbar.replaceChildren(this.segments, this.selectToggle, this.density.el);
     this.syncSegments();
   }
-  /** The wall keeps the same segments, select and density, and adds the filters. */
+  /** The wall keeps the same segments, select and density, and adds the filters and the switch. */
   private renderWallToolbar(): void {
     this.buildSegments();
     this.syncFilterButton();
     if (this.toolbar.firstElementChild !== this.segments) {
-      this.toolbar.replaceChildren(this.segments, this.filterButton, this.selectToggle, this.density.el);
+      this.toolbar.replaceChildren(this.segments, this.filterButton, this.similarToggle, this.selectToggle, this.density.el);
     }
     this.syncSegments();
+  }
+  /**
+   * Re-order the covers that are already loaded. The switch is not a new paging mode: it
+   * reads no cursor, sends no request, and turning it off returns the loaded order.
+   */
+  private setSimilarSort(enabled: boolean): void {
+    this.similarSort = enabled;
+    this.syncSegments();
+    this.applyTileOrder();
+  }
+  private applyTileOrder(): void {
+    const clips = this.similarSort ? similarOrder(this.controller.rows) : this.controller.rows;
+    for (const clip of clips) {
+      const tile = this.tiles.get(clip.id);
+      if (tile) this.list.append(tile.root);
+    }
+    if (this.loadButton.isConnected) this.list.append(this.loadButton);
+    this.masonry?.layout();
   }
   private syncSegments(): void {
     for (const button of this.segmentButtons) {
@@ -354,6 +380,7 @@ export class VideoLibraryPage {
     }
     this.selectToggle.textContent = this.selectMode ? "退出多选" : "选择";
     this.selectToggle.setAttribute("aria-pressed", String(this.selectMode));
+    this.similarToggle.setAttribute("aria-pressed", String(this.similarSort));
     this.renderSelection();
   }
   private buildSegments(): void {
@@ -404,16 +431,29 @@ export class VideoLibraryPage {
     const clips = this.controller.selectedClips;
     const play = this.button(`播放选中 (${clips.length}/${MAX_SELECTED})`, () => this.play(this.controller.selectedClips, play));
     play.disabled = !clips.length;
+    const actions: HTMLButtonElement[] = [play];
+    // One cover is a subject; two have no single subject, so the entry disappears. It
+    // needs a sheet to open in, so a page without one never offers it.
+    if (this.sheet && clips.length === 1) {
+      const similar = this.button("和这张像的", () => void openSimilarSheet({
+        sheet: this.sheet, alive: () => !this.destroyed,
+        say: message => { this.notice.textContent = message; },
+        play: clip => this.play([clip]),
+      }, clips[0]));
+      similar.classList.add("similar-entry");
+      actions.push(similar);
+    }
     // Adding is the explicit entry, and it only exists in select mode: a plain tap on
     // a cover still only plays it.
     const add = this.button(`加入集合 (${clips.length})`, () => void this.openCollectionPicker());
     add.disabled = !clips.length;
     add.classList.add("collection-add");
+    actions.push(add);
     const clear = this.button("清空选择", () => this.clearSelection());
     clear.disabled = !clips.length;
-    this.selectionBar.replaceChildren(play, add, clear);
+    actions.push(clear);
+    this.selectionBar.replaceChildren(...actions);
   }
-
   private async openCollectionPicker(): Promise<void> {
     if (!this.collections.rows.length) await this.collections.load();
     const targets = this.collections.writable();
@@ -461,6 +501,8 @@ export class VideoLibraryPage {
     this.loadButton.textContent = this.controller.error ? "加载失败，重试" : "加载更多";
     if (this.controller.hasMore && this.controller.rows.length < MAX_ROWS) this.list.append(this.loadButton);
     this.syncGrid();
+    // A page that arrived after the switch was turned on joins the chain, not the tail.
+    if (this.similarSort) this.applyTileOrder();
     if (this.controller.rows.length >= MAX_ROWS) this.notice.textContent = "本次浏览已达 1000 条信息预算，请使用类型筛选缩小范围";
     else if (this.controller.error) this.notice.textContent = "分页加载失败，已保留当前视频与选择，请点击重试";
     else if (!this.controller.hasMore) this.notice.textContent = `${this.sourceLabel()} · ${this.controller.rows.length ? "已加载全部" : "该类型暂无视频"}`;

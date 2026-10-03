@@ -336,6 +336,21 @@ try {
   const wall=await layout("library wall "+width);
   check(wall.columns===densityColumns.comfortable[width],`the filtered wall keeps ${densityColumns.comfortable[width]} columns at ${width}, measured ${wall.columns}`);
   check(await evaluate("document.querySelectorAll('.library-preview-video').length===0"),"the wall never decodes media "+width);
+  // The similarity switch re-orders what is already on screen: it must not move the
+  // density step or the column count, and it must not ask for another page to do it.
+  const videoPages=()=>evaluate("performance.getEntriesByType('resource').filter(e=>e.name.includes('/api/v1/videos')).length");
+  const pagesBefore=await videoPages();
+  await click(".library-similar-toggle");
+  await delay(300);
+  check(await evaluate("document.querySelector('.library-similar-toggle').getAttribute('aria-pressed')==='true'"),"按相似排序 states it is on "+width);
+  const sorted=await layout("library wall similar "+width);
+  check(sorted.columns===wall.columns,`按相似排序 keeps ${wall.columns} columns at ${width}, measured ${sorted.columns}`);
+  check(sorted.count===wall.count,`按相似排序 changes no tile (${wall.count} -> ${sorted.count})`);
+  check(await evaluate("document.querySelector('.library-page').dataset.density==='comfortable'"),"the similar switch does not change the density step "+width);
+  check(await videoPages()===pagesBefore,"the similar switch asks for no extra page "+width);
+  await click(".library-similar-toggle");
+  await delay(200);
+  check(await evaluate("document.querySelector('.library-similar-toggle').getAttribute('aria-pressed')==='false'"),"the similar switch turns off again "+width);
   // The wall can put a cover into a collection, from select mode, without playing it.
   if(width===390){
    await click(".library-page .library-select-toggle");
