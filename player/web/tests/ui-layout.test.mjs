@@ -181,18 +181,37 @@ test("privacy lock uses opaque cover rather than revealing a blurred frame", () 
   assert.match(body(feedCss, ".app-shell.privacy-locked .media-stage::after"), /background:\s*var\(--privacy-cover\)/);
 });
 
-test("the display face ships inside the bundle instead of a third-party CDN", () => {
+test("the display face goes through the asset pipeline so the server can route it", () => {
+  // The Player server mounts `/assets/*` statically and routes a fixed list of
+  // root files; anything else left in `public/` ships in the image but 404s in
+  // production. This was a real production-only defect, so the location is pinned.
   assert.ok(styleEntry.includes("fonts.css"), "the font face is imported by the entry stylesheet");
   assert.match(fontsCss, /@font-face/);
-  assert.match(fontsCss, /src:\s*url\("\/fonts\/playfair-display-latin\.woff2"\)\s*format\("woff2"\)/);
+  assert.match(fontsCss, /src:\s*url\("\.\.\/assets\/playfair-display-latin\.woff2"\)\s*format\("woff2"\)/);
   assert.match(fontsCss, /font-display:\s*swap/);
   assert.doesNotMatch(fontsCss, /https?:\/\//, "no remote font origin may be referenced");
-  // The subset has to actually be in the shipped directory, not just referenced.
-  const subset = readFileSync(new URL("../public/fonts/playfair-display-latin.woff2", import.meta.url));
-  assert.ok(subset.length > 1024, "the vendored subset is a real font file");
+  // The subset has to actually be where the stylesheet points at.
+  assert.ok(readFileSync(new URL("../src/assets/playfair-display-latin.woff2", import.meta.url)).length > 1024, "the vendored subset is a real font file");
   assert.ok(readFileSync(new URL("../public/fonts/OFL.txt", import.meta.url), "utf8").includes("SIL OPEN FONT LICENSE"), "the licence ships with the face");
   // Latin and digits only: CJK has to keep falling through to the sans stack.
   assert.match(baseCss, /--font-display:\s*"Playfair Display",\s*var\(--font-sans\)/);
+});
+
+test("the shell only references frontend paths the Player server routes", () => {
+  // Authority: `src/tgvio_player/adapters/http/server.py` serves `/`, a static
+  // mount on `/assets`, and exactly these root-level files. A reference to
+  // anything else resolves to a 404 in production while looking fine locally.
+  const routed = ["", "/site.webmanifest", "/apple-touch-icon.png", "/player-icon-192.png", "/player-icon-512.png", "/player-icon.svg"];
+  const html = readFileSync(new URL("../index.html", import.meta.url), "utf8");
+  // `/src/main.ts` is the dev entry; Vite rewrites it into `/assets/` at build
+  // time. Every other root-relative reference has to be routable as written.
+  const references = [...html.matchAll(/(?:href|src)="([^"]*)"/g)]
+    .map(([, value]) => value)
+    .filter((value) => value.startsWith("/") && !value.startsWith("/src/"));
+  assert.ok(references.includes("/site.webmanifest") && references.includes("/apple-touch-icon.png"), "the shell references its root-level assets");
+  for (const reference of references) {
+    assert.ok(reference.startsWith("/assets/") || routed.includes(reference), `the Player server does not route ${reference}`);
+  }
 });
 
 test("ink on the gold foil clears AA on every stop, not just the mid tone", () => {

@@ -15,16 +15,17 @@
 | `src/styles/shell.css` | 宽屏触摸设备（`hover:none` 且 ≥900px）下侧栏标签改 `color: inherit`，并删掉固定亮色覆盖 |
 | `src/components/large-player-view.ts` | `.large-controls` 补 `role="group"`（`aria-label` 落在裸 `div` 上会被无障碍树丢弃） |
 | `src/styles/fonts.css`（新） | `@font-face` 自托管 Playfair Display latin 子集，`font-display: swap`，无任何远程来源 |
-| `public/fonts/`（新） | `playfair-display-latin.woff2`（38,404 B，可变字重 400–900）+ `OFL.txt`（SIL OFL 1.1） |
+| `src/assets/playfair-display-latin.woff2`（新） | 38,404 B，可变字重 400–900；由 Vite 打进 `dist/assets/` 并加内容哈希 |
+| `public/fonts/OFL.txt`（新） | SIL OFL 1.1 许可证，随镜像发布 |
 | `src/styles/foil.css` | 金色裁字标题同时套用 `--font-display` |
-| `src/style.css` / `index.html` | 引入 `fonts.css`；`preload` 字体子集；`theme-color` 由旧 `#0b0d10` 改为 `--bg #08070a` |
+| `src/style.css` / `index.html` | 引入 `fonts.css`；`theme-color` 由旧 `#0b0d10` 改为 `--bg #08070a` |
 | `tests/ui-layout.test.mjs` | 新增 4 项：顶栏浮层契约、**幕布在白画面下的实测对比度**、金箔最暗停靠点对比度、侧栏标签继承、字体随包发布（含"不得有远程来源"与子集文件真实存在） |
 | `tests/fixtures/player-layout.ts` | 新增真实 DOM 断言：媒体从播放器顶部开始、顶栏确实压在画面上、返回键可达、浮层不吃画面输入、侧栏标签取按钮 ink、reduced-motion 下弹簧被抹平 |
 | `tests/browser-layout.smoke.mjs` | 抽出 `runFixture`，新增 **150% 页面缩放**两档与 **`prefers-reduced-motion: reduce`** 一档回归 |
 | `tests/presentation-components.test.mjs` | 断言 `.large-controls` 的 `role`/`aria-label` |
 | `docs/development/PLAYER_FRONTEND_DARK_CINEMA.md` | 标题与全文由「深夜影院」回填为**黑金 Pro**：真实令牌、真实对比度、浮层顶栏契约、侧栏标签坑位、字体一节、批次落地提交表、风险更新 |
 
-## 本轮定位到的 4 个真实缺陷
+## 本轮定位到的 5 个真实缺陷
 
 1. **金底白字 1.86:1（唯一 palette 级 violation）**
    `hover: none` 且 ≥900px（宽屏触摸设备、无鼠标的平板/一体机）时，侧栏标签不再是悬浮标签，
@@ -43,6 +44,17 @@
 4. **`.large-controls` 的 `aria-label` 进不了无障碍树**
    `<div aria-label>` 没有 role 是多余属性（axe `aria-prohibited-attr`）。
    与上一轮 `#feed` 同一族问题，补 `role="group"`。
+
+5. **自托管字体在生产 404（只有发布后验才能发现）**
+   首版把字体放在 `public/fonts/`，本地、单测、浏览器回归全绿，镜像里也真的有这个文件
+   （`/app/player-web/fonts/playfair-display-latin.woff2`），但生产
+   `GET /fonts/playfair-display-latin.woff2` 返回 **404**，页面静默回退系统字体。
+   根因：Player 服务端只静态挂载 `/assets/*`，再加一份根路径白名单
+   （`site.webmanifest` / `apple-touch-icon.png` / `player-icon-*.png|svg`），
+   `public/` 下的其他文件虽然打进镜像却没有任何路由。
+   改为放 `src/assets/`，由 Vite 输出成 `dist/assets/playfair-display-latin-<hash>.woff2`，
+   走已存在的 `/assets` 挂载；同时去掉 `rel=preload`（哈希名构建期才确定）。
+   新增一条跨层断言：`index.html` 里的每个根路径引用都必须在服务端白名单内。
 
 顺带发现 `--font-display` 此前**从未被任何规则使用**（只声明未应用），本轮一并接上。
 

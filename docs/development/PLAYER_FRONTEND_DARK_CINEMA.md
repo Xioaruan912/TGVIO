@@ -156,13 +156,21 @@ View Transitions 与滚动驱动动画在 Chrome/Safari 可用、**Firefox 不�
 - 正文/UI：`--font-sans`，CJK 优先的系统栈（MiSans → HarmonyOS Sans SC → PingFang SC →
   Noto Sans SC → Source Han Sans SC → Microsoft YaHei → system-ui）。**不下载**中文字体。
 - 标题：`--font-display` = `"Playfair Display", var(--font-sans)`。
-  字面文件是 `public/fonts/playfair-display-latin.woff2`（38,404 字节，可变字重 400–900，
-  **仅 latin 子集**），随包发布，**不得**引外部 CDN；许可证 `public/fonts/OFL.txt`（SIL OFL 1.1）。
+  字面文件 `src/assets/playfair-display-latin.woff2`（38,404 字节，可变字重 400–900，
+  **仅 latin 子集**），由 Vite 打进 `dist/assets/` 并加内容哈希；随包发布，**不得**引外部 CDN。
+  许可证 `public/fonts/OFL.txt`（SIL OFL 1.1）同样随包发布。
+- **字体必须落在 `src/assets/`，不能放 `public/`**：Player 服务端只静态挂载 `/assets/*`，
+  再加一份根路径白名单（`site.webmanifest`、`apple-touch-icon.png`、`player-icon-*.png/svg`）。
+  放 `public/fonts/` 的字体会随镜像发布但**在生产 404**——实测
+  `GET /fonts/playfair-display-latin.woff2` → 404（`text/plain`，14 字节），
+  页面静默回退到系统字体。同理不做 `rel=preload`：哈希文件名构建期才确定，
+  而 CSS 本身是阻塞资源，浏览器解析到 `@font-face` 时就会去取。
+  `tests/ui-layout.test.mjs` 有一条断言逐一检查 `index.html` 里的根路径引用是否在服务端白名单内。
 - 应用范围与金色裁字标题同一组选择器（`.browse-title` / `.sheet-title` / `.login-title` /
   `.desktop-brand strong` / `.brand-name` / `.app-header-context`）。
   中文字形不在子集里，因此靠 `--font-sans` 回退；混排标题（如「批次 A · 20/600」）
   呈现为拉丁/数字用衬线、中文用黑体，这是预期效果。
-- `index.html` 对子集做 `rel=preload`，并已把 `theme-color` 从旧的 `#0b0d10` 改为 `--bg #08070a`。
+- `theme-color` 已从旧的 `#0b0d10` 改为 `--bg #08070a`。
 
 ## 5. 动效语言
 
