@@ -14,8 +14,10 @@ import { prefs, setPref } from "./settings";
 import { initialMutedState, rememberMuted } from "./sound-policy";
 import { ScreenWakeLockController } from "./wake-lock";
 import { playerMediaSession } from "./media-session";
-import { confirmMediaDelete, element, formatTime } from "./ui";
+import { confirmMediaDelete, element, formatTime, seekPercent, showSeekFeedback } from "./ui";
 import { qualityLabel, qualityOptions, resolveStreamUrl } from "./quality";
+import { applyRate, boostRate, type PlaybackRate } from "./playback-rate";
+import type { RateMenu } from "./components/rate-menu";
 import { PlaybackStateController, playbackUi, type PlaybackState } from "./playback-state";
 import type { Clip, QualitySelection } from "./types";
 function paintBuffered(fill: HTMLElement, video: HTMLVideoElement): void {
@@ -78,6 +80,8 @@ export class LargePlayer {
   private deleted = false;
   private muted = initialMutedState();
   private quality: QualitySelection = prefs.quality;
+  private rate = prefs.playbackRate;
+  private readonly rateMenu: RateMenu | null;
   private userSeeking = false;
   private destroyed = false;
   private sourceRestore: { controller: AbortController; time: number; resumeIntent: boolean } | null = null;
@@ -133,14 +137,14 @@ export class LargePlayer {
         this.onPrivacyLock("idle");
       },
     });
-    const view = buildLargePlayerView(clip.id, clip.duration);
+    const view = buildLargePlayerView(clip.id, clip.duration, { value: this.rate, onPick: rate => this.setRate(rate) });
     this.root = view.root; this.video = view.video; this.seek = view.seek;
     this.buffered = view.buffered; this.progress = view.progress;
     this.timeCurrent = view.timeCurrent; this.timeTotal = view.timeTotal;
     this.playButton = view.playButton; this.favoriteButton = view.favoriteButton;
     this.soundButton = view.soundButton; this.fullscreenButton = view.fullscreenButton;
     this.pipButton = view.pipButton; this.deleteButton = view.deleteButton;
-    this.qualityButton = view.qualityButton; this.loading = view.loading;
+    this.qualityButton = view.qualityButton; this.loading = view.loading; this.rateMenu = view.rateMenu;
     this.retryButton = view.retryButton; this.privacyPlayButton = view.privacyPlayButton;
     const stage = view.stage, netSpeed = view.netSpeed;
     this.video.muted = this.muted;
@@ -178,7 +182,7 @@ export class LargePlayer {
       },
       onPreview: (time, clientX) => {
         this.timeCurrent.textContent = formatTime(time);
-        this.progress.style.setProperty("--p", this.percent(time) + "%");
+    this.progress.style.setProperty("--p", seekPercent(this.seek.max, time) + "%");
         if (clientX !== undefined && prefs.dragThumbnail) {
           this.preview.show(this.clip, time, formatTime(time), clientX);
         }
@@ -316,7 +320,7 @@ export class LargePlayer {
       },
       onDoubleTap: (direction) => this.doubleTapSeek(direction, stage),
       onFastForward: (speed) => {
-        this.video.playbackRate = speed ?? 1;
+        this.video.playbackRate = boostRate(speed, this.rate);
       },
       onScrubStart: () => {
         if (this.root.classList.contains("privacy-locked")) return;
@@ -331,7 +335,7 @@ export class LargePlayer {
         if (this.root.classList.contains("privacy-locked")) return;
         this.seek.value = String(time);
         this.timeCurrent.textContent = formatTime(time);
-        this.progress.style.setProperty("--p", `${this.percent(time)}%`);
+        this.progress.style.setProperty("--p", `${seekPercent(this.seek.max, time)}%`);
         if (prefs.dragThumbnail) this.preview.show(this.clip, time, formatTime(time), clientX);
       },
       onScrubEnd: (time, resumePlayback) => {
@@ -353,12 +357,12 @@ export class LargePlayer {
     this.root.addEventListener("pointerdown", () => this.showControls(), { passive: true });
     this.root.addEventListener("touchstart", () => this.showControls(), { passive: true });
     this.root.addEventListener("focusin", () => this.showControls());
-    this.root.addEventListener("focusout", () => this.scheduleControlsHide());
+    this.root.addEventListener("focusout", () => this.showControls());
     this.video.addEventListener("pause", () => this.showControls());
-    this.video.addEventListener("play", () => this.scheduleControlsHide());
+    this.video.addEventListener("play", () => this.showControls());
     if (options.privacyLocked) this.lockPrivacy();
     else this.idlePrivacy.setEnabled(true);
-    this.video.src = this.resolveUrl();
+    this.applySource();
     if (!this.root.classList.contains("privacy-locked")) this.activateMediaSession();
     if (prefs.netSpeed) this.meter.start();
     if (!this.root.classList.contains("privacy-locked")) void this.video.play().catch(() => undefined);
@@ -452,8 +456,7 @@ export class LargePlayer {
     this.playback.update(
       loading ? { hasFrame: false, networkWaiting: false } : { hasFrame: true, networkWaiting: false },
     );
-    if (loading) this.showControls();
-    else this.scheduleControlsHide();
+    this.showControls();
   }
 
   private applyState(state: PlaybackState): void {
@@ -462,8 +465,7 @@ export class LargePlayer {
     const label = this.loading?.querySelector<HTMLElement>(".media-loading-label");
     if (label) label.textContent = ui.label ?? "";
     if (this.retryButton) this.retryButton.hidden = !ui.retryButton;
-    if (ui.controlsAutoHide) this.scheduleControlsHide();
-    else this.showControls();
+    this.showControls();
   }
 
   private activateMediaSession(): void {
@@ -494,9 +496,7 @@ export class LargePlayer {
     const duration = Number.isFinite(this.video.duration) ? this.video.duration : Infinity;
     this.video.currentTime = Math.min(duration, Math.max(0, this.video.currentTime + delta));
     this.updateProgress();
-    const feedback = element("span", `double-tap-feedback ${direction}`, direction === "backward" ? "后退 10 秒" : "前进 10 秒");
-    stage.appendChild(feedback);
-    window.setTimeout(() => feedback.remove(), 650);
+    showSeekFeedback(stage, direction);
   }
 
   private async togglePictureInPicture(): Promise<void> {
@@ -510,6 +510,7 @@ export class LargePlayer {
     }
   }
 
+  /** The control panel is persistent and partitioned: it is never auto-hidden. */
   private showControls(): void {
     this.root.classList.add("controls-visible");
     this.root.querySelectorAll<HTMLElement>(".large-topbar, .large-controls").forEach((container) => {
@@ -517,19 +518,16 @@ export class LargePlayer {
     });
   }
 
-  private scheduleControlsHide(): void {
-    // Persistent, partitioned control panel. Never auto-hide or make it inert during playback.
-    this.showControls();
-  }
-
-  private percent(value: number): number {
-    const max = Number(this.seek.max) || 0;
-    if (max <= 0) return 0;
-    return Math.min(100, Math.max(0, (value / max) * 100));
-  }
+  private applySource(): void { this.video.src = this.resolveUrl(); applyRate(this.video, this.rate); }
 
   private resolveUrl(): string {
     return resolveStreamUrl(this.clip, this.quality);
+  }
+
+  /** A speed change is a viewer choice: it persists and applies to this element at once. */
+  private setRate(rate: PlaybackRate): void {
+    this.rate = rate; setPref("playbackRate", rate);
+    applyRate(this.video, rate); this.rateMenu?.sync(rate); this.activateMediaSession();
   }
 
   private cycleQuality(): void {
@@ -561,7 +559,7 @@ export class LargePlayer {
         void this.video.play().catch(() => this.playback.update({ autoplayBlocked: true }));
       }
     }, { once: true, signal: restore.signal });
-    this.video.src = this.resolveUrl();
+    this.applySource();
     this.video.load();
   }
 
@@ -596,7 +594,7 @@ export class LargePlayer {
     if (!this.userSeeking && !this.seekControl?.isSeeking()) {
       this.seek.value = String(this.video.currentTime);
       this.timeCurrent.textContent = formatTime(this.video.currentTime);
-      this.progress.style.setProperty("--p", this.percent(this.video.currentTime) + "%");
+      this.progress.style.setProperty("--p", seekPercent(this.seek.max, this.video.currentTime) + "%");
     }
     paintBuffered(this.buffered, this.video);
     this.onProgress?.(this.video.currentTime, this.video.duration, false);
@@ -646,12 +644,12 @@ export class LargePlayer {
         ? `已删除 ${result.deletedCopies} 份，${result.failedCopies} 份失败，点此恢复播放`
         : "删除失败，点此恢复播放";
       this.retryButton.hidden = false;
-      this.video.src = this.resolveUrl();
+      this.applySource();
     } catch {
       if (this.destroyed) return;
       this.retryButton.textContent = "删除失败，点此恢复播放";
       this.retryButton.hidden = false;
-      this.video.src = this.resolveUrl();
+      this.applySource();
     } finally {
       this.deleteButton.disabled = false;
     }

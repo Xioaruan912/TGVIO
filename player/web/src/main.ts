@@ -1036,10 +1036,7 @@ function feedGestureOptions() {
       if (autoplayBlocked) playGesture();
       else togglePlayback();
     },
-    onFastForward: (speed: number | null) => {
-      const video = pool?.currentVideo();
-      if (video) video.playbackRate = speed ?? 1;
-    },
+    onFastForward: (speed: number | null) => { pool?.setPlaybackBoost(speed); },
     onScrubStart: () => {
       if (!privacyUnlocked) return;
       const video = pool?.currentVideo();
@@ -1528,7 +1525,7 @@ function renderFeed(): void {
   privacyCover.setAttribute("aria-hidden", "true");
   document.body.appendChild(privacyCover);
   feedView = new FeedView(shell.feed);
-  pool = new VideoPool();
+  pool = new VideoPool(() => prefs.playbackRate);
   playback = new PlaybackStateController({
     privacyUnlocked,
     shouldPlay: !paused && privacyUnlocked && !longVideosOpen,

@@ -36,3 +36,22 @@ test("changing cover density persists for the next page load", () => {
   assert.equal(loadPrefs().coverDensity, "dense", "the choice survives a reload");
   setPref("coverDensity", "comfortable");
 });
+
+test("playback rate defaults to normal speed and only accepts an offered rate", () => {
+  store.clear();
+  assert.equal(loadPrefs().playbackRate, 1, "an absent preference keeps normal speed");
+  withPrefs({ playbackRate: 1.5 });
+  assert.equal(loadPrefs().playbackRate, 1.5);
+  for (const bad of [9, 0, -1, "1.5", null, NaN]) {
+    withPrefs({ playbackRate: bad });
+    assert.equal(loadPrefs().playbackRate, 1, `${String(bad)} falls back instead of reaching the video`);
+  }
+});
+
+test("changing the playback rate persists for the next video", () => {
+  store.clear();
+  setPref("playbackRate", 2);
+  assert.equal(prefs.playbackRate, 2);
+  assert.equal(loadPrefs().playbackRate, 2, "the choice outlives this video");
+  setPref("playbackRate", 1);
+});

@@ -98,3 +98,13 @@
  .large-context { display: none; }
  .large-controls > .panel-cache { justify-self: stretch; }
 }
+
+/* The speed control is a disclosure like the 更多 menu, sized like the transport buttons. */
+.rate-menu { position: relative; }
+.rate-toggle { min-width: 48px; min-height: 56px; display: grid; place-content: center; padding: 6px 8px; border-radius: var(--radius-pill); color: var(--text-secondary); cursor: pointer; list-style: none; font-size: 13px; font-variant-numeric: tabular-nums; }
+.rate-toggle::-webkit-details-marker { display: none; }
+.rate-menu[open] .rate-toggle { background: var(--primary-soft); color: var(--primary); }
+.rate-list { width: min(160px, calc(100vw - 32px)); }
+.rate-option { display: flex; align-items: center; gap: 8px; min-height: 48px; padding: 10px 12px; border: 0; border-radius: var(--radius); background: transparent; color: var(--text-secondary); font-size: 13px; text-align: left; cursor: pointer; }
+.rate-option[aria-pressed="true"] { background: var(--primary-soft); color: var(--primary); font-weight: 650; }
+.rate-mark { width: 16px; display: inline-grid; place-items: center; }

@@ -193,6 +193,20 @@ export function showGestureGuide(host: HTMLElement): Promise<void> {
   });
 }
 
+/** The same 0..100 scale `paintSeek` writes, for a value the caller already has. */
+export function seekPercent(max: number | string, value: number): number {
+  const limit = Number(max) || 0;
+  if (!(limit > 0)) return 0;
+  return Math.min(100, Math.max(0, ((Number(value) || 0) / limit) * 100));
+}
+
+/** A transient "back 10 seconds" note over the picture; the stage owns its own removal. */
+export function showSeekFeedback(stage: HTMLElement, direction: "backward" | "forward"): void {
+  const feedback = element("span", `double-tap-feedback ${direction}`, direction === "backward" ? "后退 10 秒" : "前进 10 秒");
+  stage.appendChild(feedback);
+  window.setTimeout(() => feedback.remove(), 650);
+}
+
 export function setControlsVisible(shell: Shell, visible: boolean): void {
   shell.root.classList.toggle("controls-visible", visible);
   // Only opt-in media overlays auto-hide. Header, panel and unlock stay usable.

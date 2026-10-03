@@ -5,6 +5,10 @@ export type CacheMode = "auto" | "speed" | "data-saving" | "off";
 export type CoverDensity = "comfortable" | "compact" | "dense";
 const COVER_DENSITIES: CoverDensity[] = ["comfortable", "compact", "dense"];
 import type { QualitySelection } from "./types";
+// The one extension-ful specifier in src: `player-prefs.test.mjs` runs this module
+// through Node's resolver, which needs a real filename. Playback speed is validated here,
+// at the boundary, like every other preference.
+import { normalizeRate, type PlaybackRate } from "./playback-rate.js";
 
 export type PlayerPrefs = {
   longPressFastForward: boolean;
@@ -19,6 +23,8 @@ export type PlayerPrefs = {
   soundPromptFrequency: "every-time" | "once-per-open" | "continuous-sound";
   soundContinuousConfirmed: boolean;
   quality: QualitySelection;
+  /** How fast a video plays by default; a held long press overrides it temporarily. */
+  playbackRate: PlaybackRate;
   coverDensity: CoverDensity;
 };
 
@@ -37,6 +43,7 @@ const DEFAULTS: PlayerPrefs = {
   soundPromptFrequency: "continuous-sound",
   soundContinuousConfirmed: false,
   quality: 480,
+  playbackRate: 1,
   coverDensity: "comfortable",
 };
 
@@ -76,6 +83,7 @@ export function loadPrefs(): PlayerPrefs {
       soundContinuousConfirmed:
         parsed.soundContinuousConfirmed === true,
       quality: parseQuality(parsed.quality),
+      playbackRate: normalizeRate(parsed.playbackRate),
       coverDensity: COVER_DENSITIES.includes(parsed.coverDensity as CoverDensity)
         ? parsed.coverDensity as CoverDensity
         : DEFAULTS.coverDensity,

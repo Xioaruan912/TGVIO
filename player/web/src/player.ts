@@ -39,7 +39,7 @@ export class VideoPool {
   onUnusableFrame: ((mediaId: string) => void) | null = null;
   shouldContinue: (() => boolean) | null = null;
 
-  constructor() {
+  constructor(private readonly chosenRate: () => number = () => 1) {
     for (let i = 0; i < SLOT_COUNT; i += 1) {
       const video = document.createElement("video");
       video.className = "media-slot";
@@ -311,7 +311,18 @@ export class VideoPool {
     );
     video.preload = preload;
     video.src = withPlaybackSession(source);
+    // A source assignment follows load(), which resets playbackRate to the default.
+    const rate = this.chosenRate();
+    video.defaultPlaybackRate = rate; video.playbackRate = rate;
     video.load();
+  }
+
+  /** A held long press speeds the current clip up; releasing it restores the chosen rate. */
+  setPlaybackBoost(speed: number | null): void {
+    const video = this.current;
+    if (!video) return;
+    const rate = speed ?? this.chosenRate();
+    video.defaultPlaybackRate = rate; video.playbackRate = rate;
   }
 
   private release(video: HTMLVideoElement): void {

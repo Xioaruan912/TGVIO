@@ -1,4 +1,5 @@
 import { buildActionMenu } from "./action-menu";
+import { buildRateMenu, type RateMenuHost } from "./rate-menu";
 import { element } from "./dom";
 import { icon, type IconName } from "../icons";
 import { buildTimeline } from "./timeline";
@@ -15,7 +16,7 @@ function control(name: IconName, label: string, className = "") {
   return button;
 }
 
-export function buildLargePlayerView(id: string, duration: number) {
+export function buildLargePlayerView(id: string, duration: number, rate?: RateMenuHost) {
   const root = element("section", "large-player");
   // A named section becomes a region landmark, so the player's header, stage and
   // controls stay inside a landmark while the overlay covers the shell.
@@ -58,13 +59,16 @@ export function buildLargePlayerView(id: string, duration: number) {
   const menu = element("div", "action-menu large-more-menu");
   menu.append(pipButton, deleteButton);
   const more = buildActionMenu(menu, "large-more");
+  // The speed control sits beside the quality one: both change what is being streamed.
+  const rateMenu = rate ? buildRateMenu(rate) : null;
   const actions = element("div", "large-action-row");
-  actions.append(playButton, soundButton, favoriteButton, qualityButton, fullscreenButton, more);
+  actions.append(playButton, soundButton, favoriteButton, qualityButton,
+    ...(rateMenu ? [rateMenu.root] : []), fullscreenButton, more);
   const netSpeed = element("span", "net-speed panel-cache", "已缓存未知 / 文件大小未知");
   netSpeed.hidden = true;
   controls.append(timeline.row, actions, netSpeed);
   root.append(topbar, stage, controls);
   return { root, stage, back, privacyLock, video, loading, retryButton, privacyPlayButton,
-    controls, playButton, favoriteButton, soundButton, fullscreenButton, qualityButton, pipButton, deleteButton,
+    controls, actions, rateMenu, playButton, favoriteButton, soundButton, fullscreenButton, qualityButton, pipButton, deleteButton,
     netSpeed, ...timeline };
 }

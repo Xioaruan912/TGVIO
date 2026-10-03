@@ -47,6 +47,9 @@
 .media-actions-toggle::-webkit-details-marker { display: none; }
 .media-actions[open] .media-actions-toggle { background: var(--primary-soft); color: var(--primary); }
 .action-menu { position: absolute; z-index: 40; right: 0; bottom: calc(100% + 8px); width: min(280px,calc(100vw - 32px)); max-height: min(360px,calc(100dvh - 120px)); overflow-y: auto; display: grid; grid-template-columns: 1fr; padding: 8px; border: 1px solid var(--border); border-radius: var(--radius-lg); background: var(--surface); box-shadow: var(--shadow-panel); }
+/* The disclosure hides its content, but this rule's own `display` would win over the UA
+   sheet, so a closed menu stayed rendered and hit-testable. Say it explicitly. */
+details:not([open]) > .action-menu { display: none; }
 .action-menu .action-btn { display: flex; justify-content: flex-start; gap: 12px; padding: 12px; min-height: 48px; }
 .action-menu .action-label { font-size: 13px; }
 .action-menu .delete-action { border-top: 1px solid var(--border); border-radius: 0; margin-top: 6px; color: var(--danger); }

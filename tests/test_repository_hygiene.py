@@ -31,12 +31,17 @@ class RepositoryHygieneTests(unittest.TestCase):
             self.assertIn("exceeds 600", hygiene.frontend_problems(root)[0])
 
     def test_existing_debt_cannot_grow(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            self.write(root, "player/web/src/main.ts", "\n" * 1710)
-            self.assertEqual([], hygiene.frontend_problems(root))
-            self.write(root, "player/web/src/main.ts", "\n" * 1711)
-            self.assertIn("exceeds 1710", hygiene.frontend_problems(root)[0])
+        # The recorded ceilings, frozen here. Shrinking one is a deliberate edit to both this
+        # table and the map in the gate; growing either one fails.
+        recorded = {"main.ts": 1707, "large.ts": 680}
+        self.assertEqual(hygiene.FRONTEND_DEBT, recorded, "existing debt may only shrink")
+        for name, budget in sorted(recorded.items()):
+            with tempfile.TemporaryDirectory() as folder:
+                root = Path(folder)
+                self.write(root, f"player/web/src/{name}", "\n" * budget)
+                self.assertEqual([], hygiene.frontend_problems(root))
+                self.write(root, f"player/web/src/{name}", "\n" * (budget + 1))
+                self.assertIn(f"exceeds {budget}", hygiene.frontend_problems(root)[0])
 
     def test_node_test_rejects_direct_typescript_import(self):
         with tempfile.TemporaryDirectory() as folder:

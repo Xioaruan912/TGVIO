@@ -393,11 +393,28 @@ try {
   await wait("document.querySelector('.large-controls .net-speed')?.textContent.includes('已缓存约')","long size readout");
   check(await evaluate("(()=>{const e=document.querySelector('.large-controls .net-speed'),r=e.getBoundingClientRect(),h=e.closest('.large-controls').getBoundingClientRect();return r.left>=h.left&&r.right<=h.right&&r.top>=h.top&&r.bottom<=h.bottom&&e.scrollWidth<=e.clientWidth+1})()"),"cache readout stays inside long panel "+width);
   check(await evaluate("document.querySelector('.large-quality').textContent==='原画'&&document.querySelector('.large-quality').disabled"),"no fake low quality for original-only media "+width);
+  // Playback speed: a real choice that reaches the element, not a gesture-only boost.
+  check(await evaluate("!!document.querySelector('.large-controls .rate-menu .rate-toggle')"),"the speed control is offered on a long video "+width);
+  check(await evaluate("(()=>{const closed=[...document.querySelectorAll('.large-controls details:not([open]) > .action-menu')];return closed.every(menu=>getComputedStyle(menu).display==='none')})()"),"a closed control menu is not rendered "+width);
+  check(await evaluate("(()=>{const b=document.querySelector('.large-controls .rate-toggle'),r=b.getBoundingClientRect();return r.width>=44&&r.height>=44})()"),"the speed control keeps a 44px target "+width);
+  await click(".large-controls .rate-toggle");
+  check(await evaluate("document.querySelectorAll('.large-controls .rate-option').length===7"),"every offered rate is one control "+width);
+  await click(".large-controls .rate-option:nth-child(5)");
+  await delay(200);
+  check(await evaluate("document.querySelector('.large-video').playbackRate===1.5"),"picking 1.5x reaches the video "+width);
+  check(await evaluate("document.querySelector('.large-controls .rate-toggle').textContent==='1.5x'"),"the control states the chosen rate "+width);
+  await click(".large-controls .rate-toggle");
+  await cdp("Input.dispatchKeyEvent",{type:"keyDown",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+  await cdp("Input.dispatchKeyEvent",{type:"keyUp",key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
+  await delay(150);
+  check(await evaluate("document.querySelector('.large-controls .rate-menu').open===false"),"Escape closes the speed menu "+width);
+  check(await evaluate("document.activeElement.classList.contains('rate-toggle')"),"and returns focus to the control "+width);
   await screenshot("long-player-"+width+"x"+height);
   await click(".large-back");
   await nav("home");
   await nav("home");await click(".topbar-settings");await screenshot("settings-"+width+"x"+height);
   check(await evaluate("document.querySelector('.sheet-card')?.contains(document.activeElement)"),"settings constrains focus");
+  check(await evaluate("[...document.querySelectorAll('.sheet .sheet-row-title')].map(n=>n.textContent).filter(t=>/^[0-9.]+x$/.test(t)).length===7"),"the settings sheet lists every offered rate "+width);
   for(const type of ["keyDown","keyUp"])await cdp("Input.dispatchKeyEvent",{type,key:"Escape",code:"Escape",windowsVirtualKeyCode:27});
  }
  // The unlock reveal, checked on its own so it does not disturb the viewport pass:

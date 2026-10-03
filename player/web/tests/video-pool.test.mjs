@@ -68,7 +68,7 @@ function page() {
   result.querySelector = () => host;
   return result;
 }
-function fixture() {
+function fixture(rate = () => 1) {
   const videos = [];
   const timers = new Map();
   let timerId = 0;
@@ -77,7 +77,7 @@ function fixture() {
     setTimeout(callback) { const id = ++timerId; timers.set(id, callback); return id; },
     clearTimeout(id) { timers.delete(id); },
   };
-  const pool = new VideoPool();
+  const pool = new VideoPool(rate);
   const a = { id: "a", streamUrl: "/a" };
   const b = { id: "b", streamUrl: "/b" };
   const pa = page();
@@ -377,4 +377,31 @@ test("retry clears pending restore rather than leaking a previous position", () 
   video.emit("loadedmetadata");
   assert.equal(video.currentTime, 7);
   assert.equal(video.paused, true);
+});
+
+test("a slot starts at the chosen rate and a held boost returns to it", () => {
+  const { pool, video } = fixture(() => 1.5);
+  assert.equal(video.playbackRate, 1.5, "a clip starts at the viewer's rate, not at 1x");
+  assert.equal(video.defaultPlaybackRate, 1.5, "so the load() that follows cannot reset it");
+  pool.setPlaybackBoost(3);
+  assert.equal(video.playbackRate, 3, "a held long press overrides while it lasts");
+  assert.equal(video.defaultPlaybackRate, 3, "the boost is temporary but consistent");
+  pool.setPlaybackBoost(null);
+  assert.equal(video.playbackRate, 1.5, "releasing it restores the chosen rate, never 1x");
+});
+
+test("changing the rate reaches the clip that starts next", () => {
+  let rate = 1;
+  const { pool, video } = fixture(() => rate);
+  assert.equal(video.playbackRate, 1);
+  rate = 2;
+  pool.switchCurrentSource("/faster");
+  assert.equal(video.playbackRate, 2, "the next source is loaded at the new rate");
+  assert.equal(video.defaultPlaybackRate, 2);
+});
+
+test("a boost with no clip is ignored instead of throwing", () => {
+  const { pool } = fixture(() => 1.5);
+  assert.doesNotThrow(() => pool.setPlaybackBoost(2));
+  assert.doesNotThrow(() => pool.setPlaybackBoost(null));
 });

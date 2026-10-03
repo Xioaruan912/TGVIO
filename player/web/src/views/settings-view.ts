@@ -1,4 +1,5 @@
 import { prefs, setPref } from "../settings";
+import { RATES, rateLabel } from "../playback-rate";
 import { qualityOptions } from "../quality";
 import { element, sheetNote, sheetRow, sheetSection, sheetToggle } from "../ui";
 import type { Clip, QualitySelection } from "../types";
@@ -107,6 +108,19 @@ export function buildSettingsView(actions: SettingsViewActions): Node[] {
     () => { setPref("doubleTapSeek", !prefs.doubleTapSeek); openSettings(); },
   ));
   body.push(sheetRow({ title: "查看手势说明", sub: "单击、双击、长按与拖动", onPick: openGestureGuide }));
+
+  // One row per offered rate, like the quality list below: the viewer picks, nothing types.
+  for (const rate of RATES) {
+    const selected = rate === prefs.playbackRate;
+    body.push(
+      sheetRow({
+        title: rateLabel(rate),
+        sub: selected ? "当前倍速" : undefined,
+        iconName: selected ? "play-small" : undefined,
+        onPick: () => { setPref("playbackRate", rate); openSettings(); },
+      }),
+    );
+  }
 
   body.push(sheetSection(SETTINGS_GROUP_NETWORK));
   // Only qualities the current media and the real strategy support are offered.
