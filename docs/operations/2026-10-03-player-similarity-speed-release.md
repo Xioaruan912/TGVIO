@@ -113,3 +113,61 @@ Bot 容器全程未动。
 | 门禁 | `scripts/check.sh --browser` → `project_checks=passed`（前端 319/319、Python 1136/1136、布局 6 视口、封面回归 680 checks） |
 
 验证图（修复前/后、智能集合）见交付目录 `tgvio-shots/`。
+
+## 追加发布：sheet 被页面盖住（r8，当前运行版本）
+
+用户报告「筛选 和智能集合 都有问题 前端不对」，并补充「手机上面板出现了但被隐藏在下面」「电脑上点筛选后什么都没有」。
+
+### 根因（用户控制台 + 实测堆栈共同确认）
+
+- 片库/收藏/长视频页是 `position: fixed; z-index: 45`，由 `main.ts` 用
+  `document.body.appendChild(page.root)` 挂到 **body** 上。
+- 而 `.sheet` 当时在 **`.app-shell` 内部**，`.app-shell` 自身 `z-index: auto`。
+- 结果：页面的 45 压过整个 shell，sheet 的 `z-index: 70` 被关在 shell 的层叠上下文里，
+  **永远无法升到页面之上**。
+- 手机之所以"能看到一条"：页面 `inset: 0 0 calc(66px + safe-bottom)`，底部 66px 没被盖住，
+  sheet 只从那条缝里露出来。
+- 用户控制台输出证实面板**确实已打开**：`{"exists":true,"hidden":false,"kids":1,"h":622,"w":600,"top":16}`。
+
+### 修复
+
+1. **sheet 改为 body 级浮层**（`ui.ts`）：与 large player、音量提示、隐私遮罩同级，
+   与页面同父、z 更高 → 一定盖住打开它的页面。
+2. **CSP 放行设计自带的颗粒纹理**：`--grain` 是刻意用 data URI 的（注释写明"让应用永不请求额外资源"），
+   但策略没有 `img-src`，浏览器拦截并刷出 11 条违规。改为
+   `img-src 'self' data:`（`<img>` 里的 SVG 不能执行脚本），并加测试钉住该头。
+
+### 为什么整套回归没发现
+
+所有浏览器检查断言的是 **DOM、几何与命中测试**；而 `document.elementsFromPoint` 在被页面盖住时
+**仍然报告 sheet 在最上层**。本轮新增 `sheetPaintsOnTop`：给 sheet 内部插入一个本测试自有的
+洋红标记像素并回读——**修复前该检查为红**（`collections-smart-sheet-390x844 is painted above the page`），
+修复后为绿。布局夹具也改为从 `shell.sheet` 查找设置面板。
+
+### 发布事实
+
+| 项目 | 值 |
+|---|---|
+| 应用提交 | `cd8319a330ba27e114a548a9d7e9018c21845812` |
+| Release id / tag | `sheet-on-top-20261004` / `tgvio-player:sheet-on-top-20261004` |
+| VPS 导入镜像 ID | `sha256:cc2979c20a11d2189d6474f31f4172fb6f64b468421bc4b9fdeb41adcf03ea82` |
+| 传输包 SHA-256 | `a9f0cae7190d7dfecbed8b9eda58fb40a53322249139c90fb134b61861da0a87`（两端一致） |
+| 新 Player 容器 | `080d3d6d8bc157eafa8f71e00107b240063296743c91c545db3545f7cad9b92d`（healthy / restarts 0） |
+| 回滚点 | `/root/tgvio-player/rollback-20261003T185949Z`（原镜像 `sha256:686da23d…`） |
+| Bot | `408fd4e6…` restarts 0，未变 |
+
+### 上线后验
+
+| 检查 | 结果 |
+|---|---|
+| 公网 `/` `/healthz` / 未登录 feed | 200 / 200 / 401 |
+| **线上 CSP** | `default-src 'self'; img-src 'self' data:; connect-src 'self'; …` ✓ |
+| 线上资源 | `index-FZDe7o0M.css`（含 `sheet-body>*{min-width:0}`）、`index-Bc9gMIZB.js` |
+| 线上库 | 账本未变、`quick_check=ok` |
+| 门禁 | `scripts/check.sh --browser` → `project_checks=passed`（布局 6 视口、封面回归 682 checks、Python 1137/1137） |
+
+### 过程教训（记账）
+
+本轮先修错了对象：第一次报告时我从一张**不可信的无头截图**推断症状，修掉了真实但无关的
+「面板比 sheet 宽 43px 被裁切」。正确做法是先要用户的实际截图/控制台——拿到后 5 分钟就定位到根因。
+已在提交信息与本节记录该教训。
