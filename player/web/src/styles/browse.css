@@ -13,17 +13,22 @@
 .library-toolbar > .library-select-toggle { margin-left: auto; display: flex; align-items: center; }
 .library-select-toggle[aria-pressed="true"] { background: var(--primary); color: #fff; border-color: var(--primary); }
 .library-date-label { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; font-size: 13px; color: var(--text-secondary); }
-.library-date-input { min-width: 0; max-width: 100%; min-height: 44px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: 16px; }
+.library-date-input { min-width: 0; max-width: 100%; min-height: 44px; padding: 6px 12px; border: 1px solid var(--border); border-radius: var(--radius); background: var(--surface); color: var(--text); font-size: 16px; color-scheme: light; accent-color: var(--primary); }
 .library-notice { margin: 0; padding: 0 20px 14px; color: var(--text-muted); font-size: 12px; line-height: 1.7; flex: none; overflow-wrap: anywhere; }
 .library-selection { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 20px; border-top: 1px solid var(--border); border-bottom: 1px solid var(--border); background: var(--surface); flex: none; }
 .library-selection > .library-button:first-child { background: var(--primary); border-color: var(--primary); color: #fff; }
 .library-selection:empty { display: none; }
 .library-list, .long-list { flex: 1; min-width: 0; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 20px 24px; scrollbar-gutter: stable; }
 .library-list.cover-grid { align-content: start; }
-.directory-grid { display: grid; grid-template-columns: repeat(auto-fill,minmax(min(100%,280px),1fr)); align-content: start; gap: 12px; }
-.library-index-row { display: grid; grid-template-columns: 44px minmax(0,1fr); align-items: start; gap: 12px; min-height: 140px; padding: 20px; text-align: left; }
+/* auto-fit so a short directory list fills its row instead of reserving a
+   phantom trailing column. Cover grids stay on auto-fill on purpose: stretching
+   a lone 9:16 still would be worse than leaving it at tile size. */
+.directory-grid { display: grid; grid-template-columns: repeat(auto-fit,minmax(min(100%,280px),1fr)); align-content: start; gap: 12px; }
+/* Centered content keeps the 12px rhythm instead of dumping the leftover height
+   of the minimum tap target into the gap above the count line. */
+.library-index-row { display: grid; grid-template-columns: 44px minmax(0,1fr); align-items: center; align-content: center; gap: 10px 12px; min-height: 120px; padding: 18px 20px; text-align: left; }
 .directory-mark { display: grid; place-items: center; width: 44px; height: 44px; background: var(--primary-soft); color: var(--primary); border-radius: var(--radius); }
-.directory-text { min-width: 0; display: grid; gap: 8px; padding-top: 2px; }
+.directory-text { min-width: 0; display: grid; gap: 4px; }
 .library-index-title { font-size: 15px; line-height: 22px; font-weight: 650; color: var(--text); overflow-wrap: anywhere; }
 .library-index-meta { font-size: 12px; line-height: 20px; color: var(--text-muted); overflow-wrap: anywhere; }
 .directory-count { grid-column: 2; color: var(--text-secondary); font-size: 13px; font-variant-numeric: tabular-nums; }

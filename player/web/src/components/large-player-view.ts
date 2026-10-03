@@ -17,6 +17,9 @@ function control(name: IconName, label: string, className = "") {
 
 export function buildLargePlayerView(id: string, duration: number) {
   const root = element("section", "large-player");
+  // A named section becomes a region landmark, so the player's header, stage and
+  // controls stay inside a landmark while the overlay covers the shell.
+  root.setAttribute("aria-label", "长视频播放");
   const topbar = element("header", "large-topbar");
   const back = control("back", "返回", "large-back");
   const heading = element("div", "large-heading");

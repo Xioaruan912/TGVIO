@@ -36,6 +36,10 @@ export class ThumbnailPreview {
     this.context = this.canvas.getContext("2d");
     this.video = document.createElement("video");
     this.video.className = "scrub-video";
+    // Decoding scratch element, never user-facing media: keep it out of the
+    // accessibility tree so it is not announced or audited as a silent video.
+    this.video.setAttribute("aria-hidden", "true");
+    this.video.tabIndex = -1;
     this.video.muted = true;
     this.video.playsInline = true;
     this.video.preload = "auto";

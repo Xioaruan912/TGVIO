@@ -15,22 +15,24 @@
 .progress-row { grid-area: progress; min-width: 0; min-height: 64px; display: grid; align-content: center; }
 .seek-track { min-width: 0; }
 .seek { -webkit-appearance: none; appearance: none; display: block; width: 100%; height: 48px; min-height: 48px; margin: 0; background: transparent; touch-action: none; --p: 0%; cursor: pointer; }
-.seek::-webkit-slider-runnable-track { height: 4px; border-radius: var(--radius-pill); background: linear-gradient(to right,var(--primary) var(--p),var(--border) var(--p)); }
+.seek::-webkit-slider-runnable-track { height: 4px; border-radius: var(--radius-pill); background: linear-gradient(to right,var(--primary) var(--p),var(--track) var(--p)); }
 .seek::-webkit-slider-thumb { -webkit-appearance: none; width: 14px; height: 14px; margin-top: -5px; border: 3px solid #fff; border-radius: 50%; background: var(--primary); box-shadow: 0 0 0 1px var(--primary); }
 .seek:active::-webkit-slider-thumb, .seek.dragging::-webkit-slider-thumb { box-shadow: 0 0 0 6px var(--primary-soft); }
-.seek::-moz-range-track { height: 4px; border-radius: var(--radius-pill); background: var(--border); }
+.seek::-moz-range-track { height: 4px; border-radius: var(--radius-pill); background: var(--track); }
 .seek::-moz-range-progress { height: 4px; background: var(--primary); }
 .seek::-moz-range-thumb { width: 10px; height: 10px; border: 3px solid #fff; border-radius: 50%; background: var(--primary); }
 .timeline { display: flex; justify-content: space-between; gap: 12px; font-size: 12px; color: var(--text-secondary); font-variant-numeric: tabular-nums; line-height: 16px; margin-top: -8px; padding-bottom: 4px; }
-.transport-row { grid-area: transport; display: grid; grid-template-columns: repeat(4,minmax(0,1fr)); align-items: stretch; gap: 4px; min-width: 0; }
+/* The primary action is the widest column so 5-character Chinese labels
+   (「解锁并播放」) never break onto a second line at 360-390px. */
+.transport-row { grid-area: transport; display: grid; grid-template-columns: minmax(84px,1.35fr) repeat(3,minmax(0,1fr)); align-items: stretch; gap: 4px; min-width: 0; }
 .transport-play { min-height: 56px; min-width: 0; display: grid; place-content: center; justify-items: center; gap: 3px; padding: 6px; border-radius: var(--radius); color: #fff; background: var(--primary); }
 .transport-play .icon-pause { display: none; }
 .app-shell[data-playback-state="playing"]:not(.privacy-locked) .transport-play .icon-play { display: none; }
 .app-shell[data-playback-state="playing"]:not(.privacy-locked) .transport-play .icon-pause { display: block; }
-.transport-label { font-size: 12px; line-height: 14px; overflow-wrap: anywhere; }
+.transport-label { font-size: 12px; line-height: 14px; white-space: nowrap; }
 .action-btn { min-width: 0; min-height: 56px; display: grid; justify-items: center; align-content: center; gap: 4px; padding: 6px 4px; border-radius: var(--radius); color: var(--text-secondary); }
 .action-btn .icon { width: 22px; height: 22px; }
-.action-label { font-size: 12px; line-height: 14px; overflow-wrap: anywhere; }
+.action-label { font-size: 12px; line-height: 14px; overflow-wrap: anywhere; word-break: keep-all; }
 .action-btn.selected { color: var(--favorite); background: #fff1f6; }
 .action-btn.selected .icon-outline, .action-btn.is-muted .icon-unmuted { display: none; }
 .action-btn.selected .icon-filled, .action-btn.is-muted .icon-muted { display: block; }
@@ -101,4 +103,4 @@
 .gesture-guide strong { font-size: 22px; }
 .gesture-guide span { font-size: 14px; line-height: 1.7; }
 .gesture-guide small { margin-top: 16px; color: #bae6fd; }
-@media (hover: hover) { .action-btn:hover, .nav-btn:hover, .topbar-settings:hover, .topbar-fullscreen:hover { background: var(--sky100); } }
+@media (hover: hover) { .action-btn:hover, .nav-btn:hover, .topbar-settings:hover, .topbar-fullscreen:hover { background: var(--sky100); } .transport-play:hover { background: var(--primary-hover); } }

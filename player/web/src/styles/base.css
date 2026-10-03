@@ -16,8 +16,12 @@
 
   --text: #17253a;
   --text-secondary: #53637a;
-  --text-muted: #65758a;
+  /* 5.0:1 on --bg and 5.4:1 on --surface: 12px metadata must stay WCAG AA.
+     The previous #65758a measured 4.33:1 on --bg and failed at this size. */
+  --text-muted: #5c6b80;
   --border: #dce5ef;
+  /* Unfilled slider track: 3.0:1 on --surface so the media range stays visible. */
+  --track: #8296b1;
 
   --success: #16815d;
   --warning: #a86412;
@@ -82,7 +86,9 @@ body { font-family: var(--font-sans); color: var(--text); overflow: hidden; over
 #app { height: 100%; }
 button, input, summary { font: inherit; }
 button { color: inherit; cursor: pointer; background: none; border: 0; padding: 0; touch-action: manipulation; transition: background var(--duration-fast) var(--ease), color var(--duration-fast) var(--ease), box-shadow var(--duration-fast) var(--ease); }
-button:disabled { cursor: default; opacity: .48; }
+/* .6 instead of .48: a disabled control still has to be readable. 12px Chinese
+   at .48 blended to roughly 2:1 against the surface. */
+button:disabled { cursor: default; opacity: .6; }
 button:not(:disabled):active { translate: 0 1px; }
 button:focus-visible, input:focus-visible, summary:focus-visible, a:focus-visible { outline: 3px solid var(--primary-bright); outline-offset: 2px; }
 input { min-width: 0; }

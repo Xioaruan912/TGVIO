@@ -76,7 +76,11 @@ export function buildShell(handlers: ShellHandlers): Shell {
   mediaStage.setAttribute("aria-label", "视频画面与手势区域");
   const feed = element("div", "feed");
   feed.id = "feed";
+  // A labelled, keyboard-scrollable region: the label needs a real role and the
+  // scroll container needs to be reachable without a pointer.
+  feed.setAttribute("role", "region");
   feed.setAttribute("aria-label", "竖屏视频流");
+  feed.tabIndex = 0;
 
   const { topbar, contextBackBtn, netSpeed, fullscreenBtn } = buildAppHeader(handlers);
 
