@@ -1075,6 +1075,249 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    # --- collections ---------------------------------------------------------
+
+    @staticmethod
+    def _collection_cookies(cookie: str) -> dict[str, str]:
+        return {"tgvio_player_session": cookie}
+
+    async def _create_collection(self, cookie: str, **payload) -> dict:
+        body = {"name": "旅行", "kind": "manual"}
+        body.update(payload)
+        response = await self.client.post(
+            "/api/v1/collections", json=body, cookies=self._collection_cookies(cookie)
+        )
+        self.assertEqual(response.status, 201, await response.text())
+        return await response.json()
+
+    async def _collection_rows(self, cookie: str) -> list[dict]:
+        response = await self.client.get(
+            "/api/v1/collections", cookies=self._collection_cookies(cookie)
+        )
+        self.assertEqual(response.status, 200, await response.text())
+        return (await response.json())["items"]
+
+    async def test_collections_require_a_session(self) -> None:
+        for method, path in (
+            ("get", "/api/v1/collections"),
+            ("post", "/api/v1/collections"),
+            ("patch", "/api/v1/collections/whatever"),
+            ("delete", "/api/v1/collections/whatever"),
+            ("get", "/api/v1/collections/whatever/items"),
+            ("put", f"/api/v1/collections/whatever/items/{self.media_id}"),
+            ("delete", f"/api/v1/collections/whatever/items/{self.media_id}"),
+        ):
+            response = await getattr(self.client, method)(path)
+            self.assertEqual(response.status, 401, path)
+
+    async def test_builtin_favorites_is_first_and_cannot_be_renamed_or_deleted(self) -> None:
+        cookie = await self._login()
+        first = (await self._collection_rows(cookie))[0]
+        self.assertEqual(
+            {key: first[key] for key in ("collection_id", "kind", "name")},
+            {"collection_id": "favorites", "kind": "builtin", "name": "收藏"},
+        )
+        for method, payload in (("patch", {"name": "x"}), ("delete", None)):
+            kwargs: dict = {"cookies": self._collection_cookies(cookie)}
+            if payload is not None:
+                kwargs["json"] = payload
+            response = await getattr(self.client, method)(
+                "/api/v1/collections/favorites", **kwargs
+            )
+            self.assertEqual(response.status, 400)
+
+    async def test_member_add_and_remove_are_idempotent(self) -> None:
+        cookie = await self._login()
+        created = await self._create_collection(cookie)
+        path = f"/api/v1/collections/{created['collection_id']}/items/{self.media_id}"
+        for _ in range(2):
+            self.assertEqual(
+                (await self.client.put(path, cookies=self._collection_cookies(cookie))).status, 204
+            )
+        for _ in range(2):
+            self.assertEqual(
+                (await self.client.delete(path, cookies=self._collection_cookies(cookie))).status, 204
+            )
+
+    async def test_a_member_appears_only_after_it_is_added(self) -> None:
+        cookie = await self._login()
+        created = await self._create_collection(cookie)
+        base = f"/api/v1/collections/{created['collection_id']}/items"
+        empty = await (await self.client.get(base, cookies=self._collection_cookies(cookie))).json()
+        self.assertEqual(empty, {"items": [], "has_more": False, "next_cursor": None})
+        await self.client.put(f"{base}/{self.media_id}", cookies=self._collection_cookies(cookie))
+        page = await (await self.client.get(base, cookies=self._collection_cookies(cookie))).json()
+        self.assertEqual([item["id"] for item in page["items"]], [self.media_id])
+        row = [
+            item for item in await self._collection_rows(cookie)
+            if item["collection_id"] == created["collection_id"]
+        ][0]
+        self.assertEqual((row["name"], row["count"], row["count_capped"]), ("旅行", 1, False))
+
+    async def test_unknown_collections_and_bad_names_are_rejected(self) -> None:
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        self.assertEqual(
+            (await self.client.get("/api/v1/collections/missing/items", cookies=cookies)).status, 404
+        )
+        self.assertEqual(
+            (await self.client.put(
+                f"/api/v1/collections/missing/items/{self.media_id}", cookies=cookies
+            )).status, 404
+        )
+        self.assertEqual(
+            (await self.client.patch(
+                "/api/v1/collections/missing", json={"name": "x"}, cookies=cookies
+            )).status, 404
+        )
+        self.assertEqual(
+            (await self.client.delete("/api/v1/collections/missing", cookies=cookies)).status, 404
+        )
+        for body in (
+            {"name": "", "kind": "manual"},
+            {"name": "   ", "kind": "manual"},
+            {"name": "x" * 61, "kind": "manual"},
+            {"name": "旅行", "kind": "builtin"},
+            {"name": "旅行", "kind": "manual", "colour": "red"},
+            {"name": "旅行", "kind": "smart", "rules_json": "{"},
+            {"name": "旅行", "kind": "smart", "rules_json": "[]"},
+        ):
+            response = await self.client.post("/api/v1/collections", json=body, cookies=cookies)
+            self.assertEqual(response.status, 400, body)
+        created = await self._create_collection(cookie)
+        self.assertEqual(
+            (await self.client.patch(
+                f"/api/v1/collections/{created['collection_id']}",
+                json={"colour": "red"}, cookies=cookies,
+            )).status, 400
+        )
+        renamed = await self.client.patch(
+            f"/api/v1/collections/{created['collection_id']}",
+            json={"name": "重看"}, cookies=cookies,
+        )
+        self.assertEqual(renamed.status, 200)
+        row = [
+            item for item in await self._collection_rows(cookie)
+            if item["collection_id"] == created["collection_id"]
+        ][0]
+        self.assertEqual(row["name"], "重看")
+        self.assertEqual(
+            (await self.client.delete(
+                f"/api/v1/collections/{created['collection_id']}", cookies=cookies
+            )).status, 204
+        )
+        self.assertEqual(len(await self._collection_rows(cookie)), 1, "only the builtin is left")
+
+    async def test_smart_collections_evaluate_their_rules(self) -> None:
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        # The fixture video is two seconds long.
+        matching = await self._create_collection(
+            cookie, name="短片", kind="smart", rules_json='{"min_seconds": 1}'
+        )
+        missing = await self._create_collection(
+            cookie, name="无", kind="smart", rules_json='{"min_seconds": 100}'
+        )
+        page = await (await self.client.get(
+            f"/api/v1/collections/{matching['collection_id']}/items", cookies=cookies
+        )).json()
+        self.assertEqual([item["id"] for item in page["items"]], [self.media_id])
+        empty = await (await self.client.get(
+            f"/api/v1/collections/{missing['collection_id']}/items", cookies=cookies
+        )).json()
+        self.assertEqual(empty["items"], [])
+        rows = {item["collection_id"]: item for item in await self._collection_rows(cookie)}
+        self.assertEqual((rows[matching["collection_id"]]["kind"], rows[matching["collection_id"]]["count"]), ("smart", 1))
+        self.assertEqual(rows[missing["collection_id"]]["count"], 0)
+
+    async def test_unreadable_smart_rules_select_nothing_never_the_whole_library(self) -> None:
+        """Review Focus: a corrupt or empty rule blob is an empty collection.
+
+        The API refuses to *store* rules it cannot read back, so the unreadable
+        blobs are written straight to the table - that is how a build newer than
+        this one, or a restored payload, leaves a row behind.
+        """
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        for rules in (None, "{}", '{"nope": 1}'):
+            created = await self._create_collection(cookie, name="空", kind="smart", rules_json=rules)
+            await self._assert_empty_smart(cookie, cookies, created["collection_id"], repr(rules))
+        connection = self.repo._require()
+        for raw in ("", "{", "[]", '"text"'):
+            connection.execute(
+                "INSERT INTO collections(collection_id, name, kind, rules_json) VALUES(?,?,?,?)",
+                ("c" * 8 + str(len(raw)), "坏", "smart", raw),
+            )
+            connection.commit()
+            await self._assert_empty_smart(
+                cookie, cookies, "c" * 8 + str(len(raw)), repr(raw)
+            )
+
+    async def _assert_empty_smart(
+        self, cookie: str, cookies: dict[str, str], collection_id: str, label: str
+    ) -> None:
+        page = await (await self.client.get(
+            f"/api/v1/collections/{collection_id}/items", cookies=cookies
+        )).json()
+        self.assertEqual(page["items"], [], label)
+        rows = {item["collection_id"]: item for item in await self._collection_rows(cookie)}
+        self.assertEqual(rows[collection_id]["count"], 0, label)
+
+    async def test_a_smart_count_is_bounded_and_says_when_it_hit_the_bound(self) -> None:
+        second = "d" * 64
+        await self.repo.apply_package(CatalogPackage(
+            "package2", "TGVIO/2026-09-23/1", "c" * 64, '"manifest2"', '"complete2"',
+            (CatalogMedia(second, "video", 8, "video/mp4", 1080, 1920, 3.0),),
+            (CatalogLocation(second, "package2", "second.mp4", '"etag2"'),),
+        ))
+        await self.repo.refresh_media_activity()
+        cookie = await self._login()
+        created = await self._create_collection(
+            cookie, name="全部", kind="smart", rules_json='{"min_seconds": 1}'
+        )
+
+        async def count_for(collection_id: str) -> tuple[int, bool]:
+            row = [
+                item for item in await self._collection_rows(cookie)
+                if item["collection_id"] == collection_id
+            ][0]
+            return row["count"], row["count_capped"]
+
+        self.assertEqual(await count_for(created["collection_id"]), (2, False))
+        with patch("tgvio_player.adapters.http.library._MAX_COLLECTION_COUNT", 1):
+            self.assertEqual(await count_for(created["collection_id"]), (1, True))
+
+    async def test_builtin_favorites_lists_the_same_favorites_as_the_page(self) -> None:
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        await self.repo.set_favorite(token_digest(cookie), self.media_id, enabled=True)
+        first = (await self._collection_rows(cookie))[0]
+        self.assertEqual((first["collection_id"], first["count"]), ("favorites", 1))
+        page = await (await self.client.get(
+            "/api/v1/collections/favorites/items", cookies=cookies
+        )).json()
+        self.assertEqual([item["id"] for item in page["items"]], [self.media_id])
+        # Read-only through the member routes too: favourites are written on the media.
+        for method in ("put", "delete"):
+            self.assertEqual(
+                (await getattr(self.client, method)(
+                    f"/api/v1/collections/favorites/items/{self.media_id}", cookies=cookies
+                )).status, 400
+            )
+
+    async def test_builtin_favorites_follows_the_backup_chain_when_it_is_configured(self) -> None:
+        """The same authority as the favourites page, in the other runtime mode."""
+        await self._enable_storage_services()
+        cookie = await self._login()
+        cookies = self._collection_cookies(cookie)
+        await self.repo.set_global_favorite(self.media_id, True)
+        first = (await self._collection_rows(cookie))[0]
+        self.assertEqual((first["collection_id"], first["count"]), ("favorites", 1))
+        page = await (await self.client.get(
+            "/api/v1/collections/favorites/items", cookies=cookies
+        )).json()
+        self.assertEqual([item["id"] for item in page["items"]], [self.media_id])
+
 
 class ClientIdentityTests(unittest.TestCase):
     def test_resolve_client_behind_trusted_proxy(self) -> None:

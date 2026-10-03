@@ -9,6 +9,8 @@ from __future__ import annotations
 
 from typing import Any
 
+from tgvio_player.domain.library_filters import LibraryFilters, duration_bounds
+
 _BASE_CLAUSES = (
     "active=1",
     "kind='video'",
@@ -87,6 +89,45 @@ def _order_sql(order: str, sort: str | None, seed: int | None) -> str:
         "duration_desc": "duration_seconds DESC, media_id",
         "duration_asc": "duration_seconds ASC, media_id",
     }.get(order, "media_id")
+
+
+def listing_query_kwargs(
+    filters: LibraryFilters,
+    *,
+    category: str,
+    large_video_seconds: float,
+    sort: str | None,
+    favorite_scope: str,
+    favorite_token_digest: str | None = None,
+    media_id_prefix: str | None = None,
+) -> dict[str, Any]:
+    """One filter set, mapped onto this query's parameters.
+
+    The wall and a smart collection are the same conditions evaluated by the same
+    query, so both come through here rather than each assembling the arguments - a
+    second assembly would drift the moment one of them learns a new filter.
+    """
+    min_seconds, max_seconds = duration_bounds(
+        filters, category=category, large_video_seconds=large_video_seconds
+    )
+    return {
+        "min_seconds": min_seconds,
+        "max_seconds": max_seconds,
+        "media_id_prefix": media_id_prefix,
+        "order": "duration_desc" if category == "long" else "media_id",
+        "date_from": filters.date_from,
+        "date_to": filters.date_to,
+        "min_bytes": filters.min_bytes,
+        "max_bytes": filters.max_bytes,
+        "has_cover": filters.has_cover,
+        "favorite": filters.favorite,
+        "favorite_scope": favorite_scope,
+        "favorite_token_digest": favorite_token_digest,
+        "resumable": filters.resumable,
+        "unwatched": filters.unwatched,
+        "sort": sort,
+        "seed": filters.seed,
+    }
 
 
 def build_video_query(

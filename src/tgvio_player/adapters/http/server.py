@@ -38,7 +38,6 @@ from tgvio_player.application.player_recovery import (
 from tgvio_player.domain.auth import token_digest
 from tgvio_player.domain.library_filters import (
     InvalidFilters,
-    duration_bounds,
     parse_filters,
 )
 from tgvio_player.domain.storage_settings import (
@@ -47,11 +46,15 @@ from tgvio_player.domain.storage_settings import (
     validate_webdav_endpoint,
 )
 from tgvio_player.application.ports import WebDavWriteClient, WebDavWriteError
+from tgvio_player.infrastructure.video_query import listing_query_kwargs
 from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter
 
 
 _MAX_JSON_BYTES = 4096
 _MAX_FEED_LIMIT = 20
+
+# The methods this API answers at all. Everything else is 405 before any handler runs.
+_ALLOWED_METHODS = frozenset({"GET", "HEAD", "POST", "PUT", "PATCH", "DELETE"})
 
 # Everything /api/v1/videos accepts that is not a filter: paging, the id-prefix search
 # and the prefetch hint. Anything else in the query string is a filter this build does
@@ -258,8 +261,8 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
                 raise web.HTTPRequestEntityTooLarge(
                     max_size=_MAX_JSON_BYTES, actual_size=request.content_length
                 )
-            if request.method not in {"GET", "HEAD", "POST", "PUT", "DELETE"}:
-                raise web.HTTPMethodNotAllowed(request.method, {"GET", "HEAD", "POST", "PUT", "DELETE"})
+            if request.method not in _ALLOWED_METHODS:
+                raise web.HTTPMethodNotAllowed(request.method, _ALLOWED_METHODS)
             if "token" in request.query or "access_token" in request.query:
                 raise web.HTTPBadRequest(text="query tokens are not accepted")
             response = await handler(request)
@@ -533,31 +536,20 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
             )
         except InvalidFilters as error:
             raise web.HTTPBadRequest(text=str(error)) from None
-        min_seconds, max_seconds = duration_bounds(
-            filters, category=category, large_video_seconds=self._large_video_seconds
-        )
         # A sort the client did not ask for keeps the order that was already in use, so
         # existing clients and the deck see no change.
-        sort = filters.sort if "sort" in request.query else None
         media_ids = await self._repository.list_video_ids(
-            min_seconds=min_seconds,
-            max_seconds=max_seconds,
-            order="duration_desc" if category == "long" else "media_id",
+            **listing_query_kwargs(
+                filters,
+                category=category,
+                large_video_seconds=self._large_video_seconds,
+                sort=filters.sort if "sort" in request.query else None,
+                favorite_scope="global" if self._favorite_backup is not None else "session",
+                favorite_token_digest=digest,
+                media_id_prefix=search or None,
+            ),
             limit=limit + 1,
             offset=offset,
-            date_from=filters.date_from,
-            date_to=filters.date_to,
-            min_bytes=filters.min_bytes,
-            max_bytes=filters.max_bytes,
-            has_cover=filters.has_cover,
-            favorite=filters.favorite,
-            favorite_scope="global" if self._favorite_backup is not None else "session",
-            favorite_token_digest=digest,
-            resumable=filters.resumable,
-            unwatched=filters.unwatched,
-            sort=sort,
-            seed=filters.seed,
-            **({"media_id_prefix": search} if search else {}),
         )
         has_more = len(media_ids) > limit
         media_ids = media_ids[:limit]
