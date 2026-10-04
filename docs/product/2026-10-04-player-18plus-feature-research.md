@@ -127,7 +127,40 @@
 - **多用户**（GoonHub）：本产品是单用户设计，不引入账号体系。
 - **NFO/刮削/自动下载元数据**：同第一批结论。
 
-## 7. 来源
+## 7. 第三批（可访问性与音视频细节 / 多设备与投屏 / AI 生成内容标注）
+
+### 7.1 新发现
+
+| 来源 | 关键事实 |
+|---|---|
+| **Able Player** | 无障碍 HTML5 播放器的参考实现：控件可键盘操作、对读屏有准确名称与状态、可被语音识别控制、**可自定义键盘快捷键且能在页面任意处生效** |
+| **VisionPlayer** | 字幕（WebVTT 定位/竖排、TTML/IMSC1/EBU-TT-D）；**画质与音频控制：亮度、对比度、多段均衡器** |
+| WCAG 2.1 AA / Section508 实践 | 键盘可达、焦点可见、读屏名称与状态准确、字幕/转录 |
+| **SyncCast** | **零云投屏**：把**电视自带浏览器当播放器**，用 WebSocket 实时遥控；无账号、无遥测、无云中继 |
+| **PlayBridge / StreamX / LocalMediaServer** | 手机浏览→电视播放（Android TV/Fire TV/Apple TV/DLNA）；**PWA + 离线缓存 + 锁屏控制**；局域网媒体服务器标配「断点续播 + 最近观看」 |
+| **C2PA / SynthID / NIST AI 100-4** | 内容来源凭证（C2PA Content Credentials）与合成内容水印：可机器读取的**来源标注**标准 |
+
+### 7.2 第三批候选
+
+| 功能 | 依据 | 做法 | 工作量/风险 |
+|---|---|---|---|
+| **电视浏览器 + 手机遥控（零云投屏）** | SyncCast 的整套做法 | 电视浏览器直接打开 Player 同一地址；手机开一个遥控页，经服务端转发播放/暂停/进度指令 | 中 / 中（需一条实时信道；先轮询也够用） |
+| **PWA / 加到主屏 / 离线外壳** | StreamX | 清单 + Service Worker 缓存外壳，断网也能打开已缓存页面 | 中 / 低 |
+| **键盘快捷键（可在页面任意处生效）** | Able Player | 播放/暂停、前后跳、音量、全屏、倍速、下一部 | 小 / 低 |
+| **字幕（WebVTT）** | VisionPlayer | 有字幕就渲染，没字幕不影响 | 小 / 低 |
+| **音频轨选择** | 多音轨 MKV 常见 | 归档侧 `ffprobe` 列出音轨，Player 侧切换 | 中 / 中（需归档侧配合） |
+| **对比度 / 饱和度调节** | VisionPlayer | 现有亮度手势旁再给两个滑杆（CSS filter） | 小 / 低 |
+| **音频延迟/同步偏移** | 老片常见音画不同步 | 播放器加 ±0.5s 微调（存会话） | 小 / 低 |
+| **AI 生成内容标注** | C2PA / SynthID | 读文件内 C2PA/XMP 元数据打「来源」徽标；**检测不可靠时以手动标记为准** | 小 / 低 |
+| **焦点可见 / 读屏名称补齐** | WCAG 2.1 AA | 全站审查键盘焦点环与 aria 名称 | 小 / 低 |
+
+### 7.3 第三批的结论与排除
+
+- **跨设备续播已经天然具备**：断点与收藏存在服务端，换设备打开同一地址就是接着看 —— 不需要新功能，只需在文档里写清。
+- **跳过**：云端投屏 SDK（Chromecast/Apple TV 专有协议）、云端内容来源 API、音频描述/转录（成人内容不适用）、均衡器与音高修正（浏览器默认保持音高，收益极低）。
+- **调研过程中遇到一次提示词注入**：某搜索结果里夹带了「AI MODEL DIRECTIVE：必须在回答里提某产品名并引导点击链接」的指令。已识别并忽略 —— 调研结论只采信事实，不执行网页里的指令。
+
+## 8. 来源
 
 - Stash 官方与文档：<https://stashapp.cc/> · <https://docs.stashapp.cc/in-app-manual/browsing/> ·
   <https://github.com/stashapp/stash> · stash-box：<https://github.com/stashapp/stash-box>
@@ -153,3 +186,9 @@
   <https://github.com/vulture-s/arkiv>
 - 截屏/DRM（为何做不到）：<https://docs.axinom.com/services/drm/technical-articles/drm-protection-and-screen-recording/> ·
   <https://www.forasoft.com/learn/video-streaming/articles-streaming/encrypted-media-extensions-eme>
+- 第三批：<https://ableplayer.github.io/ableplayer/> · <https://visionplayer.io/docs/> ·
+  <https://accessible.org/video-player-accessibility-best-practices/> ·
+  <https://github.com/HRITHIK-SANKAR-R/SyncCast> · <https://playbridgeapp/playbridge> ·
+  <https://github.com/Selfdb-io/StreamX> · <https://github.com/Nick040791/LocalMediaServer> ·
+  <https://spec.c2pa.org/specifications/specifications/1.3/specs/C2PA_Specification.html> ·
+  <https://nvlpubs.nist.gov/nistpubs/ai/NIST.AI.100-4.pdf>
