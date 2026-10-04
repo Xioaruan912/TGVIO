@@ -90,7 +90,44 @@
    再决定要不要 3×3。这一条风险最高，值得单独一次设计与实测。
 3. **标签/标记按需**：标签是"越早打越值钱"的东西，但需要归档侧跑模型；标记纯手工、随时可加。
 
-## 6. 来源
+## 6. 第二批（换角度补充：会话玩法 / 库管理 / 本地 AI / 互动设备）
+
+### 6.1 新发现的同类产品
+
+| 产品 | 定位 | 关键事实 |
+|---|---|---|
+| **GoonHub** | 自托管 NSFW 库（Go + Nuxt） | **定位与 TGVIO 最接近**：自动处理、**全文搜索**、**标记（markers）**、播放列表、多用户、**全程在自己的硬件上** |
+| **VidVana**（补全） | 桌面会话播放器 | 除网格外还有：**Quick Play 预设**（Most Watched / Favorites Mix 一键开局）、**Swap Timer**（免手轮换计时）、**加权收藏轮换**、**书签→合辑导出（Compilation Maker）**、**按演员的播放列表**、**全文本文件名搜索**（不联网）、AES-256、胁迫 PIN、Panic Hide |
+| **Stash Sense** | Stash 的本地 ML 侧车 | **人脸识别认演员**（用精灵图）、重复场景检测、推荐；本地推理，但**演员库是上游同步的**（这一点不合本产品约束） |
+| **FrameQuery** | 本地视频索引/搜索 | 一次索引（转录/场景/人脸/物体），**100% 离线搜索**；场景切分带**镜头类型与角度**；物体+人脸识别本地 |
+| **ScriptPlayer+ / FunGen / Intiface** | 互动设备播放 | **funscript**（带时间戳位置数据的 JSON）本地播放、时间轴**热力图**、经 Intiface（600+ 设备）蓝牙/USB 驱动；延迟补偿 |
+| **PHAR**（云 API） | 成人视频智能 | 把长视频变成**可导航场景** + 时间戳**动作/体位标签与章节**；本身是云服务（不合约束，但**概念可本地复刻**） |
+
+### 6.2 第二批候选（按性价比排序）
+
+| 功能 | 依据 | 做法 | 工作量/风险 |
+|---|---|---|---|
+| **全文本文件名/标题搜索** | VidVana「秒找演员」、GoonHub 全文搜索 | 本地索引现有文件名与标题；不联网、不刮削 | **小 / 低**（性价比最高的一档） |
+| **Quick Play 预设** | VidVana | 「最常看」「收藏混合」一键开局，直接复用现有随机/收藏/续播 | 小 / 低 |
+| **待看队列（Watch later）** | 主流播放器 | 收藏之外的第二种轻量意图；驱动「下一部看什么」 | 小 / 低 |
+| **观看历史与一键清空** | 隐私研究里第一位的担忧（85% 说记录被看到就弃用） | 本机历史列表 + 单条删除 + 一键清空（含断点） | 小 / 低 |
+| **重复检测视图** | Stash Sense / FrameQuery / 各库管理器 | **phash 已经有了**，只差一个「疑似重复」列表与合并入口 | 中 / 低 |
+| **封面悬停/长按预览** | 主流播放器（旋转缩略图/短视频预览） | 复用现有缩略图预览管线，墙上悬停即放几秒 | 中 / 低 |
+| **自动章节（场景切分）** | PHAR「可导航场景」、FrameQuery 场景切分 | **归档侧**用 ffmpeg 场景检测预计算（与指纹回填同一条管线），Player 侧显示章节与「跳过」 | 中 / 中 |
+| **时间轴热力图** | ScriptPlayer+ | 有了章节/强度数据后，在进度条上画强度热力 | 小 / 低（依赖上一条） |
+| **人脸聚类（本地认人）** | Stash Sense（本地推理那半） | **不引入外部演员库**：本地人脸检测+向量聚类，把同一个人聚成一组，由你命名 | 大 / 中（模型体积、误聚需可合并） |
+| **本地语义搜索** | arkiv（本地 LLM + 向量库）、FrameQuery | 对画面/字幕做本地向量索引，按语义找 | 大 / 高（算力与存储都在归档侧） |
+| **funscript 热力图（不含设备）** | ScriptPlayer+ / The Edgy | 读 funscript JSON 在时间轴画强度，纯本地 | 小 / 低 |
+| **互动设备同步** | Intiface / FunGen | 技术上浏览器从 HTTPS 页面连本机 `ws://` 会被混合内容策略拦（需 `wss://` 或本机中继） | 中 / **高**（先不做，除非你确有设备） |
+
+### 6.3 第二批里的「诚实排除」
+
+- **阻止截屏/录屏**：浏览器层面**做不到**。真正有效的是 EME/Widevine L1（硬件级）与原生播放器，且它在无痕模式/WebView/Electron 里都不可靠；本产品能做的只有 panic/模糊/锁/无痕会话。不要承诺做不到的事。
+- **云端演员库与云端动作识别**（Stash Sense 的上游库、PHAR API）：与「不外发」冲突，改为本地聚类与本地场景检测。
+- **多用户**（GoonHub）：本产品是单用户设计，不引入账号体系。
+- **NFO/刮削/自动下载元数据**：同第一批结论。
+
+## 7. 来源
 
 - Stash 官方与文档：<https://stashapp.cc/> · <https://docs.stashapp.cc/in-app-manual/browsing/> ·
   <https://github.com/stashapp/stash> · stash-box：<https://github.com/stashapp/stash-box>
@@ -108,3 +145,11 @@
 - 多流解码上限：<https://blog.mickeyzzc.tech/en/posts/network/web-video-codec-survey/>
 - 本地（不上云）打标：<https://github.com/ICIJ/nuditag> · <https://pypi.org/project/nsfwpy-onnx/> ·
   <https://github.com/monbooru/monbooru>
+- 第二批：<https://github.com/gglafrance/goonhub> · <https://github.com/carrotwaxr/stash-sense> ·
+  <https://www.framequery.com/> · <https://phar-virid.vercel.app/> ·
+  <https://github.com/sioaeko/scriptplayer-plus> · <https://docs.intiface.com/> · <https://fungen.app/supported-devices/> ·
+  <https://www.vidvana.app/help> · <https://privatemediapro.com/stash-alternative> ·
+  <https://docs.neptuneplayer.com/settings/playback> · <https://www.adultscriptpro.com/features/> ·
+  <https://github.com/vulture-s/arkiv>
+- 截屏/DRM（为何做不到）：<https://docs.axinom.com/services/drm/technical-articles/drm-protection-and-screen-recording/> ·
+  <https://www.forasoft.com/learn/video-streaming/articles-streaming/encrypted-media-extensions-eme>
