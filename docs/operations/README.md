@@ -61,3 +61,5 @@ docs/refactor-v2的旧部署协议与版本只用于追溯，不表示当前runt
 - [补齐与上传只读巡查](2026-10-02-maintenance-upload-audit.md)：当前覆盖、新失败归属、405 方法与索引证据及未完成范围。
 
 - [元数据非成功响应核验发布](2026-10-02-metadata-put-verification-release.md)：完整内容确认、隔离回归、副本维护切换和仍未解决范围。
+
+- [10 月 7 日补齐覆盖核查](2026-10-07-maintenance-coverage-audit.md)：实时覆盖、全部当前收藏读取、运行基准校准、上传耗时与未完成范围。

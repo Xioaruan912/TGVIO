@@ -490,3 +490,13 @@ recovered-0254-range-remote固定完成时间、已验收，不照旧重跑；�
 OOM0/四身份零重启、磁盘21.13GB、冻结Jobenabled/max3/count6/exhausted边界保持。
 completion-metadata-verify/audit-20261002-0302保留18项证据，未修改应用或扩大资源；
 仅文档源码同步，自动跟进继续至逐项全覆盖。
+
+## 2026-10-07 13:16 北京时间实际复核
+
+本轮回执见 [10 月 7 日覆盖核查](../operations/2026-10-07-maintenance-coverage-audit.md)。当前有效原视频 1048，封面 1047，480p 759/1005，720p 653/845；50 条当前收藏封面均通过真实鉴权读取和完整哈希核验。未全覆盖。
+
+monitor 已显式核对并接受有发布回执支持的新 Player f673061 与新封面 abd7ff1；旧保护基准留存，Bot 和副本 8097821 身份保持。后续不可再拿旧 Player/封面容器当唯一当前版本，也不可从 Git HEAD 重建运行进程。
+
+私有监控仍在 2026-10-01/completion-release/monitor.py；expected-workers.json 已据实际、发布回执核实更新，新增 protected-services-20261007.json 与 baseline-reconciliation-20261007.json。本轮冻结证据另存 2026-10-07/maintenance-audit；读取结果仅匿名统计，不输出私有媒体标识或路径。失败统计已修正 6 小时封顶。
+
+两项维护继续运行且 cgroup 无 OOM；当前有效副本失败 20 条（19 上传核验、1 媒体处理），上传超时明显耗时。最后同一 HEVC 无封面、无绑定副本，attempts 分别 28/16；保留自动重试，不复做此前有界首包/帧诊断，不无条件扩大预算。download_failed 当前 exhausted/count8，保持隔离，不清零、不重发 Telegram。下一次先跑已修正监控，再按实时数据重新核实覆盖、失败和读取。
