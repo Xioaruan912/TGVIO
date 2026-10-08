@@ -8,13 +8,15 @@ _LOG = logging.getLogger("tgvio_player.warm")
 
 
 class MediaWarmBackfill:
-    """Warm the head of every active video into the disk range cache.
+    """Warm clip heads into the disk range cache, newest clips first.
 
     Each clip caches ``min(size, head_bytes)`` (small clips are cached whole), so
-    any clip plays from local disk on first view. Work is bounded by a small
-    worker pool that shares the range cache's own concurrency limiter, skips
-    clips that already have their first chunk, and pauses only when playback has
-    saturated every stream slot.
+    it starts from local disk on first view. The head tier has a fixed share of a
+    fixed cache budget: once it is full the backfill stops instead of evicting one
+    warm head for another, so the disk footprint no longer grows with the library.
+    Work is bounded by a small worker pool that shares the range cache's own
+    concurrency limiter, skips clips that already have their first chunk, and
+    pauses only when playback has saturated every stream slot.
     """
 
     def __init__(
@@ -38,6 +40,7 @@ class MediaWarmBackfill:
         self._list_limit = max(1, int(list_limit))
         self._progress_every = max(1, progress_every)
         self._completed = 0
+        self._budget_reached = False
 
     async def _sleep_stop(self, stop: asyncio.Event, seconds: float) -> None:
         try:
@@ -56,7 +59,7 @@ class MediaWarmBackfill:
         if stop.is_set():
             return
         try:
-            media_ids = await self._repository.list_video_ids(limit=self._list_limit)
+            media_ids = await self._repository.list_video_ids(limit=self._list_limit, sort="newest")
         except Exception:
             _LOG.warning("player.warm.list_failed", exc_info=True)
             return
@@ -74,6 +77,10 @@ class MediaWarmBackfill:
                     return
                 if self._cache.has_chunk(media_id, 0):
                     continue
+                can_warm = getattr(self._cache, "can_warm_head", None)
+                if can_warm is not None and not can_warm():
+                    self._budget_reached = True
+                    return
                 while not stop.is_set() and self._should_pause():
                     await self._sleep_stop(stop, self._pause_seconds)
                 if stop.is_set():
@@ -105,4 +112,7 @@ class MediaWarmBackfill:
                     )
 
         await asyncio.gather(*[asyncio.create_task(worker()) for _ in range(self._workers)])
-        _LOG.info("player.warm.completed done=%s total=%s", self._completed, total)
+        _LOG.info(
+            "player.warm.completed done=%s total=%s head_budget_reached=%s",
+            self._completed, total, self._budget_reached,
+        )

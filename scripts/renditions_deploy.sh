@@ -25,7 +25,7 @@ if docker inspect tgvio-renditions >/dev/null 2>&1; then
   printf 'worker already exists; inspect it before a separate update\n' >&2; exit 2
 fi
 docker run -d --name tgvio-renditions --restart unless-stopped \
-  --cpus 1.5 --memory 2g --pids-limit 96 \
+  --cpus 1.5 --cpu-shares 256 --memory 2g --pids-limit 96 \
   --read-only --cap-drop ALL --security-opt no-new-privileges \
   --tmpfs /tmp:rw,noexec,nosuid,size=128m \
   --env-file "$env_file" \

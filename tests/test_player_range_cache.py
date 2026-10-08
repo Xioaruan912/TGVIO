@@ -480,5 +480,75 @@ class RangeStoreTests(unittest.TestCase):
             self.assertEqual(reopened.total_bytes, 10)
 
 
+class TieredRangeStoreTests(unittest.TestCase):
+    """Heads and playback share one fixed budget without evicting each other."""
+
+    CHUNK = 64 * 1024
+
+    def store(self, root: Path, chunks: int) -> RangeStore:
+        store = RangeStore(root, chunk_bytes=self.CHUNK, max_bytes=chunks * self.CHUNK, head_chunks=1, head_share=0.5)
+        store.open()
+        return store
+
+    def test_watching_never_evicts_warm_heads(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = self.store(Path(temporary) / "cache", 4)
+            chunk = b"h" * self.CHUNK
+            store.write_chunk("a", 0, chunk)
+            store.write_chunk("b", 0, chunk)
+            for index in range(1, 9):  # a long watch, far past the whole budget
+                store.write_chunk("c", index, chunk)
+            self.assertTrue(store.has("a", 0) and store.has("b", 0))
+            self.assertLessEqual(store.total_bytes, 4 * self.CHUNK)
+
+    def test_heads_stay_inside_their_share_and_report_no_room(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = self.store(Path(temporary) / "cache", 4)
+            chunk = b"h" * self.CHUNK
+            store.write_chunk("a", 0, chunk)
+            self.assertTrue(store.head_room())
+            store.write_chunk("b", 0, chunk)
+            self.assertFalse(store.head_room())
+            store.write_chunk("c", 0, chunk)  # a played clip's own head still fits by evicting the oldest head
+            self.assertEqual(store.head_bytes, 2 * self.CHUNK)
+            self.assertFalse(store.has("a", 0))
+            self.assertTrue(store.has("c", 0))
+
+    def test_a_smaller_budget_shrinks_the_cache_on_open(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "cache"
+            big = RangeStore(root, chunk_bytes=self.CHUNK, max_bytes=40 * self.CHUNK)
+            big.open()
+            for key in "abcdefghij":
+                big.write_chunk(key, 0, b"h" * self.CHUNK)
+                big.write_chunk(key, 1, b"p" * self.CHUNK)
+            small = self.store(root, 4)
+            self.assertLessEqual(small.total_bytes, 4 * self.CHUNK)
+            self.assertLessEqual(small.head_bytes, 2 * self.CHUNK)
+            on_disk = sum(path.stat().st_size for path in root.rglob("*.bin"))
+            self.assertEqual(on_disk, small.total_bytes, "evicted chunks leave the disk")
+
+    def test_head_budget_always_fits_one_head(self) -> None:
+        with TemporaryDirectory() as temporary:
+            store = RangeStore(Path(temporary) / "cache", chunk_bytes=self.CHUNK, max_bytes=self.CHUNK, head_chunks=1, head_share=0.1)
+            store.open()
+            store.write_chunk("a", 0, b"h" * self.CHUNK)
+            self.assertTrue(store.has("a", 0))
+
+
+class HeadWarmFetchTests(unittest.IsolatedAsyncioTestCase):
+    async def test_warm_requests_only_the_head_chunks_not_the_window(self) -> None:
+        store = FakeStore()
+        reader = FakeReader(bytes(range(256)) * 4)
+        cache = MediaRangeCache(store, reader, window_bytes=64, concurrency=2)
+        try:
+            await cache.warm("k", "p", "r", 1024, 8)
+            self.assertEqual(reader.calls, [(0, 7)], "one request for the 8-byte head, not the 64-byte window")
+            self.assertIsNotNone(store.read_slice("k", 0, 0, 8))
+            await cache.warm("k", "p", "r", 1024, 8)
+            self.assertEqual(len(reader.calls), 1, "a warmed head is never fetched again")
+        finally:
+            await cache.shutdown()
+
 if __name__ == "__main__":
     unittest.main()
