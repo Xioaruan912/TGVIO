@@ -1,4 +1,4 @@
 # The TGVIO-Player front end built into Player images. Change commit only by an
 # explicit, reviewed commit; scripts/player_web_source.sh enforces the format.
 repository=https://github.com/Xioaruan912/TGVIO-Player.git
-commit=7b0e4e6328882c09dda44bbe5bbaf2fd898d6259
+commit=7c442ee8093e89e663dd46487921f266f2a1ee98
