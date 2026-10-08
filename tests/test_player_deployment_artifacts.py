@@ -118,6 +118,20 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
         self.assertIn('"io.tgvio.player-web.revision"', player)
         self.assertIn("player_release.sh", player)
 
+    def test_maintenance_workers_yield_cpu_to_playback(self) -> None:
+        # Transcoding may use its whole quota while the host is idle, but a low CPU
+        # weight lets the Player and the archive proxy win whenever they need it.
+        for name in ("renditions_deploy.sh", "covers_deploy.sh"):
+            script = (ROOT / "scripts" / name).read_text(encoding="utf-8")
+            subprocess.run(["bash", "-n", str(ROOT / "scripts" / name)], check=True)
+            self.assertIn("--cpu-shares 256", script, name)
+            self.assertRegex(script, r"--cpus [0-9.]+", name)
+
+    def test_player_cache_template_is_a_fixed_budget(self) -> None:
+        template = (ROOT / "deploy" / "player.env.example").read_text(encoding="utf-8")
+        self.assertIn("TGVIO_PLAYER_CACHE_BYTES=4294967296", template)
+        self.assertIn("TGVIO_PLAYER_WARM_HEAD_MB=4", template)
+
     def test_player_env_template_has_no_bot_credentials(self) -> None:
         template = (ROOT / "deploy" / "player.env.example").read_text(encoding="utf-8")
         self.assertIn("TGVIO_PLAYER_ACCESS_SECRET=", template)

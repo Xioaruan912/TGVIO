@@ -11,16 +11,49 @@ class RangeStore:
     """Byte-bounded, chunk-granular, LRU disk cache for media byte ranges.
 
     Files live at ``<root>/<key>/<index>.bin`` and are only created once a whole
-    chunk has been fetched, so a cached file is always complete. Eviction is by
-    least-recently-used across all media, bounded by ``max_bytes``.
+    chunk has been fetched, so a cached file is always complete. The whole store is
+    bounded by ``max_bytes`` whatever the size of the library.
+
+    Two tiers share that budget. The first ``head_chunks`` chunks of a clip are its
+    *head* (what makes a clip start instantly); everything else is *playback* data.
+    Heads may use at most ``head_share`` of the budget, so warming heads can never
+    crowd out what is being watched, and watching can never wipe the warm heads.
+    The tier follows from the chunk index alone, so it survives a restart without
+    any extra metadata.
     """
 
-    def __init__(self, root: Path, *, chunk_bytes: int, max_bytes: int) -> None:
+    def __init__(
+        self,
+        root: Path,
+        *,
+        chunk_bytes: int,
+        max_bytes: int,
+        head_chunks: int = 0,
+        head_share: float = 0.5,
+    ) -> None:
         self._root = Path(root)
         self.chunk_bytes = max(64 * 1024, int(chunk_bytes))
         self.max_bytes = max(self.chunk_bytes, int(max_bytes))
+        self.head_chunks = max(0, int(head_chunks))
+        share = min(1.0, max(0.0, float(head_share)))
+        # Never smaller than one head, or a freshly written head would evict itself.
+        self.head_budget = (
+            max(self.chunk_bytes * self.head_chunks, int(self.max_bytes * share)) if self.head_chunks else 0
+        )
         self._index: "OrderedDict[tuple[str, int], int]" = OrderedDict()
         self._total = 0
+        self._head_total = 0
+
+    def is_head(self, index: int) -> bool:
+        return index < self.head_chunks
+
+    @property
+    def head_bytes(self) -> int:
+        return self._head_total
+
+    def head_room(self) -> bool:
+        """Whether one more head chunk fits inside the head budget."""
+        return self.head_chunks > 0 and self._head_total + self.chunk_bytes <= self.head_budget
 
     @property
     def total_bytes(self) -> int:
@@ -33,6 +66,7 @@ class RangeStore:
     def open(self) -> None:
         self._index.clear()
         self._total = 0
+        self._head_total = 0
         if not self._root.exists():
             return
         for media_dir in self._root.iterdir():
@@ -47,6 +81,9 @@ class RangeStore:
                     continue
                 self._index[(key, index)] = size
                 self._total += size
+                if self.is_head(index):
+                    self._head_total += size
+        # A smaller budget than the cache on disk shrinks it right away.
         self._evict()
 
     def _path(self, key: str, index: int) -> Path:
@@ -85,16 +122,21 @@ class RangeStore:
         temporary.replace(target)
         previous = self._index.get((key, index))
         if previous is not None:
-            self._total -= previous
+            self._account(index, -previous)
         self._index[(key, index)] = len(data)
-        self._total += len(data)
+        self._account(index, len(data))
         self._index.move_to_end((key, index))
         self._evict()
+
+    def _account(self, index: int, delta: int) -> None:
+        self._total += delta
+        if self.is_head(index):
+            self._head_total += delta
 
     def _forget(self, key: str, index: int) -> None:
         size = self._index.pop((key, index), None)
         if size is not None:
-            self._total -= size
+            self._account(index, -size)
         try:
             self._path(key, index).unlink()
         except OSError:
@@ -105,13 +147,27 @@ class RangeStore:
             if cache_key[0] != key:
                 continue
             self._index.pop(cache_key, None)
-            self._total -= size
+            self._account(cache_key[1], -size)
         shutil.rmtree(self._root / key, ignore_errors=True)
 
+    def _victim(self) -> tuple[str, int]:
+        """The least recently used chunk of the tier that has to give way."""
+        want_head = self.head_chunks > 0 and self._head_total > self.head_budget
+        for cache_key in self._index:
+            if self.is_head(cache_key[1]) == want_head:
+                return cache_key
+        return next(iter(self._index))
+
     def _evict(self) -> None:
-        while self._total > self.max_bytes and self._index:
-            (key, index), size = self._index.popitem(last=False)
-            self._total -= size
+        # Heads over their share go first; otherwise playback data does, so warming
+        # and watching never evict each other. Only one tier left: plain LRU.
+        while self._index and (
+            self._total > self.max_bytes
+            or (self.head_chunks and self._head_total > self.head_budget)
+        ):
+            key, index = self._victim()
+            size = self._index.pop((key, index))
+            self._account(index, -size)
             try:
                 self._path(key, index).unlink()
             except OSError:
@@ -122,6 +178,8 @@ class RangeStore:
             "bytes": self._total,
             "chunks": len(self._index),
             "max_bytes": self.max_bytes,
+            "head_bytes": self._head_total,
+            "head_budget": self.head_budget,
             "chunk_bytes": self.chunk_bytes,
             "updated_at": time.time(),
         }

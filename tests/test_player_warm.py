@@ -24,11 +24,13 @@ class FakeCache:
 class FakeRepository:
     def __init__(self, ids: list[str]) -> None:
         self.ids = ids
+        self.list_kwargs: dict[str, object] = {}
 
     async def count_active_videos(self) -> int:
         return len(self.ids)
 
     async def list_video_ids(self, **kwargs: object) -> list[str]:
+        self.list_kwargs = kwargs
         return list(self.ids)
 
     async def active_media_details(self, media_id: str) -> dict[str, object]:
@@ -70,6 +72,24 @@ class MediaWarmBackfillTests(unittest.IsolatedAsyncioTestCase):
         await backfill.run(asyncio.Event())
         self.assertEqual(cache.warmed, ["d" * 64])
 
+
+class BudgetedCache(FakeCache):
+    def __init__(self, room: int) -> None:
+        super().__init__()
+        self.room = room
+
+    def can_warm_head(self) -> bool:
+        return len(self.warmed) < self.room
+
+
+class BoundedWarmTests(unittest.IsolatedAsyncioTestCase):
+    async def test_newest_first_and_stops_when_the_head_budget_is_full(self) -> None:
+        ids = [f"{index:064d}" for index in range(10)]
+        repository = FakeRepository(ids)
+        cache = BudgetedCache(room=3)
+        await MediaWarmBackfill(cache, repository, head_bytes=4 * 1024 * 1024, workers=1).run(asyncio.Event())
+        self.assertEqual(repository.list_kwargs.get("sort"), "newest")
+        self.assertEqual(cache.warmed, ids[:3], "warming stops instead of evicting one head for another")
 
 if __name__ == "__main__":
     unittest.main()

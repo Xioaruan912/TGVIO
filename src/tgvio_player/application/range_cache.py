@@ -547,25 +547,39 @@ class MediaRangeCache:
         *,
         whole_below: int = 0,
     ) -> None:
-        """Fetch and cache the head of a clip (whole file when small enough)."""
+        """Fetch and cache the head of a clip (whole file when small enough).
+
+        Only the head chunks are requested, in one upstream range: warming a 4 MB
+        head used to pull its whole 32 MB window, eight times the bytes it kept.
+        """
         if size <= 0:
             return
         target = size if whole_below and size <= whole_below else min(length, size)
         if target <= 0:
             return
         last_chunk = max(0, (target - 1) // self._chunk_bytes)
-        last_window = self._window_for_chunk(last_chunk)
-        tasks: list[asyncio.Task[object]] = []
-        for window in range(last_window + 1):
-            self._ensure_window(key, package, relpath, size, window, low_priority=True)
-            task = self._window_tasks.get((key, window))
-            if task is not None:
-                tasks.append(task)
-        for task in tasks:
+        missing = [
+            index for index in range(last_chunk + 1)
+            if self._store.read_slice(key, index, 0, self._chunk_bytes) is None
+        ]
+        if not missing:
+            return
+        window = self._window_for_chunk(missing[0])
+        if (key, window) in self._window_tasks:
             try:
-                await asyncio.shield(task)
+                await asyncio.shield(self._window_tasks[(key, window)])
             except Exception:
-                return
+                pass
+            return
+        await self._fetch_window(
+            key, package, relpath, size, window,
+            low_priority=True, first_chunk=missing[0], last_chunk=last_chunk, head_prefetch=True,
+        )
+
+    def can_warm_head(self) -> bool:
+        """Whether the head tier still has room; warming stops instead of churning."""
+        room = getattr(self._store, "head_room", None)
+        return bool(room()) if room is not None else True
 
     def prefetch_head(
         self,
