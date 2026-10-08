@@ -56,9 +56,6 @@ def deploy_player(repo: Path, head: str, ssh: list[str], scp: list[str], target:
         ["bash", str(repo / "scripts" / "player_release.sh"), "--tag", tag, "--commit", head, "--release-id", release_id],
         cwd=repo, check=True,
     )
-    image_id = subprocess.run(
-        ["docker", "image", "inspect", "--format", "{{.Id}}", tag], check=True, capture_output=True, text=True,
-    ).stdout.strip()
     if _label(tag, "org.opencontainers.image.revision") != head:
         raise PlayerDeployError("candidate image revision label does not match HEAD")
     if _label(tag, "io.tgvio.player-web.revision") != web_commit:
@@ -92,7 +89,7 @@ def deploy_player(repo: Path, head: str, ssh: list[str], scp: list[str], target:
     )
     subprocess.run([*ssh, extract_script], check=True)
     remote = " ".join(shlex.quote(value) for value in [
-        "bash", f"{remote_dir}/bootstrap/scripts/player_remote_release.sh", release_id, head, image_id, image_sha, source_sha,
+        "bash", f"{remote_dir}/bootstrap/scripts/player_remote_release.sh", release_id, head, web_commit, image_sha, source_sha,
     ])
     subprocess.run([*ssh, remote], check=True)
     return release_id
