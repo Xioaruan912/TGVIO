@@ -1,5 +1,6 @@
 #!/usr/bin/env bash
-# Local verification only; never installs, deploys or starts the Bot.
+# Local verification only; never deploys or starts the Bot. The only install is the
+# pinned front end's npm dependencies inside a temporary export.
 set -Eeuo pipefail
 repo_root=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 cd "$repo_root"
@@ -26,9 +27,15 @@ export PYTHONDONTWRITEBYTECODE=1
 "$python_bin" scripts/release_guard.py architecture .
 "$python_bin" -m compileall -q src tests scripts
 "$python_bin" -m unittest discover -s tests
-npm --prefix player/web run check
+# The Player front end is checked as the exact commit pinned in player-web.lock,
+# installed into a temporary export that is removed on exit.
+web_source=$(mktemp -d "${TMPDIR:-/tmp}/tgvio-player-web.XXXXXX")
+trap 'bash "$repo_root/scripts/player_web_source.sh" --remove "$web_source"' EXIT
+web_commit=$(bash scripts/player_web_source.sh --dest "$web_source")
+npm --prefix "$web_source" ci --no-audit --no-fund
+npm --prefix "$web_source" run check
 if [[ "$browser" == true ]]; then
-    npm --prefix player/web run test:browser
+    npm --prefix "$web_source" run test:browser
 fi
 git diff --check
-printf 'project_checks=passed python=%s browser=%s\n' "$("$python_bin" --version)" "$browser"
+printf 'project_checks=passed python=%s browser=%s player_web=%s\n' "$("$python_bin" --version)" "$browser" "$web_commit"

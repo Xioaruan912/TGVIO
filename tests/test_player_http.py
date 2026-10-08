@@ -1768,7 +1768,7 @@ class PlayerCoverRouteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_cover_ceiling_never_sheds_a_single_browse_page(self) -> None:
         # One browse page opens six cover lanes
-        # (player/web/src/components/cover-load-queue.ts). The previous ceiling of
+        # (TGVIO-Player src/components/cover-load-queue.ts). The previous ceiling of
         # max(2, max_streams // 4) resolved to 2 here and shed the rest as 503, and
         # an <img> error carries no status, so a healthy grid painted
         # "封面加载失败" instead of waiting its turn.

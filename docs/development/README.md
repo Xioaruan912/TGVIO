@@ -1,6 +1,6 @@
 # 开发与验证
 
-仓库是两个独立 Python 服务加一个 Player Web 前端，不是一个共享状态的应用。
+仓库是两个独立 Python 服务，不是一个共享状态的应用。Player Web 前端在独立仓库 [TGVIO-Player](https://github.com/Xioaruan912/TGVIO-Player)，这里只以 player-web.lock 固定其提交。
 先读根 AGENTS.md 和目标目录的局部约定，再改目标模块。
 
 ## 目录职责
@@ -9,10 +9,9 @@
 |---|---|
 | src/tgvio | Telegram Bot，持久化 Job 与发布/归档 |
 | src/tgvio_player | Player API、认证、catalog、Range代理与独立数据库 |
-| player/web/src | Vite/TypeScript UI 与播放控制 |
 | tests | 两个 Python 服务及发布工具的离线回归 |
-| player/web/tests | Node 行为测试、隔离浏览器 fixture |
 | scripts | 验证、发布、运维工具 |
+| player-web.lock | Player 镜像与检查所用的 TGVIO-Player 提交 |
 | deploy | 占位配置、Player配置样例与 pinned host key |
 | docs/development | 当前开发/架构说明 |
 | docs/operations | 操作规程与有日期的运维证据 |
@@ -33,7 +32,7 @@ Player后端仅安装 requirements.player.lock，不依赖 Telethon。
 python3 -m venv .venv
 .venv/bin/python -m pip install --require-hashes --no-deps -r requirements.lock
 .venv/bin/python -m pip install --require-hashes --no-deps -r requirements.player.lock
-npm --prefix player/web ci
+git clone https://github.com/Xioaruan912/TGVIO-Player.git ../TGVIO-Player
 ```
 
 FFmpeg/ffprobe用于离线媒体测试；Chrome用于可选布局回归。不要让本地环境加载生产凭据。
@@ -48,21 +47,14 @@ bash scripts/check.sh --browser
 PYTHON_BIN=/path/to/python3.11 bash scripts/check.sh
 ```
 
-检查脚本不安装依赖、不启动Bot、不部署；默认选择 .venv/bin/python，缺少依赖明确失败。
-它执行治理规则、源码秘密/路径扫描、既有Python分层检查、离线Python回归和前端check。
+检查脚本不安装Python依赖、不启动Bot、不部署；默认选择 .venv/bin/python，缺少依赖明确失败。
+它执行治理规则、源码秘密/路径扫描、既有Python分层检查、离线Python回归，
+再把锁定的前端提交导出到临时目录、npm ci 后运行其check，退出即清理。
 --browser额外运行隔离loopback fixture，不能代表iOS/Android真机或生产Range验收。
 
-前端单独执行：
-
-```sh
-npm --prefix player/web run typecheck
-npm --prefix player/web test
-npm --prefix player/web run build
-npm --prefix player/web run check
-```
-
-tsconfig.test.json继承严格生产配置，编译所有src到临时.test-dist。Node行为测试只导入编译产物，不直接导入.ts。
-测试构建每次重建并清理，禁止依赖上次生成文件侥幸通过。
+前端开发、测试与浏览器回归在 TGVIO-Player 仓库执行（`npm run check`、`npm run test:browser`），
+规则见该仓库 AGENTS.md。前端改动推送到其 main 后，在 TGVIO 单独提交更新 player-web.lock，
+再跑本仓库 check.sh；未推送或不在 origin/main 上的提交会被导出脚本拒绝。
 
 ## 开发流程
 
@@ -73,4 +65,4 @@ tsconfig.test.json继承严格生产配置，编译所有src到临时.test-dist�
 5. 更新单独交接文档；按任务授权提交、同步或部署。
 6. 记录源码版本与运行版本各自事实，失败门禁不写成成功。
 
-前端设计与验收边界见 [Player 前端设计](PLAYER_FRONTEND.md)。main.ts既有1710行只登记为债务，不能以标准化为名未经行为回归整页重写。
+前端设计与验收边界见 TGVIO-Player 的 docs/DESIGN.md。

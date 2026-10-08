@@ -41,7 +41,7 @@ LABEL org.opencontainers.image.revision=${APP_COMMIT} \
       io.tgvio.requirements-lock-sha256=${REQUIREMENTS_LOCK_SHA256}
 
 FROM runtime-base AS test
-COPY .dockerignore Dockerfile Dockerfile.player docker-compose.yml docker-compose.player.yml requirements.txt requirements.lock requirements.player.lock ./
+COPY .dockerignore Dockerfile Dockerfile.player docker-compose.yml docker-compose.player.yml requirements.txt requirements.lock requirements.player.lock player-web.lock ./
 RUN python -m pip install \
       --disable-pip-version-check \
       --no-cache-dir \
@@ -54,9 +54,6 @@ COPY deploy ./deploy
 COPY src ./src
 COPY tests ./tests
 COPY scripts ./scripts
-# Offline Player tests read the Vite/TypeScript sources, so the test image must
-# ship them. The runtime image above deliberately stays Bot-only.
-COPY player ./player
 CMD ["sh", "scripts/check_foundation.sh"]
 
 FROM runtime-base AS runtime

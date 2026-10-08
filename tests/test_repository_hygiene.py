@@ -24,33 +24,6 @@ class RepositoryHygieneTests(unittest.TestCase):
                 self.assertTrue(hygiene.generated_path(path))
         self.assertFalse(hygiene.generated_path("src/tgvio/domain/job.py"))
 
-    def test_new_modules_fail_above_budget(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            self.write(root, "player/web/src/new.ts", "\n" * 601)
-            self.assertIn("exceeds 600", hygiene.frontend_problems(root)[0])
-
-    def test_existing_debt_cannot_grow(self):
-        # The recorded ceilings, frozen here. Shrinking one is a deliberate edit to both this
-        # table and the map in the gate; growing either one fails.
-        recorded = {"main.ts": 1707, "large.ts": 680}
-        self.assertEqual(hygiene.FRONTEND_DEBT, recorded, "existing debt may only shrink")
-        for name, budget in sorted(recorded.items()):
-            with tempfile.TemporaryDirectory() as folder:
-                root = Path(folder)
-                self.write(root, f"player/web/src/{name}", "\n" * budget)
-                self.assertEqual([], hygiene.frontend_problems(root))
-                self.write(root, f"player/web/src/{name}", "\n" * (budget + 1))
-                self.assertIn(f"exceeds {budget}", hygiene.frontend_problems(root)[0])
-
-    def test_node_test_rejects_direct_typescript_import(self):
-        with tempfile.TemporaryDirectory() as folder:
-            root = Path(folder)
-            self.write(root, "player/web/tests/x.test.mjs", 'import {x} from "../src/x.ts";')
-            self.assertIn("compiled JS", hygiene.frontend_problems(root)[0])
-            self.write(root, "player/web/tests/x.test.mjs", 'import {x} from "../.test-dist/x.js";')
-            self.assertEqual([], hygiene.frontend_problems(root))
-
     def test_current_docs_reject_missing_and_untracked_links(self):
         with tempfile.TemporaryDirectory() as folder:
             root = Path(folder)

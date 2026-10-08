@@ -161,7 +161,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         # fast, so a wall of thumbnails can never queue behind or block playback.
         # Covers are decorative but they still cost one upstream round trip each,
         # and one browse page opens six lanes at once
-        # (player/web/src/components/cover-load-queue.ts). The old ceiling of
+        # (TGVIO-Player src/components/cover-load-queue.ts). The old ceiling of
         # max(2, max_streams // 4) resolved to 2 on a 10-stream deployment and shed
         # the other four as 503; an <img> error carries no status, so the grid showed
         # a failure that was really just back-pressure. The floor keeps one page

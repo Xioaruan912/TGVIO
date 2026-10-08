@@ -17,14 +17,9 @@ PRIVATE_FRAGMENTS = (
 
 
 def player_source_files() -> list[Path]:
-    roots = (
-        ROOT / "src/tgvio_player",
-        ROOT / "player/web/src",
-        ROOT / "player/web/tests",
-    )
-    paths = [path for root in roots for path in root.rglob("*") if path.is_file()]
+    # The front end moved to TGVIO-Player, whose hygiene gate scans the same digests.
+    paths = [path for path in (ROOT / "src/tgvio_player").rglob("*") if path.is_file()]
     paths.extend(ROOT.glob("tests/test_player*.py"))
-    paths.extend((ROOT / "player/web/index.html", ROOT / "player/web/README.md"))
     paths.extend(ROOT.glob("deploy/player*.example"))
     return sorted(set(paths))
 

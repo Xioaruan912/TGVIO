@@ -10,6 +10,6 @@
 - 收藏、播放进度与recovery用自己的ports/repository；不可变migration/checksum。
 - HTTP/存储测试用fake或loopback fixture，不读生产Cookie/秘密/Archive。
 - 根scripts/check.sh负责交付验证；Player发布/回滚仅操作tgvio-player并核实Bot容器未变。
-- 前端联动改动同时阅读player/AGENTS.md。运维交接放docs/handoffs，不追加到本规范。
+- 前端在独立仓库TGVIO-Player；联动改动先落后端合同，再在前端仓库消费并更新player-web.lock。运维交接放docs/handoffs，不追加到本规范。
 - 可选 renditions.json 必须绑定 package_id 与原清单摘要；验证父视频、相对路径、实际尺寸、时长和码率后才投影。副本不进入独立 Feed；永久删除须涵盖已登记副本并保留 tombstone，失败不得宣称完全删除。
 - 可选 covers.json v2 绑定 package_id、原清单 SHA-256 和主视频 SHA-256；JPEG 为有界内容寻址对象，错误索引不隐藏原视频。临时读取失败保留已验证封面，正常移除索引才撤销投影。永久删除先删除已登记封面，封面失败保留原视频并反馈部分失败。

@@ -16,7 +16,7 @@
 
 - Bot：`src/tgvio/`，入口 `python -m tgvio.main`。
 - Player 后端：`src/tgvio_player/`，独立进程、容器及 player.sqlite3。
-- Player 前端：`player/web/`，Vite + TypeScript，遵守 [Player 约定](player/AGENTS.md)。
+- Player 前端：独立仓库 [TGVIO-Player](https://github.com/Xioaruan912/TGVIO-Player)（Vite + TypeScript），前端改动在该仓库进行并遵守其 AGENTS.md。TGVIO 只用 `player-web.lock` 固定其已推送提交；检查和 Player 镜像只经 `scripts/player_web_source.sh` 导出该提交，改锁须单独提交并重跑检查。
 - Bot 与 Player 不相互 import；Player 不读写 Bot 主库，不读取 Bot token/session，不挂载 Bot 下载卷。
 - Archive 的 `manifest.json + _COMPLETE.json` 是媒体交接合同；Player 只消费 committed package。
 - 不为整理项目替换框架、数据库、消息队列、传输协议或依赖版本；依赖变更必须有任务理由并同步 lock。
@@ -42,7 +42,7 @@ bash scripts/check.sh                 # 规范、架构、秘密扫描、Python�
 bash scripts/check.sh --browser       # 加上隔离 Chrome 布局回归
 ```
 
-- 快速检查：`python3 scripts/repository_hygiene.py`；前端：`npm --prefix player/web run check`。
+- 快速检查：`python3 scripts/repository_hygiene.py`；前端在 TGVIO-Player 仓库 `npm run check`，check.sh 另行检查锁定提交。
 - 发布前跑完整检查；数据库变更额外做生产副本 migration rehearsal，运行镜像按既有发布门禁检查。
 - 测试用 fake、临时库与本地 fixture；不得连接生产 Telegram/WebDAV或使用生产 Cookie/session。
 - 不把本地测试写成真机或生产验收；分别记录验证范围、失败项、未验证项。
