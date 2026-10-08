@@ -132,6 +132,13 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
         self.assertIn("TGVIO_PLAYER_CACHE_BYTES=4294967296", template)
         self.assertIn("TGVIO_PLAYER_WARM_HEAD_MB=4", template)
 
+    def test_direct_reads_reach_openlist_through_the_host_gateway(self) -> None:
+        compose = (ROOT / "docker-compose.player.yml").read_text(encoding="utf-8")
+        self.assertIn('"host.docker.internal:host-gateway"', compose)
+        self.assertIn("TGVIO_PLAYER_OPENLIST_API_URL: ${TGVIO_PLAYER_OPENLIST_API_URL:-}", compose)
+        template = (ROOT / "deploy" / "player.env.example").read_text(encoding="utf-8")
+        self.assertIn("TGVIO_PLAYER_OPENLIST_API_URL=\n", template, "direct reads stay off unless configured")
+
     def test_player_env_template_has_no_bot_credentials(self) -> None:
         template = (ROOT / "deploy" / "player.env.example").read_text(encoding="utf-8")
         self.assertIn("TGVIO_PLAYER_ACCESS_SECRET=", template)
