@@ -28,7 +28,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: ${{ matrix.node }}
-          cache: npm
-          cache-dependency-path: player/web/package-lock.json
-      - run: npm --prefix player/web ci
-      - run: npm --prefix player/web run check
+      # The front end lives in TGVIO-Player; check the exact commit in player-web.lock.
+      - run: git clone --quiet "$(sed -n 's/^repository=//p' player-web.lock)" "$RUNNER_TEMP/TGVIO-Player"
+      - run: bash scripts/player_web_source.sh --git "$RUNNER_TEMP/TGVIO-Player" --dest "$RUNNER_TEMP/player-web"
+      - run: npm --prefix "$RUNNER_TEMP/player-web" ci
+      - run: npm --prefix "$RUNNER_TEMP/player-web" run check

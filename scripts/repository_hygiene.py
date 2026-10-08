@@ -14,40 +14,22 @@ from pathlib import PurePosixPath
 
 
 REQUIRED = (
-    "AGENTS.md", "AI_DEVELOPMENT.md", "player/AGENTS.md",
+    "AGENTS.md", "AI_DEVELOPMENT.md",
     "src/tgvio/AGENTS.md", "src/tgvio_player/AGENTS.md",
     "docs/README.md", "docs/development/README.md",
     "docs/development/ARCHITECTURE.md", "docs/operations/README.md",
     "docs/archive/README.md", "docs/refactor-v2/README.md",
     "scripts/check.sh", "scripts/repository_hygiene.py",
-    "player/web/tsconfig.test.json",
+    "player-web.lock", "scripts/player_web_source.sh",
 )
-# Existing debt may only shrink. New modules receive no exemption.
-FRONTEND_DEBT = {"main.ts": 1707, "large.ts": 680}
-FRONTEND_LIMIT = 600
 GOVERNANCE_LIMIT = 160
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")
-DIRECT_TS = re.compile(r"""(?:from\s*|import\s*\()\s*["'][^"']+\.ts["']""")
 
 
 def generated_path(name: str) -> bool:
     return bool(set(Path(name).parts) & {
         "node_modules", "dist", ".test-dist", "__pycache__", ".venv", ".superpowers",
     }) or name.endswith((".pyc", ".pyo"))
-
-
-def frontend_problems(root: Path) -> list[str]:
-    problems = []
-    for path in sorted((root / "player/web/src").rglob("*.ts")):
-        relative = path.relative_to(root / "player/web/src").as_posix()
-        size = len(path.read_text(encoding="utf-8").splitlines())
-        budget = FRONTEND_DEBT.get(relative, FRONTEND_LIMIT)
-        if size > budget:
-            problems.append(f"{path.relative_to(root)}: {size} lines exceeds {budget}")
-    for path in sorted((root / "player/web/tests").glob("*.test.mjs")):
-        if DIRECT_TS.search(path.read_text(encoding="utf-8")):
-            problems.append(f"{path.relative_to(root)}: Node tests must import compiled JS, not TypeScript")
-    return problems
 
 
 def document_problems(root: Path, names: list[str]) -> list[str]:
@@ -93,7 +75,6 @@ def check(root: Path) -> list[str]:
                 problems.append(f"{name}: {finding}")
     if not any("missing" in item for item in problems):
         problems.extend(document_problems(root, names))
-    problems.extend(frontend_problems(root))
     return problems
 
 
@@ -104,8 +85,7 @@ def main() -> int:
         print("repository_hygiene=failed\n" + "\n".join(problems), file=sys.stderr)
         return 1
     print(json.dumps({
-        "repository_hygiene": "passed", "frontend_module_limit": FRONTEND_LIMIT,
-        "existing_frontend_debt": FRONTEND_DEBT, "governance_line_limit": GOVERNANCE_LIMIT,
+        "repository_hygiene": "passed", "governance_line_limit": GOVERNANCE_LIMIT,
     }, sort_keys=True))
     return 0
 

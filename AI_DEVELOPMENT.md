@@ -4,7 +4,7 @@
 
 - [开发与验证](docs/development/README.md)
 - [模块、依赖和行为边界](docs/development/ARCHITECTURE.md)
-- [Player 前端约定](player/AGENTS.md)
+- [Player 前端（独立仓库 TGVIO-Player）](https://github.com/Xioaruan912/TGVIO-Player)
 - [Bot 局部约定](src/tgvio/AGENTS.md)
 - [Player 后端约定](src/tgvio_player/AGENTS.md)
 - [部署、源码同步和清理](docs/operations/README.md)

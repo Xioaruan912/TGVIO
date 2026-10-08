@@ -5,13 +5,16 @@
 ARG PYTHON_IMAGE=python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
 ARG NODE_IMAGE=node:20-bookworm-slim
 
+# The front end lives in the TGVIO-Player repository. scripts/player_release.sh
+# exports the commit pinned in player-web.lock and passes it as the named build
+# context "player-web"; a build without that context has no source and fails.
 FROM ${NODE_IMAGE} AS player-web-build
 WORKDIR /web
-COPY player/web/package.json player/web/package-lock.json ./
+COPY --from=player-web package.json package-lock.json ./
 RUN npm ci
-COPY player/web/index.html player/web/tsconfig.json player/web/vite.config.ts ./
-COPY player/web/public ./public
-COPY player/web/src ./src
+COPY --from=player-web index.html tsconfig.json vite.config.ts ./
+COPY --from=player-web public ./public
+COPY --from=player-web src ./src
 RUN npm run build
 
 FROM ${PYTHON_IMAGE} AS player-runtime
@@ -30,13 +33,15 @@ RUN python -m pip install \
 
 ARG PLAYER_COMMIT=unknown
 ARG PLAYER_RELEASE_ID=unreleased
+ARG PLAYER_WEB_COMMIT=unknown
 ENV PYTHONDONTWRITEBYTECODE=1 \
     PYTHONUNBUFFERED=1 \
     PYTHONPATH=/app/src:/opt/tgvio-player/site-packages \
     TGVIO_PLAYER_DATA_DIR=/var/lib/tgvio-player
 LABEL org.opencontainers.image.title="tgvio-player" \
       org.opencontainers.image.revision=${PLAYER_COMMIT} \
-      org.opencontainers.image.version=${PLAYER_RELEASE_ID}
+      org.opencontainers.image.version=${PLAYER_RELEASE_ID} \
+      io.tgvio.player-web.revision=${PLAYER_WEB_COMMIT}
 
 RUN groupadd --gid 65532 tgvio-player \
     && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin tgvio-player
