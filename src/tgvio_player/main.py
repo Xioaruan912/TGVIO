@@ -7,10 +7,12 @@ import logging
 import os
 from pathlib import Path
 import signal
+from urllib.parse import urlsplit
 
 from aiohttp import web
 
 from tgvio_player.adapters.http import PlayerHttpServer
+from tgvio_player.application.archive_read import ArchiveReadRouter, ReadModeService
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.catalog import CatalogSyncService
 from tgvio_player.application.favorite_backup import FavoriteBackupService, SourceMediaError
@@ -22,6 +24,7 @@ from tgvio_player.application.range_cache import MediaRangeCache
 from tgvio_player.application.warm_backfill import MediaWarmBackfill
 from tgvio_player.infrastructure.cover_mirror import CoverMirror, CoverMirrorCounters
 from tgvio_player.infrastructure.faststart_store import FaststartStore
+from tgvio_player.infrastructure.openlist_direct import DEFAULT_USER_AGENT, OpenListDirectReader, OpenListDirectSettings
 from tgvio_player.infrastructure.player_crypto import PlayerStateCipher
 from tgvio_player.infrastructure.range_store import RangeStore
 from tgvio_player.infrastructure.player_crypto import decode_recovery_key
@@ -68,6 +71,9 @@ class PlayerSettings:
     cover_mirror_batch: int
     cover_mirror_concurrency: int
     cover_mirror_interval_seconds: int
+    # Optional fast path: OpenList API for direct links. Empty means WebDAV only.
+    openlist_api_url: str = ""
+    direct_user_agent: str = DEFAULT_USER_AGENT
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -116,7 +122,18 @@ class PlayerSettings:
             cls._integer(get("COVER_MIRROR_CONCURRENCY") or "2", "COVER_MIRROR_CONCURRENCY", 1, 8),
             cls._integer(get("COVER_MIRROR_INTERVAL_SECONDS") or "30",
                          "COVER_MIRROR_INTERVAL_SECONDS", 5, 3600),
+            openlist_api_url=cls._optional_url(get("OPENLIST_API_URL"), "OPENLIST_API_URL"),
+            direct_user_agent=get("DIRECT_USER_AGENT") or DEFAULT_USER_AGENT,
         )
+
+    @staticmethod
+    def _optional_url(value: str, name: str) -> str:
+        if not value:
+            return ""
+        parsed = urlsplit(value)
+        if parsed.scheme not in {"http", "https"} or not parsed.netloc or parsed.username or parsed.password:
+            raise ValueError(f"TGVIO_PLAYER_{name} must be an http(s) URL without credentials")
+        return value.rstrip("/")
 
     @staticmethod
     def _flag(value: str, name: str) -> bool:
@@ -204,6 +221,7 @@ async def run(settings: PlayerSettings) -> None:
         except NotImplementedError:
             pass
     await repository.open()
+    direct_reader: OpenListDirectReader | None = None
     try:
         await client.open()
         archive_reader = ReadOnlyWebDavAdapter(client)
@@ -238,8 +256,18 @@ async def run(settings: PlayerSettings) -> None:
             repository, favorite_writer, favorite_source, recovery,
             source_location=favorite_source_location,
         )
+        direct_reader = (
+            OpenListDirectReader(OpenListDirectSettings(
+                settings.openlist_api_url, settings.webdav_user, settings.webdav_password,
+                user_agent=settings.direct_user_agent,
+            ))
+            if settings.openlist_api_url else None
+        )
+        read_router = ArchiveReadRouter(archive_reader, direct_reader)
+        read_mode = ReadModeService(repository, read_router)
+        _LOG.info("TGVIO Player read mode: %s (direct available: %s)", await read_mode.load(), direct_reader is not None)
         reader = PlayerMediaReader(
-            repository, archive_reader, repository.get_storage_settings,
+            repository, read_router, repository.get_storage_settings,
             recovery.credentials_for, storage_client_factory,
         )
         deleter = WebDavDeleteAdapter(client) if settings.delete_enabled else None
@@ -285,6 +313,7 @@ async def run(settings: PlayerSettings) -> None:
             storage_client_factory=storage_client_factory,
             cover_mirror=cover_mirror,
             cover_mirror_counters=cover_mirror_counters,
+            read_mode=read_mode,
         )
         server_ref[0] = server
         runner = server.runner()
@@ -341,6 +370,8 @@ async def run(settings: PlayerSettings) -> None:
         for write_client in write_clients:
             await write_client.close()
         await client.close()
+        if direct_reader is not None:
+            await direct_reader.close()
         await repository.close()
 
 

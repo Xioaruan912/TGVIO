@@ -25,6 +25,7 @@ from .library import PlayerLibraryHttpMixin
 from .media import PlayerMediaHttpMixin
 from .streaming import PlayerHttpStreamingMixin
 from .storage_settings import PlayerStorageSettingsHttpMixin
+from .read_mode import PlayerReadModeHttpMixin
 
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.favorite_backup import FavoriteBackupService
@@ -86,7 +87,7 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin, PlayerLibraryHttpMixin, PlayerMediaHttpMixin):
+class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin, PlayerReadModeHttpMixin, PlayerLibraryHttpMixin, PlayerMediaHttpMixin):
     """Small authenticated HTTP boundary around Player-only services.
 
     This adapter intentionally accepts only Player repository IDs. It has no
@@ -118,6 +119,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         storage_client_factory: Callable[[str, str, str], WebDavWriteClient] | None = None,
         cover_mirror: CoverMirror | None = None,
         cover_mirror_counters: CoverMirrorCounters | None = None,
+        read_mode: object | None = None,
     ) -> None:
         if min(
             max_streams, max_streams_per_client, max_header_size, stream_chunk_size, startup_range_bytes
@@ -180,6 +182,8 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         self._static_dir = static_dir.resolve() if static_dir is not None and static_dir.is_dir() else None
         self._faststart = faststart
         self._range_cache = range_cache
+        self._read_mode = read_mode
+        self._read_router_stats = getattr(read_mode, "router_stats", None)
         self._large_video_seconds = max(1.0, float(large_video_seconds))
         self._warm_head_bytes = max(1, int(warm_head_bytes))
         self._warm_tail_bytes = max(0, int(warm_tail_bytes))
@@ -211,6 +215,8 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         app.router.add_get("/api/v1/favorites", self._favorites)
         app.router.add_get("/api/v1/settings/storage", self._storage_settings_get)
         app.router.add_put("/api/v1/settings/storage", self._storage_settings_put)
+        app.router.add_get("/api/v1/settings/read-mode", self._read_mode_get)
+        app.router.add_put("/api/v1/settings/read-mode", self._read_mode_put)
         app.router.add_post("/api/v1/settings/storage/test", self._storage_settings_test)
         app.router.add_post("/api/v1/settings/storage/retry", self._storage_retry)
         app.router.add_post("/api/v1/settings/recover", self._storage_recover)
@@ -403,7 +409,8 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
     async def _cache_stats(self, request: web.Request) -> web.Response:
         await self._authenticate(request)
         stats = self._range_cache.stats() if self._range_cache is not None else {}
-        return web.json_response({"available": self._range_cache is not None, **stats})
+        read = self._read_router_stats() if callable(self._read_router_stats) else {}
+        return web.json_response({"available": self._range_cache is not None, **stats, "read": read})
 
     async def _playback_diagnostic(self, request: web.Request) -> web.Response:
         await self._authenticate(request)

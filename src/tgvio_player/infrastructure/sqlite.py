@@ -19,6 +19,7 @@ from tgvio_player.infrastructure.sqlite_cover_mirror import PlayerCoverMirrorRep
 from tgvio_player.infrastructure.sqlite_similar import PlayerSimilarRepositoryMixin
 from tgvio_player.infrastructure.sqlite_favorites import PlayerFavoriteRepositoryMixin
 from tgvio_player.infrastructure.sqlite_library import PlayerLibraryRepositoryMixin
+from tgvio_player.infrastructure.sqlite_read_mode import PlayerReadModeRepositoryMixin
 from tgvio_player.infrastructure.video_query import build_video_count, build_video_query
 
 
@@ -28,6 +29,7 @@ _DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class PlayerCatalogRepositorySQLite(
+    PlayerReadModeRepositoryMixin,
     PlayerCoverMirrorRepositoryMixin,
     PlayerSimilarRepositoryMixin,
     PlayerCollectionRepositoryMixin,
