@@ -6,7 +6,12 @@ set -Eeuo pipefail
 # unchanged. Every switch keeps a rollback point (prior image, env, SQLite backup)
 # and a failed health check rolls back to the prior image automatically.
 #
-# usage: player_remote_release.sh RELEASE_ID COMMIT IMAGE_ID IMAGE_SHA256 SOURCE_SHA256
+# usage: player_remote_release.sh RELEASE_ID COMMIT WEB_COMMIT IMAGE_SHA256 SOURCE_SHA256
+#
+# Image IDs are not portable between Docker image stores (classic overlay2 IDs are the
+# config digest, the containerd store uses the manifest digest), so identity is the
+# SHA-256 of the transferred archive plus the two provenance labels, and the ID that
+# runs is the one this host computes after loading.
 
 PLAYER_ROOT=/root/tgvio-player
 ENV_FILE="$PLAYER_ROOT/player.env"
@@ -14,11 +19,11 @@ DATA_DB="$PLAYER_ROOT/data/player.sqlite3"
 HEALTH_URL=http://127.0.0.1:8790/healthz
 
 fail() { printf 'player_release_failed: %s\n' "$1" >&2; exit 1; }
-[[ $# -eq 5 ]] || { printf 'usage: %s RELEASE_ID COMMIT IMAGE_ID IMAGE_SHA256 SOURCE_SHA256\n' "$0" >&2; exit 2; }
-release_id=$1 commit=$2 image_id=$3 image_sha=$4 source_sha=$5
+[[ $# -eq 5 ]] || { printf 'usage: %s RELEASE_ID COMMIT WEB_COMMIT IMAGE_SHA256 SOURCE_SHA256\n' "$0" >&2; exit 2; }
+release_id=$1 commit=$2 web_commit=$3 image_sha=$4 source_sha=$5
 [[ "$release_id" =~ ^player-[0-9a-f]{7}-[0-9]{8}T[0-9]{6}Z$ ]] || fail "invalid release id"
 [[ "$commit" =~ ^[0-9a-f]{40}$ ]] || fail "invalid commit"
-[[ "$image_id" =~ ^sha256:[0-9a-f]{64}$ ]] || fail "invalid image id"
+[[ "$web_commit" =~ ^[0-9a-f]{40}$ ]] || fail "invalid front-end commit"
 [[ "$image_sha" =~ ^[0-9a-f]{64}$ && "$source_sha" =~ ^[0-9a-f]{64}$ ]] || fail "invalid transfer hash"
 
 release_dir="$PLAYER_ROOT/releases/$release_id"
@@ -40,9 +45,12 @@ tar -xzf "$release_dir/incoming/source.tar.gz" -C "$release_dir/source"
 
 stage=load-image
 gunzip -c "$release_dir/incoming/player-image.tar.gz" | docker load >/dev/null
-[[ "$(docker image inspect --format '{{.Id}}' "$image_id")" == "$image_id" ]] || fail "loaded image id mismatch"
-[[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image_id")" == "$commit" ]] \
+tag="tgvio-player:$release_id"
+image_id=$(docker image inspect --format '{{.Id}}' "$tag") || fail "the loaded archive did not provide $tag"
+[[ "$(docker image inspect --format '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$tag")" == "$commit" ]] \
   || fail "image revision label does not match the release commit"
+[[ "$(docker image inspect --format '{{index .Config.Labels "io.tgvio.player-web.revision"}}' "$tag")" == "$web_commit" ]] \
+  || fail "image front-end label does not match player-web.lock"
 
 stage=rollback-point
 bot_before=$(docker inspect --format '{{.Id}} {{.RestartCount}}' tgvio) || fail "Bot container tgvio is not inspectable"

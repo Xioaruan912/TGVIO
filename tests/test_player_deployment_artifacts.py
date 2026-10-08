@@ -93,11 +93,14 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
         self.assertLess(remote.index("stage=health"), remote.index('mv -f "$ENV_FILE.next" "$ENV_FILE"'))
         self.assertIn("the Bot container changed during a Player release", remote)
         self.assertIn("flock -n 9", remote)
+        # Image IDs differ between Docker image stores; provenance is checked by label.
+        self.assertIn('"io.tgvio.player-web.revision"', remote)
+        self.assertNotIn("loaded image id mismatch", remote)
 
     def test_remote_player_release_rejects_malformed_arguments(self) -> None:
         script = ROOT / "scripts" / "player_remote_release.sh"
-        good = ["player-abcdef0-20261008T000000Z", "a" * 40, "sha256:" + "b" * 64, "c" * 64, "d" * 64]
-        for index, bad in ((0, "../escape"), (1, "main"), (2, "latest"), (3, "x")):
+        good = ["player-abcdef0-20261008T000000Z", "a" * 40, "b" * 40, "c" * 64, "d" * 64]
+        for index, bad in ((0, "../escape"), (1, "main"), (2, "latest"), (3, "x"), (4, "y")):
             arguments = list(good)
             arguments[index] = bad
             result = subprocess.run(["bash", str(script), *arguments], capture_output=True, text=True)
