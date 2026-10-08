@@ -63,3 +63,5 @@ docs/refactor-v2的旧部署协议与版本只用于追溯，不表示当前runt
 - [元数据非成功响应核验发布](2026-10-02-metadata-put-verification-release.md)：完整内容确认、隔离回归、副本维护切换和仍未解决范围。
 
 - [10 月 7 日补齐覆盖核查](2026-10-07-maintenance-coverage-audit.md)：实时覆盖、全部当前收藏读取、运行基准校准、上传耗时与未完成范围。
+
+播放卡顿排查与 115 直连调研见 [2026-10-08 记录](2026-10-08-playback-latency-diagnosis.md)。
