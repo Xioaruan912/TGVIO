@@ -70,7 +70,7 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
             self.assertNotIn(forbidden, lock)
 
     def test_player_scripts_are_shell_valid_and_target_only_player(self) -> None:
-        for name in ("player_release.sh", "player_deploy.sh", "player_rollback.sh"):
+        for name in ("player_release.sh", "player_deploy.sh", "player_rollback.sh", "player_remote_release.sh"):
             path = ROOT / "scripts" / name
             subprocess.run(["bash", "-n", str(path)], check=True)
         deploy = (ROOT / "scripts" / "player_deploy.sh").read_text(encoding="utf-8")
@@ -79,6 +79,41 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
         self.assertIn("--no-deps tgvio-player", rollback)
         self.assertNotIn("docker-compose.yml", deploy)
         self.assertNotIn("docker-compose.yml", rollback)
+
+    def test_remote_player_release_keeps_rollback_and_bot_guards(self) -> None:
+        remote = (ROOT / "scripts" / "player_remote_release.sh").read_text(encoding="utf-8")
+        self.assertNotIn("docker-compose.yml", remote)
+        self.assertIn("player_deploy.sh", remote)
+        # A rollback point exists before the switch, with a consistent database copy.
+        for marker in ("player-image.id", "player.env", "player.sqlite3.before", ".backup(copy)"):
+            self.assertIn(marker, remote)
+        self.assertLess(remote.index("rollback-point"), remote.index("stage=switch"))
+        # An unhealthy image is rolled back; the live env only changes after health.
+        self.assertIn("player_rollback.sh", remote)
+        self.assertLess(remote.index("stage=health"), remote.index('mv -f "$ENV_FILE.next" "$ENV_FILE"'))
+        self.assertIn("the Bot container changed during a Player release", remote)
+        self.assertIn("flock -n 9", remote)
+
+    def test_remote_player_release_rejects_malformed_arguments(self) -> None:
+        script = ROOT / "scripts" / "player_remote_release.sh"
+        good = ["player-abcdef0-20261008T000000Z", "a" * 40, "sha256:" + "b" * 64, "c" * 64, "d" * 64]
+        for index, bad in ((0, "../escape"), (1, "main"), (2, "latest"), (3, "x")):
+            arguments = list(good)
+            arguments[index] = bad
+            result = subprocess.run(["bash", str(script), *arguments], capture_output=True, text=True)
+            self.assertNotEqual(result.returncode, 0, bad)
+            self.assertIn("player_release_failed", result.stderr)
+
+    def test_one_deploy_entry_releases_bot_and_player(self) -> None:
+        entry = (ROOT / "scripts" / "deploy_hostdzire.py").read_text(encoding="utf-8")
+        self.assertIn('choices=("all", "bot", "player")', entry)
+        self.assertIn('default="all"', entry)
+        self.assertIn("deploy_player(repo, head, ssh, scp", entry)
+        player = (ROOT / "scripts" / "player_hostdzire.py").read_text(encoding="utf-8")
+        # The image must carry both the release commit and the pinned front end.
+        self.assertIn('"org.opencontainers.image.revision"', player)
+        self.assertIn('"io.tgvio.player-web.revision"', player)
+        self.assertIn("player_release.sh", player)
 
     def test_player_env_template_has_no_bot_credentials(self) -> None:
         template = (ROOT / "deploy" / "player.env.example").read_text(encoding="utf-8")

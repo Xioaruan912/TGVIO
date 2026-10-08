@@ -15,8 +15,8 @@
 
 ## 应用发布
 
-- Bot唯一正式入口：scripts/deploy_hostdzire.py；仅clean且已推送的main。先核实线上源码、任务blocker、时钟、数据库、挂载和磁盘。
-- Player：scripts/player_release.sh构建候选，前端只取player-web.lock固定且已在TGVIO-Player origin/main上的提交（镜像标签io.tgvio.player-web.revision）；scripts/player_deploy.sh仅切换Player；scripts/player_rollback.sh指定可用旧镜像回滚。镜像身份、env权限和health后验须另行核验。
+- 唯一正式入口：scripts/deploy_hostdzire.py；仅clean且已推送的main。`--target all`（默认）先发Bot再发Player，`bot`/`player`只发其一。Bot先核实线上源码、任务blocker、时钟、数据库、挂载和磁盘。
+- Player部分（scripts/player_hostdzire.py + player_remote_release.sh）：本机player_release.sh构建，前端只取player-web.lock固定且已在TGVIO-Player origin/main上的提交（镜像标签io.tgvio.player-web.revision）；镜像与源码两端校验SHA-256；VPS加锁、留rollback-*（旧镜像、env、SQLite backup API备份）后经player_deploy.sh切换；health失败自动player_rollback.sh；后验镜像、Bot容器ID与restart不变、quick_check，成功后才更新player.env。
 - 每次保留当前/上一可用镜像、release source与schema兼容备份。数据库用SQLite backup API，不能cp活跃库冒充一致性备份。
 - 只用固定host key与专用SSH key；不输出秘密、不用sshpass/StrictHostKeyChecking=no。
 - Player-only动作核实Bot容器ID和restart不变；不将两个Compose合并。

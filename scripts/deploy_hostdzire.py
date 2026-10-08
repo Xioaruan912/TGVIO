@@ -1,5 +1,9 @@
 #!/usr/bin/env python3
-"""Build one release from a pushed commit and deliver it to HostDZire."""
+"""Build one release from a pushed commit and deliver it to HostDZire.
+
+One entry for both services: `--target all` (default) releases the Bot and then the
+Player (with the front end pinned in player-web.lock); `bot` or `player` releases one.
+"""
 
 from __future__ import annotations
 
@@ -16,6 +20,7 @@ import subprocess
 import sys
 import tempfile
 
+from player_hostdzire import PlayerDeployError, deploy_player
 from release_guard import (
     GuardError,
     git_source_manifest,
@@ -276,6 +281,25 @@ def deploy(args: argparse.Namespace) -> int:
     expected_source_manifest = source_manifest(repo)
     if git_source_manifest(repo, head) != expected_source_manifest:
         raise DeployError("working source manifest differs from the pushed commit")
+    ssh = _ssh_base(repo, key)
+    scp = _scp_base(repo, key)
+    if args.target in ("bot", "all"):
+        _deploy_bot(args, repo, head, expected_source_manifest, ssh, scp)
+    if args.target in ("player", "all"):
+        print(f"player_release_start={head[:12]}", flush=True)
+        release = deploy_player(repo, head, ssh, scp, f"{USER}@{HOST}")
+        print(f"player_release_complete={release}", flush=True)
+    return 0
+
+
+def _deploy_bot(
+    args: argparse.Namespace,
+    repo: Path,
+    head: str,
+    expected_source_manifest: str,
+    ssh: list[str],
+    scp: list[str],
+) -> None:
     lock_sha = sha256_file(repo / "requirements.lock")
     dockerfile_sha = sha256_file(repo / "Dockerfile")
     phase = args.phase.lower()
@@ -292,8 +316,6 @@ def deploy(args: argparse.Namespace) -> int:
     ):
         raise DeployError("generated release id is invalid")
 
-    ssh = _ssh_base(repo, key)
-    scp = _scp_base(repo, key)
     with tempfile.TemporaryDirectory(prefix="tgvio-release-") as temporary:
         archive = Path(temporary) / "source.tar.gz"
         _git_archive(repo, head, archive)
@@ -348,11 +370,16 @@ def deploy(args: argparse.Namespace) -> int:
     print(f"release_start={release_id}", flush=True)
     _run([*ssh, remote_command])
     print(f"release_complete={release_id}", flush=True)
-    return 0
 
 
 def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
+    result.add_argument(
+        "--target",
+        choices=("all", "bot", "player"),
+        default="all",
+        help="which service to release; all releases the Bot, then the Player",
+    )
     result.add_argument(
         "--phase",
         default="R2-02",
@@ -388,7 +415,7 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     try:
         return deploy(parser().parse_args())
-    except (DeployError, GuardError, OSError, subprocess.CalledProcessError) as exc:
+    except (DeployError, GuardError, PlayerDeployError, OSError, subprocess.CalledProcessError) as exc:
         print(f"deployment failed: {exc}", file=sys.stderr)
         return 2
 
