@@ -386,14 +386,15 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len((await response.json())["items"]), 7)
         self.assertEqual(self.server._schedule_prefetch.await_count, 5)
 
-    async def test_head_prefetch_is_limited_to_one_cache_chunk(self) -> None:
+    async def test_head_prefetch_is_the_warm_head_whatever_the_chunk_size(self) -> None:
         cache = Mock(chunk_bytes=1024)
         self.server._range_cache = cache
+        self.server._warm_head_bytes = 4096
 
-        await self.server._schedule_prefetch(self.media_id, {"size_bytes": 4096})
+        await self.server._schedule_prefetch(self.media_id, {"size_bytes": 64 * 1024})
 
-        self.assertEqual(cache.prefetch_head.call_args.args[4], 1024)
-        self.assertEqual(cache.prefetch_head.call_args.kwargs["whole_below"], 1024)
+        self.assertEqual(cache.prefetch_head.call_args.args[4], 4096)
+        self.assertEqual(cache.prefetch_head.call_args.kwargs["whole_below"], 4096)
 
     async def _queue_delete(self, cookie: str, media_id: str | None = None) -> None:
         response = await self.client.delete(

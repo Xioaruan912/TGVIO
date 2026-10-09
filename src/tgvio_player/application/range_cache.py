@@ -668,43 +668,61 @@ class MediaRangeCache:
         *,
         whole_below: int = 0,
     ) -> None:
-        """Warm the start of an upcoming clip; whole file when small enough."""
+        """Warm the start of an upcoming clip; whole file when small enough.
+
+        Missing head chunks are fetched with one upstream range per contiguous run,
+        so a head of several chunks costs one archive request, not one per chunk.
+        """
         if size <= 0:
             return
         target = size if whole_below and size <= whole_below else min(length, size)
         last_chunk = max(0, (target - 1) // self._chunk_bytes)
+        run: list[int] = []
         for index in range(last_chunk + 1):
             expected = min(self._chunk_bytes, size - index * self._chunk_bytes)
-            if self._store.read_slice(key, index, 0, expected) is not None:
-                continue
-            task_key = (key, index)
             window = self._window_for_chunk(index)
-            if task_key in self._head_tasks or self._span_covering(key, window, index) is not None:
-                continue
-            self._failed.pop(f"{key}:{index}", None)
-            task = asyncio.create_task(
-                self._fetch_window(
-                    key,
-                    package,
-                    relpath,
-                    size,
-                    window,
-                    low_priority=True,
-                    first_chunk=index,
-                    last_chunk=index,
-                    head_prefetch=True,
-                )
+            busy = (
+                self._store.read_slice(key, index, 0, expected) is not None
+                or (key, index) in self._head_tasks
+                or self._span_covering(key, window, index) is not None
             )
+            if run and (busy or self._window_for_chunk(run[0]) != window):
+                self._start_head_fetch(key, package, relpath, size, run)
+                run = []
+            if not busy:
+                run.append(index)
+        if run:
+            self._start_head_fetch(key, package, relpath, size, run)
+
+    def _start_head_fetch(self, key: str, package: str, relpath: str, size: int, run: list[int]) -> None:
+        for index in run:
+            self._failed.pop(f"{key}:{index}", None)
+        task = asyncio.create_task(
+            self._fetch_window(
+                key,
+                package,
+                relpath,
+                size,
+                self._window_for_chunk(run[0]),
+                low_priority=True,
+                first_chunk=run[0],
+                last_chunk=run[-1],
+                head_prefetch=True,
+            )
+        )
+        task_keys = [(key, index) for index in run]
+        for task_key in task_keys:
             self._head_tasks[task_key] = task
-            self._tasks.add(task)
+        self._tasks.add(task)
 
-            def _done(done: asyncio.Task[object], *, key: tuple[str, int] = task_key) -> None:
-                if self._head_tasks.get(key) is done:
-                    self._head_tasks.pop(key, None)
-                    self._signal_partial(key[0], key[1])
-                self._tasks.discard(done)
+        def _done(done: asyncio.Task[object]) -> None:
+            for task_key in task_keys:
+                if self._head_tasks.get(task_key) is done:
+                    self._head_tasks.pop(task_key, None)
+                    self._signal_partial(task_key[0], task_key[1])
+            self._tasks.discard(done)
 
-            task.add_done_callback(_done)
+        task.add_done_callback(_done)
 
     def prefetch_tail(
         self,

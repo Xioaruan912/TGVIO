@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -248,6 +249,22 @@ class MediaRangeCacheTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(set(store.data), {("k", 0)})
         await cache.shutdown()
 
+    async def test_prefetch_head_of_several_chunks_is_one_upstream_range(self) -> None:
+        buffer = bytes(range(64))
+        store = FakeStore()
+        reader = FakeReader(buffer)
+        cache = MediaRangeCache(store, reader, window_bytes=len(buffer), concurrency=2)
+        store.write_chunk("k", 1, buffer[8:16])  # an already warm chunk splits the run
+        cache.prefetch_head("k", "pkg", "clip.mp4", len(buffer), 32)
+        for _ in range(50):
+            if all(("k", index) in store.data for index in range(4)):
+                break
+            await asyncio.sleep(0.01)
+        self.assertEqual(sorted(reader.calls), [(0, 7), (16, 31)])
+        self.assertEqual(b"".join(store.data[("k", i)] for i in range(4)), buffer[:32])
+        self.assertEqual(cache._head_tasks, {})
+        await cache.shutdown()
+
     async def test_prefetch_tail_warms_the_end_and_not_the_head(self) -> None:
         buffer = bytes(range(64))
         store = FakeStore()
@@ -479,6 +496,83 @@ class RangeStoreTests(unittest.TestCase):
             reopened.open()
             self.assertTrue(reopened.has("k", 3))
             self.assertEqual(reopened.total_bytes, 10)
+
+
+class RangeStoreLayoutTests(unittest.TestCase):
+    """A chunk-size change keeps the cache valid without reading the archive again."""
+
+    def _legacy(self, root: Path) -> bytes:
+        # Two clips written with 4-unit chunks, before the layout was recorded.
+        payload = bytes(range(10))
+        for key in ("a", "b"):
+            (root / key).mkdir(parents=True)
+            (root / key / "0.bin").write_bytes(payload[:4])
+            (root / key / "1.bin").write_bytes(payload[4:8])
+            (root / key / "2.bin").write_bytes(payload[8:])
+        return payload
+
+    def _read_all(self, store: RangeStore, key: str, size: int) -> bytes:
+        chunk = store.chunk_bytes
+        return b"".join(
+            store.read_slice(key, index, 0, chunk) or b"" for index in range(-(-size // chunk))
+        )
+
+    def test_larger_chunks_are_split_in_place(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "cache"
+            payload = self._legacy(root)
+            store = RangeStore(root, chunk_bytes=2, max_bytes=1000)
+            store.chunk_bytes = 2  # below the production floor, to keep the fixture small
+            store.open()
+            for key in ("a", "b"):
+                self.assertEqual(self._read_all(store, key, len(payload)), payload)
+                self.assertTrue(store.has(key, 4))
+            self.assertEqual(json.loads((root / "layout.json").read_text()), {"chunk_bytes": 2})
+            self.assertFalse(root.with_name("cache.relayout").exists())
+
+            reopened = RangeStore(root, chunk_bytes=2, max_bytes=1000)
+            reopened.chunk_bytes = 2
+            reopened.open()
+            self.assertEqual(self._read_all(reopened, "a", len(payload)), payload)
+
+    def test_interrupted_conversion_resumes(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "cache"
+            aside = root.with_name("cache.relayout")
+            aside.mkdir()
+            payload = self._legacy(aside)
+            (aside / "layout.json").write_text(json.dumps({"chunk_bytes": 4}))
+            root.mkdir()
+            (root / "layout.json").write_text(json.dumps({"chunk_bytes": 2}))
+            (root / "a").mkdir()
+            (root / "a" / "0.bin").write_bytes(payload[:2])  # half converted
+            store = RangeStore(root, chunk_bytes=2, max_bytes=1000)
+            store.chunk_bytes = 2
+            store.open()
+            for key in ("a", "b"):
+                self.assertEqual(self._read_all(store, key, len(payload)), payload)
+            self.assertFalse(aside.exists())
+
+    def test_unknown_layout_is_dropped(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "cache"
+            self._legacy(root)
+            (root / "layout.json").write_text("not json")
+            store = RangeStore(root, chunk_bytes=64 * 1024, max_bytes=8 * 64 * 1024)
+            store.open()
+            self.assertEqual(store.chunk_count, 0)
+            self.assertEqual(json.loads((root / "layout.json").read_text()), {"chunk_bytes": 64 * 1024})
+
+    def test_cache_already_in_the_configured_layout_is_kept(self) -> None:
+        with TemporaryDirectory() as temporary:
+            root = Path(temporary) / "cache"
+            (root / "k").mkdir(parents=True)
+            (root / "k" / "0.bin").write_bytes(b"x" * (64 * 1024))
+            (root / "k" / "1.bin").write_bytes(b"y" * 10)
+            store = RangeStore(root, chunk_bytes=64 * 1024, max_bytes=8 * 64 * 1024)
+            store.open()
+            self.assertEqual(store.chunk_count, 2)
+            self.assertEqual(store.read_slice("k", 1, 0, 10), b"y" * 10)
 
 
 class TieredRangeStoreTests(unittest.TestCase):
