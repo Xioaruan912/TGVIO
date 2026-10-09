@@ -1,10 +1,14 @@
 from __future__ import annotations
 
 from collections import OrderedDict
+import json
 from pathlib import Path
 import os
 import shutil
 import time
+
+
+_LAYOUT = "layout.json"
 
 
 class RangeStore:
@@ -67,6 +71,7 @@ class RangeStore:
         self._index.clear()
         self._total = 0
         self._head_total = 0
+        self._relayout()
         if not self._root.exists():
             return
         for media_dir in self._root.iterdir():
@@ -85,6 +90,72 @@ class RangeStore:
                     self._head_total += size
         # A smaller budget than the cache on disk shrinks it right away.
         self._evict()
+
+    def _relayout(self) -> None:
+        """Keep the cache valid when the configured chunk size changes.
+
+        A chunk file is named by its index, so its byte offset depends on the chunk
+        size it was written with. That size is recorded in ``layout.json``; a cache
+        without the record (written before it existed) is judged by its largest
+        file. Chunks of a whole multiple of the new size are split in place, which
+        keeps warm heads without reading anything from the archive again; any other
+        layout is dropped. The old tree is first renamed aside in one step and
+        converted one clip at a time, so an interrupted conversion resumes on the
+        next start instead of mixing two layouts.
+        """
+        aside = self._root.with_name(self._root.name + ".relayout")
+        if not aside.exists():
+            previous = self._recorded_chunk_bytes(self._root)
+            if previous is None or previous == self.chunk_bytes:
+                self._write_layout(self._root)
+                return
+            self._root.rename(aside)
+        previous = self._recorded_chunk_bytes(aside) or 0
+        self._root.mkdir(parents=True, exist_ok=True)
+        self._write_layout(self._root)
+        if previous > self.chunk_bytes and previous % self.chunk_bytes == 0:
+            ratio = previous // self.chunk_bytes
+            for media_dir in sorted(aside.iterdir()):
+                if media_dir.is_dir():
+                    self._split_clip(media_dir, self._root / media_dir.name, ratio)
+        shutil.rmtree(aside, ignore_errors=True)
+
+    def _recorded_chunk_bytes(self, root: Path) -> int | None:
+        """The chunk size a cache tree was written with; None for an empty tree."""
+        try:
+            return int(json.loads((root / _LAYOUT).read_text())["chunk_bytes"])
+        except FileNotFoundError:
+            pass
+        except (OSError, ValueError, KeyError, TypeError):
+            return -1  # unreadable record: the layout is unknown and gets dropped
+        if not root.is_dir():
+            return None
+        largest = max((chunk.stat().st_size for chunk in root.glob("*/*.bin")), default=0)
+        if largest == 0:
+            return None
+        # Full chunks fill the size they were written with.
+        return largest if largest > self.chunk_bytes else self.chunk_bytes
+
+    def _write_layout(self, root: Path) -> None:
+        root.mkdir(parents=True, exist_ok=True)
+        temporary = root / f".{_LAYOUT}.tmp"
+        temporary.write_text(json.dumps({"chunk_bytes": self.chunk_bytes}))
+        temporary.replace(root / _LAYOUT)
+
+    def _split_clip(self, source: Path, target: Path, ratio: int) -> None:
+        target.mkdir(parents=True, exist_ok=True)
+        for chunk in source.glob("*.bin"):
+            try:
+                index = int(chunk.stem)
+                data = chunk.read_bytes()
+            except (ValueError, OSError):
+                continue
+            for part, offset in enumerate(range(0, len(data), self.chunk_bytes)):
+                piece = target / f"{index * ratio + part}.bin"
+                temporary = piece.with_name(f".{piece.name}.tmp")
+                temporary.write_bytes(data[offset : offset + self.chunk_bytes])
+                temporary.replace(piece)
+        shutil.rmtree(source, ignore_errors=True)
 
     def _path(self, key: str, index: int) -> Path:
         return self._root / key / f"{index}.bin"

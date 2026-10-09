@@ -580,8 +580,7 @@ class PlayerHttpStreamingMixin:
         size = int(details.get("size_bytes") or 0)
         if size <= 0:
             return
-        chunk_bytes = int(getattr(self._range_cache, "chunk_bytes", self._warm_head_bytes))
-        head_bytes = min(self._warm_head_bytes, chunk_bytes)
+        head_bytes = self._warm_head_bytes
         self._range_cache.prefetch_head(
             media_id,
             location[0],
