@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
@@ -393,6 +394,86 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cache.prefetch_head.call_args.args[4], 1024)
         self.assertEqual(cache.prefetch_head.call_args.kwargs["whole_below"], 1024)
 
+    async def _queue_delete(self, cookie: str, media_id: str | None = None) -> None:
+        response = await self.client.delete(
+            f"/api/v1/media/{media_id or self.media_id}",
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(response.status, 202)
+
+    async def _run_deletions(self) -> dict[str, int]:
+        """Run the background worker once, past the undo window, without pauses."""
+        deletions = self.server.media_deletions
+        deletions._file_pause = 0.0
+        later = time.time() + 10_000
+        deletions._clock = lambda: later
+        await deletions.run_due()
+        return await deletions.status()
+
+    async def _retry_deletions(self) -> dict[str, int]:
+        deletions = self.server.media_deletions
+        deletions._clock = lambda: time.time() + 100_000
+        await deletions.retry_now()
+        await deletions.run_due()
+        return await deletions.status()
+
+    async def test_delete_answers_at_once_and_hides_the_media_before_any_archive_call(self) -> None:
+        cookie = await self._login()
+        response = await self.client.delete(
+            f"/api/v1/media/{self.media_id}", cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(response.status, 202)
+        body = await response.json()
+        self.assertTrue(body["queued"])
+        self.assertGreater(body["undo_seconds"], 0)
+        self.assertEqual(self.delete_client.calls, [])
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+        media = await self.client.get(
+            f"/api/v1/media/{self.media_id}", cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(media.status, 404)
+        feed = await self.client.get("/api/v1/feed?limit=5", cookies={"tgvio_player_session": cookie})
+        self.assertEqual((await feed.json())["items"], [])
+        # A catalog pass while the files are still there must not bring it back.
+        await self.repo.refresh_media_activity()
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+        status = await self.client.get("/api/v1/media-deletions", cookies={"tgvio_player_session": cookie})
+        self.assertEqual(await status.json(), {"pending": 1, "retrying": 0})
+
+    async def test_undo_inside_the_window_restores_the_media_and_touches_nothing(self) -> None:
+        cookie = await self._login()
+        await self._queue_delete(cookie)
+        undo = await self.client.delete(
+            f"/api/v1/media/{self.media_id}/deletion", cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(undo.status, 200)
+        self.assertTrue((await undo.json())["restored"])
+        self.assertIsNotNone(await self.repo.active_media_details(self.media_id))
+        await self._run_deletions()
+        self.assertEqual(self.delete_client.calls, [])
+        self.assertEqual(await self.server.media_deletions.status(), {"pending": 0, "retrying": 0})
+
+    async def test_undo_after_the_worker_started_is_refused(self) -> None:
+        cookie = await self._login()
+        self.delete_client.failures.add(("TGVIO/2026-09-22/1", "video.mp4"))
+        await self._queue_delete(cookie)
+        await self._run_deletions()
+        undo = await self.client.delete(
+            f"/api/v1/media/{self.media_id}/deletion", cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(undo.status, 409)
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+
+    async def test_deleting_twice_keeps_one_queue_entry_and_unknown_media_is_404(self) -> None:
+        cookie = await self._login()
+        await self._queue_delete(cookie)
+        await self._queue_delete(cookie)
+        self.assertEqual((await self.server.media_deletions.status())["pending"], 1)
+        missing = await self.client.delete(
+            f"/api/v1/media/{'9' * 64}", cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(missing.status, 404)
+
     async def test_delete_media_removes_every_registered_file_but_no_folder(self) -> None:
         duplicate = CatalogPackage(
             "duplicate-package", "TGVIO/2026-09-23/2", "c" * 64,
@@ -404,12 +485,9 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.refresh_media_activity()
         cookie = await self._login()
 
-        response = await self.client.delete(
-            f"/api/v1/media/{self.media_id}",
-            cookies={"tgvio_player_session": cookie},
-        )
+        await self._queue_delete(cookie)
+        status = await self._run_deletions()
 
-        self.assertEqual(response.status, 200)
         self.assertCountEqual(
             self.delete_client.calls,
             [
@@ -418,7 +496,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             ],
         )
         self.assertTrue(all(relpath.endswith(".mp4") for _, relpath in self.delete_client.calls))
-        self.assertEqual((await response.json())["deleted_copies"], 2)
+        self.assertEqual(status, {"pending": 0, "retrying": 0})
         self.assertIsNone(await self.repo.active_media_details(self.media_id))
 
     async def test_permanent_delete_removes_still_before_original(self):
@@ -431,16 +509,13 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         await self.repo.apply_package(package)
         cookie = await self._login()
-        response = await self.client.delete(f"/api/v1/media/{self.media_id}",
-                                            cookies={"tgvio_player_session": cookie})
-        body = await response.json()
-        self.assertTrue(body["removed"])
-        self.assertEqual(body["deleted_covers"], 1)
-        self.assertEqual(body["deleted_copies"], 1)
+        await self._queue_delete(cookie)
+        status = await self._run_deletions()
+        self.assertEqual(status["pending"], 0)
         self.assertEqual([path for _, path in self.delete_client.calls], [cover_path, "video.mp4"])
         self.assertIsNone(await self.repo.active_cover(self.media_id))
 
-    async def test_failed_cover_delete_keeps_original_and_reports_partial_failure(self):
+    async def test_failed_cover_delete_keeps_original_and_retries_until_done(self):
         cover_path = "cover/backfill/" + "f" * 64 + ".jpg"
         package = CatalogPackage(
             "package", "TGVIO/2026-09-22/1", "b" * 64, None, None,
@@ -451,13 +526,17 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.apply_package(package)
         self.delete_client.failures.add(("TGVIO/2026-09-22/1", cover_path))
         cookie = await self._login()
-        response = await self.client.delete(f"/api/v1/media/{self.media_id}",
-                                            cookies={"tgvio_player_session": cookie})
-        body = await response.json()
-        self.assertFalse(body["removed"])
-        self.assertEqual(body["failed_covers"], 1)
+        await self._queue_delete(cookie)
+        status = await self._run_deletions()
+        self.assertEqual(status, {"pending": 1, "retrying": 1})
         self.assertEqual([path for _, path in self.delete_client.calls], [cover_path])
-        self.assertIsNotNone(await self.repo.active_media_details(self.media_id))
+        # Still hidden: the viewer deleted it, a failed file does not undo that.
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+
+        self.delete_client.failures.clear()
+        status = await self._retry_deletions()
+        self.assertEqual(status, {"pending": 0, "retrying": 0})
+        self.assertEqual([path for _, path in self.delete_client.calls], [cover_path, cover_path, "video.mp4"])
 
     async def _add_delete_rendition(self):
         variant_id = "e" * 64
@@ -476,13 +555,9 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
     async def test_delete_includes_renditions_and_tombstones_prevent_restore(self):
         variant_id, package = await self._add_delete_rendition()
         cookie = await self._login()
-        response = await self.client.delete(
-            f"/api/v1/media/{self.media_id}",
-            cookies={"tgvio_player_session": cookie},
-        )
-        body = await response.json()
-        self.assertTrue(body["removed"])
-        self.assertEqual(body["deleted_copies"], 2)
+        await self._queue_delete(cookie)
+        status = await self._run_deletions()
+        self.assertEqual(status["pending"], 0)
         self.assertEqual(self.delete_client.calls,
                          [("TGVIO/2026-09-22/1", "renditions/480.mp4"),
                           ("TGVIO/2026-09-22/1", "video.mp4")])
@@ -491,27 +566,25 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNone(await self.repo.active_media_details(self.media_id))
         self.assertIsNone(await self.repo.active_media_details(variant_id))
 
-    async def test_failed_rendition_deletion_keeps_original_and_reports_failure(self):
+    async def test_failed_rendition_deletion_keeps_original_and_retries_until_done(self):
         _, _package = await self._add_delete_rendition()
         self.delete_client.failures.add(("TGVIO/2026-09-22/1", "renditions/480.mp4"))
         cookie = await self._login()
-        response = await self.client.delete(
-            f"/api/v1/media/{self.media_id}",
-            cookies={"tgvio_player_session": cookie},
-        )
-        body = await response.json()
-        self.assertFalse(body["removed"])
-        self.assertEqual(body["failed_copies"], 2)
+        await self._queue_delete(cookie)
+        status = await self._run_deletions()
+        self.assertEqual(status, {"pending": 1, "retrying": 1})
         self.assertEqual(self.delete_client.calls, [("TGVIO/2026-09-22/1", "renditions/480.mp4")])
-        self.assertIsNotNone(await self.repo.active_media_details(self.media_id))
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+
+        self.delete_client.failures.clear()
+        status = await self._retry_deletions()
+        self.assertEqual(status["pending"], 0)
+        self.assertEqual(self.delete_client.calls[-1], ("TGVIO/2026-09-22/1", "video.mp4"))
 
     async def test_deleted_location_tombstone_prevents_catalog_resurrection(self) -> None:
         cookie = await self._login()
-        response = await self.client.delete(
-            f"/api/v1/media/{self.media_id}",
-            cookies={"tgvio_player_session": cookie},
-        )
-        self.assertEqual(response.status, 200)
+        await self._queue_delete(cookie)
+        await self._run_deletions()
 
         package = CatalogPackage(
             "package", "TGVIO/2026-09-22/1", "b" * 64, '"manifest"', '"complete"',
@@ -523,7 +596,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIsNone(await self.repo.active_media_details(self.media_id))
 
-    async def test_delete_media_reports_partial_failure_and_keeps_remaining_copy(self) -> None:
+    async def test_partial_failure_stays_hidden_and_only_the_remaining_copy_is_retried(self) -> None:
         duplicate = CatalogPackage(
             "duplicate-package", "TGVIO/2026-09-23/2", "c" * 64,
             '"manifest-2"', '"complete-2"',
@@ -535,17 +608,49 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.delete_client.failures.add(("TGVIO/2026-09-23/2", "copy.mp4"))
         cookie = await self._login()
 
-        response = await self.client.delete(
-            f"/api/v1/media/{self.media_id}",
-            cookies={"tgvio_player_session": cookie},
-        )
+        await self._queue_delete(cookie)
+        status = await self._run_deletions()
 
+        self.assertEqual(status, {"pending": 1, "retrying": 1})
+        self.assertEqual(len(self.delete_client.calls), 2)
+        await self.repo.apply_package(duplicate)
+        await self.repo.refresh_media_activity()
+        self.assertIsNone(await self.repo.active_media_details(self.media_id))
+
+        self.delete_client.failures.clear()
+        status = await self._retry_deletions()
+        self.assertEqual(status["pending"], 0)
+        self.assertEqual(self.delete_client.calls[2:], [("TGVIO/2026-09-23/2", "copy.mp4")])
+
+    async def test_a_restart_finishes_a_deletion_left_unfinished(self) -> None:
+        cookie = await self._login()
+        self.delete_client.failures.add(("TGVIO/2026-09-22/1", "video.mp4"))
+        await self._queue_delete(cookie)
+        await self._run_deletions()
+        self.delete_client.failures.clear()
+        restarted = PlayerHttpServer(
+            self.repo,
+            SessionService(self.repo, access_secret="s" * 32),
+            ShuffleDeckService(self.repo),
+            ReadOnlyWebDavAdapter(self.read_client),
+            deleter=self.delete_client,
+        )
+        deletions = restarted.media_deletions
+        deletions._file_pause = 0.0
+        deletions._clock = lambda: time.time() + 100_000
+        self.assertTrue(await deletions.run_due())
+        self.assertEqual(await deletions.status(), {"pending": 0, "retrying": 0})
+
+    async def test_retry_now_route_brings_waiting_deletions_forward(self) -> None:
+        cookie = await self._login()
+        self.delete_client.failures.add(("TGVIO/2026-09-22/1", "video.mp4"))
+        await self._queue_delete(cookie)
+        await self._run_deletions()
+        response = await self.client.post(
+            "/api/v1/media-deletions/retry", cookies={"tgvio_player_session": cookie},
+        )
         self.assertEqual(response.status, 200)
-        body = await response.json()
-        self.assertEqual(body["deleted_copies"], 1)
-        self.assertEqual(body["failed_copies"], 1)
-        self.assertFalse(body["removed"])
-        self.assertIsNotNone(await self.repo.active_media_details(self.media_id))
+        self.assertEqual((await response.json())["retried"], 1)
 
     async def test_delete_playing_media_releases_its_stream_slot(self) -> None:
         class BlockingRangeCache:
@@ -579,12 +684,9 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         await asyncio.wait_for(cache.started.wait(), timeout=1)
         self.assertEqual(self.server.active_playback_streams, 1)
 
-        deleted = await self.client.delete(
-            f"/api/v1/media/{self.media_id}",
-            cookies={"tgvio_player_session": cookie},
-        )
-        self.assertEqual(deleted.status, 200)
-        self.assertTrue((await deleted.json())["removed"])
+        await self._queue_delete(cookie)
+        status = await self._run_deletions()
+        self.assertEqual(status["pending"], 0)
         with self.assertRaises(Exception):
             await playing.read()
         for _ in range(20):

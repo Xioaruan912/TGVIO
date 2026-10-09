@@ -19,6 +19,7 @@ from tgvio_player.infrastructure.sqlite_cover_mirror import PlayerCoverMirrorRep
 from tgvio_player.infrastructure.sqlite_similar import PlayerSimilarRepositoryMixin
 from tgvio_player.infrastructure.sqlite_favorites import PlayerFavoriteRepositoryMixin
 from tgvio_player.infrastructure.sqlite_library import PlayerLibraryRepositoryMixin
+from tgvio_player.infrastructure.sqlite_media_deletions import MEDIA_ACTIVE_CASE, PlayerMediaDeletionRepositoryMixin
 from tgvio_player.infrastructure.sqlite_read_mode import PlayerReadModeRepositoryMixin
 from tgvio_player.infrastructure.video_query import build_video_count, build_video_query
 
@@ -29,6 +30,7 @@ _DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class PlayerCatalogRepositorySQLite(
+    PlayerMediaDeletionRepositoryMixin,
     PlayerReadModeRepositoryMixin,
     PlayerCoverMirrorRepositoryMixin,
     PlayerSimilarRepositoryMixin,
@@ -329,23 +331,7 @@ class PlayerCatalogRepositorySQLite(
 
     async def refresh_media_activity(self) -> None:
         async with self._write_transaction() as conn:
-            conn.execute(
-                """
-                UPDATE media
-                SET active = CASE
-                    WHEN EXISTS (
-                        SELECT 1
-                        FROM media_locations ml
-                        JOIN catalog_packages cp ON cp.package_id = ml.package_id
-                        WHERE ml.media_id = media.media_id
-                          AND ml.active = 1
-                          AND cp.active = 1
-                    ) OR EXISTS (
-                        SELECT 1 FROM favorite_locations fl
-                        WHERE fl.media_id = media.media_id
-                    ) THEN 1 ELSE 0 END
-                """
-            )
+            conn.execute(f"UPDATE media SET active = {MEDIA_ACTIVE_CASE}")
 
     async def count_active_videos(self) -> int:
         row = self._require().execute(
