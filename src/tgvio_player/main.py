@@ -167,11 +167,18 @@ def build_cover_mirror(
     )
 
 
-async def _catalog_poll(sync: CatalogSyncService, seconds: int, stop: asyncio.Event) -> None:
+async def _catalog_poll(
+    sync: CatalogSyncService, source: WebDavArchiveCatalogSource, seconds: int, stop: asyncio.Event
+) -> None:
     while not stop.is_set():
         try:
+            reads, hits = source.metadata_reads, source.metadata_hits
             result = await sync.sync_once()
-            _LOG.info("Player catalog sync completed: active_videos=%s rejected=%s", result.active_videos, result.rejected)
+            _LOG.info(
+                "Player catalog sync completed: active_videos=%s rejected=%s metadata_reads=%s metadata_hits=%s",
+                result.active_videos, result.rejected,
+                source.metadata_reads - reads, source.metadata_hits - hits,
+            )
         except Exception:
             _LOG.exception("Player catalog sync failed")
         try:
@@ -271,7 +278,8 @@ async def run(settings: PlayerSettings) -> None:
             recovery.credentials_for, storage_client_factory,
         )
         deleter = WebDavDeleteAdapter(client) if settings.delete_enabled else None
-        sync = CatalogSyncService(WebDavArchiveCatalogSource(client, remote_root=settings.remote_root), repository)
+        catalog_source = WebDavArchiveCatalogSource(client, remote_root=settings.remote_root)
+        sync = CatalogSyncService(catalog_source, repository)
         faststart = FaststartService(
             FaststartStore(settings.data_dir / "faststart"), repository, reader
         )
@@ -321,7 +329,7 @@ async def run(settings: PlayerSettings) -> None:
         site = web.TCPSite(runner, settings.host, settings.port)
         await site.start()
         tasks: list[asyncio.Task[object]] = [
-            asyncio.create_task(_catalog_poll(sync, settings.catalog_poll_seconds, stop)),
+            asyncio.create_task(_catalog_poll(sync, catalog_source, settings.catalog_poll_seconds, stop)),
             asyncio.create_task(_favorite_sync_poll(favorite_backup, 5, stop)),
         ]
         if server.media_deletions is not None:

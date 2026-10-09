@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -530,6 +531,57 @@ class WebDavCatalogSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(discovery.complete_scan)
         self.assertEqual(discovery.packages[0].manifest_etag, '"m"')
         self.assertTrue(all(limit <= 512 * 1024 for _, limit in source.reads))
+
+    async def test_unchanged_metadata_is_not_downloaded_again(self) -> None:
+        source = FakeWebDavClient()
+        source.entries["TGVIO"] = (WebDavCollectionEntry("2026-09-22", True),)
+        source.entries["TGVIO/2026-09-22"] = (WebDavCollectionEntry("1", True),)
+        source.entries["TGVIO/2026-09-22/1"] = (
+            WebDavCollectionEntry("manifest.json", False, '"m1"'),
+            WebDavCollectionEntry("_COMPLETE.json", False, '"c1"'),
+            WebDavCollectionEntry("covers.json", False),
+        )
+        item = candidate("arc_one", "7" * 64)
+        source.json["TGVIO/2026-09-22/1/manifest.json"] = item.manifest
+        source.json["TGVIO/2026-09-22/1/_COMPLETE.json"] = item.complete
+        source.json["TGVIO/2026-09-22/1/covers.json"] = {"version": 2}
+        catalog = WebDavArchiveCatalogSource(source, remote_root="TGVIO")
+
+        first = await catalog.discover()
+        source.reads.clear()
+        second = await catalog.discover()
+
+        # Only the sidecar without an ETag is read again.
+        self.assertEqual([path for path, _ in source.reads], ["TGVIO/2026-09-22/1/covers.json"])
+        self.assertEqual(second.packages[0].manifest, first.packages[0].manifest)
+        self.assertEqual(second.packages[0].complete, first.packages[0].complete)
+
+        source.reads.clear()
+        source.entries["TGVIO/2026-09-22/1"] = (
+            WebDavCollectionEntry("manifest.json", False, '"m2"'),
+            WebDavCollectionEntry("_COMPLETE.json", False, '"c1"'),
+        )
+        await catalog.discover()
+        self.assertEqual([path for path, _ in source.reads], ["TGVIO/2026-09-22/1/manifest.json"])
+
+    async def test_cached_metadata_is_not_shared_with_the_caller(self) -> None:
+        source = FakeWebDavClient()
+        source.entries["TGVIO"] = (WebDavCollectionEntry("2026-09-22", True),)
+        source.entries["TGVIO/2026-09-22"] = (WebDavCollectionEntry("1", True),)
+        source.entries["TGVIO/2026-09-22/1"] = (
+            WebDavCollectionEntry("manifest.json", False, '"m"'),
+            WebDavCollectionEntry("_COMPLETE.json", False, '"c"'),
+        )
+        item = candidate("arc_one", "7" * 64)
+        source.json["TGVIO/2026-09-22/1/manifest.json"] = item.manifest
+        source.json["TGVIO/2026-09-22/1/_COMPLETE.json"] = item.complete
+        expected = copy.deepcopy(item.manifest)
+        catalog = WebDavArchiveCatalogSource(source, remote_root="TGVIO")
+
+        (await catalog.discover()).packages[0].manifest["media"] = []
+        again = await catalog.discover()
+
+        self.assertEqual(again.packages[0].manifest, expected)
 
     async def test_unsafe_remote_entry_keeps_scan_incomplete(self) -> None:
         source = FakeWebDavClient()
