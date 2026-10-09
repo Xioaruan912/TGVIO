@@ -387,7 +387,7 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 if undo_status.complete:
                     text += (
                         f"\n\n↩️ **发布撤销** · 已删除 `{undo_status.deleted_messages}/"
-                        f"{undo_status.total_messages}` 条已确认 Telegram 消息。"
+                        f"{undo_status.total_messages}` 条频道消息。"
                     )
                 elif undo_status.deleted_messages or undo_status.failed_messages:
                     text += (
@@ -400,22 +400,22 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
             if deletion is not None:
                 if deletion.complete:
                     text += (
-                        "\n\n🗑 **远端归档** · 已按记录删除全部文件；"
+                        "\n\n🗑 **云端备份** · 已全部删除；"
                         "Telegram 与删除审计仍保留。"
                     )
                 elif deletion.commit_boundary_invalidated:
                     text += (
-                        f"\n\n🧹 **远端归档清理** · 已删 `{deletion.deleted_targets}/"
+                        f"\n\n🧹 **云端备份删除中** · 已删 `{deletion.deleted_targets}/"
                         f"{deletion.total_targets}`，剩余 `{deletion.remaining_count}` 个精确文件。"
                     )
                 else:
                     text += (
-                        f"\n\n⚠️ **远端归档删除待确认** · 精确目标 "
+                        f"\n\n⚠️ **云端备份等待删除确认** · 共 "
                         f"`{deletion.remaining_count}` 个，尚未开始删除内容。"
                     )
         control = await self._repository.get_job_control(job.id)
         if control.hold_requested and not job.terminal:
-            text += "\n\n⏸ **任务已暂停** · 当前缓存已保留，恢复后从安全边界继续。"
+            text += "\n\n⏸ **任务已暂停** · 恢复后会接着做。"
         return text
 
     async def _plan_text(self, owner_id: int, prefix: str | None) -> str:

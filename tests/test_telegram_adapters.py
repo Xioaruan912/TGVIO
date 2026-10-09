@@ -91,8 +91,8 @@ class TelegramIntakeMappingTests(unittest.TestCase):
 
         self.assertIn("任务 #24", text)
         self.assertNotIn(failed.id[:10], text)
-        self.assertIn("暂时无法读取原媒体", text)
-        self.assertIn("尚未向目标频道发布", text)
+        self.assertIn("没能下载原文件", text)
+        self.assertIn("频道还没有发任何内容", text)
         self.assertNotIn("download_failed", text)
         payloads = [button.data for row in buttons for button in row]
         self.assertIn(f"ui:retry:{failed.id}".encode(), payloads)
@@ -122,8 +122,8 @@ class TelegramIntakeMappingTests(unittest.TestCase):
         text = runtime._render_live_status(completed, None, archive)
         buttons = runtime._status_buttons(completed, archive)
 
-        self.assertIn("Telegram 发布完成", text)
-        self.assertIn("Telegram 发布不受影响", text)
+        self.assertIn("已发到频道", text)
+        self.assertIn("频道里的内容不受影响", text)
         self.assertNotIn("archive_execution_failed", text)
         payloads = [button.data for row in buttons for button in row]
         self.assertIn(f"ui:archive-retry:{completed.id}".encode(), payloads)
@@ -151,8 +151,8 @@ class TelegramIntakeMappingTests(unittest.TestCase):
         text = runtime._render_live_status(failed, None, None)
         buttons = runtime._status_buttons(failed, None)
 
-        self.assertIn("自动恢复", text)
-        self.assertIn("无需操作", text)
+        self.assertIn("正在自动重试", text)
+        self.assertIn("不用管", text)
         payloads = [button.data for row in buttons for button in row]
         self.assertNotIn(f"ui:retry:{failed.id}".encode(), payloads)
         self.assertFalse(runtime._status_is_terminal(failed, None))
@@ -176,8 +176,8 @@ class TelegramIntakeMappingTests(unittest.TestCase):
         text = runtime._render_live_status(failed, None, None)
         buttons = runtime._status_buttons(failed, None)
 
-        self.assertIn("已隔离", text)
-        self.assertIn("后续任务会继续", text)
+        self.assertIn("为防重复没有重发", text)
+        self.assertIn("其他任务不受影响", text)
         payloads = [button.data for row in buttons for button in row]
         self.assertNotIn(f"ui:retry:{failed.id}".encode(), payloads)
         self.assertTrue(runtime._status_is_terminal(failed, None))

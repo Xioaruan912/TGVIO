@@ -384,7 +384,7 @@ class TelethonBotUI(
         if action == "ui:queue-pause":
             await self._edit_page(
                 event,
-                "**确认暂停队列**\n\n只会阻止新的 prepare / publish / archive claim；已经在执行的外部操作会在原安全边界结束，不会被强制中断。",
+                "**确认暂停**\n\n暂停后不再开始新的下载、发布和备份；正在做的这一步会做完再停。",
                 [[Button.inline("⏸ 确认暂停", b"ui:queue-pause-confirm"), Button.inline("返回", b"ui:status")]],
             )
             return
@@ -533,7 +533,7 @@ class TelethonBotUI(
                 event,
                 (
                     "**确认清理缓存**\n\n"
-                    "只会删除已完成或已取消任务的缓存；失败任务和归档未完成任务不会被删除。"
+                    "只删已完成或已取消任务的临时文件；失败的任务和还没备份完的不会删。"
                     f"{target_text}"
                 ),
                 [
@@ -730,7 +730,7 @@ class TelethonBotUI(
             rows.append(
                 [
                     Button.inline(
-                        "☁️ 重传失败归档",
+                        "☁️ 重新备份",
                         self._callback_data("archive-retry", job.id),
                     )
                 ]
@@ -748,9 +748,9 @@ class TelethonBotUI(
                     [
                         Button.inline(
                             (
-                                "🧹 继续清理远端归档"
+                                "🧹 继续删除云端备份"
                                 if deletion is not None
-                                else "🗑 删除远端归档"
+                                else "🗑 删除云端备份"
                             ),
                             self._callback_data("archive-delete", job.id),
                         )
@@ -771,17 +771,17 @@ class TelethonBotUI(
 
         plan = await self._repository.get_publish_plan(job.id)
         detail_row = []
-        if plan is not None:
+        if plan is not None and deep:
             detail_row.append(
                 Button.inline("🧠 发布计划", self._callback_data("plan", job.id))
             )
         if deep:
             detail_row.append(
-                Button.inline("简明详情", self._callback_data("job", job.id))
+                Button.inline("↩️ 简单视图", self._callback_data("job", job.id))
             )
         else:
             detail_row.append(
-                Button.inline("🩺 技术详情", self._callback_data("job-deep", job.id))
+                Button.inline("🔧 详细信息", self._callback_data("job-deep", job.id))
             )
         if detail_row:
             rows.append(detail_row)
