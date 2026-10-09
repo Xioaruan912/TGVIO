@@ -363,7 +363,7 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                     lines.append(f"  ☁️ WebDAV：{issue.title} · {issue.action}")
                 if job.error_code in {"publish_partial", "publish_uncertain"}:
                     lines.append("  🛡️ 可能已有可见消息，禁止自动重发。")
-        rows: list[list] = []
+        rows: list[list] = self._retry_all_button(await self._retry_all_plan(owner_id))
         for position, entry in enumerate(result.entries, start=1):
             rows.append(
                 [

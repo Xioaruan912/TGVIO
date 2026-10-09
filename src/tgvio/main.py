@@ -47,6 +47,7 @@ from tgvio.domain.notifications import ALERT_EVENT_TYPES
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
 from tgvio.application.item_recovery import SkippedItemRecoveryService
+from tgvio.application.bulk_retry import BulkRetryService
 from tgvio.application.collection_editing import CollectionEditingService
 from tgvio.application.previews import PreviewService
 from tgvio.application.pick_previews import PickPreviewService
@@ -522,6 +523,12 @@ async def run(*, check_only: bool = False) -> None:
                 else None
             ),
             item_recovery=SkippedItemRecoveryService(repository),
+            bulk_retry=BulkRetryService(
+                repository,
+                control,
+                item_recovery=SkippedItemRecoveryService(repository),
+                archive_operator=archive_runtime if settings.archive_enabled else None,
+            ),
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()
