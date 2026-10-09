@@ -23,6 +23,8 @@ class ArchiveObjectState(StrEnum):
     VERIFYING = "verifying"
     STORED = "stored"
     FAILED = "failed"
+    # Only seen on objects of packages an earlier operation cancelled; terminal.
+    CANCELLED = "cancelled"
 
 
 class ArchiveObjectRole(StrEnum):
@@ -126,6 +128,7 @@ ARCHIVE_OBJECT_TRANSITIONS: dict[ArchiveObjectState, set[ArchiveObjectState]] = 
     # recovery. Re-uploading that exact canonical object is safe and is the
     # only allowed transition out of STORED.
     ArchiveObjectState.STORED: {ArchiveObjectState.UPLOADING},
+    ArchiveObjectState.CANCELLED: set(),
 }
 
 
