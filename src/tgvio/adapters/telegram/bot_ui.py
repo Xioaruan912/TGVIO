@@ -339,6 +339,15 @@ class TelethonBotUI(
                 buttons=self._cache_buttons(),
                 parse_mode="md",
             )
+        elif action == NAV_SETTINGS:
+            quiet = await self._quiet_enabled(owner_id)
+            await event.respond(
+                self._settings_page_text(quiet),
+                buttons=self._settings_page_buttons(quiet),
+                parse_mode="md",
+            )
+        elif action == NAV_HELP:
+            await event.respond(self._help_text(), buttons=self._help_buttons(), parse_mode="md")
         elif action == NAV_MORE:
             await event.respond(
                 self._more_text(),

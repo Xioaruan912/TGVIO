@@ -6,19 +6,13 @@ from tgvio.domain.job_query import JobListFilter
 from tgvio.domain.publish import PublishStepKind
 
 
+# The menu shows only everyday entries; the other commands keep working when typed.
 COMMANDS: tuple[tuple[str, str], ...] = (
-    ("start", "打开 TGVIO 首页"),
-    ("begin", "开始收集一个合集"),
-    ("end", "结束合集并创建任务"),
-    ("mode", "设置雪花显示偏好"),
-    ("drafts", "查看合集草稿"),
-    ("pause", "暂停队列或指定任务"),
-    ("resume", "恢复队列或指定任务"),
-    ("jobs", "查看最近任务"),
-    ("status", "查看运行与任务状态"),
-    ("source", "来源账号（个人 session）"),
-    ("pick", "选择来源最近媒体并发布"),
-    ("help", "查看使用说明"),
+    ("start", "首页"),
+    ("jobs", "我的任务"),
+    ("begin", "开始一个合集"),
+    ("end", "结束合集并发布"),
+    ("help", "怎么用"),
 )
 
 
@@ -31,6 +25,8 @@ NAV_MORE = "ℹ️ 更多"
 NAV_HISTORY = "🗂 发布历史"
 NAV_DRAFTS = "📝 我的草稿"
 NAV_STYLE = "🎨 发布风格"
+NAV_SETTINGS = "⚙️ 设置"
+NAV_HELP = "❓ 怎么用"
 COLLECTION_BEGIN_BUTTON = "📥 开始合集"
 COLLECTION_NEW_BUTTON = "📥 新建合集"
 COLLECTION_END_BUTTON = "🛑 结束并发布"
@@ -46,6 +42,8 @@ NAV_BUTTONS = frozenset(
         NAV_HISTORY,
         NAV_DRAFTS,
         NAV_STYLE,
+        NAV_SETTINGS,
+        NAV_HELP,
     }
 )
 COLLECTION_BUTTONS = frozenset(
