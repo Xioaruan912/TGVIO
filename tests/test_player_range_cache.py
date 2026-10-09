@@ -564,13 +564,13 @@ class RangeCacheTraceTests(unittest.IsolatedAsyncioTestCase):
             stream_trace.end(token)
         return trace.fields
 
-    async def test_a_seek_into_a_window_reports_the_bytes_fetched_in_front_of_it(self) -> None:
+    async def test_a_seek_into_a_window_waits_only_for_its_own_chunk(self) -> None:
         reader = FakeReader(bytes(range(64)))
         cache = MediaRangeCache(FakeStore(), reader, window_bytes=32, max_attempts=1)
         try:
             fields = await self._traced_prime(cache, 20)
-            self.assertEqual(reader.calls, [(0, 31)], "the window is fetched from its start")
-            self.assertEqual(fields["lead_bytes"], 20)
+            self.assertEqual(reader.calls, [(16, 31)], "a seek fetches from its own chunk, not the window start")
+            self.assertEqual(fields["lead_bytes"], 4)
             self.assertEqual(fields["prime_from"], "fetched")
             self.assertFalse(fields["fetch_joined"])
             self.assertIn("upstream_open_ms", fields)
@@ -589,4 +589,74 @@ class RangeCacheTraceTests(unittest.IsolatedAsyncioTestCase):
             await cache.prime("k", "pkg", "clip.mp4", 64, ByteRange(0, 3))
             self.assertIsNone(stream_trace.current())
         finally:
+            await cache.shutdown()
+
+
+class GatedReader(FakeReader):
+    """Holds each upstream body until released, so fetches can overlap."""
+
+    def __init__(self, buffer: bytes) -> None:
+        super().__init__(buffer)
+        self.release = asyncio.Event()
+
+    async def open_range(self, package: str, relpath: str, byte_range: ByteRange):
+        response = await super().open_range(package, relpath, byte_range)
+        payload, gate = response.body.payload, self.release
+
+        class Body:
+            def __init__(self) -> None:
+                self.done = False
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self) -> bytes:
+                if self.done:
+                    raise StopAsyncIteration
+                await gate.wait()
+                self.done = True
+                return payload
+
+            async def aclose(self) -> None:
+                return None
+
+        response.body = Body()
+        return response
+
+
+class SeekWithinWindowTests(unittest.IsolatedAsyncioTestCase):
+    async def test_reading_back_before_a_seek_fetches_only_the_gap(self) -> None:
+        payload = bytes(range(64))
+        reader = GatedReader(payload)
+        cache = MediaRangeCache(FakeStore(), reader, window_bytes=32, max_attempts=1)
+        try:
+            seek = asyncio.create_task(collect(cache.stream("k", "pkg", "c.mp4", 64, ByteRange(20, 23))))
+            await asyncio.sleep(0)
+            back = asyncio.create_task(collect(cache.stream("k", "pkg", "c.mp4", 64, ByteRange(2, 5))))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(reader.calls, [(16, 31), (0, 15)], "the earlier chunks are fetched, not waited on")
+            reader.release.set()
+            self.assertEqual(await asyncio.wait_for(seek, 1), payload[20:24])
+            self.assertEqual(await asyncio.wait_for(back, 1), payload[2:6])
+        finally:
+            reader.release.set()
+            await cache.shutdown()
+
+    async def test_a_read_inside_a_running_fetch_joins_it(self) -> None:
+        payload = bytes(range(64))
+        reader = GatedReader(payload)
+        cache = MediaRangeCache(FakeStore(), reader, window_bytes=32, max_attempts=1)
+        try:
+            first = asyncio.create_task(collect(cache.stream("k", "pkg", "c.mp4", 64, ByteRange(9, 10))))
+            await asyncio.sleep(0)
+            second = asyncio.create_task(collect(cache.stream("k", "pkg", "c.mp4", 64, ByteRange(26, 27))))
+            for _ in range(5):
+                await asyncio.sleep(0)
+            self.assertEqual(reader.calls, [(8, 31)])
+            reader.release.set()
+            self.assertEqual(await asyncio.wait_for(first, 1), payload[9:11])
+            self.assertEqual(await asyncio.wait_for(second, 1), payload[26:28])
+        finally:
+            reader.release.set()
             await cache.shutdown()

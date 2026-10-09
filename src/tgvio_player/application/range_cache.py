@@ -86,7 +86,9 @@ class MediaRangeCache:
     """Streams media ranges through a bounded on-disk chunk cache.
 
     Upstream reads happen in large aligned *windows* (default 32 MB) so the slow
-    per-request latency of the archive backend is amortised over many chunks; the
+    per-request latency of the archive backend is amortised over many chunks. A
+    read starts at the chunk the reader needs (a seek never downloads the part of
+    the window in front of it) and runs to the window end; the
     data is split into local chunks (default 4 MB) as it streams and served from
     disk on later hits. Windows fetch concurrently (default 4) and the limiter
     backs off automatically when the backend throttles with 403/429/5xx.
@@ -113,7 +115,8 @@ class MediaRangeCache:
         self._should_pause = should_pause or (lambda: False)
         self._max_attempts = max(1, int(max_attempts))
         self._backoff = max(0.05, float(backoff_seconds))
-        self._window_tasks: dict[tuple[str, int], asyncio.Task[object]] = {}
+        # In-flight fetches per window, each as (first chunk, last chunk, task).
+        self._window_tasks: dict[tuple[str, int], list[tuple[int, int, asyncio.Task[object]]]] = {}
         self._head_tasks: dict[tuple[str, int], asyncio.Task[object]] = {}
         self._chunk_events: dict[tuple[str, int], asyncio.Event] = {}
         self._partial_chunks: dict[tuple[str, int], bytearray] = {}
@@ -166,6 +169,12 @@ class MediaRangeCache:
         finally:
             self._unmark_foreground(key, window)
 
+    def _window_spans(self, key: str, window: int) -> list[tuple[int, int, asyncio.Task[object]]]:
+        return self._window_tasks.get((key, window), [])
+
+    def _span_covering(self, key: str, window: int, index: int) -> tuple[int, int, asyncio.Task[object]] | None:
+        return next((span for span in self._window_spans(key, window) if span[0] <= index <= span[1]), None)
+
     def _ensure_window(
         self,
         key: str,
@@ -177,41 +186,64 @@ class MediaRangeCache:
         low_priority: bool = False,
         needed_chunk: int | None = None,
     ) -> None:
+        """Make sure the bytes a reader needs next are on their way.
+
+        A reader that needs a particular chunk gets a fetch starting at that chunk,
+        so a seek into the middle of a window never waits for the bytes in front of
+        it. The fetch runs to the window end, or up to a fetch already running later
+        in the window; several fetches can therefore share one window, each owning
+        its own span of chunks.
+        """
         if window * self._window_bytes >= size:
             return
         if needed_chunk is not None:
             head_task = self._head_tasks.get((key, needed_chunk))
             if head_task is not None and not head_task.done():
                 return
-        if (key, window) in self._window_tasks:
-            return
-        for task_key, head_task in list(self._head_tasks.items()):
-            if task_key[0] == key and self._window_for_chunk(task_key[1]) == window:
-                self._head_tasks.pop(task_key, None)
-                head_task.cancel()
-        # A failed window belongs to that fetch attempt. Let a later playback
-        # request start a fresh fetch instead of inheriting a stale failure.
+        spans = self._window_spans(key, window)
         window_start = window * self._window_bytes
         window_end = min(window_start + self._window_bytes, size) - 1
         first_chunk = window_start // self._chunk_bytes
         last_chunk = window_end // self._chunk_bytes
+        if needed_chunk is None:
+            if spans:
+                return
+            start = first_chunk
+        else:
+            if self._span_covering(key, window, needed_chunk) is not None:
+                return
+            start = needed_chunk
+        last_chunk = min([last_chunk, *(span[0] - 1 for span in spans if span[0] > start)])
         if all(
             self._store.read_slice(key, item, 0, self._chunk_bytes) is not None
-            for item in range(first_chunk, last_chunk + 1)
+            for item in range(start, last_chunk + 1)
         ):
             return
-        for index in range(first_chunk, last_chunk + 1):
+        for task_key, head_task in list(self._head_tasks.items()):
+            if task_key[0] == key and start <= task_key[1] <= last_chunk:
+                self._head_tasks.pop(task_key, None)
+                head_task.cancel()
+        # A failed fetch belongs to that attempt. Let a later playback request
+        # start a fresh fetch instead of inheriting a stale failure.
+        for index in range(start, last_chunk + 1):
             chunk_key = (key, index)
             self._partial_chunks.pop(chunk_key, None)
             self._failed.pop(f"{key}:{index}", None)
         task = asyncio.create_task(
-            self._fetch_window(key, package, relpath, size, window, low_priority=low_priority)
+            self._fetch_window(
+                key, package, relpath, size, window,
+                low_priority=low_priority, first_chunk=start, last_chunk=last_chunk,
+            )
         )
-        self._window_tasks[(key, window)] = task
+        span = (start, last_chunk, task)
+        self._window_tasks.setdefault((key, window), []).append(span)
         self._tasks.add(task)
 
         def _done(_task: asyncio.Task[object]) -> None:
-            if self._window_tasks.get((key, window)) is _task:
+            remaining = [item for item in self._window_spans(key, window) if item[2] is not _task]
+            if remaining:
+                self._window_tasks[(key, window)] = remaining
+            else:
                 self._window_tasks.pop((key, window), None)
             self._tasks.discard(_task)
 
@@ -523,19 +555,16 @@ class MediaRangeCache:
     ) -> None:
         """Note how much the archive must send before this request's first byte.
 
-        A window is fetched from its first missing chunk, so a seek into the middle of
-        a window waits for every missing byte in front of it.
+        A fetch already running in front of the requested chunk is joined; otherwise
+        a new fetch starts at the requested chunk itself.
         """
-        first = window * self._window_chunks
-        missing = next(
-            (
-                item for item in range(first, index + 1)
-                if self._store.read_slice(key, item, 0, self._chunk_bytes) is None
-            ),
-            None,
-        )
-        trace.note("fetch_joined", (key, window) in self._window_tasks)
-        trace.note("lead_bytes", 0 if missing is None else start - missing * self._chunk_bytes)
+        span = self._span_covering(key, window, index)
+        trace.note("fetch_joined", span is not None)
+        if self._store.read_slice(key, index, 0, self._chunk_bytes) is not None:
+            trace.note("lead_bytes", 0)
+            return
+        first = index if span is None else span[0]
+        trace.note("lead_bytes", start - first * self._chunk_bytes)
 
     async def _available_chunk_bytes(
         self,
@@ -612,9 +641,10 @@ class MediaRangeCache:
         if not missing:
             return
         window = self._window_for_chunk(missing[0])
-        if (key, window) in self._window_tasks:
+        running = self._span_covering(key, window, missing[0])
+        if running is not None:
             try:
-                await asyncio.shield(self._window_tasks[(key, window)])
+                await asyncio.shield(running[2])
             except Exception:
                 pass
             return
@@ -649,7 +679,7 @@ class MediaRangeCache:
                 continue
             task_key = (key, index)
             window = self._window_for_chunk(index)
-            if task_key in self._head_tasks or self._window_tasks.get((key, window)) is not None:
+            if task_key in self._head_tasks or self._span_covering(key, window, index) is not None:
                 continue
             self._failed.pop(f"{key}:{index}", None)
             task = asyncio.create_task(
@@ -686,11 +716,9 @@ class MediaRangeCache:
     ) -> None:
         """Warm the end of a clip so a first seek to the tail is local.
 
-        Warms the whole aligned window(s) covering the last ``length`` bytes.
-        Warming only the tail chunks would not help: ``prime`` refetches any
-        incomplete window in full, so the window itself is what has to be
-        present. The bytes fetched are the ones playback would have pulled on
-        that seek anyway, only earlier.
+        Warms the whole aligned window(s) covering the last ``length`` bytes, so
+        a seek anywhere in the tail starts from local chunks. A seek elsewhere
+        fetches from its own chunk onward and never waits for this warm.
         """
         if size <= 0:
             return
@@ -724,8 +752,9 @@ class MediaRangeCache:
         }
         tasks = [
             task
-            for (media_id, _window), task in list(self._window_tasks.items())
+            for (media_id, _window), spans in list(self._window_tasks.items())
             if media_id == key
+            for _first, _last, task in spans
         ]
         tasks.extend(
             task
@@ -756,7 +785,7 @@ class MediaRangeCache:
         data = dict(self._store.stats())
         data["window_bytes"] = self._window_bytes
         data["concurrency"] = self._gate.limit
-        data["windows_inflight"] = len(self._window_tasks)
+        data["windows_inflight"] = sum(len(spans) for spans in self._window_tasks.values())
         data["head_chunks_inflight"] = len(self._head_tasks)
         data["disk_cache_bytes_served"] = self._disk_cache_bytes_served
         data["inflight_bytes_served"] = self._inflight_bytes_served
