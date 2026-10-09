@@ -63,3 +63,25 @@ class StructuredLoggingTests(unittest.TestCase):
             self.assertEqual(payload["event"], "fixture.file")
             self.assertEqual(payload["item_count"], 3)
 
+
+    def test_telethon_transport_noise_stays_out_of_the_log(self) -> None:
+        # Production logs were ~77% mtproto warnings such as "Server sent a very
+        # new message" and "Too many messages"; real failures drowned in them.
+        with TemporaryDirectory() as tmp:
+            configure_logging(
+                level="INFO",
+                log_dir=Path(tmp),
+                file_enabled=True,
+                max_bytes=1024 * 1024,
+                backup_count=2,
+            )
+            logging.getLogger("telethon.network.mtprotostate").warning("Server sent a very new message")
+            logging.getLogger("telethon.network.mtprotosender").warning("Security error while unpacking")
+            logging.getLogger("telethon.network.mtprotosender").info("Connecting to 1.2.3.4:443")
+            logging.getLogger("telethon.client.users").warning("Telegram is having internal issues")
+            logging.getLogger("telethon.client.updates").error("Unhandled exception on _on_callback")
+            for handler in logging.getLogger().handlers:
+                handler.flush()
+            lines = (Path(tmp) / "tgvio.jsonl").read_text(encoding="utf-8").splitlines()
+            messages = [json.loads(line)["message"] for line in lines]
+            self.assertEqual(messages, ["Unhandled exception on _on_callback"])
