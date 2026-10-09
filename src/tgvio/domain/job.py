@@ -39,6 +39,23 @@ def item_download_skipped(item: "MediaItem") -> bool:
 
     return bool(item.metadata.get(DOWNLOAD_SKIPPED_KEY))
 
+def job_failure_code(job: "Job") -> str | None:
+    """The failure code to act on.
+
+    Jobs failed before source_missing existed recorded media deleted at its
+    source as download_failed; their skipped items still say what happened.
+    """
+
+    if job.error_code == "download_failed":
+        media = [item for item in job.items if item.kind != MediaKind.TEXT]
+        if media and all(
+            item_download_skipped(item)
+            and item.metadata.get(DOWNLOAD_SKIPPED_CODE_KEY) == "source_missing"
+            for item in media
+        ):
+            return "source_missing"
+    return job.error_code
+
 ALLOWED_TRANSITIONS: dict[JobState, set[JobState]] = {
     JobState.RECEIVED: {
         JobState.DOWNLOADING,

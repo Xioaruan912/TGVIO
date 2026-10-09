@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
+from tgvio.domain.job import job_failure_code
 
 
 class IntakeStatusMixin:
@@ -154,7 +155,7 @@ class IntakeStatusMixin:
         elif job.state == JobState.SUCCEEDED:
             lines.append("状态：✅ **已发到频道**")
         elif job.state == JobState.FAILED:
-            issue = describe_job_failure(job.error_code)
+            issue = describe_job_failure(job_failure_code(job))
             recovery = job_recovery_state(job)
             recovery_status = str(recovery.get("status", ""))
             if recovery_status == "scheduled":
@@ -276,7 +277,7 @@ class IntakeStatusMixin:
             )
         if (
             job.state == JobState.FAILED
-            and job.error_code not in {"publish_partial", "publish_uncertain"}
+            and job_failure_code(job) not in {"publish_partial", "publish_uncertain", "source_missing"}
             and not job_failure_waits_for_recovery(job)
             and job_recovery_state(job).get("status") != "manual_review"
         ):

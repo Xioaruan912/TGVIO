@@ -51,7 +51,7 @@ from tgvio.domain.archive import (
     ArchivePackageState,
 )
 from tgvio.domain.diagnostics import DiagnosticSnapshot
-from tgvio.domain.job import Job, JobState, MediaKind
+from tgvio.domain.job import Job, JobState, MediaKind, job_failure_code
 from tgvio.domain.job_query import (
     FailurePage,
     FailureSummary,
@@ -244,15 +244,20 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
         lines = [
             f"{icon} **#{number if number is not None else '?'}** · {state} · "
             f"{self._job_media_counts(job)} · {self._job_local_time(job)}",
-            f"　{self._job_content_summary(job)}",
+            *self._job_summary_lines(job),
         ]
         if job.state == JobState.FAILED:
-            lines.append(f"　⚠️ {describe_job_failure(job.error_code).title}")
+            lines.append(f"　⚠️ {describe_job_failure(job_failure_code(job)).title}")
         elif not job.terminal and not held:
             progress = await self._repository.get_job_progress(job.id)
             if progress is not None:
                 lines.append(f"　{self._progress_text(progress)}")
         return lines
+
+    def _job_summary_lines(self, job: Job) -> list[str]:
+        summary = self._job_content_summary(job)
+        # Without a name or caption the summary only repeats the media counts.
+        return [] if summary == f"🎬 {self._job_media_counts(job)}" else [f"　{summary}"]
 
     @staticmethod
     def _task_tabs(current: bytes) -> list:
@@ -333,9 +338,9 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
                 f"❌ **#{entry.label_number if entry.label_number is not None else '?'}** · "
                 f"{self._job_media_counts(job)} · {self._job_local_time(job)}"
             )
-            lines.append(f"　{self._job_content_summary(job)}")
+            lines.extend(self._job_summary_lines(job))
             if entry.job_actionable:
-                issue = describe_job_failure(job.error_code)
+                issue = describe_job_failure(job_failure_code(job))
                 lines.append(f"　{issue.title}：{issue.action}")
             if entry.archive_actionable:
                 issue = describe_archive_failure(entry.archive_error_code)
