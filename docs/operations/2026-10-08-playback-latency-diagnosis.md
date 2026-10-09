@@ -124,3 +124,4 @@ Player：分块 4 MB、预读窗口 32 MB、并发 4、开头预热 16 MB（WARM
   - `first_byte_ms` 小而浏览器等待长：慢在客户端到 VPS 这一段。
   - `lead_bytes` 大且 `prime_ms` 高：慢在窗口对齐，下一步应改为从目标块开始取数。
   - `upstream_open_ms` 高：慢在网盘或直链建立连接。
+- 发布：用户执行 `deploy_hostdzire.py --target player --phase R2-51`（无迁移）：release `player-2f7b0b4-20261009T030832Z`，镜像 `sha256:9586d7f9c9bd…`，容器 `73b93aecdce3`，healthy，restarts 0；Bot `4bf74f9f3abf` 未变；回滚点 `/root/tgvio-player/rollback-20261009T030920Z`。启动 read mode webdav；公网 `/healthz` 200。待用户实际播放后读取日志分析。
