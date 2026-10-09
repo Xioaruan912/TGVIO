@@ -324,6 +324,9 @@ async def run(settings: PlayerSettings) -> None:
             asyncio.create_task(_catalog_poll(sync, settings.catalog_poll_seconds, stop)),
             asyncio.create_task(_favorite_sync_poll(favorite_backup, 5, stop)),
         ]
+        if server.media_deletions is not None:
+            # Queued permanent deletes, including any left unfinished by a restart.
+            tasks.append(asyncio.create_task(server.media_deletions.run(stop)))
         if settings.faststart_backfill:
             backfill = FaststartBackfill(
                 faststart, repository, should_pause=lambda: server.active_playback_streams > 0

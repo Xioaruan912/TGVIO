@@ -30,6 +30,7 @@ from .read_mode import PlayerReadModeHttpMixin
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.favorite_backup import FavoriteBackupService
 from tgvio_player.application.feed import ShuffleDeckService
+from tgvio_player.application.media_deletion import MediaDeletionService
 from tgvio_player.application.playback import StartupRangeCache
 from tgvio_player.application.player_recovery import (
     PlayerRecoveryService,
@@ -135,6 +136,19 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         self._cover_mirror_counters = cover_mirror_counters
         self._deleter = deleter
         self._favorite_backup = favorite_backup
+        # The one owner of permanent deletion; main runs its background worker.
+        self.media_deletions = (
+            MediaDeletionService(
+                repository, deleter,
+                on_removed=self._discard_media_caches,
+                favorites=favorite_backup,
+                events=log_event,
+                fingerprint=fingerprint,
+            )
+            if deleter is not None
+            else None
+        )
+        self._media_deletions = self.media_deletions
         self._recovery_service = recovery_service
         self._storage_client_factory = storage_client_factory
         self._storage_rate: dict[str, list[float]] = {}
@@ -227,6 +241,9 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         app.router.add_get("/api/v1/media/{media_id}/similar", self._similar)
         if self._deleter is not None:
             app.router.add_delete("/api/v1/media/{media_id}", self._delete_media)
+            app.router.add_delete("/api/v1/media/{media_id}/deletion", self._cancel_media_deletion)
+            app.router.add_get("/api/v1/media-deletions", self._media_deletions_status)
+            app.router.add_post("/api/v1/media-deletions/retry", self._media_deletions_retry)
         app.router.add_get("/api/v1/media/{media_id}/stream", self._stream)
         app.router.add_get("/api/v1/media/{media_id}/cover", self._cover)
         app.router.add_post("/api/v1/media/{media_id}/prepare", self._prepare)

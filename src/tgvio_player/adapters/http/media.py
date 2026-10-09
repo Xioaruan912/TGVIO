@@ -1,14 +1,12 @@
 from __future__ import annotations
 
 import math
-import time
 
 from aiohttp import web
 
 from tgvio_player.application.favorite_backup import FavoriteBackupError
 
 from .client import _prefetch_requested
-from .diagnostics import fingerprint, log_event
 
 # A similarity request is a bounded read: a personal library can outgrow any one request's
 # budget, and a partial answer that says so beats a silent one.
@@ -173,117 +171,43 @@ class PlayerMediaHttpMixin:
         return web.json_response({"id": details["media_id"], "deleted": True})
 
     async def _delete_media(self, request: web.Request) -> web.Response:
+        """Accept a permanent delete at once; the archive files go in the background."""
         await self._authenticate(request)
         self._require_same_origin(request)
         media_id = request.match_info["media_id"]
-        media_fingerprint = fingerprint(media_id)
-        request_id = request.get("player_request_id")
-        await self._media_details(media_id)
-        locations = await self._repository.active_location_records(media_id)
-        if not locations:
+        undo_seconds = await self._media_deletions.request(media_id)
+        if undo_seconds is None:
             raise web.HTTPNotFound(text="media not found")
-
-        variants = await self._repository.active_variants(media_id)
-        variant_locations = [
-            (str(v["variant_media_id"]), location)
-            for v in variants
-            for location in await self._repository.active_location_records(str(v["variant_media_id"]))
-        ]
-        cover_locations = await self._repository.active_cover_records(media_id)
-        targets = variant_locations + [(media_id, location) for location in locations]
-        log_event(
-            "media_delete_started",
-            request_id=request_id,
-            media=media_fingerprint,
-            copies=len(targets),
-        )
-
-        deleted = 0
-        failed = 0
-        assert self._deleter is not None
-        deleted_covers = 0
-        failed_covers = 0
-        for package_id, package_path, relpath in cover_locations:
-            try:
-                succeeded = await self._deleter.delete_location(package_path, relpath)
-            except Exception:
-                succeeded = False
-            if succeeded:
-                await self._repository.record_deleted_cover(media_id, package_id)
-                deleted_covers += 1
-            else:
-                failed_covers += 1
-        for copy_index, (target_id, (package_id, package_path, remote_relpath)) in enumerate(targets, start=1):
-            if target_id == media_id and (failed_covers or (failed and variant_locations)):
-                failed += 1
-                continue
-            failure_kind = "DeleteReturnedFalse"
-            try:
-                succeeded = await self._deleter.delete_location(
-                    package_path, remote_relpath
-                )
-            except Exception as exc:
-                failure_kind = type(exc).__name__
-                succeeded = False
-            if not succeeded:
-                failed += 1
-                log_event(
-                    "media_delete_copy_failed",
-                    request_id=request_id,
-                    media=media_fingerprint,
-                    copy=copy_index,
-                    error=failure_kind,
-                )
-                continue
-            await self._repository.record_deleted_location(
-                target_id, package_id, remote_relpath
-            )
-            if target_id != media_id:
-                await self._repository.finalize_media_deletion(target_id)
-                for cache in (self._range_cache, self._faststart, self._startup_cache):
-                    discard = getattr(cache, "discard", None)
-                    if callable(discard):
-                        await discard(target_id)
-            deleted += 1
-
-        removed = await self._repository.finalize_media_deletion(media_id)
-        log_event(
-            "media_delete_repository_finalized",
-            request_id=request_id,
-            media=media_fingerprint,
-            deleted_copies=deleted,
-            failed_copies=failed,
-            removed=removed,
-        )
-        if removed:
-            if self._range_cache is not None:
-                discard = getattr(self._range_cache, "discard", None)
-                if callable(discard):
-                    stage_started = time.monotonic()
-                    await discard(media_id)
-                    log_event("media_delete_cache_cleared", request_id=request_id, media=media_fingerprint,
-                              cache="range", duration_ms=round((time.monotonic() - stage_started) * 1000, 1))
-            if self._faststart is not None:
-                discard = getattr(self._faststart, "discard", None)
-                if callable(discard):
-                    stage_started = time.monotonic()
-                    await discard(media_id)
-                    log_event("media_delete_cache_cleared", request_id=request_id, media=media_fingerprint,
-                              cache="faststart", duration_ms=round((time.monotonic() - stage_started) * 1000, 1))
-            stage_started = time.monotonic()
-            await self._startup_cache.discard(media_id)
-            log_event("media_delete_cache_cleared", request_id=request_id, media=media_fingerprint,
-                      cache="startup_range", duration_ms=round((time.monotonic() - stage_started) * 1000, 1))
         return web.json_response(
-            {
-                "id": media_id,
-                "deleted_copies": deleted,
-                "failed_copies": failed,
-                "removed": removed,
-                "deleted_covers": deleted_covers,
-                "failed_covers": failed_covers,
-            }
+            {"id": media_id, "queued": True, "undo_seconds": undo_seconds}, status=202
         )
+
+    async def _cancel_media_deletion(self, request: web.Request) -> web.Response:
+        """Undo, only while the undo window is open and no file was touched."""
+        await self._authenticate(request)
+        self._require_same_origin(request)
+        media_id = request.match_info["media_id"]
+        restored = await self._media_deletions.cancel(media_id)
+        return web.json_response(
+            {"id": media_id, "restored": restored}, status=200 if restored else 409
+        )
+
+    async def _media_deletions_status(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        return web.json_response(await self._media_deletions.status())
+
+    async def _media_deletions_retry(self, request: web.Request) -> web.Response:
+        await self._authenticate(request)
+        self._require_same_origin(request)
+        retried = await self._media_deletions.retry_now()
+        return web.json_response({"retried": retried, **await self._media_deletions.status()})
+
+    async def _discard_media_caches(self, media_id: str) -> None:
+        """A removed media must not keep serving from any cache (and ends its streams)."""
+        for cache in (self._range_cache, self._faststart, self._startup_cache):
+            discard = getattr(cache, "discard", None)
+            if callable(discard):
+                await discard(media_id)
 
     async def _media_details(self, media_id: str) -> dict[str, object]:
         if len(media_id) != 64 or any(char not in "0123456789abcdef" for char in media_id):

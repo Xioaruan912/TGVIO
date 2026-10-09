@@ -65,5 +65,7 @@ scripts/covers_deploy.sh 只创建 tgvio-covers，验证 Bot/Player/rendition �
 
 图片继续通过 Player 登录鉴权与版本化 /cover 读取，私有缓存和独立并发预算保持。
 读取失败不写远端；采样不是 HTTP GET 的隐式副作用。
-永久删除包括所有已登记包封面，先删图再删视频；图失败则保留原视频，
-返回 deleted_covers/failed_covers 和原有视频删除统计，不提前宣称完全删除。
+永久删除包括所有已登记包封面，先删图再删视频；图失败则保留原视频。
+删除请求只排队（202，媒体立即隐藏，6 秒内可撤销），由后台单一 worker
+（`application/media_deletion.py`）逐个文件执行，失败按 1 分钟起、最长 1 小时退避重试直到删净，
+不放弃；进度见 `GET /api/v1/media-deletions`。
