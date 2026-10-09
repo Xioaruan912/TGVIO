@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from pathlib import Path
+import sqlite3
 from tempfile import TemporaryDirectory
 import unittest
 
@@ -62,6 +63,24 @@ class ArchiveRepositoryTests(unittest.IsolatedAsyncioTestCase):
         events = await self.repo.list_archive_events(saved.id)
         self.assertEqual([event.event_type for event in events], ["archive_planned"])
         self.assertEqual(events[0].detail["media_total"], 1)
+
+    async def test_historically_cancelled_object_reads_without_crashing(self) -> None:
+        # Production holds an object row an earlier operation marked cancelled;
+        # every reader of that package (cache cleanup, daily maintenance, the
+        # archive page) failed until the domain knew the state.
+        job = await self._job()
+        saved = await self.repo.save_archive_plan(ArchivePlanner().plan(job))
+        await self.repo.close()
+        with sqlite3.connect(self.root / "state.sqlite3") as connection:
+            connection.execute("UPDATE archive_packages SET state='cancelled' WHERE id=?", (saved.id,))
+            connection.execute("UPDATE archive_objects SET state='cancelled' WHERE package_id=?", (saved.id,))
+        self.repo = SQLiteJobRepository(self.root / "state.sqlite3")
+        await self.repo.open()
+
+        package = await self.repo.get_archive_package_for_job(job.id)
+
+        self.assertEqual(package.state, ArchivePackageState.CANCELLED)
+        self.assertEqual(package.objects[0].state, ArchiveObjectState.CANCELLED)
 
     async def test_archive_profile_policy_round_trips_durably(self) -> None:
         job = await self._job()
