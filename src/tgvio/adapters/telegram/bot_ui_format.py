@@ -94,7 +94,7 @@ class BotUIFormatMixin:
                 buttons.extend(self._retry_all_button(retry_plan))
                 buttons.append([Button.inline("⚠️ 看看是什么问题", b"ui:failures:0")])
             if active:
-                buttons.append([Button.inline("⏳ 看进度", b"ui:jobs:active:0")])
+                buttons.append([Button.inline("⏳ 看进度", b"ui:jobs:running:0")])
             session = await self._repository.get_open_collection(owner_id, chat_id)
             if session is not None:
                 media, texts = await self._repository.count_collection_entries(session.id)

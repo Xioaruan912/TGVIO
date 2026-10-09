@@ -144,6 +144,8 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
             if callable(get_control):
                 control = await get_control(job.id)
             held = bool(getattr(control, "hold_requested", False)) and not job.terminal
+            if filter == JobListFilter.RUNNING and job.terminal:
+                continue
             if filter == JobListFilter.ACTIVE and (job.terminal or held):
                 continue
             if filter == JobListFilter.HELD and not held:
@@ -191,100 +193,85 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
         self,
         owner_id: int,
         *,
-        filter: JobListFilter = JobListFilter.ALL,
+        filter: JobListFilter | None = None,
         page: int = 0,
     ) -> tuple[str, list]:
+        if filter is None:
+            # Open where the user's attention is: running work, then problems.
+            running = await self._load_jobs_page(owner_id, filter=JobListFilter.RUNNING, page=0)
+            if not running.total:
+                if (await self._load_failure_page(owner_id, page=0)).total:
+                    return await self._failures_page(owner_id)
+            filter = JobListFilter.RUNNING if running.total else JobListFilter.COMPLETED
         result = await self._load_jobs_page(owner_id, filter=filter, page=page)
         label = JOB_FILTER_LABELS[result.filter]
-        lines = [
-            f"**我的任务 · {label} · 第 {result.page + 1}/{result.total_pages} 页**",
-            f"共 `{result.total}` 个任务",
-            "",
-        ]
+        lines = [f"📋 **我的任务 · {label}**（{result.total}）", ""]
         if not result.entries:
-            lines.append("这个筛选下暂时没有任务。")
-        else:
-            for position, entry in enumerate(result.entries, start=1):
-                job = entry.job
-                size = sum(item.size_bytes for item in job.items)
-                state_label = "已暂停" if entry.held else STATE_LABELS[job.state]
-                icon = "⏸" if entry.held else self._job_state_icon(job.state)
-                lines.append(
-                    f"{position}. {icon} {self._job_number(entry.label_number)} · "
-                    f"{state_label} · {self._job_local_time(job)}"
-                )
-                lines.append(
-                    f"  {self._job_content_summary(job)} · "
-                    f"{self._job_media_counts(job)} · {self._human_bytes(size)}"
-                )
-                if job.state == JobState.FAILED:
-                    lines.append(f"  ⚠️ {describe_job_failure(job.error_code).title}")
-                progress = await self._repository.get_job_progress(job.id)
-                if progress is not None and not job.terminal and not entry.held:
-                    lines.append(f"  {self._progress_text(progress)}")
-        lines.extend(["", "点编号查看详情；筛选和翻页都只读取当前 SQL 页面。"])
-
+            lines.append(
+                "现在没有进行中的任务。转发视频给我就会开始。"
+                if result.filter == JobListFilter.RUNNING
+                else "这里还没有任务。"
+            )
+        for entry in result.entries:
+            lines.extend(await self._job_list_lines(entry.job, entry.label_number, held=entry.held))
         rows: list[list] = []
-        for position, entry in enumerate(result.entries, start=1):
+        if result.entries:
             rows.append(
                 [
                     Button.inline(
-                        (
-                            f"{position} {self._job_state_icon(entry.job.state, held=entry.held)} "
-                            + (
-                                f"任务 #{entry.label_number}"
-                                if entry.label_number is not None
-                                else "查看任务"
-                            )
-                        ),
+                        f"{self._job_state_icon(entry.job.state, held=entry.held)} "
+                        + (f"#{entry.label_number}" if entry.label_number is not None else "查看"),
                         self._callback_data("job", entry.job.id),
                     )
+                    for entry in result.entries
                 ]
             )
-        filter_buttons = [
-            Button.inline(
-                ("• " if item == result.filter else "") + JOB_FILTER_LABELS[item],
-                f"ui:jobs:{item.value}:0".encode("utf-8"),
+            lines.extend(["", "点上面的编号看详情。"])
+        rows.extend(
+            self._page_nav(
+                result.page,
+                result.total_pages,
+                lambda number: f"ui:jobs:{result.filter.value}:{number}".encode(),
             )
-            for item in JOB_FILTER_UI_ORDER
-        ]
-        rows.append(filter_buttons[:3])
-        rows.append(filter_buttons[3:])
-        if result.total_pages > 1:
-            nav = []
-            if result.page > 0:
-                nav.append(
-                    Button.inline(
-                        "⬅️ 上一页",
-                        f"ui:jobs:{result.filter.value}:{result.page - 1}".encode("utf-8"),
-                    )
-                )
-            nav.append(
-                Button.inline(
-                    "🔄 刷新",
-                    f"ui:jobs:{result.filter.value}:{result.page}".encode("utf-8"),
-                )
-            )
-            if result.page + 1 < result.total_pages:
-                nav.append(
-                    Button.inline(
-                        "下一页 ➡️",
-                        f"ui:jobs:{result.filter.value}:{result.page + 1}".encode("utf-8"),
-                    )
-                )
-            rows.append(nav)
-        else:
-            rows.append(
-                [
-                    Button.inline(
-                        "🔄 刷新",
-                        f"ui:jobs:{result.filter.value}:{result.page}".encode("utf-8"),
-                    )
-                ]
-            )
-        rows.append([Button.inline("❌ 失败中心", b"ui:failures:0")])
-        rows.extend(self._nav_buttons())
+        )
+        rows.append(self._task_tabs(f"ui:jobs:{result.filter.value}:0".encode()))
+        rows.append([Button.inline("🗂 更早的", b"ui:jobs:history:0"), Button.inline("🏠 首页", b"ui:home")])
         return "\n".join(lines), rows
+
+    async def _job_list_lines(self, job: Job, number: int | None, *, held: bool = False) -> list[str]:
+        icon = self._job_state_icon(job.state, held=held)
+        state = "已暂停" if held else STATE_LABELS[job.state]
+        lines = [
+            f"{icon} **#{number if number is not None else '?'}** · {state} · "
+            f"{self._job_media_counts(job)} · {self._job_local_time(job)}",
+            f"　{self._job_content_summary(job)}",
+        ]
+        if job.state == JobState.FAILED:
+            lines.append(f"　⚠️ {describe_job_failure(job.error_code).title}")
+        elif not job.terminal and not held:
+            progress = await self._repository.get_job_progress(job.id)
+            if progress is not None:
+                lines.append(f"　{self._progress_text(progress)}")
+        return lines
+
+    @staticmethod
+    def _task_tabs(current: bytes) -> list:
+        return [
+            Button.inline(("• " if data == current else "") + label, data)
+            for label, data in TASK_TABS
+        ]
+
+    @staticmethod
+    def _page_nav(page: int, total_pages: int, data_for: Callable[[int], bytes]) -> list[list]:
+        if total_pages <= 1:
+            return []
+        nav = []
+        if page > 0:
+            nav.append(Button.inline("⬅️ 上一页", data_for(page - 1)))
+        nav.append(Button.inline(f"{page + 1}/{total_pages}", data_for(page)))
+        if page + 1 < total_pages:
+            nav.append(Button.inline("下一页 ➡️", data_for(page + 1)))
+        return [nav]
 
     async def _load_failure_page(
         self,
@@ -336,58 +323,43 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
 
     async def _failures_page(self, owner_id: int, *, page: int = 0) -> tuple[str, list]:
         result = await self._load_failure_page(owner_id, page=page)
-        lines = [
-            f"**失败中心 · 第 {result.page + 1}/{result.total_pages} 页**",
-            f"需要处理：`{result.total}`",
-            "",
-        ]
+        plan = await self._retry_all_plan(owner_id)
+        lines = [f"⚠️ **有问题的任务**（{result.total}）", ""]
         if not result.entries:
-            lines.append("✅ 当前没有需要人工处理的失败。自动恢复中的任务不会在这里重复催促。")
-        else:
-            for position, entry in enumerate(result.entries, start=1):
-                job = entry.job
-                size = sum(item.size_bytes for item in job.items)
-                lines.append(
-                    f"{position}. {self._job_number(entry.label_number)} · "
-                    f"{self._job_local_time(job)}"
-                )
-                lines.append(
-                    f"  {self._job_content_summary(job)} · "
-                    f"{self._job_media_counts(job)} · {self._human_bytes(size)}"
-                )
-                if entry.job_actionable:
-                    issue = describe_job_failure(job.error_code)
-                    lines.append(f"  ❌ Telegram/任务：{issue.title} · {issue.action}")
-                if entry.archive_actionable:
-                    issue = describe_archive_failure(entry.archive_error_code)
-                    lines.append(f"  ☁️ WebDAV：{issue.title} · {issue.action}")
-                if job.error_code in {"publish_partial", "publish_uncertain"}:
-                    lines.append("  🛡️ 可能已有可见消息，禁止自动重发。")
-        rows: list[list] = self._retry_all_button(await self._retry_all_plan(owner_id))
-        for position, entry in enumerate(result.entries, start=1):
+            lines.append("✅ 没有需要你处理的问题。出错的任务会先自动重试。")
+        for entry in result.entries:
+            job = entry.job
+            lines.append(
+                f"❌ **#{entry.label_number if entry.label_number is not None else '?'}** · "
+                f"{self._job_media_counts(job)} · {self._job_local_time(job)}"
+            )
+            lines.append(f"　{self._job_content_summary(job)}")
+            if entry.job_actionable:
+                issue = describe_job_failure(job.error_code)
+                lines.append(f"　{issue.title}：{issue.action}")
+            if entry.archive_actionable:
+                issue = describe_archive_failure(entry.archive_error_code)
+                lines.append(f"　☁️ {issue.title}：{issue.action}")
+        if plan is not None and plan.skipped_items:
+            lines.extend(["", f"📎 另有 {plan.skipped_items} 个文件之前没下载到，可以补发。"])
+        if plan is not None:
+            lines.extend(["", "点“🔁 全部重试”一次处理所有能重试的；已经发出去的不会重复发。"])
+        rows: list[list] = self._retry_all_button(plan)
+        if result.entries:
             rows.append(
                 [
                     Button.inline(
-                        (
-                            f"{position} 🔎 任务 #{entry.label_number}"
-                            if entry.label_number is not None
-                            else f"{position} 🔎 查看任务"
-                        ),
+                        f"#{entry.label_number}" if entry.label_number is not None else "查看",
                         self._callback_data("job", entry.job.id),
                     )
+                    for entry in result.entries
                 ]
             )
-        if result.total_pages > 1:
-            nav = []
-            if result.page > 0:
-                nav.append(Button.inline("⬅️ 上一页", f"ui:failures:{result.page - 1}".encode()))
-            nav.append(Button.inline("🔄 刷新", f"ui:failures:{result.page}".encode()))
-            if result.page + 1 < result.total_pages:
-                nav.append(Button.inline("下一页 ➡️", f"ui:failures:{result.page + 1}".encode()))
-            rows.append(nav)
-        else:
-            rows.append([Button.inline("🔄 刷新", b"ui:failures:0")])
-        rows.append([Button.inline("← 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")])
+        rows.extend(
+            self._page_nav(result.page, result.total_pages, lambda number: f"ui:failures:{number}".encode())
+        )
+        rows.append(self._task_tabs(b"ui:failures:0"))
+        rows.append([Button.inline("🏠 首页", b"ui:home")])
         return "\n".join(lines), rows
 
     async def _job_text(

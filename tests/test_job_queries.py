@@ -123,6 +123,11 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
         held = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.HELD)
         self.assertEqual([entry.job.id for entry in held.entries], ["job-held"])
         self.assertTrue(held.entries[0].held)
+        running = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.RUNNING)
+        self.assertEqual(
+            {entry.job.id for entry in running.entries},
+            {"job-received", "job-held", "job-publishing"},
+        )
         failed = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.FAILED)
         self.assertEqual([entry.job.id for entry in failed.entries], ["job-failed"])
         completed = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.COMPLETED)

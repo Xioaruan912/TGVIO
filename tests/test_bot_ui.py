@@ -1070,8 +1070,9 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         ui = TelethonBotUI(FakeClient(), settings(), FakeRepository([failed]))
         text, buttons = await ui._jobs_page(42)
 
+        # Nothing is running, so the page opens on the problem the user must see.
         self.assertIn("暂时无法读取原媒体", text)
-        self.assertIn("任务 #1", text)
+        self.assertIn("**#1**", text)
         self.assertIn("09-13 07:42", text)
         self.assertIn("旅行\\_01.mp4", text)
         self.assertNotIn(failed.id[:10], text)
@@ -1108,8 +1109,8 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(event)
 
         text = event.edits[0][0]
-        self.assertIn("完成", text)
-        self.assertIn("任务 #2", text)
+        self.assertIn("已完成", text)
+        self.assertIn("**#2**", text)
         self.assertNotIn(completed.id[:10], text)
         self.assertNotIn(active.id[:10], text)
         payloads = [
@@ -1153,11 +1154,11 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(event)
 
         text = event.edits[0][0]
-        self.assertIn("任务 #1", text)
-        self.assertNotIn("任务 #2", text)
+        self.assertIn("**#1**", text)
+        self.assertNotIn("#2", text)
         self.assertNotIn(failed.id[:10], text)
         self.assertNotIn(pending.id[:10], text)
-        self.assertIn("需要处理", text)
+        self.assertIn("有问题的任务**（1）", text)
 
     async def test_task_number_resolves_without_uuid_memory(self) -> None:
         first = job(state=JobState.SUCCEEDED, error_code=None)
@@ -1219,7 +1220,7 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("已完成", all_text)
         self.assertNotIn("已暂停", all_text)
-        self.assertIn("共 `0` 个任务", held_text)
+        self.assertIn("（0）", held_text)
 
     async def test_normal_job_detail_hides_internal_code_but_deep_view_keeps_it(self) -> None:
         failed = job()

@@ -120,5 +120,5 @@ class BotUIRetryAllMixin:
         await self._edit_page(
             event,
             "\n".join(lines),
-            [[Button.inline("📋 看进度", b"ui:jobs:active:0")], [Button.inline("🏠 首页", b"ui:home")]],
+            [[Button.inline("📋 看进度", b"ui:jobs:running:0")], [Button.inline("🏠 首页", b"ui:home")]],
         )
