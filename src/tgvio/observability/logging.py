@@ -141,9 +141,9 @@ def configure_logging(
         file_handler.setFormatter(formatter)
         root.addHandler(file_handler)
 
-    # Keep useful connection lifecycle logs, but suppress noisy transport internals.
-    logging.getLogger("telethon.network.mtprotosender").setLevel(logging.INFO)
-    logging.getLogger("telethon").setLevel(logging.WARNING)
+    # Telethon retries transport hiccups itself and the app logs its own
+    # download/publish retries; its warnings were most of every log file.
+    logging.getLogger("telethon").setLevel(logging.ERROR)
     logging.getLogger("asyncio").setLevel(logging.WARNING)
 
 
