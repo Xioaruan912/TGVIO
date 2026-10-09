@@ -72,3 +72,13 @@ Player：分块 4 MB、预读窗口 32 MB、并发 4、开头预热 16 MB（WARM
 
 结论：链接缓存 + 连接复用可把拖动/续读从约 2–3.5 s 降到约 0.3 s。
 未完成：OpenList Cookie 的设备类型未核实（需用户在 115 App 登录设备管理中确认），Player 扫码登录必须选不同类型，否则会把 OpenList 挤下线。
+
+## 方案 2 发布（2026-10-09 UTC）
+
+代码：TGVIO `8d2492f`（OpenList 直链读取 + 可切换读取方式，迁移 `0013_player_read_mode`）、`6451da7`（锁定前端 TGVIO-Player `8fde4cc`，设置 > 清晰度与网络 > 读取方式）。
+
+- VPS `player.env` 新增 `TGVIO_PLAYER_OPENLIST_API_URL=http://host.docker.internal:5244`（备份 `player.env.bak-direct-read-20261009`）；发布前确认容器经 Docker 网关可达 OpenList `/ping`，WebDAV 地址路径为 `/dav`，与 OpenList API 路径一致。
+- 用户本人执行 `deploy_hostdzire.py --target player --phase R2-49 --migration 0013_player_read_mode`：release `player-6451da7-20261009T010333Z`，镜像 `sha256:b387de65d36f…`，容器 `e8ba1d25077b`，healthy，restarts 0；Bot `4bf74f9f3abf`（`388c4ac`）未变；回滚点 `/root/tgvio-player/rollback-20261009T010422Z`。
+- 启动日志：`read mode: webdav (direct available: True)`；公网 `/healthz` 200，未登录 `/api/v1/settings/read-mode` 401。
+- 默认仍为网盘；切到“115 直连”须用户在设置中操作。直连任何失败都回落 WebDAV。
+- 未验证：生产直连实际取链与拖动耗时（未用生产凭据探测），需用户切换后看缓存统计中的 direct_reads / direct_fallbacks / link_hits。
