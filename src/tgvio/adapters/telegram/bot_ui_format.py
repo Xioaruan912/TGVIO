@@ -70,48 +70,59 @@ from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
 class BotUIFormatMixin:
     async def _context_home(self, owner_id: int, chat_id: int):
         """Read owner-scoped local state; navigation never schedules work."""
-        lines = ["**TGVIO 首页**", ""]
+        lines = ["👋 **TGVIO**", ""]
         buttons = []
         try:
-            failures = await self._repository.page_failures(
-                owner_id=owner_id, page=0, page_size=1,
-            )
-            if failures.total:
-                lines.append(f"⚠️ 有 {failures.total} 个任务需要处理，可查看原因和下一步。")
-                buttons.append([Button.inline("查看待处理事项", b"ui:failures:0")])
-            session = await self._repository.get_open_collection(owner_id, chat_id)
-            if session is not None:
-                media, texts = await self._repository.count_collection_entries(session.id)
-                lines.append(f"📥 合集收集中：{media} 项媒体、{texts} 段文字。")
-                lines.append("继续转发即可添加；准备好后点预览发布。")
-                buttons.append([Button.inline(
-                    "预览发布", f"intake:preview:{session.id}".encode(),
-                )])
+            stats = await self._repository.get_stats_snapshot(owner_id=owner_id)
             counts = await self._repository.count_by_state(owner_id=owner_id)
             active = sum(count for state, count in counts.items() if state not in {
                 JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED,
             })
+            failures = await self._repository.page_failures(
+                owner_id=owner_id, page=0, page_size=1,
+            )
+            retry_plan = await self._retry_all_plan(owner_id)
+            lines.append(
+                f"今天已发布 **{int(stats.get('today_succeeded', 0) or 0)}** 个 · "
+                f"进行中 **{active}** 个"
+            )
+            attention = failures.total + (
+                len(retry_plan.skipped_parent_ids) if retry_plan is not None else 0
+            )
+            if attention:
+                lines.extend(["", f"⚠️ 有 **{attention}** 项需要你看一下。"])
+                buttons.extend(self._retry_all_button(retry_plan))
+                buttons.append([Button.inline("⚠️ 看看是什么问题", b"ui:failures:0")])
             if active:
-                lines.append(f"⏳ 有 {active} 个未完成任务，可查看进度或暂停状态。")
-                buttons.append([Button.inline("查看任务进度", b"ui:jobs:active:0")])
+                buttons.append([Button.inline("⏳ 看进度", b"ui:jobs:active:0")])
+            session = await self._repository.get_open_collection(owner_id, chat_id)
+            if session is not None:
+                media, texts = await self._repository.count_collection_entries(session.id)
+                lines.extend([
+                    "",
+                    f"📥 合集收集中：{media} 项媒体、{texts} 段文字。",
+                    "继续转发就会加进来，好了点“预览发布”。",
+                ])
+                buttons.append([Button.inline(
+                    "👀 预览发布", f"intake:preview:{session.id}".encode(),
+                )])
             drafts = await self._repository.list_drafts(owner_id, limit=20)
             saved = [draft for draft in drafts if not draft.active]
             if saved:
-                lines.append(f"📝 有 `{len(saved)}` 份草稿可继续编辑。")
-                buttons.append([Button.inline("我的草稿", b"ui:drafts:0")])
-            if not failures.total and session is None and not active and not saved:
-                lines.append("📥 直接转发图片、视频或文件给我，开始一次发布。")
-                lines.append("想先看效果再发布？请先点“📥 新建合集”，添加内容后点“👀 预览与整理”。直接转发不会进入预览。")
+                lines.append(f"📝 有 {len(saved)} 份草稿没发。")
+                buttons.append([Button.inline("📝 继续编辑草稿", b"ui:drafts:0")])
         except Exception:
             lines.append("暂时无法读取完整状态，请稍后刷新；已有任务不受影响。")
+        lines.extend([
+            "",
+            "**怎么用：** 直接把视频、图片转发给我，我会自动发到频道。",
+            "想把几条消息合成一组发？点下方“📥 新建合集”。",
+        ])
         if not getattr(self._settings, "publish_enabled", False):
-            lines.append("自动发布当前关闭，任务不会自动发送到频道。")
-        buttons.extend([
-            [Button.inline("📋 我的任务", b"ui:jobs"),
-             Button.inline("🗂 发布历史", b"ui:jobs:history:0")],
-            [Button.inline("📝 我的草稿", b"ui:drafts:0"),
-             Button.inline("🎨 发布风格", b"ui:styles")],
-            [Button.inline("刷新", b"ui:home"), Button.inline("ℹ️ 更多", b"ui:more")],
+            lines.append("⏸ 自动发布已关闭，现在不会发到频道。")
+        buttons.append([
+            Button.inline("📋 我的任务", b"ui:jobs"),
+            Button.inline("🔄 刷新", b"ui:home"),
         ])
         return "\n".join(lines), buttons
 
@@ -128,22 +139,31 @@ class BotUIFormatMixin:
 
     def _help_text(self) -> str:
         text = (
-            "**TGVIO 使用说明**\n\n"
-            "1. 直接发送图片、视频、文件、媒体组或支持的链接。\n"
-            "2. 点“📋 我的任务”按状态筛选和翻页；“失败中心”只显示需要人工处理的最终失败。\n"
-            "3. 点任务编号查看详情；活动任务可暂停/恢复或取消，普通失败可安全重试。\n"
-            "4. `/pause` / `/resume` 无参数时控制整个队列；带任务 ID 时只控制该任务。\n"
-            "5. WebDAV 失败只影响归档副本，不影响已经完成的 Telegram 发布。\n\n"
-            "常用入口都在常驻键盘和页面按钮中，命令菜单也提供合集、队列与任务控制快捷入口。"
+            "❓ **怎么用**\n\n"
+            "**发视频**\n"
+            "直接把视频、图片或文件转发给我。我会下载好再发到频道，完成后通知你。\n\n"
+            "**几条消息合成一组发**\n"
+            "1. 点下方“📥 新建合集”\n"
+            "2. 把要发的内容都转发给我\n"
+            "3. 点“👀 预览与整理”，确认后发布\n\n"
+            "**出问题了怎么办**\n"
+            "大部分问题会自动重试，不用管。需要你处理时首页会提示，点“🔁 全部重试”就行。\n\n"
+            "**下方按钮**\n"
+            "📋 我的任务：看进度、看发过的内容\n"
+            "⚙️ 设置：发布风格、草稿、收藏、系统状态"
         )
         if self._settings.url_enabled:
-            text += "\n🔗 也可直接发送一个 HTTP(S) 媒体/站点链接，由 yt-dlp 下载后进入同一流水线。"
+            text += "\n\n🔗 也可以直接发一个视频网页链接给我。"
         if getattr(self._settings, "live_fixture_enabled", False):
             text += (
                 "\n\n🧪 受控发布已启用：`/publish #任务序号`，例如 `/publish #24`。"
                 "该命令需要二次确认，且只允许小型安全 fixture。"
             )
         return text
+
+    @staticmethod
+    def _help_buttons():
+        return [[Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")]]
 
     async def _diag_text(self) -> str:
         if self._diagnostic_service is None:
@@ -785,8 +805,7 @@ class BotUIFormatMixin:
 
         return [
             [text_button(COLLECTION_NEW_BUTTON), text_button(NAV_JOBS)],
-            [text_button(NAV_DRAFTS), text_button(NAV_HISTORY)],
-            [text_button(NAV_STYLE), text_button(NAV_MORE)],
+            [text_button(NAV_SETTINGS), text_button(NAV_HELP)],
         ]
 
     @staticmethod
@@ -806,61 +825,50 @@ class BotUIFormatMixin:
             [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
         ]
 
-    def _settings_page_text(self, quiet: bool = False) -> str:
+    def _setting_on(self, key: str, default: bool = True) -> bool:
         flags = getattr(self, "_runtime_flags", None)
+        if flags is None:
+            return default
+        try:
+            return flags.bool(key, default)
+        except Exception:
+            return default
 
-        def on(key: str, default: bool = True) -> bool:
-            if flags is None:
-                return default
-            try:
-                return flags.bool(key, default)
-            except Exception:
-                return default
-
+    def _settings_page_text(self, quiet: bool = False) -> str:
         def label(value: bool) -> str:
-            return "已开启" if value else "已关闭"
+            return "✅ 开" if value else "⛔ 关"
 
-        layout = getattr(self._settings, "archive_layout", "v2")
-        layout_text = "简短 /115/Pron/日期/N" if layout == "v2" else "旧 archive/年/月/日"
+        flags = getattr(self, "_runtime_flags", None)
+        cleanup_time = flags.get("daily_cleanup_time", "06:00") if flags else "06:00"
         return (
-            "⚙️ **设置**\n"
-            "──────────\n"
-            f"🔔 失败告警：`{label(on('alerts_enabled', True))}`\n"
-            f"📦 合集发布预览：`{label(on('collection_preview_enabled', True))}`\n"
-            f"🧹 每日清空任务：`{label(on('daily_cleanup_enabled', True))}`\n"
-            f"🔕 安静模式：`{label(quiet)}`（只影响你自己的中间提示）\n"
-            f"🗂 归档路径：`{layout_text}`（改布局需重启）\n"
-            "──────────\n"
-            f"每日清空在 {flags.get('daily_cleanup_time', '06:00') if flags else '06:00'}（北京时间）执行：安全隐藏已结算任务、清理缓存与旧状态消息，保留记录与统计。\n"
-            "安静模式会减少中间状态刷新，但确认、最终结果与风险告警始终保留。"
+            "⚙️ **设置**\n\n"
+            f"🔔 出错时提醒我：{label(self._setting_on('alerts_enabled'))}\n"
+            f"📦 合集发布前先预览：{label(self._setting_on('collection_preview_enabled'))}\n"
+            f"🧹 每天 {cleanup_time} 自动整理：{label(self._setting_on('daily_cleanup_enabled'))}\n"
+            "　　（收起已完成的任务、清理缓存，记录都会保留）\n"
+            f"🔕 安静模式：{label(quiet)}\n"
+            "　　（开启后少发中间进度，结果和出错提醒照常）\n\n"
+            "点下面的按钮切换，或进入其他设置。"
         )
 
     def _settings_page_buttons(self, quiet: bool = False):
-        flags = getattr(self, "_runtime_flags", None)
-
-        def on(key: str, default: bool = True) -> bool:
-            if flags is None:
-                return default
-            try:
-                return flags.bool(key, default)
-            except Exception:
-                return default
-
         def toggle_label(value: bool) -> str:
-            return "✅ 开" if value else "⛔ 关"
+            return "✅" if value else "⛔"
 
         return [
             [
-                Button.inline(f"🔔 告警 {toggle_label(on('alerts_enabled', True))}", b"set:alerts_enabled"),
-                Button.inline(f"📦 预览 {toggle_label(on('collection_preview_enabled', True))}", b"set:collection_preview_enabled"),
+                Button.inline(f"🔔 出错提醒 {toggle_label(self._setting_on('alerts_enabled'))}", b"set:alerts_enabled"),
+                Button.inline(f"📦 先预览 {toggle_label(self._setting_on('collection_preview_enabled'))}", b"set:collection_preview_enabled"),
             ],
             [
-                Button.inline(f"🧹 每日清空 {toggle_label(on('daily_cleanup_enabled', True))}", b"set:daily_cleanup_enabled"),
+                Button.inline(f"🧹 自动整理 {toggle_label(self._setting_on('daily_cleanup_enabled'))}", b"set:daily_cleanup_enabled"),
                 Button.inline(f"🔕 安静 {toggle_label(quiet)}", b"set:quiet_mode"),
             ],
-            [Button.inline("🧩 内容与下载", b"ui:content")],
-            [Button.inline("🔐 来源登录（个人账号）", b"ui:source")],
-            [Button.inline("🔄 刷新", b"ui:settings"), Button.inline("🏠 首页", b"ui:home")],
+            [Button.inline("🎨 发布风格", b"ui:styles"), Button.inline("📝 草稿", b"ui:drafts:0")],
+            [Button.inline("⭐ 收藏", b"ui:favorites:0"), Button.inline("🗂 发过的内容", b"ui:jobs:history:0")],
+            [Button.inline("🧩 内容与下载", b"ui:content"), Button.inline("🔐 来源账号", b"ui:source")],
+            [Button.inline("🔧 系统状态", b"ui:status")],
+            [Button.inline("🏠 首页", b"ui:home")],
         ]
 
     def _nav_buttons(self):
