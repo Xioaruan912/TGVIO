@@ -111,6 +111,25 @@ class JobDiagnosticTests(unittest.IsolatedAsyncioTestCase):
             )
             self.assertNotIn("source_url", rows[0])
 
+    async def test_recent_problems_reads_only_errors_from_the_bounded_tail(self) -> None:
+        with TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            rows = [{"ts": "0", "level": "ERROR", "event": "too.old", "message": "x" * 400}]
+            rows += [
+                {"ts": "1", "level": "WARNING", "event": "noise"},
+                {"ts": "2", "level": "ERROR", "event": "maintenance.daily.failed", "source_url": "secret"},
+                {"ts": "3", "level": "CRITICAL", "event": "runtime.crashed"},
+            ]
+            (root / "tgvio.jsonl").write_text(
+                "\n".join(json.dumps(row) for row in rows) + "\n", encoding="utf-8"
+            )
+            problems = await JsonlOperationalLogReader(root).recent_problems(tail_bytes=300)
+            self.assertEqual(
+                [row["event"] for row in problems],
+                ["maintenance.daily.failed", "runtime.crashed"],
+            )
+            self.assertNotIn("source_url", problems[0])
+
     async def test_bot_method_invalid_log_gets_specific_root_cause_hint(self) -> None:
         job = Job(
             owner_id=42,

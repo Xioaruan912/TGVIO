@@ -96,6 +96,41 @@ class JsonlOperationalLogReader:
                     )
         return list(rows)
 
+    async def recent_problems(
+        self,
+        *,
+        tail_bytes: int = 4 * 1024 * 1024,
+        limit: int = 200,
+    ) -> list[dict[str, object]]:
+        """ERROR/CRITICAL rows from the bounded tail of the current log file."""
+
+        return await asyncio.to_thread(self._recent_problems_sync, int(tail_bytes), int(limit))
+
+    def _recent_problems_sync(self, tail_bytes: int, limit: int) -> list[dict[str, object]]:
+        rows: deque[dict[str, object]] = deque(maxlen=max(1, min(limit, 1000)))
+        path = self._log_dir / self._filename
+        try:
+            with path.open("rb") as handle:
+                handle.seek(0, 2)
+                size = handle.tell()
+                handle.seek(max(0, size - max(1, tail_bytes)))
+                if handle.tell():
+                    handle.readline()  # drop the partial first line
+                data = handle.read()
+        except OSError:
+            return []
+        for line in data.decode("utf-8", "replace").splitlines():
+            try:
+                row = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if not isinstance(row, dict) or row.get("level") not in {"ERROR", "CRITICAL"}:
+                continue
+            rows.append(
+                {key: value for key, value in row.items() if key in _SAFE_FIELDS and self._scalar(value)}
+            )
+        return list(rows)
+
     def _paths_oldest_first(self) -> Iterable[Path]:
         base = self._log_dir / self._filename
         backups: list[tuple[int, Path]] = []

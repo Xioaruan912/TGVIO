@@ -711,6 +711,24 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         # Entries removed from the keyboard must stay one tap away in settings.
         self.assertTrue({b"ui:styles", b"ui:drafts:0", b"ui:jobs:history:0", b"ui:status"} <= targets)
 
+    async def test_system_page_groups_recent_problems_in_plain_words(self) -> None:
+        class ProblemLog:
+            async def recent_problems(self):
+                return [
+                    {"ts": "2026-10-08T11:03:01Z", "level": "ERROR", "event": "maintenance.daily.failed"},
+                    {"ts": "2026-10-09T11:03:01Z", "level": "ERROR", "event": "maintenance.daily.failed"},
+                    {"ts": "2026-10-05T13:54:19Z", "level": "ERROR", "event": "log.message",
+                     "component": "telethon.client.updates"},
+                ]
+
+        ui = TelethonBotUI(FakeClient(), settings(), FakeRepository(), problem_log=ProblemLog())
+        text = await ui._status_text(42)
+
+        self.assertIn("🔧 **系统状态**", text)
+        self.assertIn("• 每日整理没有完成 ×2 · 最近 10-09 19:03", text)
+        self.assertIn("• 按钮或消息处理出错 · 最近 10-05 21:54", text)
+        self.assertNotIn("maintenance.daily.failed", text)
+
     async def test_context_home_collecting_failure_and_active_are_owner_scoped(self) -> None:
         from unittest.mock import AsyncMock
         repo = FakeRepository()

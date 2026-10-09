@@ -1,14 +1,40 @@
 from __future__ import annotations
 
+from datetime import datetime
 import logging
 import shutil
+from zoneinfo import ZoneInfo
 
 from telethon import Button
 
 from tgvio.application.operation_tokens import OperationTokenInvalidError
 from tgvio.domain.job import JobState
 from tgvio.observability import log_event
-from tgvio.adapters.telegram.bot_ui_support import STATE_LABELS
+
+
+_PROBLEM_LABELS = {
+    "maintenance.daily.failed": "每日整理没有完成",
+    "maintenance.runtime.failed": "后台整理出错",
+    "auto_recovery.disk_cleanup.failed": "自动清理空间失败",
+    "auto_recovery.job.exhausted": "有任务自动重试多次仍失败",
+    "auto_recovery.job.quarantined": "有任务可能已发出一部分，已停止",
+    "download.job.failed": "有任务下载失败",
+    "job.run.failed": "有任务处理出错",
+    "archive.package.failed": "云端备份出错",
+    "archive.execution.failed": "云端备份出错",
+    "archive.object.failed": "云端备份出错",
+}
+
+
+def problem_label(row: dict[str, object]) -> str:
+    event = str(row.get("event") or "")
+    if event in _PROBLEM_LABELS:
+        return _PROBLEM_LABELS[event]
+    if str(row.get("component") or "").startswith("telethon"):
+        return "按钮或消息处理出错"
+    if event.startswith("publish."):
+        return "发到频道时出错"
+    return "程序内部出错"
 
 
 class BotUISystemMixin:
@@ -89,44 +115,61 @@ class BotUISystemMixin:
         runtime_health = await self._repository.get_runtime_health()
         queue_control = await self._repository.get_queue_control()
         disk = shutil.disk_usage(self._settings.download_dir)
-        active_states = {
-            JobState.RECEIVED,
-            JobState.DOWNLOADING,
-            JobState.DOWNLOADED,
-            JobState.ANALYZING,
-            JobState.ANALYZED,
-            JobState.PLANNED,
-            JobState.PUBLISHING,
-        }
-        active = sum(counts.get(state, 0) for state in active_states)
-        total = sum(counts.values())
-        telegram_status = str(
-            runtime_health.get("telegram", {}).get("status", "unknown")
-        )
-        telegram_label = {
-            "connected": "🟢 已连接",
-            "disconnected": "🔴 已断开",
-        }.get(telegram_status, "🟡 未知")
+        terminal = {JobState.SUCCEEDED, JobState.FAILED, JobState.CANCELLED}
+        active = sum(count for state, count in counts.items() if state not in terminal)
+        connected = runtime_health.get("telegram", {}).get("status") == "connected"
         lines = [
-            "**TGVIO 状态**",
+            "🔧 **系统状态**",
             "",
-            f"Telegram：{telegram_label}",
-            f"⚙️ 环境：`{self._settings.environment}`",
-            f"🚦 发布执行：`{'开启' if self._settings.publish_enabled else '关闭'}`",
-            f"⏯ 队列：`{'已暂停' if queue_control.paused else '运行中'}`",
-            f"🧪 受控发布：`{'开启' if getattr(self._settings, 'live_fixture_enabled', False) else '关闭'}`",
-            f"🔗 URL 下载：`{'开启' if self._settings.url_enabled else '关闭'}` · `{self._settings.url_private_network_policy}`",
-            f"🧵 Worker：`{self._settings.worker_concurrency}`",
-            f"📦 任务：`{total}`，活跃：`{active}`",
-            f"💽 磁盘可用：`{self._human_bytes(disk.free)}` / `{self._human_bytes(disk.total)}`",
+            "🟢 运行正常" if connected else "🔴 和 Telegram 的连接断了，会自动重连",
+            f"⏯ 处理：{'⏸ 已暂停' if queue_control.paused else '运行中'}",
+            f"🚦 自动发布：{'开' if self._settings.publish_enabled else '关'}",
+            f"💽 剩余空间：{self._human_bytes(disk.free)} / {self._human_bytes(disk.total)}",
         ]
-        if counts:
-            lines.extend(["", "**任务状态**"])
-            for state in JobState:
-                count = counts.get(state, 0)
-                if count:
-                    lines.append(f"• {STATE_LABELS[state]}：`{count}`")
+        if self._cache_operator is not None:
+            try:
+                cache = await self._cache_operator.stats()
+                lines.append(
+                    f"🧹 临时文件：{self._human_bytes(cache.bytes_used)}"
+                    + (f"（{cache.eligible_jobs} 个任务的可以清理）" if cache.eligible_jobs else "")
+                )
+            except Exception:
+                pass
+        lines.append(
+            f"📦 任务：进行中 {active} · 完成 {counts.get(JobState.SUCCEEDED, 0)} · "
+            f"失败 {counts.get(JobState.FAILED, 0)}"
+        )
+        problems = await self._recent_problem_lines()
+        if problems:
+            lines.extend(["", "**最近出过的问题**", *problems])
         return "\n".join(lines)
+
+    async def _recent_problem_lines(self, limit: int = 5) -> list[str]:
+        reader = getattr(self, "_problem_log", None)
+        if reader is None:
+            return []
+        try:
+            rows = await reader.recent_problems()
+        except Exception:
+            return []
+        grouped: dict[str, tuple[int, str]] = {}
+        for row in rows:
+            label = problem_label(row)
+            count, _last = grouped.get(label, (0, ""))
+            grouped[label] = (count + 1, str(row.get("ts") or ""))
+        latest = sorted(grouped.items(), key=lambda pair: pair[1][1], reverse=True)[:limit]
+        return [
+            f"• {label}" + (f" ×{count}" if count > 1 else "") + f" · 最近 {self._problem_time(ts)}"
+            for label, (count, ts) in latest
+        ]
+
+    @staticmethod
+    def _problem_time(ts: str) -> str:
+        try:
+            moment = datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        except ValueError:
+            return "时间未知"
+        return moment.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%m-%d %H:%M")
 
     async def _stats_text(self, owner_id: int) -> str:
         stats = await self._repository.get_stats_snapshot(owner_id=owner_id)
@@ -222,10 +265,13 @@ class BotUISystemMixin:
         rows = [
             [
                 Button.inline(
-                    "▶️ 恢复队列" if queue.paused else "⏸ 暂停新任务",
+                    "▶️ 继续处理" if queue.paused else "⏸ 暂停处理",
                     b"ui:queue-resume" if queue.paused else b"ui:queue-pause",
-                )
-            ]
+                ),
+                Button.inline("🧹 清理临时文件", b"ui:cache-clean"),
+            ],
+            [Button.inline("☁️ 云端备份", b"ui:archive"), Button.inline("📈 统计", b"ui:stats")],
+            [Button.inline("🩺 技术诊断", b"ui:diag"), Button.inline("🔄 刷新", b"ui:status")],
+            [Button.inline("⚙️ 设置", b"ui:settings"), Button.inline("🏠 首页", b"ui:home")],
         ]
-        rows.extend(self._nav_buttons())
         return rows

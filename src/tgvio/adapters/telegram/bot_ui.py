@@ -110,6 +110,7 @@ class TelethonBotUI(
         pick_previews: object | None = None,
         item_recovery: SkippedItemRecoveryService | None = None,
         bulk_retry: BulkRetryService | None = None,
+        problem_log: object | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -129,6 +130,7 @@ class TelethonBotUI(
         self._source, self._pick_previews = source_coordinator, pick_previews
         self._item_recovery = item_recovery
         self._bulk_retry = bulk_retry
+        self._problem_log = problem_log
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 
@@ -339,7 +341,7 @@ class TelethonBotUI(
                 buttons=self._cache_buttons(),
                 parse_mode="md",
             )
-        elif action == NAV_SETTINGS:
+        elif action in {NAV_SETTINGS, NAV_MORE}:
             quiet = await self._quiet_enabled(owner_id)
             await event.respond(
                 self._settings_page_text(quiet),
@@ -348,12 +350,6 @@ class TelethonBotUI(
             )
         elif action == NAV_HELP:
             await event.respond(self._help_text(), buttons=self._help_buttons(), parse_mode="md")
-        elif action == NAV_MORE:
-            await event.respond(
-                self._more_text(),
-                buttons=self._more_buttons(),
-                parse_mode="md",
-            )
         raise events.StopPropagation
 
     async def _on_callback(self, event) -> None:
@@ -458,8 +454,7 @@ class TelethonBotUI(
                 await self._show_plan_callback(event, owner_id, job.id)
             return
         if action == "ui:more":
-            await self._edit_page(event, self._more_text(), self._more_buttons())
-            return
+            action = "ui:settings"
         if action == "ui:styles":
             await self._show_styles_callback(event, owner_id)
             return
