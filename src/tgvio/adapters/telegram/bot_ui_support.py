@@ -80,20 +80,19 @@ JOB_FILTER_LABELS = {
     JobListFilter.TODAY: "今天",
     JobListFilter.PENDING: "待处理",
     JobListFilter.FAILED: "失败",
-    JobListFilter.COMPLETED: "完成",
+    JobListFilter.COMPLETED: "已完成",
     JobListFilter.ACTIVE: "进行中",
-    JobListFilter.HISTORY: "历史",
+    JobListFilter.HISTORY: "更早的",
     JobListFilter.ALL: "全部",
     JobListFilter.HELD: "暂停",
+    JobListFilter.RUNNING: "进行中",
 }
 
-JOB_FILTER_UI_ORDER = (
-    JobListFilter.TODAY,
-    JobListFilter.PENDING,
-    JobListFilter.FAILED,
-    JobListFilter.COMPLETED,
-    JobListFilter.ACTIVE,
-    JobListFilter.HISTORY,
+# The three tabs every task page shows; "has problems" is the failure page.
+TASK_TABS: tuple[tuple[str, bytes], ...] = (
+    ("⏳ 进行中", b"ui:jobs:running:0"),
+    ("⚠️ 有问题", b"ui:failures:0"),
+    ("✅ 已完成", b"ui:jobs:completed:0"),
 )
 
 

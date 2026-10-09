@@ -15,6 +15,8 @@ class JobListFilter(StrEnum):
     TODAY = "today"
     PENDING = "pending"
     HISTORY = "history"
+    # Unfinished Jobs, paused ones included: what "in progress" means to a user.
+    RUNNING = "running"
 
 
 @dataclass(frozen=True, slots=True)

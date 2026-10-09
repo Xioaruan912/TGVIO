@@ -455,7 +455,9 @@ class SQLiteJobRepositoryMixin:
             conditions.append("v.job_id IS NOT NULL")
         else:
             conditions.append("v.job_id IS NULL")
-        if filter == JobListFilter.ACTIVE:
+        if filter == JobListFilter.RUNNING:
+            conditions.append("j.state NOT IN ('succeeded','failed','cancelled')")
+        elif filter == JobListFilter.ACTIVE:
             conditions.extend(
                 [
                     "j.state NOT IN ('succeeded','failed','cancelled')",
