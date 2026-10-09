@@ -2218,13 +2218,14 @@ class RangeCacheHttpTests(unittest.IsolatedAsyncioTestCase):
             if self.cache.has_chunk(str(self.media_id), 2):
                 break
             await asyncio.sleep(0)
-        self.assertEqual(self.reader.calls, [(0, 199999)])
+        # The fetch starts at the requested chunk, not at the start of its window.
+        self.assertEqual(self.reader.calls, [(131072, 199999)])
         second = await self.client.get(
             stream, headers={"Range": "bytes=140000-150000"}, cookies={"tgvio_player_session": cookie}
         )
         self.assertEqual(await second.read(), self.buffer[140000:150001])
         # Chunk 2 is cached, so no further upstream read happens.
-        self.assertEqual(self.reader.calls, [(0, 199999)])
+        self.assertEqual(self.reader.calls, [(131072, 199999)])
 
     async def test_cache_stats_are_authenticated_and_report_stream_counters(self) -> None:
         denied = await self.client.get("/api/v1/cache-stats")
