@@ -812,21 +812,10 @@ class BotUIFormatMixin:
             [text_button(NAV_SETTINGS), text_button(NAV_HELP)],
         ]
 
-    @staticmethod
-    def _more_text() -> str:
-        return (
-            "**更多工具**\n\n"
-            "这里是统计、运行健康和脱敏技术诊断。日常转发一般不需要打开这些页面。"
-        )
-
     def _more_buttons(self):
         return [
-            [Button.inline("☁️ 归档", b"ui:archive"), Button.inline("🧹 缓存", b"ui:cache")],
-            [Button.inline("📊 状态", b"ui:status"), Button.inline("🗂 历史", b"ui:jobs:history:0")],
-            [Button.inline("⭐ 收藏夹", b"ui:favorites:0"), Button.inline("📈 统计", b"ui:stats")],
-            [Button.inline("❤️ 运行健康", b"ui:health"), Button.inline("🩺 技术诊断", b"ui:diag")],
-            [Button.inline("❓ 使用帮助", b"ui:help"), Button.inline("⚙️ 设置", b"ui:settings")],
-            [Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")],
+            [Button.inline("🔧 系统状态", b"ui:status"), Button.inline("⚙️ 设置", b"ui:settings")],
+            [Button.inline("🏠 首页", b"ui:home")],
         ]
 
     def _setting_on(self, key: str, default: bool = True) -> bool:

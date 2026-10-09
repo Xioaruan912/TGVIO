@@ -529,6 +529,9 @@ async def run(*, check_only: bool = False) -> None:
                 item_recovery=SkippedItemRecoveryService(repository),
                 archive_operator=archive_runtime if settings.archive_enabled else None,
             ),
+            problem_log=(
+                JsonlOperationalLogReader(settings.log_dir) if settings.log_file_enabled else None
+            ),
         )
         bot_ui.register()
         await bot_ui.configure_server_menu()
