@@ -56,7 +56,8 @@ class WorkerFailureTests(unittest.IsolatedAsyncioTestCase):
             state.conn.close()
             args = SimpleNamespace(work_dir=tmp, status=False, retry_failed=False,
                                    watch=False, dry_run=False, limit=1)
-            discovery = SimpleNamespace(tasks=AsyncMock(return_value=[task]))
+            discovery = SimpleNamespace(tasks=AsyncMock(return_value=[task]),
+                                        metadata_reads=0, metadata_hits=0)
             runner = SimpleNamespace(run=AsyncMock(side_effect=WebDavArchiveError(
                 "WebDAV archive PUT failed size verification", status=201)))
             with patch.dict("os.environ", {
