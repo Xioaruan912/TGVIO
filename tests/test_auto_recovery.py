@@ -225,6 +225,15 @@ class AutoRecoveryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(current.state, JobState.FAILED)
         self.assertNotIn(JOB_RECOVERY_STATE_KEY, current.policy)
 
+    async def test_media_deleted_at_source_is_abandoned_at_once(self) -> None:
+        failed = await self._failed_download(code="source_missing")
+        result = await self._service().run_once()
+
+        self.assertEqual(result.scheduled_jobs, 0)
+        current = await self.repo.get(failed.id)
+        assert current is not None
+        self.assertEqual(current.policy[JOB_RECOVERY_STATE_KEY]["status"], "abandoned")
+
     async def test_unknown_failure_is_abandoned_without_waiting_for_user(self) -> None:
         failed = await self._failed_download(code="permanent_fixture_error")
         result = await self._service().run_once()

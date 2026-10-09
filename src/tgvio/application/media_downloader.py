@@ -338,11 +338,15 @@ class JobDownloader:
             return
         codes = {str(entry.get("error_code") or "") for entry in skipped}
         error_code = (
-            "telegram_file_timeout" if codes == {"telegram_file_timeout"} else "download_failed"
+            codes.pop()
+            if codes in ({"telegram_file_timeout"}, {"source_missing"})
+            else "download_failed"
         )
         message = f"全部 {len(skipped)} 项都无法从 Telegram 取用"
         if error_code == "telegram_file_timeout":
             message += "（存储侧取用超时）"
+        elif error_code == "source_missing":
+            message += "（来源已删除）"
         log_event(
             self._log,
             logging.ERROR,
