@@ -11,6 +11,7 @@ from aiohttp import web
 from aiohttp.test_utils import TestClient, TestServer
 
 from tgvio_player.adapters.http import PlayerHttpServer
+from tgvio_player.application import stream_trace
 from tgvio_player.application.archive_read import ArchiveReadRouter, ReadModeService, ReadModeUnavailable
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.feed import ShuffleDeckService
@@ -173,6 +174,17 @@ class ArchiveReadRouterTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(response.status, 206)
             self.assertEqual((direct.calls, webdav.calls), (1, 1))
             self.assertEqual(router.stats()["direct_fallbacks"], 1)
+
+    async def test_a_traced_request_learns_which_route_served_it(self) -> None:
+        cases = (("webdav", StubReader()), ("direct", StubReader()), ("direct_fallback", StubReader(status=502)))
+        for expected, direct in cases:
+            router = ArchiveReadRouter(StubReader(), direct, mode="webdav" if expected == "webdav" else "direct")
+            trace, token = stream_trace.begin()
+            try:
+                await router.open_range("p", "v.mp4", ByteRange(0, 0))
+            finally:
+                stream_trace.end(token)
+            self.assertEqual(trace.via, expected)
 
     async def test_direct_mode_needs_a_direct_reader(self) -> None:
         router = ArchiveReadRouter(StubReader(), None, mode="direct")

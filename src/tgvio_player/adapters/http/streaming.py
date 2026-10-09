@@ -1,11 +1,13 @@
 from __future__ import annotations
 
 import asyncio
+import time
 from collections.abc import AsyncIterator
 from typing import Any
 
 from aiohttp import web
 
+from tgvio_player.application import stream_trace
 from tgvio_player.application.playback import StartupCacheKey
 from tgvio_player.application.streaming import StreamRequest, prepare_stream_request
 from tgvio_player.domain.catalog import MAX_COVER_BYTES
@@ -105,6 +107,18 @@ def _content_disposition(request: web.Request, media_id: str, mime_type: object)
     return f'{disposition}; filename="{fingerprint(media_id)}{extension}"'
 
 
+def _mark(name: str) -> None:
+    trace = stream_trace.current()
+    if trace is not None:
+        trace.mark(name)
+
+
+def _note(name: str, value: object) -> None:
+    trace = stream_trace.current()
+    if trace is not None:
+        trace.note(name, value)
+
+
 class StartupRangeUnavailable(RuntimeError):
     def __init__(self, reason: str, upstream_status: int | None = None) -> None:
         super().__init__(reason)
@@ -158,6 +172,8 @@ class PlayerHttpStreamingMixin:
                     overlay = None
                 if overlay is None:
                     self._faststart.schedule(media_id, details)
+            _note("faststart", overlay is not None)
+            _mark("faststart_ms")
         client = resolve_client(request)
         preload = request.headers.get(_PRELOAD_HEADER) == "1"
         probe = (
@@ -190,6 +206,7 @@ class PlayerHttpStreamingMixin:
                 client_limit=self._max_streams_per_client,
             )
             raise web.HTTPTooManyRequests(text="stream capacity reached")
+        _note("slot_wait_ms", capacity.get("wait_ms", 0))
         try:
             location = await self._repository.active_media_location(media_id)
             if location is None:
@@ -385,6 +402,7 @@ class PlayerHttpStreamingMixin:
         )
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
+        _mark("headers_ms")
         expected = int(headers["Content-Length"])
         written = 0
         try:
@@ -393,12 +411,15 @@ class PlayerHttpStreamingMixin:
                     if chunk:
                         written += len(chunk)
                         await self._write_chunks(response, chunk)
+                        _mark("first_byte_ms")
             if written < expected:
                 request["player_stream_incomplete"] = f"{written}/{expected}"
                 raise IncompleteUpstreamBody(f"{written} of {expected} bytes")
             await response.write_eof()
         except (BrokenPipeError, ConnectionError, ConnectionResetError) as exc:
             request["player_stream_disconnect"] = type(exc).__name__
+        finally:
+            _note("sent_bytes", written)
         return response
 
     async def _open_data(
@@ -424,7 +445,12 @@ class PlayerHttpStreamingMixin:
             return self._range_cache.stream(
                 media_id, location[0], location[1], size, byte_range, prefetch=prefetch
             )
+        trace = stream_trace.current()
+        opened = time.monotonic()
         upstream = await self._reader.open_range(location[0], location[1], byte_range)
+        if trace is not None:
+            trace.note("upstream_open_ms", round((time.monotonic() - opened) * 1000, 1))
+            trace.note("upstream_via", trace.via)
         if upstream.status not in {200, 206}:
             await self._close_body(upstream.body)
             raise web.HTTPBadGateway(text="media upstream unavailable")
@@ -476,19 +502,28 @@ class PlayerHttpStreamingMixin:
                 break
         response = web.StreamResponse(status=status, headers=headers)
         await response.prepare(request)
+        _mark("headers_ms")
+        written = 0
         try:
             for kind, source_offset, length in segments:
                 if length <= 0:
                     continue
                 if kind == "cache":
-                    await self._write_chunks(response, overlay.head[source_offset : source_offset + length])
+                    piece = overlay.head[source_offset : source_offset + length]
+                    written += len(piece)
+                    await self._write_chunks(response, piece)
+                    _mark("first_byte_ms")
             if data is not None:
                 async for chunk in data:
                     if chunk:
+                        written += len(chunk)
                         await self._write_chunks(response, chunk)
+                        _mark("first_byte_ms")
             await response.write_eof()
         except (BrokenPipeError, ConnectionError, ConnectionResetError) as exc:
             request["player_stream_disconnect"] = type(exc).__name__
+        finally:
+            _note("sent_bytes", written)
         return response
 
     async def _write_chunks(self, response: web.StreamResponse, data: bytes) -> None:

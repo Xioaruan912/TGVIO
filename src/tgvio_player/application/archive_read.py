@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import logging
 
+from tgvio_player.application import stream_trace
 from tgvio_player.domain.read_mode import DEFAULT_READ_MODE, DIRECT, WEBDAV, parse_read_mode
 
 _LOG = logging.getLogger("tgvio_player.read_mode")
@@ -44,11 +45,14 @@ class ArchiveReadRouter:
         self._mode = mode
 
     async def open_range(self, package_path: str, remote_relpath: str, byte_range):
+        trace = stream_trace.current()
         if self._mode == DIRECT and self._direct is not None:
             try:
                 response = await self._direct.open_range(package_path, remote_relpath, byte_range)
                 if response.status in {200, 206, 416}:
                     self.direct_reads += 1
+                    if trace is not None:
+                        trace.via = "direct"
                     return response
                 await _close(response)
                 reason = f"status {response.status}"
@@ -56,6 +60,10 @@ class ArchiveReadRouter:
                 reason = type(exc).__name__
             self.direct_fallbacks += 1
             _LOG.info("player.read_mode.fallback reason=%s", reason)
+            if trace is not None:
+                trace.via = "direct_fallback"
+        elif trace is not None:
+            trace.via = "webdav"
         return await self._webdav.open_range(package_path, remote_relpath, byte_range)
 
     def stats(self) -> dict[str, object]:

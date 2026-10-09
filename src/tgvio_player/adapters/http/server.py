@@ -32,6 +32,7 @@ from tgvio_player.application.favorite_backup import FavoriteBackupService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.media_deletion import MediaDeletionService
 from tgvio_player.application.playback import StartupRangeCache
+from tgvio_player.application import stream_trace
 from tgvio_player.application.player_recovery import (
     PlayerRecoveryService,
     RecoveryError,
@@ -287,6 +288,10 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
         started = time.monotonic()
         status = 500
         error_kind: str | None = None
+        # Only media streams are traced; their log line then says where the wait was.
+        trace, trace_token = (
+            stream_trace.begin() if request.path.endswith("/stream") else (None, None)
+        )
         try:
             if sum(len(name) + len(value) for name, value in request.headers.items()) > self._max_header_size:
                 raise web.HTTPRequestHeaderFieldsTooLarge()
@@ -315,6 +320,8 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
             error_kind = type(exc).__name__
             raise
         finally:
+            if trace_token is not None:
+                stream_trace.end(trace_token)
             route = request.match_info.route.resource
             route_name = route.canonical if route is not None else request.path
             client_id = client_fingerprint(resolve_client(request))
@@ -355,6 +362,7 @@ class PlayerHttpServer(PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin,
                     else None
                 ),
                 error=error_kind,
+                **(trace.fields if trace is not None else {}),
             )
 
     async def _security_headers(self, request: web.Request, response: web.StreamResponse) -> None:
