@@ -322,12 +322,12 @@ class BotUIFormatMixin:
             [
                 "",
                 "**处理流程**",
-                f"{self._phase_status(event_types, 'job_created', None)} 接收",
+                f"{self._phase_status(event_types, 'job_created', None)} 收到",
                 f"{self._phase_status(event_types, 'download_completed', 'download_failed', 'download_started')} 下载",
-                f"{self._phase_status(event_types, 'analysis_completed', 'analysis_failed', 'analysis_started')} 分析",
-                f"{'✅' if snapshot.plan is not None else '▫️'} 发布计划",
-                f"{self._publish_status(snapshot)} Telegram 发布",
-                f"{self._archive_status(snapshot)} WebDAV 归档",
+                f"{self._phase_status(event_types, 'analysis_completed', 'analysis_failed', 'analysis_started')} 检查文件",
+                f"{'✅' if snapshot.plan is not None else '▫️'} 准备发布",
+                f"{self._publish_status(snapshot)} 发到频道",
+                f"{self._archive_status(snapshot)} 云端备份",
             ]
         )
 
@@ -344,8 +344,9 @@ class BotUIFormatMixin:
             lines.extend(
                 [
                     "",
-                    "**Telegram 发布**",
-                    f"计划步骤：`{succeeded}/{len(snapshot.plan.steps)}` · 已确认消息记录：`{len(external_effects)}`",
+                    "**发到频道**",
+                    f"已发出：`{succeeded}/{len(snapshot.plan.steps)}` 组"
+                    + (f" · 消息记录 `{len(external_effects)}`" if deep else ""),
                 ]
             )
             for step in failed[:3] if deep else ():
@@ -365,11 +366,14 @@ class BotUIFormatMixin:
             lines.extend(
                 [
                     "",
-                    "**WebDAV 归档**",
-                    f"状态：{ARCHIVE_STATE_LABELS[archive.state]} · 文件：`{stored}/{len(archive.objects)}` · `{self._human_bytes(sum(obj.size_bytes for obj in archive.objects))}`",
-                    f"Profile：`{archive.archive_profile_id}` · 策略：**{self._archive_policy_label(archive.archive_policy.value)}** · policy v`{archive.archive_policy_version}`",
+                    "**云端备份**",
+                    f"{ARCHIVE_STATE_LABELS[archive.state]} · 文件 `{stored}/{len(archive.objects)}` · `{self._human_bytes(sum(obj.size_bytes for obj in archive.objects))}`",
                 ]
             )
+            if deep:
+                lines.append(
+                    f"Profile：`{archive.archive_profile_id}` · 策略：**{self._archive_policy_label(archive.archive_policy.value)}** · policy v`{archive.archive_policy_version}`"
+                )
             if archive.state == ArchivePackageState.FAILED:
                 issue = describe_archive_failure(archive.error_code)
                 recovery = archive_recovery_state(job)
@@ -380,18 +384,18 @@ class BotUIFormatMixin:
                     lines.extend(
                         [
                             issue.explanation,
-                            f"系统将自动进行第 `{recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')}` 次续传{retry_text}，无需操作。",
+                            f"会自动接着上传（第 {recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')} 次{retry_text}），不用管。",
                         ]
                     )
                 elif status in {"exhausted", "abandoned"}:
                     lines.extend(
                         [
                             issue.explanation,
-                            "自动续传已停止；Telegram 发布不受影响，仍可手动重传。",
+                            "自动续传停了；频道里的内容不受影响，可以点“☁️ 重新备份”。",
                         ]
                     )
                 elif archive_failure_waits_for_recovery(job, archive):
-                    lines.extend([issue.explanation, "系统正在自动判断续传方式，无需操作。"])
+                    lines.extend([issue.explanation, "正在自动处理，不用管。"])
                 else:
                     lines.extend([issue.explanation, f"下一步：{issue.action}"])
             if deep:
@@ -561,10 +565,10 @@ class BotUIFormatMixin:
         phase_labels = {
             "queued": "排队",
             "downloading": "下载",
-            "downloaded": "已下载",
-            "analyzing": "分析",
-            "analyzed": "已分析",
-            "planned": "已规划",
+            "downloaded": "下载完成",
+            "analyzing": "检查",
+            "analyzed": "检查完成",
+            "planned": "等待发布",
             "publishing": "发布",
             "succeeded": "完成",
             "failed": "失败",

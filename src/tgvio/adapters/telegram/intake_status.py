@@ -106,13 +106,13 @@ class IntakeStatusMixin:
         total_bytes = sum(max(0, int(item.size_bytes or 0)) for item in job.items)
         label = f"任务 #{accepted_order}" if accepted_order is not None else "任务"
         lines = [
-            f"✅ 已接收 · **{label}**",
+            f"✅ 收到了 · **{label}**",
             f"媒体：`{len(job.items)}` · `{self._human_bytes(total_bytes)}`",
         ]
 
         phase = progress.phase if progress is not None else job.state.value
         if held and not job.terminal:
-            lines.append("状态：⏸ **已暂停** · 已保留当前缓存，恢复后从安全边界继续")
+            lines.append("状态：⏸ **已暂停** · 恢复后会接着做")
         elif phase == "downloading" and progress is not None:
             completed_indexes = {item.index for item in job.items if item.local_path}
             completed_bytes = sum(
@@ -139,7 +139,7 @@ class IntakeStatusMixin:
             current = min(progress.total, progress.current + 1) if progress.total else 0
             lines.extend(
                 [
-                    "状态：🔎 **正在分析**",
+                    "状态：🔎 **正在检查文件**",
                     f"进度：`{current}/{progress.total or len(job.items)}`",
                 ]
             )
@@ -148,11 +148,11 @@ class IntakeStatusMixin:
             lines.extend(
                 [
                     "状态：📤 **正在发布**",
-                    f"步骤：`{current}/{progress.total}`",
+                    f"进度：`{current}/{progress.total}`",
                 ]
             )
         elif job.state == JobState.SUCCEEDED:
-            lines.append("状态：✅ **Telegram 发布完成**")
+            lines.append("状态：✅ **已发到频道**")
         elif job.state == JobState.FAILED:
             issue = describe_job_failure(job.error_code)
             recovery = job_recovery_state(job)
@@ -160,41 +160,41 @@ class IntakeStatusMixin:
             if recovery_status == "scheduled":
                 lines.extend(
                     [
-                        "状态：🔄 **系统正在自动恢复**",
+                        "状态：🔄 **出了点问题，正在自动重试**",
                         f"原因：{issue.title}",
-                        f"将自动进行第 `{recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')}` 次安全重试，无需操作。",
+                        f"会自动再试（第 {recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')} 次），不用管。",
                     ]
                 )
             elif recovery_status == "quarantined":
                 lines.extend(
                     [
-                        "状态：🛡️ **已隔离，不会自动重发**",
+                        "状态：🛡️ **可能已经发出一部分，为防重复没有重发**",
                         issue.explanation,
-                        "后续任务会继续；请有空时核对目标频道中的实际消息。",
+                        "请去频道看一下实际发出了什么；其他任务不受影响。",
                     ]
                 )
             elif recovery_status == "manual_review":
                 lines.extend(
                     [
-                        "状态：🛡️ **安全检查阻止重发**",
+                        "状态：🛡️ **为防重复发送，已停止**",
                         issue.explanation,
-                        "此任务已跳过，后续任务会继续；需要管理员核对发布记录。",
+                        "请去频道看一下实际发出了什么；其他任务不受影响。",
                     ]
                 )
             elif recovery_status in {"exhausted", "abandoned"}:
                 lines.extend(
                     [
-                        f"状态：⏭️ **{issue.title}，已自动跳过**",
-                        f"自动处理未能恢复任务（已尝试 `{recovery.get('attempt_count', 0)}` 次）。",
-                        "后续任务会继续；如仍需要这份内容，可在详情中手动重试或重新转发。",
+                        f"状态：⏭️ **{issue.title}**",
+                        f"已经自动重试了 {recovery.get('attempt_count', 0)} 次。",
+                        "其他任务不受影响。还需要的话，在“⚠️ 有问题”里点“🔁 全部重试”，或重新转发。",
                     ]
                 )
             elif job_failure_waits_for_recovery(job):
                 lines.extend(
                     [
-                        "状态：🔄 **系统正在判断恢复方式**",
+                        "状态：🔄 **出了点问题，正在自动处理**",
                         f"原因：{issue.title}",
-                        "无需操作，系统会自动重试或安全跳过。",
+                        "不用管，系统会自动重试。",
                     ]
                 )
             else:
@@ -209,24 +209,24 @@ class IntakeStatusMixin:
             lines.append("状态：⛔ **已取消**")
         elif job.state == JobState.PLANNED:
             if getattr(self._settings, "publish_enabled", False):
-                lines.append("状态：🧠 **已规划，等待发布**")
+                lines.append("状态：⏳ **排队等待发布**")
             else:
-                lines.append("状态：🧠 **已规划，自动发布关闭**")
+                lines.append("状态：⏸ **已准备好，但自动发布已关闭**")
         elif job.state in {JobState.DOWNLOADED, JobState.ANALYZED}:
-            lines.append("状态：⏳ **准备下一阶段**")
+            lines.append("状态：⏳ **处理中**")
         else:
             lines.append("状态：⏳ **等待处理**")
 
         if archive is not None:
             stored = sum(1 for obj in archive.objects if obj.state.value == "stored")
             archive_labels = {
-                ArchivePackageState.PLANNED: "等待归档",
-                ArchivePackageState.STAGING: "准备归档",
-                ArchivePackageState.UPLOADING: "归档上传中",
-                ArchivePackageState.VERIFYING: "归档校验中",
-                ArchivePackageState.COMMITTED: "归档完成",
-                ArchivePackageState.FAILED: "归档失败",
-                ArchivePackageState.CANCELLED: "归档已取消",
+                ArchivePackageState.PLANNED: "等待备份",
+                ArchivePackageState.STAGING: "准备备份",
+                ArchivePackageState.UPLOADING: "备份上传中",
+                ArchivePackageState.VERIFYING: "备份核对中",
+                ArchivePackageState.COMMITTED: "备份完成",
+                ArchivePackageState.FAILED: "备份失败",
+                ArchivePackageState.CANCELLED: "备份已取消",
             }
             icon = {
                 ArchivePackageState.COMMITTED: "✅",
@@ -234,7 +234,7 @@ class IntakeStatusMixin:
                 ArchivePackageState.CANCELLED: "⛔",
             }.get(archive.state, "☁️")
             lines.append(
-                f"WebDAV 归档：{icon} `{archive_labels[archive.state]}` · `{stored}/{len(archive.objects)}`"
+                f"云端备份：{icon} `{archive_labels[archive.state]}` · `{stored}/{len(archive.objects)}`"
             )
             if archive.state == ArchivePackageState.FAILED:
                 issue = describe_archive_failure(archive.error_code)
@@ -244,18 +244,18 @@ class IntakeStatusMixin:
                     lines.extend(
                         [
                             issue.explanation,
-                            f"系统将自动进行第 `{recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')}` 次续传，无需操作。",
+                            f"会自动接着上传（第 {recovery.get('next_attempt', '?')}/{recovery.get('max_attempts', '?')} 次），不用管。",
                         ]
                     )
                 elif recovery_status in {"exhausted", "abandoned"}:
                     lines.extend(
                         [
                             issue.explanation,
-                            "自动续传已停止；Telegram 发布不受影响，可稍后从详情手动重传。",
+                            "自动续传停了；频道里的内容不受影响，可以点“🔁 全部重试”再备份。",
                         ]
                     )
                 elif archive_failure_waits_for_recovery(job, archive):
-                    lines.extend([issue.explanation, "系统正在自动判断续传方式，无需操作。"])
+                    lines.extend([issue.explanation, "正在自动处理，不用管。"])
                 else:
                     lines.extend([issue.explanation, f"下一步：{issue.action}"])
         return "\n".join(lines)
@@ -294,7 +294,7 @@ class IntakeStatusMixin:
             rows.append(
                 [
                     Button.inline(
-                        "☁️ 重传失败归档",
+                        "☁️ 重新备份",
                         f"ui:archive-retry:{job.id}".encode("utf-8"),
                     )
                 ]

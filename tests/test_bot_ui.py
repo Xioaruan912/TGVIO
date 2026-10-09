@@ -881,7 +881,7 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(event)
 
         self.assertEqual(undo.confirm_calls, 1)
-        self.assertIn("撤销操作已过期", event.edits[0][0])
+        self.assertIn("这个操作已过期", event.edits[0][0])
 
     async def test_undo_infrastructure_error_keeps_task_ui_usable(self) -> None:
         completed = job(state=JobState.SUCCEEDED, error_code=None)
@@ -1063,7 +1063,7 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         buttons = await ui._job_buttons(completed)
         labels = [button.text for row in buttons for button in row]
-        self.assertIn("🧹 继续清理远端归档", labels)
+        self.assertIn("🧹 继续删除云端备份", labels)
 
     async def test_jobs_page_uses_direct_buttons_and_friendly_failure_text(self) -> None:
         failed = job()
@@ -1071,7 +1071,7 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         text, buttons = await ui._jobs_page(42)
 
         # Nothing is running, so the page opens on the problem the user must see.
-        self.assertIn("暂时无法读取原媒体", text)
+        self.assertIn("没能下载原文件", text)
         self.assertIn("**#1**", text)
         self.assertIn("09-13 07:42", text)
         self.assertIn("旅行\\_01.mp4", text)
@@ -1231,7 +1231,7 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("任务 #1", normal)
         self.assertIn("旅行\\_01.mp4", normal)
-        self.assertIn("暂时无法读取原媒体", normal)
+        self.assertIn("没能下载原文件", normal)
         self.assertNotIn(failed.id, normal)
         self.assertNotIn("`download_failed`", normal)
         self.assertIn(f"内部 Job ID：`{failed.id}`", deep)

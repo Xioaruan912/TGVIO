@@ -52,12 +52,12 @@ COLLECTION_BUTTONS = frozenset(
 
 
 STATE_LABELS = {
-    JobState.RECEIVED: "已接收",
+    JobState.RECEIVED: "排队中",
     JobState.DOWNLOADING: "下载中",
-    JobState.DOWNLOADED: "已下载",
-    JobState.ANALYZING: "分析中",
-    JobState.ANALYZED: "已分析",
-    JobState.PLANNED: "已规划",
+    JobState.DOWNLOADED: "下载完成",
+    JobState.ANALYZING: "检查中",
+    JobState.ANALYZED: "检查完成",
+    JobState.PLANNED: "等待发布",
     JobState.PUBLISHING: "发布中",
     JobState.SUCCEEDED: "已完成",
     JobState.FAILED: "失败",
@@ -66,10 +66,10 @@ STATE_LABELS = {
 
 
 ARCHIVE_STATE_LABELS = {
-    ArchivePackageState.PLANNED: "已规划",
+    ArchivePackageState.PLANNED: "等待备份",
     ArchivePackageState.STAGING: "准备中",
-    ArchivePackageState.UPLOADING: "归档中",
-    ArchivePackageState.VERIFYING: "校验中",
+    ArchivePackageState.UPLOADING: "上传中",
+    ArchivePackageState.VERIFYING: "核对中",
     ArchivePackageState.COMMITTED: "已完成",
     ArchivePackageState.FAILED: "失败",
     ArchivePackageState.CANCELLED: "已取消",

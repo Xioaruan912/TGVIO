@@ -49,14 +49,14 @@ class BotUIResultMixin:
             "pending": "⏳ 处理中",
         }
         archive_labels = {
-            None: "未启用归档",
-            "committed": "✅ 已归档",
-            "failed": "❌ 归档失败（可重传）",
-            "cancelled": "⛔ 归档已取消",
-            "uploading": "☁️ 归档上传中",
-            "verifying": "☁️ 归档校验中",
-            "staging": "☁️ 归档准备中",
-            "planned": "☁️ 归档排队中",
+            None: "未开启",
+            "committed": "✅ 已备份",
+            "failed": "❌ 备份没完成（可重新备份）",
+            "cancelled": "⛔ 已取消",
+            "uploading": "☁️ 上传中",
+            "verifying": "☁️ 核对中",
+            "staging": "☁️ 准备中",
+            "planned": "☁️ 排队中",
         }
         lines = [
             f"📋 **任务结果** {await self._job_label(job)}",
@@ -74,7 +74,7 @@ class BotUIResultMixin:
                 f"消息 `{card.discussion_range}`"
             )
         lines.append(
-            f"☁️ WebDAV：{archive_labels.get(card.archive_state, card.archive_state or '未知')}"
+            f"☁️ 云端备份：{archive_labels.get(card.archive_state, card.archive_state or '未知')}"
         )
         if card.link_url is None and card.link_reason:
             lines.append(f"🔗 {card.link_reason}")
@@ -190,7 +190,7 @@ class BotUIResultMixin:
                 "**确认补发跳过项**\n\n"
                 f"将为任务生成一个仅包含 `{card.skipped_items}` 个跳过媒体的新任务。\n"
                 "原任务和已发布消息不会改变；新任务会重新下载并按正常队列顺序发布。\n\n"
-                "确认令牌 5 分钟内有效，并且只能使用一次。"
+                "5 分钟内有效。"
             ),
             [
                 [

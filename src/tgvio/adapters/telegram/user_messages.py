@@ -10,46 +10,48 @@ class UserFacingIssue:
     action: str
 
 
+_SEE_CHANNEL = "请去频道看一下实际发出了什么，缺的部分重新转发给我。"
+
 _JOB_FAILURES: dict[str, UserFacingIssue] = {
     "download_failed": UserFacingIssue(
-        title="暂时无法读取原媒体",
-        explanation="任务停在下载阶段，尚未向目标频道发布任何内容。",
-        action="请点“重试任务”；如果多次失败，请重新转发原消息。",
+        title="没能下载原文件",
+        explanation="频道还没有发任何内容。",
+        action="通常会自动重试；不行的话点“🔁 重试任务”，或重新转发原消息。",
     ),
     "source_missing": UserFacingIssue(
         title="原消息已被删除",
-        explanation="来源里已经找不到这些媒体，重试也取不回来；频道没有发布任何内容。",
+        explanation="来源里已经找不到这些内容，重试也取不回来；频道没有发任何内容。",
         action="如果还能找到原内容，请重新转发给我。",
     ),
     "telegram_file_timeout": UserFacingIssue(
         title="Telegram 暂时取不到文件",
         explanation="这是 Telegram 那边的临时问题，系统会隔一段时间自动再试。",
-        action="不用操作，等待自动重试；长时间未恢复再点“重试任务”。",
+        action="不用操作，会自动再试；很久没好再点“🔁 重试任务”。",
     ),
     "disk_low": UserFacingIssue(
-        title="服务器可用空间不足",
-        explanation="系统在下载前主动停止了任务，没有向目标频道发布内容。",
-        action="清理已完成缓存或增加磁盘空间后，再点“重试任务”。",
+        title="服务器空间不够了",
+        explanation="下载前就停下了，频道没有发任何内容。",
+        action="在“⚙️ 设置 → 🔧 系统状态”里清理缓存，再点“🔁 重试任务”。",
     ),
     "media_analysis_failed": UserFacingIssue(
-        title="媒体文件无法识别",
-        explanation="文件已经下载，但格式检查没有通过，尚未开始发布。",
-        action="可先点“重试任务”；仍失败时请换一个文件或重新导出媒体。",
+        title="文件打不开",
+        explanation="文件下载好了，但格式检查没通过，还没有发布。",
+        action="可以点“🔁 重试任务”；还不行就换一个文件。",
     ),
     "publish_failed": UserFacingIssue(
-        title="Telegram 发布没有完成",
-        explanation="系统会先检查是否已有频道消息，只有确认安全时才允许重试。",
-        action="打开任务详情并点“重试任务”，系统会自动执行安全检查。",
+        title="发到频道时出错了",
+        explanation="系统会先确认频道里有没有发出去，确认安全才会再发。",
+        action="点“🔁 重试任务”。",
     ),
     "publish_partial": UserFacingIssue(
-        title="部分内容可能已经发布",
-        explanation="系统检测到已确认的 Telegram 消息，已阻止自动重发以免重复。",
-        action="请先核对目标频道中的实际消息，再进行人工处理。",
+        title="可能已经发出去一部分",
+        explanation="为了不重复发送，系统没有自动重发。",
+        action=_SEE_CHANNEL,
     ),
     "publish_uncertain": UserFacingIssue(
-        title="发布结果暂时无法确认",
-        explanation="Telegram 的返回结果不明确，系统已阻止自动重发以免重复。",
-        action="请先核对目标频道中的实际消息，再进行人工处理。",
+        title="不确定有没有发出去",
+        explanation="Telegram 没有给出明确结果；为了不重复发送，系统没有自动重发。",
+        action=_SEE_CHANNEL,
     ),
 }
 
@@ -59,8 +61,8 @@ def describe_job_failure(error_code: str | None) -> UserFacingIssue:
         error_code or "",
         UserFacingIssue(
             title="任务没有完成",
-            explanation="系统已安全停止任务；请打开任务详情查看当前阶段。",
-            action="可以从任务详情尝试安全重试；若按钮不可用，请联系管理员。",
+            explanation="系统已经安全停下，频道里不会出现重复内容。",
+            action="可以点“🔁 重试任务”。",
         ),
     )
 
@@ -68,7 +70,7 @@ def describe_job_failure(error_code: str | None) -> UserFacingIssue:
 def describe_archive_failure(error_code: str | None = None) -> UserFacingIssue:
     del error_code
     return UserFacingIssue(
-        title="WebDAV 归档未完成",
-        explanation="Telegram 发布不受影响；未确认归档前，本地缓存会继续保留。",
-        action="网络稳定后点“重传归档”，系统会从远端已确认的文件继续。",
+        title="云端备份没完成",
+        explanation="频道里的内容不受影响；备份完成前，服务器上的文件会一直保留。",
+        action="点“🔁 全部重试”或“☁️ 重新备份”，会从上次的位置接着传。",
     )

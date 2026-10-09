@@ -184,14 +184,14 @@ class BotUIJobActionsMixin:
         await self._edit_page(
             event,
             (
-                f"**确认重试{label}**\n\n"
+                f"**重试{label}？**\n\n"
                 f"{issue.explanation}\n\n"
-                "系统会再次检查已记录的发布结果，只在确认安全时继续。"
+                "已经发出的内容不会重复发送。"
             ),
             [
                 [
                     Button.inline(
-                        "确认安全重试",
+                        "🔁 重试",
                         self._callback_data("retry-confirm", confirmation_ref),
                     ),
                     Button.inline("返回", self._callback_data("job", job.id)),
@@ -265,7 +265,7 @@ class BotUIJobActionsMixin:
             event,
             (
                 f"**确认取消{label}**\n\n"
-                "取消请求会持久保存，任务将在下一个安全边界停止。"
+                "任务会在当前这一步做完后停下，不会留下半截内容。"
             ),
             [
                 [
@@ -368,10 +368,10 @@ class BotUIJobActionsMixin:
             event,
             (
                 f"**⚠️ 确认撤销发布 · {label}**\n\n"
-                f"将删除已确认的 Telegram 消息：`{status.remaining_messages}` 条\n"
+                f"将从频道删除这个任务发出的 `{status.remaining_messages}` 条消息\n"
                 f"频道：`{status.remaining_channel_messages}` · 评论区：`{status.remaining_discussion_messages}`\n\n"
-                "只删除这个任务已记录的消息；不会删除任务历史或 WebDAV 归档。\n"
-                "确认令牌 5 分钟内有效，并且只能使用一次。"
+                "只删这个任务发出的消息；任务记录和云端备份都保留。\n"
+                "5 分钟内有效。"
             ),
             [
                 [
@@ -394,7 +394,7 @@ class BotUIJobActionsMixin:
         except UndoOperationInvalidError:
             await self._edit_page(
                 event,
-                "**撤销操作已过期**\n\n任务状态、已发布消息或确认令牌已经变化。请重新打开任务详情后再操作。",
+                "**这个操作已过期**\n\n情况已经变了，请重新打开任务再试。",
                 self._nav_buttons(),
             )
             return
@@ -422,7 +422,7 @@ class BotUIJobActionsMixin:
         if result.complete:
             text = (
                 f"**✅ 撤销完成 · {label}**\n\n"
-                f"已删除 `{result.deleted_total}/{result.total_messages}` 条已确认 Telegram 消息。\n"
+                f"已删除 `{result.deleted_total}/{result.total_messages}` 条频道消息。\n"
                 "原始发布事实和撤销审计记录仍保留。"
             )
             buttons = (
@@ -457,20 +457,20 @@ class BotUIJobActionsMixin:
         except ValueError:
             return "🛡️ 任务状态已变化，请刷新任务详情后再操作。"
         except UnsafeRetryError:
-            return "🛡️ 系统检测到可能已经发布的 Telegram 消息，已阻止自动重试以免重复。"
+            return "🛡️ 频道里可能已经发出了这个任务的内容，为防重复没有重试。请去频道看一下。"
 
         if decision.target_state == JobState.RECEIVED and self._schedule_job is not None:
             self._schedule_job(decision.job, chat_id=chat_id)
-            suffix = "已重新进入下载和分析流程。"
+            suffix = "会重新下载并发布。"
         elif (
             decision.target_state == JobState.PLANNED
             and self._settings.publish_enabled
             and self._schedule_job is not None
         ):
             self._schedule_job(decision.job, chat_id=chat_id)
-            suffix = "已从确认无副作用的失败步骤继续发布。"
+            suffix = "会从出错的地方接着发，已经发出的不会重复。"
         else:
-            suffix = "已恢复到等待发布；当前自动发布关闭，不会产生频道消息。"
+            suffix = "已准备好，但自动发布已关闭，暂时不会发到频道。"
         return (
             f"🔁 {await self._job_label(job)} 已开始第 `{decision.retry_count}` 次安全重试。\n"
             f"{suffix}"
@@ -489,7 +489,7 @@ class BotUIJobActionsMixin:
         label = await self._job_label(job)
         if current.state == JobState.CANCELLED:
             return f"⛔ {label} 已取消。"
-        return f"⏳ {label} 已记录取消请求，将在下一个安全边界停止。"
+        return f"⏳ {label} 会在当前这一步做完后取消。"
 
     async def _issue_job_operation(
         self,
@@ -641,7 +641,7 @@ class BotUIJobActionsMixin:
                 )
             else:
                 self._schedule_job(job)
-        return f"▶️ {await self._job_label(job)} 已恢复（revision `{control.hold_revision}`），将从 durable 状态继续。"
+        return f"▶️ {await self._job_label(job)} 已恢复，会接着做。"
 
     async def _pause_queue_exact(self, *, owner_id: int) -> None:
         if self._control is None:
