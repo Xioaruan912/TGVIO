@@ -52,7 +52,8 @@ async def work(args) -> None:
                 await asyncio.sleep(30)
                 continue
             state.discover(tasks)
-            report("scan", **state.summary())
+            report("scan", metadata_reads=discovery.metadata_reads,
+                   metadata_hits=discovery.metadata_hits, **state.summary())
             if args.dry_run:
                 report("plan", eligible=sum(state.eligible(t) for t in tasks),
                        requiring_480=sum(480 in t.required for t in tasks),

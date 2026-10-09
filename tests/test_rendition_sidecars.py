@@ -141,7 +141,8 @@ class BackfillTests(unittest.IsolatedAsyncioTestCase):
         from tgvio.interfaces.backfill_renditions import work
         original, task = fixture()
         tasks = [replace(task, package_id=f"package-{i}") for i in range(30)]
-        discovery = SimpleNamespace(tasks=AsyncMock(return_value=tasks))
+        discovery = SimpleNamespace(tasks=AsyncMock(return_value=tasks),
+                                    metadata_reads=0, metadata_hits=0)
         runner = SimpleNamespace(run=AsyncMock(return_value=0))
         scans = 0
         async def sleep(seconds):
@@ -268,6 +269,38 @@ class StateTests(unittest.TestCase):
         tasks = asyncio.run(Discovery(Port(), "TGVIO").tasks())
         self.assertEqual(len(tasks), 1)
         self.assertEqual(tasks[0].media["sha256"], "a" * 64)
+
+    def test_discovery_reads_package_metadata_again_only_when_its_etag_changes(self):
+        original, _ = fixture()
+        listing = {"_COMPLETE.json": '"c1"', "manifest.json": '"m1"'}
+        class Discovery(RenditionDiscovery):
+            async def collections(self, path):
+                return ("2026-09-22",) if path == "TGVIO" else ("1",)
+            def _entries(self, path, allow_missing=False):
+                return tuple((name, False, 1, etag) for name, etag in listing.items())
+        class Port:
+            reads: list[str] = []
+            async def read_json(self, path):
+                self.reads.append(path)
+                return original.complete if path.endswith("_COMPLETE.json") else original.manifest
+        port = Port()
+        discovery = Discovery(port, "TGVIO")
+
+        first = asyncio.run(discovery.tasks())
+        port.reads.clear()
+        second = asyncio.run(discovery.tasks())
+        self.assertEqual(port.reads, [])
+        self.assertEqual(second, first)
+
+        listing["manifest.json"] = '"m2"'
+        asyncio.run(discovery.tasks())
+        self.assertEqual(port.reads, ["TGVIO/2026-09-22/1/manifest.json"])
+
+        # A package whose listing shows no completion marker is not read at all.
+        port.reads.clear()
+        listing.pop("_COMPLETE.json")
+        self.assertEqual(asyncio.run(discovery.tasks()), [])
+        self.assertEqual(port.reads, [])
 
 
 

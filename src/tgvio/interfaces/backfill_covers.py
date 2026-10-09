@@ -70,7 +70,8 @@ async def work(args) -> None:
                     tasks = discovered
                     state.discover(tasks)
                     scan_at = loop.time()
-                    report("scan", **state.summary())
+                    report("scan", metadata_reads=discovery.metadata_reads,
+                           metadata_hits=discovery.metadata_hits, **state.summary())
                 except Exception as error:
                     report("scan_failed", error=type(error).__name__, **state.summary())
                     if not args.watch:
