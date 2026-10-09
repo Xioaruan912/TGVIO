@@ -99,3 +99,28 @@ Player：分块 4 MB、预读窗口 32 MB、并发 4、开头预热 16 MB（WARM
 - 服务端 34 个流请求全部 206，无错误；客户端 reset 为浏览器拖动时取消开放区间，属正常。
 - 结论：样本少、波动大，直连没有表现出稳定优势；拖动在两种方式下都要 4–9 s，远高于此前单段首字节估计（约 0.3 s）。拖动需要连续取数 MB，受约 2 MB/s 的上游带宽与客户端网络限制，不只是取链/握手开销。
 - 未定位：直连那次 30 s 首帧超时，服务端日志无对应慢请求或错误；需要服务端记录流请求首字节耗时再判断。
+
+### 更正与服务端测量（2026-10-09）
+
+- 更正：生产 `window_complete` 日志显示上游单窗口吞吐约 9–14 MB/s，并非上文估计的约 2 MB/s。
+- 新假设（待测量验证）：范围缓存按 32 MB 对齐窗口、从窗口内第一个缺失块开始取数。拖到窗口中部时，必须先等目标位置之前的数据到达，最多约 32 MB，按上面的吞吐约 2–4 s。这可能是拖动 4–9 s 的主要部分。
+- 测量方法：流请求的 `http_request` 日志新增以下字段，只有数字和固定标签：
+
+  | 字段 | 含义 |
+  |---|---|
+  | `slot_wait_ms` | 等待播放槽位 |
+  | `faststart` / `faststart_ms` | 是否使用 faststart 叠加，以及判定完成的时刻 |
+  | `prime_ms` | 等首段数据的时间 |
+  | `prime_from` | 首段来源：disk / inflight / fetched |
+  | `lead_bytes` | 上游必须先送达、位于目标之前的字节数 |
+  | `fetch_joined` | 是否加入了已在进行的窗口 |
+  | `upstream_open_ms` / `upstream_via` / `upstream_status` / `upstream_failures` | 本请求触发的前台取数：打开耗时、读取路线（webdav / direct / direct_fallback）、状态码、失败次数 |
+  | `headers_ms` | 响应头发出的时刻 |
+  | `first_byte_ms` | 第一个字节发出的时刻 |
+  | `sent_bytes` | 实际发出的字节数 |
+
+  `*_ms` 字段中，`slot_wait_ms`、`prime_ms` 和 `upstream_open_ms` 是各自步骤的耗时；`faststart_ms`、`headers_ms` 和 `first_byte_ms` 是从请求开始算起的时刻。`window_complete` 日志另外新增 `start_chunk`、`open_ms` 和 `background`。
+- 判读：
+  - `first_byte_ms` 小而浏览器等待长：慢在客户端到 VPS 这一段。
+  - `lead_bytes` 大且 `prime_ms` 高：慢在窗口对齐，下一步应改为从目标块开始取数。
+  - `upstream_open_ms` 高：慢在网盘或直链建立连接。

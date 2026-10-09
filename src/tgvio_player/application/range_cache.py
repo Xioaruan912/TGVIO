@@ -5,6 +5,7 @@ from collections.abc import AsyncIterator, Callable
 import logging
 import time
 
+from tgvio_player.application import stream_trace
 from tgvio_player.domain.ranges import ByteRange
 
 _LOG = logging.getLogger("tgvio_player.rangecache")
@@ -265,9 +266,17 @@ class MediaRangeCache:
                     range_start = first_chunk * self._chunk_bytes
                 if first_chunk > last_chunk:
                     return
+                opened = time.perf_counter()
                 response = await self._reader.open_range(
                     package, relpath, ByteRange(range_start, range_end)
                 )
+                open_ms = (time.perf_counter() - opened) * 1000
+                # A fetch started for a viewer (not a prefetch) belongs to that request's trace.
+                trace = None if low_priority else stream_trace.current()
+                if trace is not None:
+                    trace.note("upstream_open_ms", round(open_ms, 1))
+                    trace.note("upstream_via", trace.via)
+                    trace.note("upstream_status", response.status)
                 if response.status in {200, 206}:
                     started = time.perf_counter()
                     self._window_fetches += 1
@@ -283,14 +292,22 @@ class MediaRangeCache:
                     await self._gate.reward()
                     elapsed = max(0.001, time.perf_counter() - started)
                     _LOG.info(
-                        "player.rangecache.window_complete key=%s win=%s bytes=%s elapsed_ms=%.1f mbps=%.2f",
-                        key[:12], window, range_end - range_start + 1, elapsed * 1000,
-                        (range_end - range_start + 1) / elapsed / 1_000_000,
+                        "player.rangecache.window_complete key=%s win=%s start_chunk=%s bytes=%s"
+                        " open_ms=%.1f elapsed_ms=%.1f mbps=%.2f background=%s",
+                        key[:12], window, first_chunk, range_end - range_start + 1, open_ms,
+                        elapsed * 1000, (range_end - range_start + 1) / elapsed / 1_000_000,
+                        low_priority,
                     )
                     return
                 await self._gate.penalize()
-            except Exception:
-                _LOG.info("player.rangecache.fetch_error key=%s win=%s", key[:12], window)
+            except Exception as exc:
+                _LOG.info(
+                    "player.rangecache.fetch_error key=%s win=%s error=%s",
+                    key[:12], window, type(exc).__name__,
+                )
+                trace = None if low_priority else stream_trace.current()
+                if trace is not None:
+                    trace.add("upstream_failures")
                 await self._gate.penalize()
             finally:
                 if response is not None:
@@ -458,16 +475,22 @@ class MediaRangeCache:
         )
         partial_key = (key, index)
         window = self._window_for_chunk(index)
+        trace = stream_trace.current()
+        if trace is not None:
+            self._trace_prime(trace, key, window, index, byte_range.start)
         self._mark_foreground(key, window)
         try:
             self._ensure_window(key, package, relpath, size, window, needed_chunk=index)
+            waited = False
             while True:
                 cached = self._store.read_slice(key, index, within, needed)
                 if cached is not None and len(cached) >= needed:
                     self._disk_cache_bytes_served += len(cached)
+                    source = "fetched" if waited else "disk"
                     break
                 partial = self._partial_chunks.get(partial_key)
                 if partial is not None and len(partial) >= within + needed:
+                    source = "fetched" if waited else "inflight"
                     break
                 # Another request may have caused this chunk to be persisted since
                 # the initial lookup; ensure the active fetch generation is reused.
@@ -484,11 +507,35 @@ class MediaRangeCache:
                     partial is not None and len(partial) >= within + needed
                 ):
                     continue
+                waited = True
                 await event.wait()
         finally:
             self._unmark_foreground(key, window)
-        self._prime_wait_ms += (time.perf_counter() - started) * 1000
+        waited_ms = (time.perf_counter() - started) * 1000
+        self._prime_wait_ms += waited_ms
         self._prime_waits += 1
+        if trace is not None:
+            trace.note("prime_from", source)
+            trace.note("prime_ms", round(waited_ms, 1))
+
+    def _trace_prime(
+        self, trace: stream_trace.StreamTrace, key: str, window: int, index: int, start: int
+    ) -> None:
+        """Note how much the archive must send before this request's first byte.
+
+        A window is fetched from its first missing chunk, so a seek into the middle of
+        a window waits for every missing byte in front of it.
+        """
+        first = window * self._window_chunks
+        missing = next(
+            (
+                item for item in range(first, index + 1)
+                if self._store.read_slice(key, item, 0, self._chunk_bytes) is None
+            ),
+            None,
+        )
+        trace.note("fetch_joined", (key, window) in self._window_tasks)
+        trace.note("lead_bytes", 0 if missing is None else start - missing * self._chunk_bytes)
 
     async def _available_chunk_bytes(
         self,

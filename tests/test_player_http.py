@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import json
 import time
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -865,6 +866,31 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             and '"action":"media_play"' in line
             for line in captured.output
         ))
+
+    async def test_a_stream_log_says_when_the_first_byte_left(self) -> None:
+        cookie = await self._login()
+        self.read_client.body = ClosableBody([b"bcd"])  # exactly the requested range
+        with self.assertLogs("tgvio_player.diagnostics", level="INFO") as captured:
+            stream = await self.client.get(
+                f"/api/v1/media/{self.media_id}/stream",
+                headers={"Range": "bytes=1-3"},
+                cookies={"tgvio_player_session": cookie},
+            )
+            await stream.read()
+            await self.client.get("/api/v1/favorites", cookies={"tgvio_player_session": cookie})
+        events = [
+            json.loads(line.split("player_event ", 1)[1])
+            for line in captured.output
+            if '"event":"http_request"' in line
+        ]
+        streamed = next(event for event in events if event["stream_kind"] == "video")
+        self.assertEqual(streamed["sent_bytes"], 3)
+        for name in ("headers_ms", "first_byte_ms", "upstream_open_ms"):
+            self.assertIsInstance(streamed[name], float, name)
+        self.assertLessEqual(streamed["headers_ms"], streamed["first_byte_ms"])
+        self.assertLessEqual(streamed["first_byte_ms"], streamed["duration_ms"])
+        api = next(event for event in events if event["stream_kind"] == "api")
+        self.assertNotIn("first_byte_ms", api, "only media streams are traced")
 
     async def test_diagnostic_outcomes_separate_missing_media_from_disconnects(self) -> None:
         self.assertEqual(classify_http_outcome(404, "HTTPNotFound", is_stream=True), "not_found")

@@ -5,6 +5,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
+from tgvio_player.application import stream_trace
 from tgvio_player.application.range_cache import MediaRangeCache, RangeCacheError
 from tgvio_player.domain.ranges import ByteRange
 from tgvio_player.infrastructure.range_store import RangeStore
@@ -552,3 +553,40 @@ class HeadWarmFetchTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RangeCacheTraceTests(unittest.IsolatedAsyncioTestCase):
+    async def _traced_prime(self, cache: MediaRangeCache, start: int) -> dict[str, object]:
+        trace, token = stream_trace.begin()
+        try:
+            await cache.prime("k", "pkg", "clip.mp4", 64, ByteRange(start, start + 3))
+        finally:
+            stream_trace.end(token)
+        return trace.fields
+
+    async def test_a_seek_into_a_window_reports_the_bytes_fetched_in_front_of_it(self) -> None:
+        reader = FakeReader(bytes(range(64)))
+        cache = MediaRangeCache(FakeStore(), reader, window_bytes=32, max_attempts=1)
+        try:
+            fields = await self._traced_prime(cache, 20)
+            self.assertEqual(reader.calls, [(0, 31)], "the window is fetched from its start")
+            self.assertEqual(fields["lead_bytes"], 20)
+            self.assertEqual(fields["prime_from"], "fetched")
+            self.assertFalse(fields["fetch_joined"])
+            self.assertIn("upstream_open_ms", fields)
+            self.assertEqual(fields["upstream_status"], 206)
+            self.assertIn("prime_ms", fields)
+
+            again = await self._traced_prime(cache, 20)
+            self.assertEqual((again["prime_from"], again["lead_bytes"]), ("disk", 0))
+            self.assertNotIn("upstream_open_ms", again, "a cache hit opens nothing upstream")
+        finally:
+            await cache.shutdown()
+
+    async def test_an_untraced_prime_records_nothing(self) -> None:
+        cache = MediaRangeCache(FakeStore(), FakeReader(bytes(range(64))), window_bytes=32, max_attempts=1)
+        try:
+            await cache.prime("k", "pkg", "clip.mp4", 64, ByteRange(0, 3))
+            self.assertIsNone(stream_trace.current())
+        finally:
+            await cache.shutdown()
