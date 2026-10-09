@@ -26,6 +26,8 @@ _JOB_RETRY_LIMITS: dict[str, int | None] = {
     "media_analysis_failed": 1,
     "publish_failed": 2,
     "telegram_file_timeout": 2,
+    # Media deleted at its source never comes back; say so instead of retrying.
+    "source_missing": 0,
 }
 # Telegram answers "Timeout while fetching data" when its storage cannot serve a
 # file; that usually clears up later, so this code backs off in tens of minutes

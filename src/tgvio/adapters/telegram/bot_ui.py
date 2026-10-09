@@ -893,7 +893,7 @@ class TelethonBotUI(
         control_state = await self._repository.get_job_control(job.id)
         if (
             job.state == JobState.FAILED
-            and job.error_code not in {"publish_partial", "publish_uncertain"}
+            and job.error_code not in {"publish_partial", "publish_uncertain", "source_missing"}
             and self._control is not None
             and not job_failure_waits_for_recovery(job)
             and job_recovery_state(job).get("status") != "manual_review"

@@ -360,6 +360,41 @@ class IntakeAndDownloaderTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(failed.error_code, "telegram_file_timeout")
         self.assertIn("无法从 Telegram 取用", failed.error_message or "")
 
+    async def test_every_item_deleted_at_source_fails_with_its_own_code(self) -> None:
+        # Retrying can never bring deleted media back; production retried such
+        # a 42-item Job eight times before giving up with a generic message.
+        intake = IntakeService(self.repo)
+        job = await intake.accept(
+            owner_id=42,
+            destination="@channel",
+            media=[
+                IncomingMedia(
+                    kind=MediaKind.VIDEO,
+                    source="telegram:42:430",
+                    size_bytes=10,
+                    source_chat_id=42,
+                    source_message_id=430,
+                )
+            ],
+        )
+
+        class SourceGone(FakeDownloader):
+            async def download(self, item, target_dir, progress_callback=None):
+                raise RuntimeError("Telegram source message missing")
+
+        downloader = JobDownloader(
+            self.repo,
+            SourceGone(),
+            self.root / "downloads",
+            reserve_bytes=0,
+            item_attempts=1,
+        )
+        with self.assertRaises(Exception):
+            await downloader.download(job)
+        failed = await self.repo.get(job.id)
+        assert failed is not None
+        self.assertEqual(failed.error_code, "source_missing")
+
     async def test_skipped_items_are_left_out_of_analysis_and_plan(self) -> None:
         intake = IntakeService(self.repo)
         job = await intake.accept(

@@ -16,6 +16,16 @@ _JOB_FAILURES: dict[str, UserFacingIssue] = {
         explanation="任务停在下载阶段，尚未向目标频道发布任何内容。",
         action="请点“重试任务”；如果多次失败，请重新转发原消息。",
     ),
+    "source_missing": UserFacingIssue(
+        title="原消息已被删除",
+        explanation="来源里已经找不到这些媒体，重试也取不回来；频道没有发布任何内容。",
+        action="如果还能找到原内容，请重新转发给我。",
+    ),
+    "telegram_file_timeout": UserFacingIssue(
+        title="Telegram 暂时取不到文件",
+        explanation="这是 Telegram 那边的临时问题，系统会隔一段时间自动再试。",
+        action="不用操作，等待自动重试；长时间未恢复再点“重试任务”。",
+    ),
     "disk_low": UserFacingIssue(
         title="服务器可用空间不足",
         explanation="系统在下载前主动停止了任务，没有向目标频道发布内容。",
