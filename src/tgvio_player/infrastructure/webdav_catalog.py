@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import copy
 from dataclasses import dataclass
 from typing import Any, Protocol
 
@@ -29,13 +30,26 @@ class WebDavCatalogClient(Protocol):
 
 
 class WebDavArchiveCatalogSource:
-    """Discover only committed Archive packages using bounded metadata requests."""
+    """Discover only committed Archive packages using bounded metadata requests.
+
+    Package metadata is read again only when its listed ETag changes. Every GET
+    through OpenList costs a download-link call on the cloud drive, and a full
+    re-read of every package each poll kept that call budget under constant
+    pressure, competing with playback and tripping the drive's rate limit. The
+    directory listings that carry the ETags come from OpenList's cache instead.
+    """
 
     def __init__(self, client: WebDavCatalogClient, *, remote_root: str) -> None:
         self._client = client
         self._remote_root = safe_remote_path(remote_root, relative=False)
+        # remote path -> (etag, parsed payload) of the last successful read.
+        self._metadata: dict[str, tuple[str, Any]] = {}
+        self._seen: set[str] = set()
+        self.metadata_reads = 0
+        self.metadata_hits = 0
 
     async def discover(self) -> ArchiveDiscovery:
+        self._seen = set()
         try:
             date_entries = await self._client.list_collection(self._remote_root)
         except Exception:
@@ -66,7 +80,25 @@ class WebDavArchiveCatalogSource:
                 complete_scan = complete_scan and package_complete
                 if candidate is not None:
                     packages.append(candidate)
+        if complete_scan:
+            # Forget metadata of packages that are gone, so the cache stays bounded.
+            for path in [path for path in self._metadata if path not in self._seen]:
+                del self._metadata[path]
         return ArchiveDiscovery(packages=tuple(packages), complete_scan=complete_scan)
+
+    async def _get_json(self, path: str, entry: WebDavCollectionEntry) -> Any | None:
+        self._seen.add(path)
+        cached = self._metadata.get(path)
+        if entry.etag is not None and cached is not None and cached[0] == entry.etag:
+            self.metadata_hits += 1
+            return copy.deepcopy(cached[1])
+        payload = await self._client.get_json(path, max_bytes=_METADATA_LIMIT)
+        self.metadata_reads += 1
+        if entry.etag is not None and payload is not None:
+            self._metadata[path] = (entry.etag, copy.deepcopy(payload))
+        else:
+            self._metadata.pop(path, None)
+        return payload
 
     async def _package_candidate(
         self, package_path: str
@@ -83,19 +115,15 @@ class WebDavArchiveCatalogSource:
             # as proof that an existing committed package was deleted.
             return None, False
         try:
-            manifest = await self._client.get_json(
-                f"{package_path}/manifest.json", max_bytes=_METADATA_LIMIT
-            )
-            complete = await self._client.get_json(
-                f"{package_path}/_COMPLETE.json", max_bytes=_METADATA_LIMIT
-            )
+            manifest = await self._get_json(f"{package_path}/manifest.json", manifest_entry)
+            complete = await self._get_json(f"{package_path}/_COMPLETE.json", complete_entry)
         except Exception:
             return None, False
         renditions = None
         if "renditions.json" in by_name:
             try:
-                renditions = await self._client.get_json(
-                    f"{package_path}/renditions.json", max_bytes=_METADATA_LIMIT
+                renditions = await self._get_json(
+                    f"{package_path}/renditions.json", by_name["renditions.json"]
                 )
             except Exception:
                 # Optional sidecars never make a committed original unplayable.
@@ -104,9 +132,7 @@ class WebDavArchiveCatalogSource:
         cover_read_failed = False
         if "covers.json" in by_name:
             try:
-                covers = await self._client.get_json(
-                    f"{package_path}/covers.json", max_bytes=_METADATA_LIMIT
-                )
+                covers = await self._get_json(f"{package_path}/covers.json", by_name["covers.json"])
             except Exception:
                 cover_read_failed = True
             if covers is None:
