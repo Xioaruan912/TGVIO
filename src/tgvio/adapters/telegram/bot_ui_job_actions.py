@@ -50,7 +50,7 @@ from tgvio.domain.archive import (
     ArchivePackageState,
 )
 from tgvio.domain.diagnostics import DiagnosticSnapshot
-from tgvio.domain.job import Job, JobState, MediaKind
+from tgvio.domain.job import Job, JobState, MediaKind, job_failure_code
 from tgvio.domain.job_query import (
     FailurePage,
     FailureSummary,
@@ -158,7 +158,7 @@ class BotUIJobActionsMixin:
         if job.state != JobState.FAILED:
             await self._safe_answer(event, "任务状态已变化，请刷新", alert=True)
             return
-        issue = describe_job_failure(job.error_code)
+        issue = describe_job_failure(job_failure_code(job))
         if job.error_code in {"publish_partial", "publish_uncertain"}:
             await self._edit_page(
                 event,

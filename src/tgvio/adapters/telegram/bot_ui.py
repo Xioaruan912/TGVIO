@@ -52,7 +52,7 @@ from tgvio.domain.archive import (
     ArchivePackageState,
 )
 from tgvio.domain.diagnostics import DiagnosticSnapshot
-from tgvio.domain.job import Job, JobState, MediaKind
+from tgvio.domain.job import Job, JobState, MediaKind, job_failure_code
 from tgvio.domain.job_query import (
     FailurePage,
     FailureSummary,
@@ -691,7 +691,7 @@ class TelethonBotUI(
         control_state = await self._repository.get_job_control(job.id)
         if (
             job.state == JobState.FAILED
-            and job.error_code not in {"publish_partial", "publish_uncertain", "source_missing"}
+            and job_failure_code(job) not in {"publish_partial", "publish_uncertain", "source_missing"}
             and self._control is not None
             and not job_failure_waits_for_recovery(job)
             and job_recovery_state(job).get("status") != "manual_review"

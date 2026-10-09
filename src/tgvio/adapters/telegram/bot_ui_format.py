@@ -50,7 +50,7 @@ from tgvio.domain.archive import (
     ArchivePackageState,
 )
 from tgvio.domain.diagnostics import DiagnosticSnapshot
-from tgvio.domain.job import Job, JobState, MediaKind
+from tgvio.domain.job import Job, JobState, MediaKind, job_failure_code
 from tgvio.domain.job_query import (
     FailurePage,
     FailureSummary,
@@ -309,7 +309,7 @@ class BotUIFormatMixin:
             if job.updated_at:
                 lines.append(f"更新（UTC）：`{job.updated_at}`")
         if job.error_code:
-            issue = describe_job_failure(job.error_code)
+            issue = describe_job_failure(job_failure_code(job))
             lines.extend([f"原因：**{issue.title}**", issue.explanation])
             recovery_hint = self._job_recovery_hint(job)
             lines.append(recovery_hint or f"下一步：{issue.action}")

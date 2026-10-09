@@ -9,7 +9,12 @@ from tgvio.application.item_recovery import (
 )
 from tgvio.application.job_control import JobControlService, RetryDecision, UnsafeRetryError
 from tgvio.application.ports import ArchiveOperator, JobRepository
-from tgvio.domain.job import DOWNLOAD_SKIPPED_CODE_KEY, Job, item_download_skipped
+from tgvio.domain.job import (
+    DOWNLOAD_SKIPPED_CODE_KEY,
+    Job,
+    item_download_skipped,
+    job_failure_code,
+)
 from tgvio.observability import log_event
 
 
@@ -82,7 +87,7 @@ class BulkRetryService:
             )
             for entry in result.entries:
                 if entry.job_actionable:
-                    if entry.job.error_code in NOT_RETRYABLE_CODES:
+                    if job_failure_code(entry.job) in NOT_RETRYABLE_CODES:
                         blocked.append(entry.job.id)
                     else:
                         job_ids.append(entry.job.id)

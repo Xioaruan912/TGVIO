@@ -87,6 +87,31 @@ class BulkRetryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(plan.skipped_parent_ids, (skipped.id,))
         self.assertEqual(plan.skipped_items, 2)
 
+    async def test_old_job_whose_media_was_all_deleted_is_not_retried(self) -> None:
+        # Before source_missing existed, such Jobs were recorded as download_failed.
+        job = Job(
+            owner_id=OWNER,
+            destination="@channel",
+            items=[
+                MediaItem(
+                    index=0,
+                    kind=MediaKind.VIDEO,
+                    source="telegram:1:10",
+                    metadata={DOWNLOAD_SKIPPED_KEY: True, DOWNLOAD_SKIPPED_CODE_KEY: "source_missing"},
+                )
+            ],
+        )
+        await self.repo.create(job)
+        await self.repo.transition(job.id, JobState.DOWNLOADING, event_type="download_started")
+        await self.repo.transition(
+            job.id, JobState.FAILED, event_type="download_failed", error_code="download_failed"
+        )
+
+        plan = await self.service.plan(OWNER)
+
+        self.assertEqual(plan.job_ids, ())
+        self.assertEqual(plan.blocked_job_ids, (job.id,))
+
     async def test_run_retries_jobs_and_recovers_skipped_items_once(self) -> None:
         failed = await self._failed_download("download_failed")
         parent = await self._succeeded_with_skipped("telegram_file_timeout")
