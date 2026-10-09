@@ -383,6 +383,10 @@ class JobRepository(Protocol):
 
     async def list_recent(self, *, owner_id: int | None = None, limit: int = 10) -> list[Job]: ...
 
+    async def list_unrecovered_skipped_parents(
+        self, *, owner_id: int, days: int = 7, limit: int = 50
+    ) -> list[Job]: ...
+
     async def page_jobs(
         self,
         *,

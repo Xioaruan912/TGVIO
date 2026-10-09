@@ -395,6 +395,48 @@ class SQLiteJobRepositoryMixin:
                 jobs.append(job)
         return jobs
 
+    async def list_unrecovered_skipped_parents(
+        self,
+        *,
+        owner_id: int,
+        days: int = 7,
+        limit: int = 50,
+    ) -> list[Job]:
+        """Recent finished Jobs that left media out and have no recovery child yet.
+
+        Hidden Jobs count too: the daily cleanup hides finished Jobs, and their
+        skipped media would otherwise become unreachable the next morning.
+        """
+
+        conn = self._require()
+        cursor = await conn.execute(
+            """
+            SELECT j.id FROM jobs j
+            WHERE j.owner_id=?
+              AND j.state='succeeded'
+              AND j.created_at >= datetime('now', ?)
+              AND NOT EXISTS (
+                  SELECT 1 FROM item_recovery_jobs r WHERE r.parent_job_id=j.id
+              )
+              AND EXISTS (
+                  SELECT 1 FROM job_items i
+                  WHERE i.job_id=j.id
+                    AND COALESCE(json_extract(i.metadata_json, '$.download_skipped'), 0)=1
+              )
+            ORDER BY j.created_at DESC, j.rowid DESC
+            LIMIT ?
+            """,
+            (int(owner_id), f"-{max(1, int(days))} days", max(1, int(limit))),
+        )
+        rows = await cursor.fetchall()
+        await cursor.close()
+        jobs: list[Job] = []
+        for row in rows:
+            job = await self.get(str(row["id"]))
+            if job is not None:
+                jobs.append(job)
+        return jobs
+
     async def page_jobs(
         self,
         *,

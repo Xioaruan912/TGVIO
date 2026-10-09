@@ -39,6 +39,7 @@ from tgvio.application.operation_tokens import (
 )
 from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepository
 from tgvio.application.item_recovery import SkippedItemRecoveryService
+from tgvio.application.bulk_retry import BulkRetryService
 from tgvio.application.undo import (
     UndoOperationInvalidError,
     UndoService,
@@ -74,7 +75,9 @@ from tgvio.adapters.telegram.bot_ui_source import BotUISourceMixin
 from tgvio.adapters.telegram.bot_ui_archive import BotUIArchiveMixin
 from tgvio.adapters.telegram.bot_ui_fixture import BotUIFixtureMixin
 from tgvio.adapters.telegram.bot_ui_system import BotUISystemMixin
+from tgvio.adapters.telegram.bot_ui_retry_all import BotUIRetryAllMixin
 class TelethonBotUI(
+    BotUIRetryAllMixin,
     BotUISystemMixin,
     BotUIFixtureMixin,
     BotUIArchiveMixin,
@@ -106,6 +109,7 @@ class TelethonBotUI(
         source_coordinator: object | None = None,
         pick_previews: object | None = None,
         item_recovery: SkippedItemRecoveryService | None = None,
+        bulk_retry: BulkRetryService | None = None,
     ) -> None:
         self._client = client
         self._settings = settings
@@ -124,6 +128,7 @@ class TelethonBotUI(
         self._intake = intake
         self._source, self._pick_previews = source_coordinator, pick_previews
         self._item_recovery = item_recovery
+        self._bulk_retry = bulk_retry
         self._log = logging.getLogger("tgvio.telegram.ui")
         self._tasks: set[asyncio.Task] = set()
 
@@ -455,6 +460,8 @@ class TelethonBotUI(
         if await self._handle_content_callback(event, owner_id, action):
             return
         if await self._handle_source_callback(event, owner_id, action):
+            return
+        if await self._handle_retry_all_callback(event, owner_id, action):
             return
         if action == "ui:settings":
             quiet = await self._quiet_enabled(owner_id)
