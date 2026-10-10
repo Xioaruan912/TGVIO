@@ -95,6 +95,16 @@ class EncryptedManifestStoreTests(unittest.IsolatedAsyncioTestCase):
         loaded = await store.load()
         self.assertEqual(loaded["revision"], 2)
 
+    async def test_only_the_last_three_revisions_stay_on_the_storage(self) -> None:
+        dav = MemoryDav()
+        cipher = PlayerStateCipher(base64.urlsafe_b64encode(b"k" * 32).decode().rstrip("="))
+        store = EncryptedManifestStore(dav, cipher, "root", context=FAVORITES_CONTEXT)
+        for revision in range(1, 7):
+            await store.save_atomic({"schema_version": 1, "revision": revision, "items": []})
+        revisions = sorted(name for name in dav.files if name.count(".") == 2)
+        self.assertEqual([name.split(".")[1] for name in revisions], ["4", "5", "6"])
+        self.assertEqual((await store.load())["revision"], 6)
+
     async def test_failed_pointer_put_preserves_last_valid_manifest(self) -> None:
         dav = MemoryDav()
         cipher = PlayerStateCipher(base64.urlsafe_b64encode(b"p" * 32).decode().rstrip("="))
