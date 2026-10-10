@@ -7,7 +7,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from tgvio.domain.renditions import (
-    ALGORITHM, INDEX, SCHEMA, RenditionTask, canonical, safe_path,
+    ALGORITHM, INDEX, SCHEMA, RenditionTask, SourceGone, canonical, safe_path,
 )
 
 
@@ -69,7 +69,7 @@ class RenditionBackfill:
         # within the existing 4 GiB source transfer allowance.
         recovery_budget = max(0, min(128 * 1024**2, 4 * 1024**3 - int(task.media["size_bytes"])))
         if not await self.port.exists(f"{root}/{source_path}", int(task.media["size_bytes"])):
-            raise ValueError("source removed before recovery")
+            raise SourceGone("source removed before recovery")
         recovered = await self.port.recover(task, tuple(missing), work, recovery_budget)
         produced = 0
         for height in missing[:]:
@@ -83,7 +83,7 @@ class RenditionBackfill:
                 raise ValueError("incorrect recovered rendition")
             await self._check_package(task)
             if not await self.port.exists(f"{root}/{source_path}", int(task.media["size_bytes"])):
-                raise ValueError("source removed during recovery")
+                raise SourceGone("source removed during recovery")
             if not await self.port.exists(f"{root}/{relpath}", spec["size_bytes"]):
                 raise ValueError("recovered rendition disappeared")
             await self._publish(task, index, spec, relpath)
@@ -102,7 +102,7 @@ class RenditionBackfill:
                 raise ValueError("incorrect encoded rendition")
             relpath = f"renditions/{parent[:16]}-{height}p-{spec['sha256'][:16]}.mp4"
             if not await self.port.exists(f"{root}/{source_path}", int(task.media["size_bytes"])):
-                raise ValueError("source removed during encode")
+                raise SourceGone("source removed during encode")
             await self.port.upload(output, f"{root}/{relpath}")
             if not await self.port.exists(f"{root}/{relpath}", spec["size_bytes"]):
                 raise ValueError("rendition upload verification failed")
@@ -115,7 +115,7 @@ class RenditionBackfill:
     async def _publish(self, task: RenditionTask, index: dict, spec: dict, relpath: str) -> None:
         if not await self.port.exists(f"{safe_path(task.root)}/{safe_path(task.media['path'])}",
                                       int(task.media["size_bytes"])):
-            raise ValueError("source removed before index publication")
+            raise SourceGone("source removed before index publication")
         parent, height = task.media["sha256"], spec["height"]
         entry = {**spec, "path": relpath, "kind": "video", "mime_type": "video/mp4",
                  "container": "mp4", "codec": "h264", "variant_of": parent,

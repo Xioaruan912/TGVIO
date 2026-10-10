@@ -14,6 +14,7 @@ import tempfile
 from tgvio.adapters.cover_archive import CoverArchivePort, CoverDiscovery
 from tgvio.application.cover_backfill_runner import CommittedCoverBackfill
 from tgvio.infrastructure.rendition_state import MaintenanceState
+from tgvio.domain.renditions import SourceGone
 
 
 def report(event: str, **fields) -> None:
@@ -99,6 +100,9 @@ async def work(args) -> None:
                     report("complete", task=task.key[:12], written=written, **state.summary())
                 except asyncio.CancelledError:
                     raise
+                except SourceGone:
+                    state.gone(task)
+                    report("gone", task=task.key[:12], **state.summary())
                 except Exception as error:
                     state.fail(task, error)
                     report("failed", task=task.key[:12], error=type(error).__name__, **state.summary())

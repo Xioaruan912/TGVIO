@@ -16,7 +16,7 @@ from pathlib import Path
 from typing import Mapping, Protocol, Sequence
 import json
 
-from tgvio.domain.renditions import RenditionTask, SampledFrame, canonical, safe_path
+from tgvio.domain.renditions import RenditionTask, SampledFrame, SourceGone, canonical, safe_path
 from tgvio.application.cover_backfill import (
     COVERS_INDEX_NAME,
     COVERS_SCHEMA,
@@ -191,7 +191,7 @@ class CommittedCoverBackfill:
                     return 0
                 verified_digest = digest
         if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
-            raise ValueError("cover source removed")
+            raise SourceGone("cover source removed")
         payload = await self.port.sample(f"{root}/{source}", int(task.media["size_bytes"]), work)
         if (payload is None or not 0 < len(payload.payload) <= 1_000_000
                 or not payload.payload.startswith(b"\xff\xd8")
@@ -208,14 +208,14 @@ class CommittedCoverBackfill:
                 raise ValueError("cover index exceeds reader budget")
             await self._unchanged(task)
             if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
-                raise ValueError("cover source removed before index commit")
+                raise SourceGone("cover source removed before index commit")
             await self.port.write_json(f"{root}/{COVERS_INDEX_NAME}", index)
             # The return value is the count of cover *files* this run wrote, and the
             # operator's report reads it: an index-only pass wrote none.
             return 0
         await self._unchanged(task)
         if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
-            raise ValueError("cover source removed during sample")
+            raise SourceGone("cover source removed during sample")
         await self.port.write_cover(f"{root}/{path}", image)
         index["covers"][source] = {"path": path, "size_bytes": len(image),
                                    "media_sha256": parent, "sha256": digest,
@@ -224,7 +224,7 @@ class CommittedCoverBackfill:
             raise ValueError("cover index exceeds reader budget")
         await self._unchanged(task)
         if not await self.port.exists(f"{root}/{source}", int(task.media["size_bytes"])):
-            raise ValueError("cover source removed before index commit")
+            raise SourceGone("cover source removed before index commit")
         # Verified image first, bound index last. Other media's entries survive.
         await self.port.write_json(f"{root}/{COVERS_INDEX_NAME}", index)
         return 1

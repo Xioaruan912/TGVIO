@@ -12,6 +12,14 @@ ALGORITHM = "h264-height-crf24-v1"
 HEIGHTS = (480, 720)
 
 
+class SourceGone(ValueError):
+    """The original a maintenance task works from is no longer in the archive.
+
+    A deleted video stays listed in its package's committed manifest (manifests
+    never change), so it is still discovered; this is not a failure to retry but a
+    task with nothing left to do."""
+
+
 def canonical(value: Any) -> bytes:
     return json.dumps(value, sort_keys=True, separators=(",", ":"), ensure_ascii=False).encode()
 

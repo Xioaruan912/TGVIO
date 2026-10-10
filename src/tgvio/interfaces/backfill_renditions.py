@@ -16,6 +16,7 @@ from tgvio.adapters.rendition_discovery import RenditionDiscovery
 from tgvio.application.rendition_backfill import RenditionBackfill
 from tgvio.infrastructure.rendition_state import RenditionState
 from tgvio.observability.logging import maintenance_failure_fields
+from tgvio.domain.renditions import SourceGone
 
 
 def report(event: str, **fields) -> None:
@@ -76,6 +77,9 @@ async def work(args) -> None:
                            recovered=getattr(runner, "last_recovered", 0), **state.summary())
                 except asyncio.CancelledError:
                     raise
+                except SourceGone:
+                    state.gone(task)
+                    report("gone", task=task.key[:12], **state.summary())
                 except Exception as error:
                     state.fail(task, error)
                     report("failed", task=task.key[:12], **maintenance_failure_fields(error), **state.summary())

@@ -30,8 +30,9 @@ class MaintenanceState:
         now = time.time() if now is None else now
         status, attempts, updated = self.conn.execute(
             "SELECT status,attempts,updated FROM tasks WHERE key=?", (task.key,)).fetchone()
-        if status == "done":
-            # Periodically verify remote objects again rather than trusting a local flag forever.
+        if status in ("done", "gone"):
+            # Periodically verify remote objects again rather than trusting a local flag
+            # forever; a source that came back is picked up the same way.
             return now - updated >= 86400
         if attempts >= 5 and not self.persistent_retry:
             return False
@@ -49,7 +50,11 @@ class MaintenanceState:
         # repeatedly select the same failed prefix and starve later failures.
         retries = sorted((t for t in ready if checkpoints[t.key][0] == "failed"),
                          key=lambda t: checkpoints[t.key][1])
-        fresh = [t for t in ready if checkpoints[t.key][0] != "failed"]
+        # Work never done comes before the daily re-check of finished tasks: a full
+        # re-check round (over a thousand tasks) otherwise fills every batch for most
+        # of a day while new sources wait.
+        fresh = ([t for t in ready if checkpoints[t.key][0] == "pending"]
+                 + [t for t in ready if checkpoints[t.key][0] in ("done", "gone")])
         if not limit:
             return retries + fresh
         quota = max(1, limit//3)
@@ -62,6 +67,12 @@ class MaintenanceState:
                           "written=written+? WHERE key=?", (time.time(), written, task.key))
         self.conn.commit()
 
+    def gone(self, task: RenditionTask) -> None:
+        """The source is no longer in the archive: neither done nor a failure to retry."""
+        self.conn.execute("UPDATE tasks SET status='gone',attempts=0,updated=?,error='SourceGone'"
+                          " WHERE key=?", (time.time(), task.key))
+        self.conn.commit()
+
     def fail(self, task: RenditionTask, error: Exception) -> None:
         self.conn.execute("UPDATE tasks SET status='failed',attempts=attempts+1,updated=?,"
                           "error=? WHERE key=?", (time.time(), type(error).__name__, task.key))
@@ -71,6 +82,7 @@ class MaintenanceState:
         return {"tasks": self.conn.execute("SELECT COUNT(*) FROM tasks").fetchone()[0],
                 "done": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='done'").fetchone()[0],
                 "failed": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='failed'").fetchone()[0],
+                "gone": self.conn.execute("SELECT COUNT(*) FROM tasks WHERE status='gone'").fetchone()[0],
                 "blocked": 0 if self.persistent_retry else self.conn.execute(
                     "SELECT COUNT(*) FROM tasks WHERE attempts>=5").fetchone()[0],
                 "slow_retry": self.conn.execute(
