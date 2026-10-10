@@ -16,6 +16,7 @@ from tgvio_player.application.archive_read import ArchiveReadRouter, ReadModeSer
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.catalog import CatalogSyncService
 from tgvio_player.application.collection_backup import CollectionBackupService
+from tgvio_player.application.duplicate_copies import DuplicateCopyCleaner
 from tgvio_player.application.favorite_backup import FavoriteBackupService, SourceMediaError
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
@@ -392,6 +393,11 @@ async def run(settings: PlayerSettings) -> None:
         if server.media_deletions is not None:
             # Queued permanent deletes, including any left unfinished by a restart.
             tasks.append(asyncio.create_task(server.media_deletions.run(stop)))
+        if deleter is not None:
+            # Spare copies of videos stored twice; paused whenever anything plays.
+            cleaner = DuplicateCopyCleaner(repository, client, deleter,
+                                           should_pause=lambda: server.active_playback_streams > 0)
+            tasks.append(asyncio.create_task(cleaner.run(stop)))
         if settings.faststart_backfill:
             backfill = FaststartBackfill(
                 faststart, repository, should_pause=lambda: server.active_playback_streams > 0
