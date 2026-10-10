@@ -56,6 +56,9 @@ class WebDavClientSettings:
     password: str
     connect_timeout_seconds: float = 10.0
     read_timeout_seconds: float = 30.0
+    # Plain http only for an operator-set address on the same host or network
+    # (TGVIO_PLAYER_WEBDAV_INTERNAL_URL); never for a user-entered endpoint.
+    allow_plain_http: bool = False
 
 
 class _ResponseBody(AsyncIterator[bytes]):
@@ -93,7 +96,8 @@ class AioHttpReadOnlyWebDavClient:
 
     def __init__(self, settings: WebDavClientSettings) -> None:
         parsed = urlsplit(settings.base_url)
-        if parsed.scheme != "https" or not parsed.netloc or parsed.username or parsed.password:
+        schemes = {"https", "http"} if settings.allow_plain_http else {"https"}
+        if parsed.scheme not in schemes or not parsed.netloc or parsed.username or parsed.password:
             raise ValueError("Player WebDAV URL must be an HTTPS URL without userinfo")
         if min(settings.connect_timeout_seconds, settings.read_timeout_seconds) <= 0:
             raise ValueError("WebDAV timeouts must be positive")
