@@ -61,10 +61,23 @@ def _started_clause() -> str:
     )
 
 
+# Seconds since the epoch before which a watch no longer counts: 0 while marks never
+# expire. Evaluated in SQL so every query shape (the wall, a smart collection, the
+# feed) reads the same setting without passing it around.
+WATCH_CUTOFF_SQL = (
+    "COALESCE((SELECT CAST(strftime('%s','now') AS INTEGER) - forget_after_days*86400 "
+    "FROM player_watch_settings WHERE singleton=1 AND forget_after_days IS NOT NULL), 0)"
+)
+
+
 def _watched_clause() -> str:
+    # A played-through mark, or a long video that was started; either one only
+    # while it is newer than the forget window.
     return (
-        "EXISTS (SELECT 1 FROM player_long_video_progress p "
-        "WHERE p.media_id=media.media_id)"
+        "(EXISTS (SELECT 1 FROM player_watched w WHERE w.media_id=media.media_id "
+        f"AND w.watched_at >= {WATCH_CUTOFF_SQL}) "
+        "OR EXISTS (SELECT 1 FROM player_long_video_progress p "
+        f"WHERE p.media_id=media.media_id AND p.updated_at >= {WATCH_CUTOFF_SQL}))"
     )
 
 
@@ -130,7 +143,8 @@ def listing_query_kwargs(
     }
 
 
-def build_video_query(    *,
+def build_video_query(
+    *,
     min_seconds: float | None = None,
     max_seconds: float | None = None,
     media_id_prefix: str | None = None,

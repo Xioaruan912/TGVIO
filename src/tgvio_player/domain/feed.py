@@ -32,3 +32,16 @@ def apply_recent_exclusion(
         if replacement is not None:
             deck[index], deck[replacement] = deck[replacement], deck[index]
     return deck
+
+
+def unseen_first(
+    media_ids: Sequence[str], *, watched: set[str], rng: random.Random
+) -> list[str]:
+    """One cycle with every unseen video, shuffled, ahead of the watched ones.
+
+    Watched videos still come round, only after the rest, so a fully watched
+    library plays exactly as a plain shuffle.
+    """
+    unseen = [media_id for media_id in media_ids if media_id not in watched]
+    seen = [media_id for media_id in media_ids if media_id in watched]
+    return shuffled_cycle(unseen, rng=rng) + shuffled_cycle(seen, rng=rng)
