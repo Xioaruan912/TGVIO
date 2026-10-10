@@ -40,7 +40,8 @@ async def work(args) -> None:
         port = RenditionArchivePort(
             os.environ["TGVIO_ARCHIVE_WEBDAV_URL"], os.environ["TGVIO_ARCHIVE_WEBDAV_USER"],
             os.environ["TGVIO_ARCHIVE_WEBDAV_PASSWORD"], timeout=30,
-            response_timeout=180, verify_attempts=6, verify_interval_seconds=5)
+            # OpenList answers a PUT only after the file reached 115: minutes for a large copy.
+            response_timeout=3600, verify_attempts=6, verify_interval_seconds=5)
         discovery = RenditionDiscovery(port, os.environ.get("TGVIO_ARCHIVE_REMOTE_ROOT", "TGVIO"))
         runner = RenditionBackfill(port)
         while True:
