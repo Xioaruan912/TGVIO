@@ -78,7 +78,7 @@ class WebDavWriteError(RuntimeError):
 
 
 class ArchiveCatalogSource(Protocol):
-    async def discover(self) -> ArchiveDiscovery: ...
+    async def discover(self, *, recent_dates: int | None = None) -> ArchiveDiscovery: ...
 
 
 class PlayerCatalogRepository(Protocol):

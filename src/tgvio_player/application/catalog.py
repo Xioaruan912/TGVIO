@@ -49,8 +49,14 @@ class CatalogSyncService:
         self._source = source
         self._repository = repository
 
-    async def sync_once(self) -> CatalogSyncResult:
-        discovery = await self._source.discover()
+    async def sync_once(self, *, recent_dates: int | None = None) -> CatalogSyncResult:
+        """Project committed packages into the catalog.
+
+        ``recent_dates`` limits the scan to the newest date folders, where new
+        packages land; such a scan is never complete, so it only adds or updates
+        and cannot retire anything.
+        """
+        discovery = await self._source.discover(recent_dates=recent_dates)
         committed = 0
         rejected = 0
         errors: list[str] = []

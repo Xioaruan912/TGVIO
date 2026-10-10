@@ -167,22 +167,38 @@ def build_cover_mirror(
     )
 
 
+# New packages land in the newest date folders; scanning just those between full
+# scans makes a fresh upload playable within seconds. Listings come from OpenList's
+# directory cache and unchanged metadata from the ETag cache, so it costs no drive calls.
+_RECENT_SCAN_SECONDS = 10
+_RECENT_DATES = 2
+
+
 async def _catalog_poll(
     sync: CatalogSyncService, source: WebDavArchiveCatalogSource, seconds: int, stop: asyncio.Event
 ) -> None:
+    loop = asyncio.get_running_loop()
+    full_due = 0.0
+    active = None
     while not stop.is_set():
+        full = loop.time() >= full_due
         try:
             reads, hits = source.metadata_reads, source.metadata_hits
-            result = await sync.sync_once()
-            _LOG.info(
-                "Player catalog sync completed: active_videos=%s rejected=%s metadata_reads=%s metadata_hits=%s",
-                result.active_videos, result.rejected,
-                source.metadata_reads - reads, source.metadata_hits - hits,
-            )
+            result = await sync.sync_once(recent_dates=None if full else _RECENT_DATES)
+            if full or result.active_videos != active:
+                _LOG.info(
+                    "Player catalog sync completed: scope=%s active_videos=%s rejected=%s"
+                    " metadata_reads=%s metadata_hits=%s",
+                    "full" if full else "recent", result.active_videos, result.rejected,
+                    source.metadata_reads - reads, source.metadata_hits - hits,
+                )
+            active = result.active_videos
+            if full:
+                full_due = loop.time() + seconds
         except Exception:
             _LOG.exception("Player catalog sync failed")
         try:
-            await asyncio.wait_for(stop.wait(), timeout=seconds)
+            await asyncio.wait_for(stop.wait(), timeout=min(seconds, _RECENT_SCAN_SECONDS))
         except asyncio.TimeoutError:
             pass
 
