@@ -52,6 +52,41 @@ class CompletionTests(unittest.TestCase):
             state.conn.close()
 
 
+class RecheckOrderTests(unittest.TestCase):
+    def test_new_work_comes_before_the_daily_recheck(self):
+        _, task = fixture()
+        tasks = [replace(task, package_id=f"package-{i}") for i in range(20)]
+        with tempfile.TemporaryDirectory() as tmp:
+            state = MaintenanceState(Path(tmp)/"state.sqlite3", persistent_retry=True)
+            state.discover(tasks)
+            with patch("tgvio.infrastructure.rendition_state.time.time", return_value=0):
+                for item in tasks[:15]:
+                    state.finish(item, 1)
+            # A day later all 15 finished tasks are due for a re-check, yet the
+            # five never-done ones lead the batch.
+            batch = state.ready_batch(tasks, limit=10, now=90_000)
+            self.assertEqual(batch[:5], tasks[15:])
+            self.assertEqual(batch[5:], tasks[:5])
+            state.conn.close()
+
+
+class GoneSourceTests(unittest.TestCase):
+    def test_a_gone_source_is_neither_done_nor_retried_as_a_failure(self):
+        _, task = fixture()
+        tasks = [replace(task, package_id=f"package-{i}") for i in range(3)]
+        with tempfile.TemporaryDirectory() as tmp:
+            state = MaintenanceState(Path(tmp)/"state.sqlite3", persistent_retry=True)
+            state.discover(tasks)
+            with patch("tgvio.infrastructure.rendition_state.time.time", return_value=0):
+                state.gone(tasks[0])
+            summary = state.summary()
+            self.assertEqual((summary["gone"], summary["failed"], summary["done"]), (1, 0, 0))
+            self.assertNotIn(tasks[0], state.ready_batch(tasks, limit=10, now=3600))
+            # A day later it is looked at again, after the work never done.
+            self.assertEqual(state.ready_batch(tasks, limit=10, now=90_000), [tasks[1], tasks[2], tasks[0]])
+            state.conn.close()
+
+
 class FrameTimeoutTests(unittest.IsolatedAsyncioTestCase):
     async def test_slow_frame_is_cancelled_then_another_real_candidate_is_tried(self):
         with tempfile.TemporaryDirectory() as tmp:
