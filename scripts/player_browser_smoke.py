@@ -63,7 +63,8 @@ def settings(page) -> None:
     page.click("button.topbar-settings")
     page.wait_for_timeout(1500)
     text = page.inner_text("body")
-    step("settings", read_mode_direct="115 直连" in text, read_mode_webdav="网盘 · 稳定" in text)
+    step("settings", read_mode_direct="115 直连" in text, read_mode_webdav="网盘 · 稳定" in text,
+         watched_window=next((line for line in text.splitlines() if "重新算作没看过" in line or line.startswith("永不")), None))
     page.screenshot(path=f"{OUT}/settings.png")
     page.keyboard.press("Escape")
     page.wait_for_timeout(500)
