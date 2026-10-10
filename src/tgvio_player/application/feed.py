@@ -2,11 +2,11 @@ from __future__ import annotations
 
 import random
 
-from tgvio_player.domain.feed import apply_recent_exclusion, shuffled_cycle
+from tgvio_player.domain.feed import apply_recent_exclusion, unseen_first
 
 
 class ShuffleDeckService:
-    """Persistent uniform shuffle cycles, independent of favorites or watch time."""
+    """Persistent shuffle cycles that play unseen videos before watched ones."""
 
     def __init__(
         self,
@@ -53,8 +53,9 @@ class ShuffleDeckService:
         recent = await self._repository.recent_feed_media(
             session_digest, limit=self._recent_exclusion
         )
+        watched = await self._repository.watched_media_ids()
         deck = apply_recent_exclusion(
-            shuffled_cycle(eligible, rng=self._rng),
+            unseen_first(eligible, watched=watched, rng=self._rng),
             recent=recent,
             target=self._recent_exclusion,
         )
