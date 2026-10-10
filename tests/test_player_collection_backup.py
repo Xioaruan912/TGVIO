@@ -21,6 +21,7 @@ class FakeStorage:
         self.files: dict[str, int] = {}
         self.dirs: set[str] = set()
         self.calls: list[str] = []
+        self.deleted: list[str] = []
         self.fail_copy = False
 
     async def ensure_directory(self, path: str) -> None:
@@ -45,7 +46,9 @@ class FakeStorage:
 
     async def delete(self, path: str) -> DeleteReceipt:
         self.calls.append("delete")
-        self.files.pop(path, None)
+        self.deleted.append(path)
+        for name in [name for name in self.files if name == path or name.startswith(path + "/")]:
+            del self.files[name]
         return DeleteReceipt(204, True)
 
 
@@ -102,13 +105,24 @@ class CollectionBackupTests(unittest.IsolatedAsyncioTestCase):
         await self.drain()
         self.assertEqual(set(self.storage.files), {"Player/好看/aaaa.mp4", "Player/好看/bbbb.mp4"})
         self.assertEqual(self.storage.calls.count("copy"), 2)
+        self.assertIn("Player/视频", self.storage.deleted, "the old folder of a renamed collection goes")
         await self.repo.remove_item(video.collection_id, A)
         await self.drain()
         self.assertEqual(set(self.storage.files), {"Player/好看/bbbb.mp4"})
         await self.repo.delete(video.collection_id)
         await self.drain()
         self.assertEqual(self.storage.files, {})
+        self.assertIn("Player/好看", self.storage.deleted, "a deleted collection leaves no folder")
         self.assertEqual(await self.repo.collection_backup_status(), {"copies": 0, "failing": 0})
+
+    async def test_an_emptied_collection_folder_is_removed(self) -> None:
+        video = await self.repo.create("视频", "manual", None)
+        await self.repo.add_item(video.collection_id, A)
+        await self.drain()
+        await self.repo.remove_item(video.collection_id, A)
+        await self.drain()
+        self.assertEqual(self.storage.deleted, ["Player/视频/aaaa.mp4", "Player/视频"])
+        self.assertNotIn("Player/Favorites", self.storage.deleted)
 
     async def test_smart_collections_are_not_copied(self) -> None:
         smart = await self.repo.create("最近", "smart", "{}")

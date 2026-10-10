@@ -49,6 +49,11 @@ def folder_names(collections: list[tuple[str, str, str]], reserved: set[str]) ->
     return folders
 
 
+def _top(relpath: str) -> str:
+    """The collection folder a copy lives in (its first path segment)."""
+    return PurePosixPath(relpath).parts[0]
+
+
 def retry_delay(attempts: int) -> int:
     return min(RETRY_MAX_SECONDS, RETRY_BASE_SECONDS * 2 ** max(0, attempts - 1))
 
@@ -95,6 +100,8 @@ class CollectionBackupService:
         rows = {(r.collection_id, r.media_id): r for r in await self._repository.collection_backup_rows()}
         # Paths in use per collection folder, kept current as this pass places copies.
         placed = {key: row.relpath for key, row in rows.items() if row.relpath is not None}
+        # Folders this pass moved or removed copies out of; emptied ones are removed.
+        vacated: set[str] = set()
         copied = moved = removed = failed = 0
         steps = 0
         # Copies first: a viewer waits to see a new member in its folder.
@@ -107,6 +114,8 @@ class CollectionBackupService:
             if row is not None and row.relpath is not None and PurePosixPath(row.relpath).parent.as_posix() == folder:
                 continue
             steps += 1
+            if row is not None and row.relpath is not None:
+                vacated.add(_top(row.relpath))
             try:
                 outcome = await self._place(root, folder, key, row, placed)
             except Exception as exc:  # noqa: BLE001 - every failure is retried later
@@ -129,11 +138,28 @@ class CollectionBackupService:
                     if not receipt.deleted:
                         raise WebDavWriteError("delete", "delete_not_confirmed", receipt.status_code)
                 await self._repository.drop_collection_backup(*key)
+                if row.relpath is not None:
+                    vacated.add(_top(row.relpath))
+                placed.pop(key, None)
                 removed += 1
             except Exception as exc:  # noqa: BLE001
                 failed += 1
                 await self._fail(key, row, exc, now)
+        await self._remove_empty_folders(root, vacated, set(wanted.values()), placed, settings.favorites_dir)
         return CollectionBackupResult(copied, moved, removed, failed)
+
+    async def _remove_empty_folders(
+        self, root: str, vacated: set[str], wanted: set[str], placed: dict, favorites_dir: str
+    ) -> None:
+        """A collection folder that holds no copy any more goes too: emptied,
+        deleted or renamed collections leave no empty folders behind. The folder
+        only ever holds this worker's copies; the favorites folder is never touched."""
+        in_use = wanted | {_top(path) for path in placed.values()}
+        for folder in vacated - in_use - {favorites_dir}:
+            try:
+                await self._writer().delete(self._remote(root, folder))
+            except Exception as exc:  # noqa: BLE001 - an empty folder is harmless
+                _LOG.warning("player.collection_backup.folder_kept error=%s", getattr(exc, "category", type(exc).__name__))
 
     async def _place(self, root, folder, key, row, placed: dict) -> str:
         collection_id, media_id = key
