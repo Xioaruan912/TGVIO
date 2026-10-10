@@ -15,6 +15,7 @@ from tgvio_player.adapters.http import PlayerHttpServer
 from tgvio_player.application.archive_read import ArchiveReadRouter, ReadModeService
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.catalog import CatalogSyncService
+from tgvio_player.application.collection_backup import CollectionBackupService
 from tgvio_player.application.favorite_backup import FavoriteBackupService, SourceMediaError
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
@@ -230,6 +231,25 @@ async def _favorite_sync_poll(
             pass
 
 
+async def _collection_backup_poll(
+    backup: CollectionBackupService, seconds: int, stop: asyncio.Event
+) -> None:
+    while not stop.is_set():
+        try:
+            result = await backup.sync_once()
+            if result.processed:
+                _LOG.info(
+                    "Player collection backup batch: copied=%s moved=%s removed=%s failed=%s",
+                    result.copied, result.moved, result.removed, result.failed,
+                )
+        except Exception:
+            _LOG.exception("Player collection backup worker failed")
+        try:
+            await asyncio.wait_for(stop.wait(), timeout=seconds)
+        except asyncio.TimeoutError:
+            pass
+
+
 async def run(settings: PlayerSettings) -> None:
     repository = PlayerCatalogRepositorySQLite(settings.data_dir / "player.sqlite3")
     cipher = PlayerStateCipher(settings.recovery_key)
@@ -288,6 +308,10 @@ async def run(settings: PlayerSettings) -> None:
         favorite_backup = FavoriteBackupService(
             repository, favorite_writer, favorite_source, recovery,
             source_location=favorite_source_location,
+        )
+        # Collection folders use the same storage client as favorites, even after a settings change.
+        collection_backup = CollectionBackupService(
+            repository, lambda: favorite_backup.writer, favorite_source_location,
         )
         direct_reader = (
             OpenListDirectReader(OpenListDirectSettings(
@@ -363,6 +387,7 @@ async def run(settings: PlayerSettings) -> None:
         tasks: list[asyncio.Task[object]] = [
             asyncio.create_task(_catalog_poll(sync, catalog_source, settings.catalog_poll_seconds, stop)),
             asyncio.create_task(_favorite_sync_poll(favorite_backup, 5, stop)),
+            asyncio.create_task(_collection_backup_poll(collection_backup, 5, stop)),
         ]
         if server.media_deletions is not None:
             # Queued permanent deletes, including any left unfinished by a restart.

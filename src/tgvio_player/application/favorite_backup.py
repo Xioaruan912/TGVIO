@@ -92,6 +92,11 @@ class FavoriteBackupService:
         self._tombstone_retry_seconds = max(0.0, float(tombstone_retry_seconds))
         self._tombstone_retry_after = 0.0
 
+    @property
+    def writer(self) -> WebDavWriteClient:
+        """The storage client in use; replaced when the storage settings change."""
+        return self._writer
+
     def replace_writer(self, writer: WebDavWriteClient) -> WebDavWriteClient:
         previous = self._writer
         self._writer = writer
