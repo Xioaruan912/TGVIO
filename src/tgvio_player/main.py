@@ -78,6 +78,9 @@ class PlayerSettings:
     # Optional fast path: OpenList API for direct links. Empty means WebDAV only.
     openlist_api_url: str = ""
     direct_user_agent: str = DEFAULT_USER_AGENT
+    # Optional: the same WebDAV reached without the public internet, for a Player
+    # on the same host or network as OpenList (e.g. http://host.docker.internal:5244/dav).
+    webdav_internal_url: str = ""
 
     @classmethod
     def from_env(cls, environ: dict[str, str] | None = None) -> "PlayerSettings":
@@ -128,6 +131,7 @@ class PlayerSettings:
                          "COVER_MIRROR_INTERVAL_SECONDS", 5, 3600),
             openlist_api_url=cls._optional_url(get("OPENLIST_API_URL"), "OPENLIST_API_URL"),
             direct_user_agent=get("DIRECT_USER_AGENT") or DEFAULT_USER_AGENT,
+            webdav_internal_url=cls._optional_url(get("WEBDAV_INTERNAL_URL"), "WEBDAV_INTERNAL_URL"),
         )
 
     @staticmethod
@@ -238,7 +242,9 @@ async def run(settings: PlayerSettings) -> None:
 
     recovery = PlayerRecoveryService(repository, cipher, storage_client_factory)
     client = AioHttpReadOnlyWebDavClient(WebDavClientSettings(
-        settings.webdav_url, settings.webdav_user, settings.webdav_password,
+        settings.webdav_internal_url or settings.webdav_url,
+        settings.webdav_user, settings.webdav_password,
+        allow_plain_http=bool(settings.webdav_internal_url),
     ))
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()

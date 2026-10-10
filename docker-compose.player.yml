@@ -31,6 +31,9 @@ services:
       # Docker host gateway (never the public interface). Empty keeps WebDAV only.
       TGVIO_PLAYER_OPENLIST_API_URL: ${TGVIO_PLAYER_OPENLIST_API_URL:-}
       TGVIO_PLAYER_DIRECT_USER_AGENT: ${TGVIO_PLAYER_DIRECT_USER_AGENT:-}
+      # Optional: the same WebDAV without the public internet when OpenList runs
+      # on this host (e.g. http://host.docker.internal:5244/dav). Empty uses WEBDAV_URL.
+      TGVIO_PLAYER_WEBDAV_INTERNAL_URL: ${TGVIO_PLAYER_WEBDAV_INTERNAL_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"
     ports:

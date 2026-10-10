@@ -39,6 +39,13 @@ class PlayerRuntimeSettingsTests(unittest.TestCase):
         self.assertEqual(settings.cover_mirror_concurrency, 2)
         self.assertEqual(settings.cover_mirror_interval_seconds, 30,
                          "the catch-up cadence the spec fixes, not the idle backoff")
+        self.assertEqual(settings.webdav_internal_url, "")
+        internal = PlayerSettings.from_env(
+            player_env(TGVIO_PLAYER_WEBDAV_INTERNAL_URL="http://host.docker.internal:5244/dav/")
+        )
+        self.assertEqual(internal.webdav_internal_url, "http://host.docker.internal:5244/dav")
+        with self.assertRaises(ValueError):
+            PlayerSettings.from_env(player_env(TGVIO_PLAYER_WEBDAV_INTERNAL_URL="http://u:p@host/dav"))
         off = PlayerSettings.from_env(player_env(TGVIO_PLAYER_COVER_MIRROR="off"))
         self.assertFalse(off.cover_mirror)
         # This file's convention is fail-closed: a value off the list is an error, never a
@@ -114,6 +121,20 @@ class PlayerWebDavTransportTests(unittest.TestCase):
         self.assertEqual(client._url("TGVIO/2026-09-22/1/clip name.mp4"), "https://dav.example.invalid/archive/TGVIO/2026-09-22/1/clip%20name.mp4")
         with self.assertRaises(ValueError):
             client._url("../escape.mp4")
+
+    def test_plain_http_only_for_an_explicit_internal_address(self) -> None:
+        client = AioHttpReadOnlyWebDavClient(
+            WebDavClientSettings("http://host.docker.internal:5244/dav", "user", "pass", allow_plain_http=True)
+        )
+        self.assertEqual(client._url("TGVIO/a.mp4"), "http://host.docker.internal:5244/dav/TGVIO/a.mp4")
+        with self.assertRaises(ValueError):
+            AioHttpReadOnlyWebDavClient(
+                WebDavClientSettings("ftp://host.docker.internal/dav", "user", "pass", allow_plain_http=True)
+            )
+        with self.assertRaises(ValueError):
+            AioHttpReadOnlyWebDavClient(
+                WebDavClientSettings("http://u:p@host.docker.internal/dav", "user", "pass", allow_plain_http=True)
+            )
 
     def test_collection_href_decodes_a_single_safe_child_name(self) -> None:
         self.assertEqual(
