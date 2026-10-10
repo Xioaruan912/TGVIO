@@ -34,6 +34,8 @@ PASSWORD_CONTEXT = b"webdav-password"
 MANIFEST_SCHEMA_VERSION = 2
 _SUPPORTED_MANIFEST_VERSIONS = (1, MANIFEST_SCHEMA_VERSION)
 _MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
+# Snapshot revisions kept on the storage: the one the pointer names and two before it.
+_KEPT_REVISIONS = 3
 _MEDIA_ID_RE = re.compile(r"^[0-9a-f]{64}$")
 
 
@@ -192,6 +194,21 @@ class EncryptedManifestStore:
         written_pointer = await self._client.get_bytes(pointer_path, max_bytes=4096)
         if written_pointer != pointer:
             raise RecoveryError("remote snapshot pointer verification failed")
+        await self._prune(revision)
+
+    async def _prune(self, revision: int) -> None:
+        """Keep the pointed revision and the two before it; older ones are never read.
+
+        Every favourite change writes a revision, so without this the folder grows
+        by one file per change. A failed delete is left for the next write.
+        """
+        stale = revision - _KEPT_REVISIONS
+        if stale < 1:
+            return
+        try:
+            await self._client.delete(_join(self._root, f"{self._name}.{stale}.enc"))
+        except Exception:  # noqa: BLE001 - pruning never fails a snapshot write
+            pass
 
 
 class PlayerRecoveryService:
