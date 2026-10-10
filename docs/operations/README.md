@@ -21,6 +21,10 @@
 - 只用固定host key与专用SSH key；不输出秘密、不用sshpass/StrictHostKeyChecking=no。
 - Player-only动作核实Bot容器ID和restart不变；不将两个Compose合并。
 - 未明确要求应用发布时不从历史规则推导自动重启。记录“源码已同步，运行未切换”。
+- 维护工作器（tgvio-renditions / tgvio-covers）：scripts/maintenance_redeploy.sh [commit]，从已推送提交构建 Dockerfile.renditions 镜像，备份检查点、旧容器改名留作回滚，先副本后封面错开冷启动扫描。
+- Player 读取方式：scripts/player_read_mode.sh direct|webdav（等同设置页“读取方式”）。
+- 只读真机冒烟：scripts/player_browser_smoke.sh [feed,settings,long,covers]，在 Playwright 镜像中用 Google Chrome 登录、测起播/拖动、读取方式、长片与全部长片封面；不删除、不收藏、不改设置。
+- OpenList（115List 仓库 `tgvio` 分支）的构建、升级与回滚见该分支 `tgvio/README.md`。
 
 ## 清理流程
 
