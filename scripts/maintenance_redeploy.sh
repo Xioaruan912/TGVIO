@@ -20,7 +20,7 @@ if ! docker image inspect "$image" >/dev/null 2>&1; then
     src=$(mktemp -d)
     git -C "$repo" archive "$commit" | tar -x -C "$src"
     docker build -q -f "$src/Dockerfile.renditions" --build-arg APP_COMMIT="$commit" -t "$image" "$src"
-    rm -rf "$src"
+    rm -r -- "$src"
 fi
 [[ "$(docker image inspect -f '{{index .Config.Labels "org.opencontainers.image.revision"}}' "$image")" == "$commit" ]]
 
