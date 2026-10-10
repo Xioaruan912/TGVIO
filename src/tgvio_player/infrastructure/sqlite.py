@@ -14,6 +14,7 @@ from typing import AsyncIterator
 
 from tgvio_player.domain.catalog import CatalogPackage
 from tgvio_player.infrastructure.migration import run_migrations
+from tgvio_player.infrastructure.sqlite_collection_backups import PlayerCollectionBackupRepositoryMixin
 from tgvio_player.infrastructure.sqlite_collections import PlayerCollectionRepositoryMixin
 from tgvio_player.infrastructure.sqlite_cover_mirror import PlayerCoverMirrorRepositoryMixin
 from tgvio_player.infrastructure.sqlite_similar import PlayerSimilarRepositoryMixin
@@ -30,6 +31,7 @@ _DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class PlayerCatalogRepositorySQLite(
+    PlayerCollectionBackupRepositoryMixin,
     PlayerMediaDeletionRepositoryMixin,
     PlayerReadModeRepositoryMixin,
     PlayerCoverMirrorRepositoryMixin,
