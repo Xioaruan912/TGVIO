@@ -54,3 +54,20 @@ class WebDavDeleteAdapter:
         package = safe_remote_path(package_path, relative=False)
         relpath = safe_remote_path(remote_relpath, relative=True)
         return await self._client.delete(f"{package}/{relpath}")
+
+
+class ArchiveBatchRemover(Protocol):
+    async def remove(self, directory: str, names: list[str]) -> bool: ...
+
+
+class OpenListBatchDeleteAdapter(WebDavDeleteAdapter):
+    """Also removes several files of one package with one OpenList call."""
+
+    def __init__(self, client: WebDavDeleteClient, remover: ArchiveBatchRemover) -> None:
+        super().__init__(client)
+        self._remover = remover
+
+    async def delete_locations(self, package_path: str, relpaths: list[str]) -> bool:
+        package = safe_remote_path(package_path, relative=False)
+        names = [safe_remote_path(relpath, relative=True) for relpath in relpaths]
+        return await self._remover.remove(package, names)

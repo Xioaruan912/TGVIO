@@ -34,7 +34,11 @@ from tgvio_player.infrastructure.webdav_aiohttp import (
     WebDavClientSettings,
 )
 from tgvio_player.infrastructure.webdav_catalog import WebDavArchiveCatalogSource
-from tgvio_player.infrastructure.webdav_read import ReadOnlyWebDavAdapter, WebDavDeleteAdapter
+from tgvio_player.infrastructure.webdav_read import (
+    OpenListBatchDeleteAdapter,
+    ReadOnlyWebDavAdapter,
+    WebDavDeleteAdapter,
+)
 from tgvio_player.infrastructure.player_media_reader import PlayerMediaReader
 from tgvio_player.infrastructure.webdav_write import AioHttpWebDavWriteClient
 
@@ -293,7 +297,13 @@ async def run(settings: PlayerSettings) -> None:
             repository, read_router, repository.get_storage_settings,
             recovery.credentials_for, storage_client_factory,
         )
-        deleter = WebDavDeleteAdapter(client) if settings.delete_enabled else None
+        deleter = None
+        if settings.delete_enabled:
+            # With the OpenList API configured, a video's files go in batches.
+            deleter = (
+                OpenListBatchDeleteAdapter(client, direct_reader)
+                if direct_reader is not None else WebDavDeleteAdapter(client)
+            )
         catalog_source = WebDavArchiveCatalogSource(client, remote_root=settings.remote_root)
         sync = CatalogSyncService(catalog_source, repository)
         faststart = FaststartService(

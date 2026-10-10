@@ -42,6 +42,16 @@ class ArchiveDeleter(Protocol):
     async def delete_location(self, package_path: str, remote_relpath: str) -> bool: ...
 
 
+class BatchArchiveDeleter(ArchiveDeleter, Protocol):
+    """A deleter that can also remove several files of one package in one call.
+
+    ``delete_locations`` returns True only when every file is confirmed gone; any
+    other outcome sends those files through ``delete_location`` one by one.
+    """
+
+    async def delete_locations(self, package_path: str, relpaths: list[str]) -> bool: ...
+
+
 class FavoriteRemover(Protocol):
     async def unfavorite(self, media_id: str) -> object: ...
 
@@ -198,16 +208,50 @@ class MediaDeletionService:
 
         deleted = failed = deleted_covers = failed_covers = 0
         calls = 0
+        # Locations a batch call has already confirmed gone.
+        confirmed: set[tuple[str, str]] = set()
 
-        async def remove(package_path: str, relpath: str) -> tuple[bool, str]:
+        async def pause() -> None:
             nonlocal calls
             if calls and self._file_pause:
                 await self._sleep(self._file_pause)
             calls += 1
+
+        async def remove_batch(locations: list[tuple[str, str]]) -> None:
+            """One archive call per package; a failed batch leaves its files to the
+            per-file path below, which counts an already missing file as deleted."""
+            batch = getattr(self._deleter, "delete_locations", None)
+            if batch is None:
+                return
+            by_package: dict[str, list[str]] = {}
+            for package_path, relpath in locations:
+                by_package.setdefault(package_path, []).append(relpath)
+            for package_path, relpaths in by_package.items():
+                if len(relpaths) < 2:
+                    continue
+                await pause()
+                try:
+                    ok = await batch(package_path, relpaths)
+                except Exception:
+                    ok = False
+                self._events("media_delete_batch", media=media, files=len(relpaths), ok=ok)
+                if ok:
+                    confirmed.update((package_path, relpath) for relpath in relpaths)
+
+        async def remove(package_path: str, relpath: str) -> tuple[bool, str]:
+            if (package_path, relpath) in confirmed:
+                return True, ""
+            await pause()
             try:
                 return await self._deleter.delete_location(package_path, relpath), "DeleteReturnedFalse"
             except Exception as exc:
                 return False, type(exc).__name__
+
+        # Covers and copies first, together; the original only once they are gone.
+        await remove_batch(
+            [(path, rel) for _id, path, rel in cover_locations]
+            + [(path, rel) for _target, (_id, path, rel) in variant_locations]
+        )
 
         for package_id, package_path, relpath in cover_locations:
             succeeded, _ = await remove(package_path, relpath)
@@ -216,10 +260,14 @@ class MediaDeletionService:
                 deleted_covers += 1
             else:
                 failed_covers += 1
+        originals_batched = False
         for copy_index, (target_id, (package_id, package_path, relpath)) in enumerate(targets, start=1):
             if target_id == media_id and (failed_covers or (failed and variant_locations)):
                 failed += 1
                 continue
+            if target_id == media_id and not originals_batched:
+                originals_batched = True
+                await remove_batch([(path, rel) for _id, path, rel in locations])
             succeeded, failure_kind = await remove(package_path, relpath)
             if not succeeded:
                 failed += 1

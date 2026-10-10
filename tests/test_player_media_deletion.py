@@ -29,6 +29,17 @@ class Deleter:
         return not self.fail
 
 
+class BatchDeleter(Deleter):
+    def __init__(self) -> None:
+        super().__init__()
+        self.batches: list[list[str]] = []
+        self.batch_ok = True
+
+    async def delete_locations(self, package_path: str, relpaths: list[str]) -> bool:
+        self.batches.append(list(relpaths))
+        return self.batch_ok
+
+
 class Favorites:
     def __init__(self) -> None:
         self.unfavorited: list[str] = []
@@ -81,6 +92,41 @@ class MediaDeletionServiceTests(unittest.IsolatedAsyncioTestCase):
     async def test_retry_waits_grow_to_an_hour_and_stop_growing(self) -> None:
         self.assertEqual([retry_delay(n) for n in range(1, 8)], [60, 120, 240, 480, 960, 1920, 3600])
         self.assertEqual(retry_delay(500), RETRY_MAX_SECONDS)
+
+    def _batch_service(self) -> BatchDeleter:
+        deleter = BatchDeleter()
+
+        async def sleep(seconds: float) -> None:
+            self.sleeps.append(seconds)
+
+        async def on_removed(media_id: str) -> None:
+            self.removed.append(media_id)
+
+        self.service = MediaDeletionService(
+            self.repo, deleter, on_removed=on_removed, favorites=self.favorites,
+            clock=self.clock, sleep=sleep,
+        )
+        return deleter
+
+    async def test_a_video_s_files_go_in_one_batch_call(self) -> None:
+        deleter = self._batch_service()
+        await self.service.request(MEDIA)
+        self.clock.now += 6
+        self.assertTrue(await self.service.run_due())
+        self.assertEqual([sorted(batch) for batch in deleter.batches], [["copy.mp4", "video.mp4"]])
+        self.assertEqual(deleter.calls, [])
+        self.assertEqual(self.removed, [MEDIA])
+        self.assertEqual(await self.service.status(), {"pending": 0, "retrying": 0})
+
+    async def test_a_failed_batch_falls_back_to_one_file_at_a_time(self) -> None:
+        deleter = self._batch_service()
+        deleter.batch_ok = False
+        await self.service.request(MEDIA)
+        self.clock.now += 6
+        self.assertTrue(await self.service.run_due())
+        self.assertEqual(len(deleter.batches), 1)
+        self.assertEqual(sorted(deleter.calls), ["copy.mp4", "video.mp4"])
+        self.assertEqual(self.removed, [MEDIA])
 
     async def test_nothing_runs_inside_the_undo_window(self) -> None:
         self.assertEqual(await self.service.request(MEDIA), 6)

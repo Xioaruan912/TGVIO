@@ -189,6 +189,23 @@ class OpenListDirectReader:
             self._links.pop(key, None)
             self._link_locks.pop(key, None)
 
+    async def remove(self, directory: str, names: list[str]) -> bool:
+        """Delete ``names`` under ``directory`` with one OpenList call.
+
+        OpenList (TGVIO build) removes all of them with one cloud-drive call; a
+        name already gone counts as removed. True only for a confirmed success.
+        """
+        directory = "/" + safe_remote_path(directory, relative=False)
+        names = [safe_remote_path(name, relative=True) for name in names]
+        for attempt in range(2):
+            token = await self._login(force=attempt > 0)
+            payload = await self._api_post("/api/fs/remove", {"dir": directory, "names": names}, token)
+            code = payload.get("code")
+            if code == 401 and attempt == 0:
+                continue
+            return code == 200
+        return False
+
     async def _login(self, *, force: bool) -> str:
         async with self._token_lock:
             if self._token is not None and not force:
