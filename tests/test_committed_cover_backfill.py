@@ -228,7 +228,11 @@ class CoverRangeTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_transient_metadata_retries_bounded_and_invalid_json_does_not(self):
         from unittest.mock import AsyncMock
+        from tgvio.domain.archive import ArchiveRemoteStat
         port = CoverArchivePort("https://fixture.invalid", "fixture", "fixture")
+        # Listed without an ETag, so every call reads the file itself.
+        patch.object(port, "stat", new=AsyncMock(return_value=ArchiveRemoteStat(exists=True))).start()
+        self.addCleanup(patch.stopall)
         with patch.object(port, "_metadata", side_effect=[TimeoutError(), b'{"ok":true}']) as read, \
              patch("tgvio.adapters.cover_archive.asyncio.sleep", new=AsyncMock()):
             self.assertEqual(await port.read_json("fixture/index.json"), {"ok": True})

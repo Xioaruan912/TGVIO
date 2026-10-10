@@ -235,3 +235,40 @@ class ActualRecoveryTests(unittest.IsolatedAsyncioTestCase):
             output.write_bytes(data[:mdat+8] + bytes(len(data)-mdat-8))
             with self.assertRaises((ValueError, RuntimeError)):
                 await verify_recovered(output, parent, 480, .5, spec["sha256"])
+
+
+class MetadataCacheTests(unittest.IsolatedAsyncioTestCase):
+    """Archive metadata is read again only when its ETag changes."""
+
+    async def test_unchanged_etag_reuses_the_last_read(self):
+        from tgvio.domain.archive import ArchiveRemoteStat
+        port = RenditionArchivePort("http://fixture.invalid", "fixture", "fixture")
+        state = {"etag": '"a"', "body": b'{"v": 1}', "exists": True}
+        reads = []
+
+        async def stat(path):
+            return ArchiveRemoteStat(exists=state["exists"], size_bytes=8, etag=state["etag"])
+
+        def metadata(path):
+            reads.append(path)
+            return state["body"]
+
+        with patch.object(port, "stat", side_effect=stat), patch.object(port, "_metadata", side_effect=metadata):
+            first = await port.read_json("pkg/manifest.json")
+            first["v"] = 99  # the caller's copy is not the cached one
+            self.assertEqual(await port.read_json("pkg/manifest.json"), {"v": 1})
+            self.assertEqual(reads, ["pkg/manifest.json"])
+
+            state.update(etag='"b"', body=b'{"v": 2}')
+            self.assertEqual(await port.read_json("pkg/manifest.json"), {"v": 2})
+            self.assertEqual(len(reads), 2)
+
+            state.update(etag=None, body=b'{"v": 3}')  # no ETag: always read
+            await port.read_json("pkg/manifest.json")
+            await port.read_json("pkg/manifest.json")
+            self.assertEqual(len(reads), 4)
+
+            state["exists"] = False
+            self.assertIsNone(await port.read_json("pkg/manifest.json"))
+            self.assertEqual(len(reads), 4)
+        self.assertEqual((port.metadata_reads, port.metadata_hits), (4, 1))

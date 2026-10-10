@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import hashlib
 import json
 from pathlib import Path
@@ -15,12 +16,47 @@ from tgvio.adapters.rendition_recovery import recover
 from tgvio.infrastructure.archive_retry import retry_archive
 
 
+# Parsed metadata kept per path; plenty for every package of a large archive.
+_JSON_CACHE_LIMIT = 8192
+
+
 class RenditionArchivePort(WebDavArchiveTransport):
+    def __init__(self, *args, **kwargs) -> None:
+        super().__init__(*args, **kwargs)
+        # remote path -> (etag, parsed payload) of the last read.
+        self._json_cache: dict[str, tuple[str, object]] = {}
+        self.metadata_reads = 0
+        self.metadata_hits = 0
+
     async def read_json(self, path: str):
+        """Read archive metadata, reusing the last read while its ETag is unchanged.
+
+        Every GET through OpenList costs a cloud-drive download-link call, and the
+        workers re-check the same manifest, marker and index files before every
+        write and on every daily re-verification. A PROPFIND of the file comes from
+        OpenList's directory cache, and its ETag is the drive's content hash, so a
+        matching ETag stands for an identical read.
+        """
+        stat = await retry_archive(lambda: self.stat(path))
+        if not stat.exists:
+            return None
+        cache = self._json_cache
+        cached = cache.get(path) if stat.etag else None
+        if cached is not None and cached[0] == stat.etag:
+            self.metadata_hits += 1
+            return copy.deepcopy(cached[1])
+
         async def read():
             data = await asyncio.to_thread(self._metadata, path)
             return json.loads(data) if data is not None else None
-        return await retry_archive(read)
+        value = await retry_archive(read)
+        self.metadata_reads += 1
+        cache.pop(path, None)
+        if stat.etag and value is not None:
+            if len(cache) >= _JSON_CACHE_LIMIT:
+                cache.pop(next(iter(cache)))
+            cache[path] = (stat.etag, copy.deepcopy(value))
+        return value
 
     def _metadata(self, path: str) -> bytes | None:
         conn = self._connect()
