@@ -48,15 +48,23 @@ class WebDavArchiveCatalogSource:
         self.metadata_reads = 0
         self.metadata_hits = 0
 
-    async def discover(self) -> ArchiveDiscovery:
+    async def discover(self, *, recent_dates: int | None = None) -> ArchiveDiscovery:
+        """List committed packages; ``recent_dates`` keeps only the newest date folders.
+
+        Date folders are named YYYY-MM-DD, so the newest sort last. A partial scan is
+        reported as incomplete and leaves the metadata cache untouched.
+        """
         self._seen = set()
         try:
             date_entries = await self._client.list_collection(self._remote_root)
         except Exception:
             return ArchiveDiscovery(packages=(), complete_scan=False)
+        if recent_dates is not None:
+            dated = sorted((e for e in date_entries if e.is_collection), key=lambda e: e.name)
+            date_entries = tuple(dated[-recent_dates:]) if recent_dates > 0 else ()
 
         packages: list[ArchivePackageCandidate] = []
-        complete_scan = True
+        complete_scan = recent_dates is None
         for date_entry in date_entries:
             if not date_entry.is_collection:
                 continue

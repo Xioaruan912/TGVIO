@@ -193,6 +193,21 @@ class PlayerCatalogTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result.active_videos, 1)
         self.assertEqual(len(await self.repo.active_locations(digest)), 1)
 
+    async def test_recent_scan_adds_but_never_retires_packages(self) -> None:
+        digest = "f" * 64
+        source = FakeArchiveCatalogSource(
+            packages=[
+                candidate("arc_a", digest, remote_path="TGVIO/2026-09-22/1"),
+                candidate("arc_b", digest, remote_path="TGVIO/2026-09-22/2"),
+            ]
+        )
+        service = CatalogSyncService(source, self.repo)
+        await service.sync_once()
+        source.packages = [source.packages[1]]
+        result = await service.sync_once(recent_dates=2)
+        self.assertEqual(result.inactive_packages, 0)
+        self.assertEqual(len(await self.repo.active_locations(digest)), 2)
+
     async def test_media_becomes_inactive_when_all_locations_disappear(self) -> None:
         digest = "f" * 64
         source = FakeArchiveCatalogSource(
@@ -531,6 +546,29 @@ class WebDavCatalogSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse(discovery.complete_scan)
         self.assertEqual(discovery.packages[0].manifest_etag, '"m"')
         self.assertTrue(all(limit <= 512 * 1024 for _, limit in source.reads))
+
+    async def test_recent_scan_lists_only_the_newest_date_folders(self) -> None:
+        source = FakeWebDavClient()
+        source.entries["TGVIO"] = tuple(
+            WebDavCollectionEntry(name, True) for name in ("2026-09-20", "2026-09-22", "2026-09-21")
+        )
+        for day in ("2026-09-20", "2026-09-21", "2026-09-22"):
+            source.entries[f"TGVIO/{day}"] = (WebDavCollectionEntry("1", True),)
+            source.entries[f"TGVIO/{day}/1"] = (
+                WebDavCollectionEntry("manifest.json", False, f'"m{day}"'),
+                WebDavCollectionEntry("_COMPLETE.json", False, f'"c{day}"'),
+            )
+            item = candidate(f"arc_{day}", "7" * 64)
+            source.json[f"TGVIO/{day}/1/manifest.json"] = item.manifest
+            source.json[f"TGVIO/{day}/1/_COMPLETE.json"] = item.complete
+
+        discovery = await WebDavArchiveCatalogSource(source, remote_root="TGVIO").discover(recent_dates=2)
+
+        self.assertFalse(discovery.complete_scan)
+        self.assertEqual(
+            sorted(p.remote_path for p in discovery.packages),
+            ["TGVIO/2026-09-21/1", "TGVIO/2026-09-22/1"],
+        )
 
     async def test_unchanged_metadata_is_not_downloaded_again(self) -> None:
         source = FakeWebDavClient()
