@@ -22,7 +22,48 @@
 - 不为整理项目替换框架、数据库、消息队列、传输协议或依赖版本；依赖变更必须有任务理由并同步 lock。
 - 在既有层和模块扩展；禁止复制出第二套配置解析、播放器、收藏队列、请求层或发布流程。
 
-## 3. 实现规则
+## 3. 代码地图（先按这里定位，再只读目标文件）
+
+数据流：Telegram → Bot 建 Job（SQLite）→ 下载/分析 → 按序发布 → 归档包写 WebDAV（`manifest.json` + `_COMPLETE.json`，可选 `covers.json`、`renditions.json`）→ Player 轮询目录投影进 `player.sqlite3` → 浏览器经 Player API 按 Range 取流。
+运行时 5 个容器：`tgvio`（Bot）、`tgvio-player`、`tgvio-covers`/`tgvio-renditions`（维护，镜像 Dockerfile.renditions）；网盘由宿主机 OpenList（115List `tgvio` 分支）提供。
+
+**Bot `src/tgvio/`**（入口 main.py 装配；配置 config.py ↔ .env.example）
+
+| 关注点 | 文件 |
+|---|---|
+| Telegram 输入/按钮 | adapters/telegram/intake_*.py、bot_ui*.py（按功能拆分：jobs、drafts、source、archive、system） |
+| Job 生命周期 | application/intake.py → orchestrator.py → execution.py / job_runner.py；scheduler.py、undo.py、auto_recovery.py |
+| 下载与分析 | application/media_downloader.py、media_analyzer.py；adapters/url_downloader.py（yt-dlp） |
+| 发布 | adapters/telegram/publish_*.py（相册分组、大文件、引用） |
+| 归档 | application/archive_planner.py（清单）→ archive_executor.py → archive_commit.py；adapters/webdav_archive.py；删除 archive_deletion.py |
+| 维护进程 | interfaces/backfill_covers.py、backfill_renditions.py → application/cover_backfill*.py、rendition_backfill.py；检查点 infrastructure/rendition_state.py |
+| 存储 | infrastructure/sqlite_*.py（按聚合拆 mixin）；迁移 infrastructure/migrations/NNNN_*.sql |
+
+**Player 后端 `src/tgvio_player/`**（入口 main.py：PlayerSettings 读 env，装配服务与后台任务）
+
+| 关注点 | 文件 |
+|---|---|
+| HTTP 路由 | adapters/http/server.py（总表、鉴权、限流）；按功能的 mixin：streaming.py、media.py、library.py、storage_settings.py、read_mode.py、watched.py、duplicates.py |
+| 目录同步 | application/catalog.py + infrastructure/webdav_catalog.py（只读 committed 包） |
+| 播放读取 | application/archive_read.py（WebDAV / OpenList 直连路由）、range_cache.py + infrastructure/range_store.py（1MB 块磁盘缓存）、faststart.py、warm_backfill.py |
+| 用户状态 | 收藏 favorite_backup.py；集合 collection_backup.py（网盘同名文件夹）；恢复快照 player_recovery.py；看过 domain/watched.py |
+| 删除与去重 | media_deletion.py（持久队列 + 撤销）；duplicate_copies.py（同片多份只留一份）；domain/duplicates.py（疑似重复分组） |
+| 查询 | infrastructure/video_query.py（片库筛选/排序 SQL）、domain/library_filters.py |
+| 存储 | infrastructure/sqlite.py 聚合 sqlite_*.py mixin；迁移 infrastructure/migrations/NNNN_*.sql（只增不改） |
+
+API 前缀 `/api/v1`：auth、feed/random、videos、library/*、groups、favorites、collections、media/{id}（stream、cover、similar、favorite、progress、watched、DELETE 删除/撤销）、duplicates、settings/*（storage、read-mode、watched、recover）、media-deletions。新路由在对应 mixin 的 `_register_*_routes` 里加，server.py 只加一行注册。
+
+**前端**在 TGVIO-Player 仓库，其 AGENTS.md 有模块地图。新功能放独立模块，经 `api.request` 调接口，不让 main.ts/api.ts 变长。
+
+**测试**：`tests/test_player_*.py`（Player，aiohttp TestServer + 临时库）、其余 `tests/test_*.py`（Bot 与发布工具）。全部离线；fake 在测试文件内或 `src/tgvio_player/testing/`。
+
+常见改动路径：
+- Player 新接口：domain 值 → sqlite_* mixin（加进 sqlite.py 基类列表）→ adapters/http 新 mixin → 测试 → 前端仓库消费 → 改 player-web.lock。
+- 新表：新增 `NNNN_name.sql`，同步 tests/test_player_migration.py 的迁移列表；在生产库副本（SQLite backup API）演练后，用 `deploy_hostdzire.py --migration NNNN_name` 发布。
+- 新 Player 配置：main.py 的 PlayerSettings + deploy/player.env.example + docker-compose.player.yml。
+- 后台任务：仿 duplicate_copies.py（有界、可暂停、播放时让路），在 main.py 的 tasks 列表里启动。
+
+## 4. 实现规则
 
 - domain 保持纯业务；application 通过 ports 编排；infrastructure 实现存储/协议；adapter 只做输入、授权与输出。具体依赖规则见架构文档和 release_guard。
 - 不在 UI/HTTP/Telegram handler 直接写 SQL，不导入 main 装配入口。
@@ -33,7 +74,7 @@
 - 新配置同步对应 .env.example；schema 变更只新增不可变 migration，先演练再发布，不改既有 checksum。
 - 不删除未经核实的功能、测试、回滚点或运行数据。大文件保持有界流式处理与取消。
 
-## 4. 验证与交付
+## 5. 验证与交付
 
 在仓库根执行：
 
@@ -50,7 +91,7 @@ bash scripts/check.sh --browser       # 加上隔离 Chrome 布局回归
 - 一个提交一个可审查目的；采用 `chore/docs/fix/refactor/test(scope): ...`，不 force push，不改写他人历史。
 - 交付说明写清改动、测试、Git 提交、VPS 是否仅同步源码或实际切换服务；不要用一个“已部署”掩盖差异。
 
-## 5. 生产与清理
+## 6. 生产与清理
 
 - 遵守 [运维入口](docs/operations/README.md)。生产 .env、session、data、downloads、logs 以 VPS 为准。
 - 同一 BOT_TOKEN/session 只允许一个 Bot 实例；不得本地启动生产身份。
@@ -63,7 +104,7 @@ bash scripts/check.sh --browser       # 加上隔离 Chrome 布局回归
 - .env、token、密码、私钥、session、Cookie、用户媒体及数据库不得写进 Git、截图或输出。
 - 发现线上差异先回收比对并记录，不能用 Git HEAD 强行覆盖。
 
-## 6. 结束时更新
+## 7. 结束时更新
 
 交接记录单独写入 `docs/handoffs/YYYY-MM-DD-主题.md`：范围、事实、已完成、验证、Git/VPS状态、下一步。
 AGENTS.md 仅在长期规则发生变化时更新，并同步检查；不得再次膨胀为历史日志。
