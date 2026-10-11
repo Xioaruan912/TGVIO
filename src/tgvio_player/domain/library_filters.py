@@ -84,6 +84,7 @@ class LibraryFilters:
     favorite: bool | None = None
     resumable: bool | None = None
     unwatched: bool | None = None
+    tag: int | None = None
     sort: str = "newest"
     seed: int | None = None
 
@@ -119,6 +120,10 @@ def parse_filters(query: Mapping[str, str]) -> LibraryFilters:
             updates["sort"] = raw
         elif key in {"has_cover", "favorite", "resumable", "unwatched"}:
             updates[key] = _as_bool(raw, key)
+        elif key == "tag":
+            updates["tag"] = _as_int(raw, key)
+            if updates["tag"] <= 0:
+                raise InvalidFilters("invalid tag")
         elif key in {"date_from", "date_to", "min_bytes", "max_bytes", "seed"}:
             updates[key] = _as_int(raw, key)
         elif key in {"min_seconds", "max_seconds"}:

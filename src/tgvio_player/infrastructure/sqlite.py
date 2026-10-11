@@ -24,6 +24,7 @@ from tgvio_player.infrastructure.sqlite_favorites import PlayerFavoriteRepositor
 from tgvio_player.infrastructure.sqlite_library import PlayerLibraryRepositoryMixin
 from tgvio_player.infrastructure.sqlite_media_deletions import MEDIA_ACTIVE_CASE, PlayerMediaDeletionRepositoryMixin
 from tgvio_player.infrastructure.sqlite_read_mode import PlayerReadModeRepositoryMixin
+from tgvio_player.infrastructure.sqlite_tags import PlayerTagRepositoryMixin
 from tgvio_player.infrastructure.sqlite_watched import PlayerWatchedRepositoryMixin
 from tgvio_player.infrastructure.video_query import build_video_count, build_video_query
 
@@ -34,6 +35,7 @@ _DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class PlayerCatalogRepositorySQLite(
+    PlayerTagRepositoryMixin,
     PlayerWatchedRepositoryMixin,
     PlayerDuplicateCopyRepositoryMixin,
     PlayerDuplicateReviewRepositoryMixin,
@@ -384,6 +386,7 @@ class PlayerCatalogRepositorySQLite(
         favorite_token_digest: str | None = None,
         resumable: bool | None = None,
         unwatched: bool | None = None,
+        tag: int | None = None,
         sort: str | None = None,
         seed: int | None = None,
     ) -> list[str]:
@@ -404,6 +407,7 @@ class PlayerCatalogRepositorySQLite(
             favorite_token_digest=favorite_token_digest,
             resumable=resumable,
             unwatched=unwatched,
+            tag=tag,
             sort=sort,
             seed=seed,
         )
@@ -539,6 +543,7 @@ class PlayerCatalogRepositorySQLite(
         favorite_token_digest: str | None = None,
         resumable: bool | None = None,
         unwatched: bool | None = None,
+        tag: int | None = None,
     ) -> int:
         # The same clause builder the page uses: a total that describes a different
         # set than the page is a denominator that lies.
@@ -556,6 +561,7 @@ class PlayerCatalogRepositorySQLite(
             favorite_token_digest=favorite_token_digest,
             resumable=resumable,
             unwatched=unwatched,
+            tag=tag,
         )
         row = self._require().execute(sql, tuple(params)).fetchone()
         return int(row["count"])

@@ -127,6 +127,7 @@ class PlayerCatalogRepository(Protocol):
         favorite_token_digest: str | None = None,
         resumable: bool | None = None,
         unwatched: bool | None = None,
+        tag: int | None = None,
         sort: str | None = None,
         seed: int | None = None,
     ) -> list[str]: ...
@@ -147,6 +148,7 @@ class PlayerCatalogRepository(Protocol):
         favorite_token_digest: str | None = None,
         resumable: bool | None = None,
         unwatched: bool | None = None,
+        tag: int | None = None,
     ) -> int: ...
 
     async def library_dates(self) -> dict[str, object]: ...

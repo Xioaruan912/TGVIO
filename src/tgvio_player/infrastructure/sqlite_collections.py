@@ -244,6 +244,7 @@ class PlayerCollectionRepositoryMixin:
             favorite_token_digest=favorite_token_digest,
             resumable=None if filters is None else filters.resumable,
             unwatched=None if filters is None else filters.unwatched,
+            tag=None if filters is None else filters.tag,
         )
         rows = self._require().execute(
             "SELECT item.media_id FROM collection_items item "
