@@ -6,7 +6,8 @@ cannot decode H.264). Start it with scripts/player_browser_smoke.sh, which passe
 the Player access secret and an output directory.
 
 Checks: login; feed start-up and seeks; the settings read-mode label; a long video
-start and uncached seeks; every long-list cover while its tile is on screen.
+start and uncached seeks; every long-list cover while its tile is on screen; the
+duplicate review's groups (opened only).
 Prints one JSON line per step and writes report.json (and screenshots without
 media frames) to /out.
 """
@@ -70,6 +71,19 @@ def settings(page) -> None:
     page.wait_for_timeout(500)
 
 
+def duplicates(page) -> None:
+    """Opens the duplicate review and counts its groups; never keeps or dismisses."""
+    page.click("button.topbar-settings")
+    page.wait_for_timeout(1000)
+    page.get_by_text("疑似重复视频").click()
+    page.wait_for_function("() => !document.body.innerText.includes('正在比对封面和时长')", timeout=30000)
+    step("duplicates", groups=page.evaluate("() => document.querySelectorAll('.duplicate-group').length"),
+         empty="没有疑似重复的视频" in page.inner_text("body"))
+    page.screenshot(path=f"{OUT}/duplicates.png")
+    page.keyboard.press("Escape")
+    page.wait_for_timeout(500)
+
+
 def open_long_list(page) -> None:
     page.click('nav.bottom-nav button[data-action="long"]')
     page.wait_for_selector("article.cover-tile", timeout=20000)
@@ -123,7 +137,7 @@ def covers(page) -> None:
          not_shown=[i for i, s in enumerate(states) if not s["shown"]])
 
 
-CHECKS = {"feed": feed, "settings": settings, "long": long_video, "covers": covers}
+CHECKS = {"feed": feed, "settings": settings, "long": long_video, "covers": covers, "duplicates": duplicates}
 
 with sync_playwright() as playwright:
     browser = playwright.chromium.launch(channel="chrome", args=["--autoplay-policy=no-user-gesture-required"])
