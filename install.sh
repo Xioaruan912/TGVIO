@@ -327,12 +327,38 @@ start_container() {
       "$IMAGE_NAME" >/dev/null; then
     err "启动失败，请用菜单「2) 查看日志」查看原因。"; return 1
   fi
-  sleep 3
-  if container_running; then
-    ok "机器人已启动。请在 Telegram 里给机器人发送 /start 开始使用。"
-  else
-    err "容器未能正常运行，请用菜单「2) 查看日志」查看原因。"
-  fi
+  verify_started
+}
+
+# 容器带 --restart，登录失败也会显示“运行中”并反复重启；
+# 观察约 20 秒，确认没有退出过才算启动成功。
+verify_started() {
+  info "正在确认机器人能登录 Telegram（约 20 秒）..."
+  local i restarts
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    sleep 2
+    restarts="$(docker inspect -f '{{.RestartCount}}' "$CONTAINER_NAME" 2>/dev/null || echo 0)"
+    if [ "${restarts:-0}" -gt 0 ] || ! container_running; then
+      explain_start_failure
+      return 1
+    fi
+  done
+  ok "机器人已启动。请在 Telegram 里给机器人发送 /start 开始使用。"
+}
+
+explain_start_failure() {
+  local out
+  out="$(docker logs --tail 80 "$CONTAINER_NAME" 2>&1)"
+  # 反复登录会被 Telegram 限流，先停下来。
+  docker stop "$CONTAINER_NAME" >/dev/null 2>&1 || true
+  err "机器人启动后退出了，已停止，避免反复登录被 Telegram 限制。"
+  case "$out" in
+    *ApiIdInvalidError*) echo "→ API_ID 和 API_HASH 不匹配，请到 my.telegram.org 核对" ;;
+    *AccessTokenInvalidError*|*AccessTokenExpiredError*) echo "→ 机器人令牌无效，请找 @BotFather 重新获取" ;;
+    *FloodWaitError*) echo "→ Telegram 要求稍后再试（登录太频繁），请等一段时间再启动" ;;
+    *) echo "最后几行日志："; printf '%s\n' "$out" | tail -n 5 ;;
+  esac
+  echo "请在菜单「7) 修改配置」改正后，选择「5) 重建 / 更新」。"
 }
 
 restart_if_running() {
