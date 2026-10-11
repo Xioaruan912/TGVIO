@@ -28,6 +28,7 @@ from .storage_settings import PlayerStorageSettingsHttpMixin
 from .read_mode import PlayerReadModeHttpMixin
 from .watched import PlayerWatchedHttpMixin
 from .duplicates import PlayerDuplicateReviewHttpMixin
+from .tags import PlayerTagHttpMixin
 
 from tgvio_player.application.auth import SessionService
 from tgvio_player.application.favorite_backup import FavoriteBackupService
@@ -91,7 +92,7 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-class PlayerHttpServer(PlayerDuplicateReviewHttpMixin, PlayerWatchedHttpMixin, PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin, PlayerReadModeHttpMixin, PlayerLibraryHttpMixin, PlayerMediaHttpMixin):
+class PlayerHttpServer(PlayerTagHttpMixin, PlayerDuplicateReviewHttpMixin, PlayerWatchedHttpMixin, PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin, PlayerReadModeHttpMixin, PlayerLibraryHttpMixin, PlayerMediaHttpMixin):
     """Small authenticated HTTP boundary around Player-only services.
 
     This adapter intentionally accepts only Player repository IDs. It has no
@@ -229,6 +230,7 @@ class PlayerHttpServer(PlayerDuplicateReviewHttpMixin, PlayerWatchedHttpMixin, P
         self._register_library_routes(app)
         self._register_watched_routes(app)
         self._register_duplicate_routes(app)
+        self._register_tag_routes(app)
         app.router.add_get("/api/v1/videos", self._videos)
         app.router.add_get("/api/v1/groups/{group_id}/videos", self._group_videos)
         app.router.add_get("/api/v1/favorites", self._favorites)

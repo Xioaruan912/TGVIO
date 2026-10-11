@@ -138,6 +138,7 @@ def listing_query_kwargs(
         "favorite_token_digest": favorite_token_digest,
         "resumable": filters.resumable,
         "unwatched": filters.unwatched,
+        "tag": filters.tag,
         "sort": sort,
         "seed": filters.seed,
     }
@@ -161,6 +162,7 @@ def build_video_query(
     favorite_token_digest: str | None = None,
     resumable: bool | None = None,
     unwatched: bool | None = None,
+    tag: int | None = None,
     sort: str | None = None,
     seed: int | None = None,
 ) -> tuple[str, list[Any]]:
@@ -179,6 +181,7 @@ def build_video_query(
         favorite_token_digest=favorite_token_digest,
         resumable=resumable,
         unwatched=unwatched,
+        tag=tag,
     )
     params.extend([max(1, int(limit)), max(0, int(offset))])
     return (
@@ -203,6 +206,7 @@ def build_video_count(
     favorite_token_digest: str | None = None,
     resumable: bool | None = None,
     unwatched: bool | None = None,
+    tag: int | None = None,
 ) -> tuple[str, list[Any]]:
     """The count of the same set a page of the wall came from.
 
@@ -224,6 +228,7 @@ def build_video_count(
         favorite_token_digest=favorite_token_digest,
         resumable=resumable,
         unwatched=unwatched,
+        tag=tag,
     )
     return f"SELECT COUNT(*) AS count FROM media WHERE {' AND '.join(clauses)}", params
 
@@ -243,6 +248,7 @@ def filter_clauses(
     favorite_token_digest: str | None = None,
     resumable: bool | None = None,
     unwatched: bool | None = None,
+    tag: int | None = None,
 ) -> tuple[list[str], list[Any]]:
     """The WHERE fragments and their bound parameters, in one place.
 
@@ -291,4 +297,9 @@ def filter_clauses(
     if unwatched is not None:
         watched = _watched_clause()
         clauses.append(f"NOT {watched}" if unwatched else watched)
+    if tag is not None:
+        clauses.append(
+            "EXISTS (SELECT 1 FROM player_media_tags t WHERE t.media_id=media.media_id AND t.tag_id=?)"
+        )
+        params.append(int(tag))
     return clauses, params
