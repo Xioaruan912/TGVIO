@@ -229,10 +229,10 @@ class BotUISystemMixin:
             "**本地缓存**\n\n"
             f"占用：`{self._human_bytes(stats.bytes_used)}`\n"
             f"Job 目录：`{stats.managed_dirs}`\n"
-            f"自动保留：`{stats.retention_hours}` 小时\n"
-            f"到期可清理：`{stats.eligible_jobs}`\n"
+            f"取消任务保留：`{stats.retention_hours}` 小时\n"
+            f"可清理任务：`{stats.eligible_jobs}`\n"
             f"被 Archive 阻塞：`{stats.blocked_by_archive}`\n\n"
-            "自动清理只处理 SUCCEEDED/CANCELLED，不会删除 PLANNED/FAILED 的重试缓存。\n"
+            "成功任务在发布与归档均完成后立即清理；归档中和失败任务的重试缓存继续保留。\n"
             "需要立即释放空间时，点下方“清理已完成缓存”。"
         )
 

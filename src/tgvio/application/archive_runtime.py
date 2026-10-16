@@ -12,7 +12,7 @@ from tgvio.application.archive_capabilities import (
 )
 from tgvio.application.archive_executor import ArchiveExecutor
 from tgvio.application.archive_planner import ArchivePlanner
-from tgvio.application.ports import ArchiveTransport, JobRepository
+from tgvio.application.ports import ArchiveTransport, CacheOperator, JobRepository
 from tgvio.application.scheduler import PhaseClaimGuard, PhaseClaimLostError
 from tgvio.domain.archive import (
     ArchiveCapabilities,
@@ -43,11 +43,14 @@ class ArchiveService:
         repository: JobRepository,
         planner: ArchivePlanner,
         transport: ArchiveTransport,
+        *,
+        cache: CacheOperator | None = None,
     ) -> None:
         self._repository = repository
         self._planner = planner
         self._transport = transport
         self._executor = ArchiveExecutor(repository, transport)
+        self._cache = cache
         self._log = logging.getLogger("tgvio.archive")
 
     async def enqueue_job(self, job: Job) -> ArchivePackage | None:
@@ -130,6 +133,16 @@ class ArchiveService:
                 processed += 1
             finally:
                 await claim.stop()
+            if self._cache is not None:
+                try:
+                    stored = await self._repository.get_archive_package(package.id)
+                    if stored is not None and stored.state == ArchivePackageState.COMMITTED:
+                        await self._cache.cleanup(job_ids=(package.job_id,))
+                except Exception as exc:
+                    log_event(
+                        self._log, logging.WARNING, "archive.cache_cleanup.failed",
+                        job_id=package.job_id, exception_type=type(exc).__name__,
+                    )
         return processed
 
     async def retry_package(
