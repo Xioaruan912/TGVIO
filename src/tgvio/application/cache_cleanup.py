@@ -50,6 +50,7 @@ class CacheCleanupService:
         self._repository = repository
         self._download_root = download_root.resolve()
         self._retention_hours = max(1, int(retention_hours))
+        self._cleanup_lock = asyncio.Lock()
 
     async def stats(self) -> CacheStats:
         jobs = await self._repository.list_by_states(_AUTO_CLEAN_STATES)
@@ -92,6 +93,17 @@ class CacheCleanupService:
         *,
         force: bool = False,
         job_ids: tuple[str, ...] | None = None,
+    ) -> CacheCleanupResult:
+        # Completion hooks and the periodic worker share this service. Re-read
+        # eligible Jobs under one lock so they cannot remove/save the same cache.
+        async with self._cleanup_lock:
+            return await self._cleanup(force=force, job_ids=job_ids)
+
+    async def _cleanup(
+        self,
+        *,
+        force: bool,
+        job_ids: tuple[str, ...] | None,
     ) -> CacheCleanupResult:
         jobs = await self._repository.list_by_states(_AUTO_CLEAN_STATES)
         requested = None if job_ids is None else frozenset(str(value) for value in job_ids)
@@ -139,6 +151,8 @@ class CacheCleanupService:
         return archive_failure_waits_for_recovery(job, package)
 
     def _age_due(self, job: Job) -> bool:
+        if job.state == JobState.SUCCEEDED:
+            return True
         value = job.updated_at or job.created_at
         if not value:
             return False
@@ -152,8 +166,8 @@ class CacheCleanupService:
         return age_hours >= self._retention_hours
 
     def _job_dir(self, job_id: str) -> Path:
-        path = (self._download_root / f"job-{job_id}").resolve()
-        if path.parent != self._download_root:
+        path = self._download_root / f"job-{job_id}"
+        if path.is_symlink() or path.resolve().parent != self._download_root:
             raise ValueError("managed cache path escaped download root")
         return path
 

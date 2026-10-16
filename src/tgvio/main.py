@@ -211,6 +211,7 @@ async def run(*, check_only: bool = False) -> None:
                     cover_provider=publish_thumbnail_cover_provider(settings.download_dir),
                 ),
                 archive_transport,
+                cache=cache_runtime,
             )
             archive_runtime = ArchiveRuntime(
                 archive_service,
@@ -337,6 +338,7 @@ async def run(*, check_only: bool = False) -> None:
             processor,
             execution if settings.publish_enabled else None,
             archive_runtime,
+            cache=cache_runtime,
         )
         intake_runtime = TelethonIntakeRuntime(
             gateway.client,

@@ -1,16 +1,23 @@
 from __future__ import annotations
 
+import asyncio
 import hashlib
 from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
 from tgvio.application.archive_planner import ArchivePlanner
+from tgvio.application.archive_runtime import ArchiveService
 from tgvio.application.cache_cleanup import CacheCleanupService
+from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IncomingMedia, IntakeService
+from tgvio.application.job_runner import JobRunner
+from tgvio.application.orchestrator import JobOrchestrator
 from tgvio.domain.archive import ArchivePackageState, ArchivePolicy, ArchiveProfileSnapshot
 from tgvio.domain.job import JobState, MediaKind
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
+from tests.test_archive_executor import MemoryArchiveTransport
+from tests.test_publish_pipeline import RecordingTransport
 
 
 class CacheCleanupTests(unittest.IsolatedAsyncioTestCase):
@@ -169,8 +176,20 @@ class CacheCleanupTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(required_path.exists())
         self.assertFalse(best_path.exists())
 
-    async def test_non_force_cleanup_waits_for_retention_then_cleans(self) -> None:
+    async def test_succeeded_cache_is_removed_without_waiting_for_retention(self) -> None:
         job, local = await self._job_with_cache(JobState.SUCCEEDED)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        self.assertEqual(await service.cleanup_candidates(), (job.id,))
+        self.assertEqual((await service.stats()).eligible_jobs, 1)
+
+        result = await service.cleanup()
+
+        self.assertEqual(result.removed_jobs, 1)
+        self.assertFalse(local.exists())
+        self.assertIsNone((await self.repo.get(job.id)).items[0].local_path)
+
+    async def test_cancelled_cache_waits_for_retention_then_cleans(self) -> None:
+        job, local = await self._job_with_cache(JobState.CANCELLED)
         service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
         first = await service.cleanup(force=False)
         self.assertEqual(first.removed_jobs, 0)
@@ -184,6 +203,109 @@ class CacheCleanupTests(unittest.IsolatedAsyncioTestCase):
         second = await service.cleanup(force=False)
         self.assertEqual(second.removed_jobs, 1)
         self.assertFalse(local.exists())
+
+    async def test_publish_finishing_last_removes_cache_before_returning(self) -> None:
+        job, local = await self._job_with_cache(JobState.ANALYZED)
+        await JobOrchestrator(self.repo).mark_planned(job)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        archive = ArchiveService(self.repo, ArchivePlanner(), MemoryArchiveTransport())
+        await archive.enqueue_job(await self.repo.get(job.id))
+        await archive.run_pending_once()
+        self.assertTrue(local.exists())
+
+        runner = JobRunner(self.repo, None, PublishExecutionEngine(self.repo, RecordingTransport()), cache=service)
+        completed = await runner.publish(await self.repo.get(job.id))
+
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertFalse(local.exists())
+        self.assertIsNone(completed.items[0].local_path)
+
+    async def test_archive_finishing_last_removes_cache_without_periodic_sweep(self) -> None:
+        job, local = await self._job_with_cache(JobState.ANALYZED)
+        await JobOrchestrator(self.repo).mark_planned(job)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        archive = ArchiveService(self.repo, ArchivePlanner(), MemoryArchiveTransport(), cache=service)
+        await archive.enqueue_job(await self.repo.get(job.id))
+        runner = JobRunner(self.repo, None, PublishExecutionEngine(self.repo, RecordingTransport()), cache=service)
+
+        completed = await runner.publish(await self.repo.get(job.id))
+
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertTrue(local.exists())
+
+        await archive.run_pending_once()
+
+        self.assertFalse(local.exists())
+        self.assertIsNone((await self.repo.get(job.id)).items[0].local_path)
+
+    async def test_cleanup_error_does_not_fail_confirmed_publish(self) -> None:
+        job, local = await self._job_with_cache(JobState.ANALYZED)
+        await JobOrchestrator(self.repo).mark_planned(job)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+
+        def unavailable(path):
+            raise OSError("fixture disk unavailable")
+
+        service._remove_tree = unavailable
+        runner = JobRunner(self.repo, None, PublishExecutionEngine(self.repo, RecordingTransport()), cache=service)
+        with self.assertLogs("tgvio.job.runner", level="WARNING"):
+            completed = await runner.publish(await self.repo.get(job.id))
+
+        self.assertEqual(completed.state, JobState.SUCCEEDED)
+        self.assertEqual((await self.repo.get(job.id)).state, JobState.SUCCEEDED)
+        self.assertTrue(local.exists())
+
+    async def test_cleanup_error_does_not_fail_committed_archive(self) -> None:
+        job, local = await self._job_with_cache(JobState.SUCCEEDED)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+
+        def unavailable(path):
+            raise OSError("fixture disk unavailable")
+
+        service._remove_tree = unavailable
+        archive = ArchiveService(self.repo, ArchivePlanner(), MemoryArchiveTransport(), cache=service)
+        package = await archive.enqueue_job(job)
+        with self.assertLogs("tgvio.archive", level="WARNING"):
+            await archive.run_pending_once()
+
+        self.assertEqual((await self.repo.get_archive_package(package.id)).state, ArchivePackageState.COMMITTED)
+        self.assertTrue(local.exists())
+
+    async def test_committed_archive_preserves_failed_publish_cache(self) -> None:
+        job, local = await self._job_with_cache(JobState.FAILED)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+        archive = ArchiveService(self.repo, ArchivePlanner(), MemoryArchiveTransport(), cache=service)
+        await archive.enqueue_job(job)
+
+        await archive.run_pending_once()
+
+        self.assertTrue(local.exists())
+        self.assertEqual((await self.repo.get(job.id)).state, JobState.FAILED)
+        self.assertEqual(await service.cleanup_candidates(), ())
+
+    async def test_concurrent_cleanup_removes_a_job_only_once(self) -> None:
+        job, local = await self._job_with_cache(JobState.SUCCEEDED)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+
+        results = await asyncio.gather(service.cleanup(), service.cleanup())
+
+        self.assertEqual(sum(result.removed_jobs for result in results), 1)
+        self.assertEqual(sum(result.removed_bytes for result in results), 7)
+        self.assertFalse(local.exists())
+
+    async def test_job_symlink_cannot_delete_another_jobs_cache(self) -> None:
+        victim, victim_local = await self._job_with_cache(JobState.SUCCEEDED)
+        alias, alias_local = await self._job_with_cache(JobState.SUCCEEDED)
+        alias_local.unlink()
+        alias_local.parent.rmdir()
+        alias_local.parent.symlink_to(victim_local.parent, target_is_directory=True)
+        service = CacheCleanupService(self.repo, self.downloads, retention_hours=24)
+
+        with self.assertRaises(ValueError):
+            await service.cleanup(job_ids=(alias.id,))
+
+        self.assertTrue(victim_local.exists())
+        self.assertIsNotNone((await self.repo.get(victim.id)).items[0].local_path)
 
     async def test_stats_reports_usage_eligibility_and_archive_block(self) -> None:
         eligible, eligible_path = await self._job_with_cache(JobState.SUCCEEDED, payload=b"abc")

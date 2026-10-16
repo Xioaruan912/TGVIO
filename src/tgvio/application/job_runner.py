@@ -3,7 +3,7 @@ from __future__ import annotations
 import logging
 
 from tgvio.application.execution import PublishExecutionEngine
-from tgvio.application.ports import ArchiveEnqueuer, JobRepository
+from tgvio.application.ports import ArchiveEnqueuer, CacheOperator, JobRepository
 from tgvio.application.processor import IngestionProcessor
 from tgvio.domain.job import Job, JobState
 from tgvio.observability import log_event
@@ -18,11 +18,14 @@ class JobRunner:
         ingestion: IngestionProcessor,
         execution: PublishExecutionEngine | None = None,
         archive: ArchiveEnqueuer | None = None,
+        *,
+        cache: CacheOperator | None = None,
     ) -> None:
         self._repository = repository
         self._ingestion = ingestion
         self._execution = execution
         self._archive = archive
+        self._cache = cache
         self._log = logging.getLogger("tgvio.job.runner")
 
     @property
@@ -75,6 +78,17 @@ class JobRunner:
         if plan is None:
             raise RuntimeError(f"{job.state.value} job has no PublishPlan: {job.id}")
         result = await self._execution.execute(job, plan)
+        if result.state == JobState.SUCCEEDED and self._cache is not None:
+            try:
+                await self._cache.cleanup(job_ids=(job.id,))
+                result = await self._repository.get(job.id) or result
+            except Exception as exc:
+                # Local cleanup is retried by the periodic worker; it must not
+                # turn confirmed Telegram delivery into a publish failure.
+                log_event(
+                    self._log, logging.WARNING, "job.cache_cleanup.failed",
+                    job_id=job.id, exception_type=type(exc).__name__,
+                )
         log_event(
             self._log,
             logging.INFO,
