@@ -18,16 +18,21 @@
 
 服务报告移除 3,882,410,307 个逻辑字节；目录已消失、数据库 local_path 已清空、成功状态保留。逻辑大小不等于磁盘净释放量，后台任务同期持续写入。
 
-最大 Job `4df858cce8154c5aa227b28c6ea34a58` 的云端归档 committed，但 Telegram 发布曾失败；随后在 14:36 UTC 自动进入 publishing。活动任务不能删除。用户对于仅云端成功、发布仍失败时是否放弃本地重试的选择尚未返回。
+最大 Job `4df858cce8154c5aa227b28c6ea34a58` 的云端归档 committed，但 Telegram 发布曾失败；随后在 14:36 UTC 自动进入 publishing。清理期间保留活动文件，等待至 14:50:40 UTC 完成 11/11 步骤并进入 succeeded。再次核验 40 个归档对象均 stored、无活动 claim、路径和符号链接后，通过原清理服务精确移除该 Job 的 48,780,450,453 个逻辑字节。三项任务最终均保持 succeeded + committed，本地路径清空且目录消失。
+
+本轮三项 Job 合计删除 52,662,860,760 个逻辑字节。另清理约 2.6 GiB Go 模块缓存，期间确认没有 Go 构建进程。最终下载目录 616 KiB；上线后根分区 52%，可用 48,964,030,464 字节（约 45.6 GiB）。
 
 ## 验证与交付状态
 
 - 先运行原有 30 项目标测试作为基线；新增即时清理行为测试先失败再通过。
 - 覆盖归档/发布两种完成顺序、失败任务保留、清理异常隔离、重复并发清理和符号链接保护。
 - 最终完整 `bash scripts/check.sh` 在 WSL CPython 3.13.5 上通过：1269 项 Python 测试，以及锁定 Player Web 的检查、测试与构建。缓存页面与缓存清理的 70 项目标测试另行通过。
+- 源码独立快照已同步到 `/root/TGVIO-snapshots/a77019d98a5f65c89b7a0668baf24353c18b86ed/source`，传输 SHA-256 一致，源码扫描通过。在生产镜像中以网络禁用、不挂载生产卷的方式运行 38 项 CPython 3.11 目标测试，通过。
 - 独立代码审查无重要发现。没有数据库迁移或依赖变更。
-- VPS 运行版本仍为 `ada7ade237c57961a959487f3f49eb98e86f2a98`；本次代码尚未切换生产。生产 preflight 因活动发布任务拒绝部署，未绕过门禁或重启 Bot。
+- 正式入口 `python3 scripts/deploy_hostdzire.py --target bot --phase R2-53` 发布成功。生产镜像构建和 CPython 3.11 的 1269 项完整回归均通过；活动发布结束后才切换 Bot，没有绕过门禁。
+- 线上代码提交：`a77019d98a5f65c89b7a0668baf24353c18b86ed`；release `r2-53-a77019d-20261016T145233Z`；镜像 `sha256:d771a88c43ac410aab5a08faeba91d7c07c41338dbbb51abb8ef59a0fd094ca8`。
+- 上线后 require-safe preflight 通过；Bot healthy、restart 0、Telegram ready、SQLite quick_check=ok、所有任务/发布/归档/claim blocker 为 0。其他容器身份未变，五个本机 HTTP 服务均返回 200。旧版本和一致性备份由正式发布流程保留。
 
-## 下一步
+## 后续边界
 
-代码通过全部检查后提交、推送；任务结束且发布门禁通过时，按 scripts/deploy_hostdzire.py 的 Bot 正式入口交付。再次检查运行身份、数据库、磁盘和缓存；不得将源码提交或同步描述为已上线。
+本次清理和代码上线均完成。仅云端归档成功但 Telegram 仍失败的任务继续保留本地重试文件；不扩展为删除失败或活动任务。没有为验收额外发送 Telegram 消息或创建生产媒体任务。
