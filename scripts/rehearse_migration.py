@@ -126,6 +126,8 @@ def _business_counts(facts: dict[str, object]) -> dict[str, object]:
 
 def rehearse(database_copy: Path, backup_dir: Path) -> dict[str, object]:
     database_input = database_copy.expanduser()
+    if database_input in _BLOCKED_DATABASES:
+        raise RehearsalError("refusing to run migration rehearsal against the production database path")
     if database_input.is_symlink():
         raise RehearsalError("database copy must not be a symbolic link")
     database_copy = database_input.resolve()
