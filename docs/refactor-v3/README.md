@@ -66,3 +66,7 @@ containers, archive the old front-end repository; the owner decides on the Bot.
   `LibraryCatalogSource` (package folders and plain folders), MP4 header probe
   (`media_probe.py`, two range reads per file, paused while playing), several
   folders in the storage page.
+- 2026-10-24: phase 1 covers and 480p copies of plain-folder videos, status and
+  folder-browser API. Phase 2 started: `web/` (React 19, Vite, Tailwind v4, Motion)
+  with the short-video feed, login and a small settings page, served at `/next/`.
+  Still missing before the cut-over: cover blur, privacy lock and idle exit.

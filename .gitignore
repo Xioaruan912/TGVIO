@@ -43,3 +43,6 @@ docs/superpowers/*
 !docs/superpowers/specs/
 !docs/superpowers/plans/
 docs/product/
+web/node_modules/
+web/dist/
+web/tsconfig.tsbuildinfo
