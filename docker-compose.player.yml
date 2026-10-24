@@ -11,10 +11,6 @@ services:
       TGVIO_PLAYER_DATA_DIR: /var/lib/tgvio-player
       TGVIO_PLAYER_ACCESS_SECRET: ${TGVIO_PLAYER_ACCESS_SECRET:?set a Player-only access secret}
       TGVIO_PLAYER_RECOVERY_KEY: ${TGVIO_PLAYER_RECOVERY_KEY:?set a Player-only 256-bit recovery key}
-      TGVIO_PLAYER_WEBDAV_URL: ${TGVIO_PLAYER_WEBDAV_URL:?set the Player WebDAV URL}
-      TGVIO_PLAYER_WEBDAV_USER: ${TGVIO_PLAYER_WEBDAV_USER:?set the Player WebDAV user}
-      TGVIO_PLAYER_WEBDAV_PASSWORD: ${TGVIO_PLAYER_WEBDAV_PASSWORD:?set the Player WebDAV password}
-      TGVIO_PLAYER_REMOTE_ROOT: ${TGVIO_PLAYER_REMOTE_ROOT:?set the Archive root}
       TGVIO_PLAYER_DELETE_ENABLED: ${TGVIO_PLAYER_DELETE_ENABLED:-false}
       TGVIO_PLAYER_CATALOG_POLL_SECONDS: ${TGVIO_PLAYER_CATALOG_POLL_SECONDS:-60}
       TGVIO_PLAYER_MAX_STREAMS: ${TGVIO_PLAYER_MAX_STREAMS:-8}
@@ -32,7 +28,8 @@ services:
       TGVIO_PLAYER_OPENLIST_API_URL: ${TGVIO_PLAYER_OPENLIST_API_URL:-}
       TGVIO_PLAYER_DIRECT_USER_AGENT: ${TGVIO_PLAYER_DIRECT_USER_AGENT:-}
       # Optional: the same WebDAV without the public internet when OpenList runs
-      # on this host (e.g. http://host.docker.internal:5244/dav). Empty uses WEBDAV_URL.
+      # on this host (e.g. http://host.docker.internal:5244/dav). Empty uses the
+      # address set in the Player storage settings page.
       TGVIO_PLAYER_WEBDAV_INTERNAL_URL: ${TGVIO_PLAYER_WEBDAV_INTERNAL_URL:-}
     extra_hosts:
       - "host.docker.internal:host-gateway"

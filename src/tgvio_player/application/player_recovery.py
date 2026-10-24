@@ -367,7 +367,10 @@ class PlayerRecoveryService:
                     raise RecoveryError("remote favorite copy is missing or has the wrong size")
                 verified.append((media_id, safe_relpath, stat.size_bytes, mime_type, created_at, state))
 
-            await self._repository.save_storage_settings(replace(settings, revision=revision))
+            # Snapshots older than archive_root keep the locally set folder.
+            await self._repository.save_storage_settings(replace(
+                settings, revision=revision, archive_root=settings.archive_root or local.archive_root,
+            ))
             for media_id, relpath, size, mime, created_at, _state in verified:
                 await self._repository.restore_favorite_copy(media_id, relpath, size, mime, created_at)
             for media_id, created_at in pending:
@@ -592,6 +595,7 @@ class PlayerRecoveryService:
             "endpoint_url": settings.endpoint_url,
             "player_root": settings.player_root,
             "favorites_dir": settings.favorites_dir,
+            "archive_root": settings.archive_root,
             "username_ciphertext": base64.b64encode(settings.username_ciphertext).decode()
             if settings.username_ciphertext is not None else None,
             "password_ciphertext": base64.b64encode(settings.password_ciphertext).decode()
@@ -651,11 +655,16 @@ class PlayerRecoveryService:
             endpoint = validate_webdav_endpoint(config["endpoint_url"])
             root = safe_storage_relpath(config["player_root"])
             favorites = safe_storage_relpath(config["favorites_dir"])
+            archive_root = config.get("archive_root") or ""
+            if archive_root:
+                safe_storage_relpath(archive_root)
             username = _decode_ciphertext(config.get("username_ciphertext"))
             password = _decode_ciphertext(config.get("password_ciphertext"))
         except (KeyError, TypeError, ValueError) as exc:
             raise RecoveryError("remote WebDAV settings are invalid") from exc
-        return PlayerStorageSettings(endpoint, root, favorites, username, password, int(config["revision"]))
+        return PlayerStorageSettings(
+            endpoint, root, favorites, username, password, int(config["revision"]), archive_root,
+        )
 
     def _validate_snapshot(
         self, value: dict[str, Any], label: str, *, versions: tuple[int, ...] = (1,)

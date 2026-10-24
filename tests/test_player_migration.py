@@ -49,7 +49,7 @@ class PlayerMigrationTests(unittest.TestCase):
                     "SELECT version,name FROM player_schema_migrations ORDER BY version"
                 )],
                 [(9, "player_public_baseline"), (10, "media_covers"), (11, "player_collections"),
-                 (12, "media_covers_phash"), (13, "player_read_mode"), (14, "player_media_deletions"), (15, "collection_backup"), (16, "player_watched"), (17, "duplicate_dismissals"), (18, "player_tags")],
+                 (12, "media_covers_phash"), (13, "player_read_mode"), (14, "player_media_deletions"), (15, "collection_backup"), (16, "player_watched"), (17, "duplicate_dismissals"), (18, "player_tags"), (19, "player_archive_root")],
             )
             tables = {
                 str(row[0]) for row in connection.execute(
@@ -133,6 +133,11 @@ class PlayerMigrationTests(unittest.TestCase):
     def test_complete_legacy_ledger_receives_every_future_migration_once(self) -> None:
         """A complete legacy ledger needs no baseline work but still gets new migrations."""
         with closing(ledger_connection()) as connection:
+            # Legacy migration 0005 created the storage settings table that 0019 extends.
+            connection.execute(
+                "CREATE TABLE player_storage_settings (singleton INTEGER PRIMARY KEY, "
+                "endpoint_url TEXT NOT NULL, player_root TEXT NOT NULL, favorites_dir TEXT NOT NULL)"
+            )
             after_first = connection.total_changes
             run_migrations(connection, MIGRATIONS)
             self.assertGreater(connection.total_changes, after_first)
@@ -142,7 +147,7 @@ class PlayerMigrationTests(unittest.TestCase):
             self.assertEqual(applied[:8], list(LEGACY_ROWS))
             self.assertEqual(
                 [row[:2] for row in applied[8:]],
-                [(10, "media_covers"), (11, "player_collections"), (12, "media_covers_phash"), (13, "player_read_mode"), (14, "player_media_deletions"), (15, "collection_backup"), (16, "player_watched"), (17, "duplicate_dismissals"), (18, "player_tags")],
+                [(10, "media_covers"), (11, "player_collections"), (12, "media_covers_phash"), (13, "player_read_mode"), (14, "player_media_deletions"), (15, "collection_backup"), (16, "player_watched"), (17, "duplicate_dismissals"), (18, "player_tags"), (19, "player_archive_root")],
             )
             settled = connection.total_changes
             run_migrations(connection, MIGRATIONS)

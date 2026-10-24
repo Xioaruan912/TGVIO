@@ -172,7 +172,7 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(response.status, 200)
         return response.cookies["tgvio_player_session"].value
 
-    async def _enable_storage_services(self) -> dict[str, FakeStorageClient]:
+    async def _enable_storage_services(self, **server_options: object) -> dict[str, FakeStorageClient]:
         await self.client.close()
         self.cipher = PlayerStateCipher(base64.urlsafe_b64encode(b"r" * 32).decode().rstrip("="))
         clients: dict[str, FakeStorageClient] = {}
@@ -199,10 +199,61 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             favorite_backup=backup,
             recovery_service=recovery,
             storage_client_factory=factory,
+            **server_options,
         )
         self.client = TestClient(TestServer(self.server.application()))
         await self.client.start_server()
         return clients
+
+    async def test_archive_folder_is_checked_before_save_and_applied_live(self) -> None:
+        checked: list[str] = []
+        applied: list[PlayerStorageSettings] = []
+
+        async def archive_check(settings: PlayerStorageSettings) -> None:
+            checked.append(settings.archive_root)
+            if settings.archive_root == "Missing":
+                raise RuntimeError("404")
+
+        async def on_storage_changed(settings: PlayerStorageSettings) -> None:
+            applied.append(settings)
+
+        await self._enable_storage_services(
+            archive_check=archive_check, on_storage_changed=on_storage_changed,
+        )
+        cookie = await self._login()
+        body = await (await self.client.get(
+            "/api/v1/settings/storage", cookies={"tgvio_player_session": cookie}
+        )).json()
+        self.assertEqual((body["archive_root"], body["archive_configured"]), ("", False))
+
+        missing = await self.client.put(
+            "/api/v1/settings/storage", json={"archive_root": "Missing"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(missing.status, 400)
+        self.assertEqual((await self.repo.get_storage_settings()).archive_root, "")
+        self.assertEqual(applied, [], "a folder that cannot be read is never applied")
+
+        unsafe = await self.client.put(
+            "/api/v1/settings/storage", json={"archive_root": "a/../b"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(unsafe.status, 400)
+
+        saved = await self.client.put(
+            "/api/v1/settings/storage", json={"archive_root": "/115/TGVIO/"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(saved.status, 200)
+        self.assertEqual(
+            ((await saved.json())["archive_root"], (await saved.json())["archive_configured"]),
+            ("115/TGVIO", True),
+        )
+        self.assertEqual(checked, ["Missing", "115/TGVIO"])
+        self.assertEqual([item.archive_root for item in applied], ["115/TGVIO"])
+        stored = await self.repo.get_storage_settings()
+        self.assertEqual(stored.archive_root, "115/TGVIO")
+        self.assertGreater(stored.revision, 0)
 
     async def test_auth_feed_and_favorite_never_expose_location(self) -> None:
         self.assertEqual((await self.client.get("/api/v1/feed")).status, 401)

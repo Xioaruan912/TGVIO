@@ -21,10 +21,6 @@ def player_env(**overrides: str) -> dict[str, str]:
         "TGVIO_PLAYER_DATA_DIR": "/var/lib/tgvio-player",
         "TGVIO_PLAYER_ACCESS_SECRET": "s" * 32,
         "TGVIO_PLAYER_RECOVERY_KEY": base64.urlsafe_b64encode(b"r" * 32).decode().rstrip("="),
-        "TGVIO_PLAYER_WEBDAV_URL": "https://webdav.example.invalid/archive",
-        "TGVIO_PLAYER_WEBDAV_USER": "reader",
-        "TGVIO_PLAYER_WEBDAV_PASSWORD": "password",
-        "TGVIO_PLAYER_REMOTE_ROOT": "TGVIO",
     }
     values.update(overrides)
     return values

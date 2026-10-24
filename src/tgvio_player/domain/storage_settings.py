@@ -17,6 +17,8 @@ class PlayerStorageSettings:
     username_ciphertext: bytes | None = None
     password_ciphertext: bytes | None = None
     revision: int = 0
+    # Archive folder the catalog is read from; empty until set in the web page.
+    archive_root: str = ""
 
 
 def validate_webdav_endpoint(value: str) -> str:
