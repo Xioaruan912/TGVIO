@@ -5,6 +5,7 @@ from dataclasses import dataclass, field
 import ipaddress
 import logging
 import os
+import shutil
 from pathlib import Path
 import signal
 from urllib.parse import urlsplit
@@ -39,6 +40,7 @@ from tgvio_player.infrastructure.webdav_aiohttp import (
     WebDavClientSettings,
 )
 from tgvio_player.infrastructure.folder_catalog import LibraryCatalogSource
+from tgvio_player.infrastructure.rendition_maker import RenditionMaker
 from tgvio_player.infrastructure.webdav_read import (
     OpenListBatchDeleteAdapter,
     ReadOnlyWebDavAdapter,
@@ -426,6 +428,14 @@ async def run(settings: PlayerSettings) -> None:
         # Plain files arrive without a duration; read it from the MP4 header, paused while playing.
         probe = MediaProbeBackfill(repository, reader, should_pause=lambda: server.active_playback_streams > 0)
         tasks.append(asyncio.create_task(probe.run(stop)))
+        if shutil.which("ffmpeg") and shutil.which("ffprobe"):
+            maker = RenditionMaker(
+                repository, reader, work_dir=settings.data_dir / "renditions-work",
+                writer=lambda: favorite_backup.writer, libraries=repository.get_libraries,
+                is_playing=lambda: server.active_playback_streams > 0,
+            )
+            tasks.append(asyncio.create_task(maker.run(stop)))
+            _LOG.info("TGVIO Player 480p copies enabled")
         if server.media_deletions is not None:
             # Queued permanent deletes, including any left unfinished by a restart.
             tasks.append(asyncio.create_task(server.media_deletions.run(stop)))

@@ -19,6 +19,9 @@ RUN npm run build
 
 FROM ${PYTHON_IMAGE} AS player-runtime
 WORKDIR /app
+# ffmpeg makes the 480p copies of plain-folder videos (rendition_maker.py).
+RUN apt-get update && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 
 COPY requirements.player.lock ./requirements.player.lock
 RUN python -m pip install \
