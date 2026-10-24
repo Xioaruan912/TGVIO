@@ -74,8 +74,8 @@ class CoverSidecarTests(unittest.IsolatedAsyncioTestCase):
         class Client:
             calls = []
             async def list_collection(self, path):
-                if path == "TGVIO": return (WebDavCollectionEntry("date", True),)
-                if path == "TGVIO/date": return (WebDavCollectionEntry("package", True),)
+                if path == "TGVIO": return (WebDavCollectionEntry("2026-09-22", True),)
+                if path == "TGVIO/2026-09-22": return (WebDavCollectionEntry("package", True),)
                 return tuple(WebDavCollectionEntry(n, False) for n in ("manifest.json", "_COMPLETE.json", "covers.json"))
             async def get_json(self, path, *, max_bytes):
                 self.calls.append((path, max_bytes))

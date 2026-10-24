@@ -61,6 +61,8 @@ class MemoryDav:
 
     async def stat(self, path: str):
         value = self.files.get(path)
+        if value is None and (path in self.directories or any(name.startswith(path + "/") for name in self.files)):
+            value = b""  # a folder, as PROPFIND reports it
         return None if value is None else type("Stat", (), {"size_bytes": len(value), "etag": None})()
 
     async def delete(self, path: str):
@@ -71,7 +73,14 @@ class MemoryDav:
         if self.fail_move:
             raise OSError("simulated pointer replacement failure")
         if source not in self.files:
-            raise FileNotFoundError(source)
+            moved = [name for name in self.files if name.startswith(source + "/")]
+            if not moved:
+                raise FileNotFoundError(source)
+            if await self.stat(target) is not None and not overwrite:
+                raise FileExistsError(target)
+            for name in moved:
+                self.files[target + name[len(source):]] = self.files.pop(name)
+            return
         if target in self.files and not overwrite:
             raise FileExistsError(target)
         self.files[target] = self.files.pop(source)
@@ -329,6 +338,21 @@ class PlayerRecoveryTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual((await new_repo.get_storage_settings()).archive_root, "115/TGVIO")
         finally:
             await new_repo.close()
+
+    async def test_backup_moved_with_the_video_folder_is_renamed_not_copied(self) -> None:
+        dav = self.factory.clients[self.settings.endpoint_url]
+        dav.files["115/V/99_TGPLAYER/Favorites/clip.mp4"] = dav.files.pop("player/Favorites/clip.mp4")
+        dav.files["115/V/99_TGPLAYER/Favorites/deleted.mp4"] = dav.files.pop("player/Favorites/deleted.mp4")
+        dav.files["115/V/99_TGPLAYER/旅行/clip.mp4"] = b"video!"
+
+        placed = await self.service.place_backup_under(replace(self.settings, archive_root="115/V"))
+
+        self.assertEqual((placed.player_root, placed.favorites_dir), ("115/V/收藏", "全部"))
+        self.assertEqual(dav.files["115/V/收藏/全部/clip.mp4"], b"video!")
+        self.assertIn("115/V/收藏/旅行/clip.mp4", dav.files, "collection folders move with it")
+        self.assertFalse([name for name in dav.files if "99_TGPLAYER" in name])
+        self.assertIn((self.media_id, "全部/clip.mp4", 6, "video/mp4"), await self.repo.list_favorite_locations())
+        self.assertIs(await self.service.place_backup_under(placed), placed, "a placed backup is left alone")
 
     async def test_collections_travel_with_the_backup_and_come_back(self) -> None:
         manual = await self.repo.create("旅行", "manual", None)

@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import re
+
 import copy
 from dataclasses import dataclass
 from typing import Any, Protocol
@@ -12,6 +14,9 @@ from tgvio_player.domain.catalog import (
 
 
 _METADATA_LIMIT = 512 * 1024
+
+
+_DATE_FOLDER = re.compile(r"\d{4}-\d{2}-\d{2}")
 
 
 @dataclass(frozen=True, slots=True)
@@ -72,7 +77,9 @@ class WebDavArchiveCatalogSource:
         except Exception:
             return ArchiveDiscovery(packages=(), complete_scan=False)
         if recent_dates is not None:
-            dated = sorted((e for e in date_entries if e.is_collection), key=lambda e: e.name)
+            dated = sorted(
+                (e for e in date_entries if e.is_collection and _DATE_FOLDER.fullmatch(e.name)), key=lambda e: e.name,
+            )
             date_entries = tuple(dated[-recent_dates:]) if recent_dates > 0 else ()
 
         packages: list[ArchivePackageCandidate] = []
@@ -83,6 +90,9 @@ class WebDavArchiveCatalogSource:
             date_path = self._child(root, date_entry.name)
             if date_path is None:
                 complete_scan = False
+                continue
+            # Packages live in YYYY-MM-DD folders; the backup (收藏) and other folders are not scanned.
+            if not _DATE_FOLDER.fullmatch(date_entry.name):
                 continue
             try:
                 package_entries = await self._client.list_collection(date_path)

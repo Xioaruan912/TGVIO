@@ -32,6 +32,11 @@ PASSWORD_CONTEXT = b"webdav-password"
 # strings are part of the key derivation, so bumping one would make every existing
 # backup undecryptable.
 MANIFEST_SCHEMA_VERSION = 2
+# The backup lives inside the video folder under plain names; 99_TGPLAYER is the
+# name earlier installs used there, and is renamed on first contact.
+BACKUP_DIR = "收藏"
+FAVORITES_DIR = "全部"
+LEGACY_BACKUP_DIR = "99_TGPLAYER"
 _SUPPORTED_MANIFEST_VERSIONS = (1, MANIFEST_SCHEMA_VERSION)
 _MAX_SNAPSHOT_BYTES = 16 * 1024 * 1024
 # Snapshot revisions kept on the storage: the one the pointer names and two before it.
@@ -388,6 +393,40 @@ class PlayerRecoveryService:
             raise RecoveryError("Player state restore failed; local state was not replaced") from exc
         finally:
             await self._close(client)
+
+    async def place_backup_under(self, settings: PlayerStorageSettings) -> PlayerStorageSettings:
+        """Point the backup at <video folder>/收藏 with favorites in 全部.
+
+        A backup already on the drive is renamed in place (server-side MOVE), never
+        copied: from the configured folder, or from the legacy 99_TGPLAYER folder
+        that moves along when the video folder is moved. Local favorite paths follow.
+        """
+        root = _join(safe_storage_relpath(settings.archive_root), BACKUP_DIR)
+        if (settings.player_root, settings.favorites_dir) == (root, FAVORITES_DIR):
+            return settings
+        client = self._client_for_settings(settings)
+        try:
+            if await client.stat(root) is None:
+                for source in (settings.player_root, _join(settings.archive_root, LEGACY_BACKUP_DIR)):
+                    if source != root and await client.stat(source) is not None:
+                        await client.move(source, root, overwrite=False)
+                        break
+            old_favorites = settings.favorites_dir
+            if (
+                old_favorites != FAVORITES_DIR
+                and await client.stat(_join(root, FAVORITES_DIR)) is None
+                and await client.stat(_join(root, old_favorites)) is not None
+            ):
+                await client.move(_join(root, old_favorites), _join(root, FAVORITES_DIR), overwrite=False)
+        finally:
+            await self._close(client)
+        prefix = old_favorites + "/"
+        for media_id, relpath, size_bytes, mime_type in await self._repository.list_favorite_locations():
+            if relpath.startswith(prefix):
+                await self._repository.save_favorite_location(
+                    media_id, FAVORITES_DIR + "/" + relpath[len(prefix):], size_bytes, mime_type,
+                )
+        return replace(settings, player_root=root, favorites_dir=FAVORITES_DIR)
 
     async def migrate_target(self, new_settings: PlayerStorageSettings) -> TargetMigrationResult:
         old_settings = await self._repository.get_storage_settings()
