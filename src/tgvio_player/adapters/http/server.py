@@ -25,6 +25,7 @@ from .library import PlayerLibraryHttpMixin
 from .media import PlayerMediaHttpMixin
 from .streaming import PlayerHttpStreamingMixin
 from .storage_settings import PlayerStorageSettingsHttpMixin
+from .status import PlayerStatusHttpMixin
 from .read_mode import PlayerReadModeHttpMixin
 from .watched import PlayerWatchedHttpMixin
 from .duplicates import PlayerDuplicateReviewHttpMixin
@@ -92,7 +93,7 @@ _SECURITY_HEADERS = {
     "X-Content-Type-Options": "nosniff",
     "X-Frame-Options": "DENY",
 }
-class PlayerHttpServer(PlayerTagHttpMixin, PlayerDuplicateReviewHttpMixin, PlayerWatchedHttpMixin, PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin, PlayerReadModeHttpMixin, PlayerLibraryHttpMixin, PlayerMediaHttpMixin):
+class PlayerHttpServer(PlayerStatusHttpMixin, PlayerTagHttpMixin, PlayerDuplicateReviewHttpMixin, PlayerWatchedHttpMixin, PlayerHttpStreamingMixin, PlayerStorageSettingsHttpMixin, PlayerReadModeHttpMixin, PlayerLibraryHttpMixin, PlayerMediaHttpMixin):
     """Small authenticated HTTP boundary around Player-only services.
 
     This adapter intentionally accepts only Player repository IDs. It has no
@@ -127,6 +128,8 @@ class PlayerHttpServer(PlayerTagHttpMixin, PlayerDuplicateReviewHttpMixin, Playe
         read_mode: object | None = None,
         archive_check: Callable[[PlayerStorageSettings], Awaitable[None]] | None = None,
         on_storage_changed: Callable[[PlayerStorageSettings], Awaitable[None]] | None = None,
+        list_folders: Callable[[str], Awaitable[list[str]]] | None = None,
+        sync_status: object | None = None,
     ) -> None:
         if min(
             max_streams, max_streams_per_client, max_header_size, stream_chunk_size, startup_range_bytes
@@ -160,6 +163,8 @@ class PlayerHttpServer(PlayerTagHttpMixin, PlayerDuplicateReviewHttpMixin, Playe
         # main owns the Archive read clients; these let a saved setting reach them.
         self._archive_check = archive_check
         self._on_storage_changed = on_storage_changed
+        self._list_folders = list_folders
+        self._sync_status = sync_status
         self._storage_rate: dict[str, list[float]] = {}
         self._max_streams = max_streams
         self._stream_slots = asyncio.BoundedSemaphore(max_streams)
@@ -241,6 +246,8 @@ class PlayerHttpServer(PlayerTagHttpMixin, PlayerDuplicateReviewHttpMixin, Playe
         app.router.add_get("/api/v1/favorites", self._favorites)
         app.router.add_get("/api/v1/settings/storage", self._storage_settings_get)
         app.router.add_put("/api/v1/settings/storage", self._storage_settings_put)
+        app.router.add_get("/api/v1/settings/folders", self._folders)
+        app.router.add_get("/api/v1/status", self._status)
         app.router.add_get("/api/v1/settings/read-mode", self._read_mode_get)
         app.router.add_put("/api/v1/settings/read-mode", self._read_mode_put)
         app.router.add_post("/api/v1/settings/storage/test", self._storage_settings_test)

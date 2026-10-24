@@ -296,6 +296,33 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(body["archive_root"], "115/短视频")
         self.assertEqual(checked[-2:], ["115/短视频", "115/长视频"])
 
+    async def test_status_and_folder_browser(self) -> None:
+        async def archive_check(settings: PlayerStorageSettings) -> None:
+            if settings.archive_root == "gone":
+                raise RuntimeError("404")
+
+        listed: list[str] = []
+
+        async def list_folders(path: str) -> list[str]:
+            listed.append(path)
+            return ["电影", "短视频"]
+
+        await self._enable_storage_services(archive_check=archive_check, list_folders=list_folders)
+        await self.repo.save_libraries(("短视频", "gone"))
+        self.assertEqual((await self.client.get("/api/v1/status")).status, 401)
+        cookie = await self._login()
+        status = await (await self.client.get("/api/v1/status", cookies={"tgvio_player_session": cookie})).json()
+        self.assertEqual(status["libraries"], [{"root": "短视频", "reachable": True}, {"root": "gone", "reachable": False}])
+        self.assertIn("pending", status["backup"])
+
+        folders = await self.client.get("/api/v1/settings/folders?path=/115/", cookies={"tgvio_player_session": cookie})
+        self.assertEqual(await folders.json(), {"path": "115", "folders": ["电影", "短视频"]})
+        root = await self.client.get("/api/v1/settings/folders", cookies={"tgvio_player_session": cookie})
+        self.assertEqual((await root.json())["path"], "")
+        self.assertEqual(listed, ["115", ""])
+        unsafe = await self.client.get("/api/v1/settings/folders?path=a/../b", cookies={"tgvio_player_session": cookie})
+        self.assertEqual(unsafe.status, 400)
+
     async def test_auth_feed_and_favorite_never_expose_location(self) -> None:
         self.assertEqual((await self.client.get("/api/v1/feed")).status, 401)
         self.assertEqual((await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})).status, 401)

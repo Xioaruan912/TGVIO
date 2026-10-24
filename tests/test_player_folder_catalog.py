@@ -64,5 +64,18 @@ class LibraryCatalogSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertFalse((await LibraryCatalogSource(unsafe, roots=("v",)).discover()).complete_scan)
 
 
+class WebDavRootListingTests(unittest.TestCase):
+    def test_the_root_is_the_endpoint_itself_and_children_are_named_from_it(self) -> None:
+        from tgvio_player.infrastructure.webdav_aiohttp import AioHttpReadOnlyWebDavClient, WebDavClientSettings
+
+        client = AioHttpReadOnlyWebDavClient(WebDavClientSettings("https://dav.example.test/dav", "u", "p"))
+        self.assertEqual(client._url(""), "https://dav.example.test/dav/")
+        self.assertEqual(client._root_entry_name("/dav/115/"), "115")
+        self.assertEqual(client._root_entry_name("/dav/%E7%9F%AD/"), "短")
+        self.assertIsNone(client._root_entry_name("/dav/"), "the root itself is not a child")
+        self.assertIsNone(client._root_entry_name("/dav/a/b/"))
+        self.assertIsNone(client._root_entry_name("/other/x/"))
+
+
 if __name__ == "__main__":
     unittest.main()
