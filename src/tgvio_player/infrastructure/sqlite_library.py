@@ -41,7 +41,7 @@ def folder_identity(package_id: str) -> str:
 # SQLite UDFs derive directory metadata without migrations or discovery changes.
 _ELIGIBLE = """
 WITH eligible AS (
-    SELECT DISTINCT m.media_id, m.duration_seconds, cp.package_id,
+    SELECT DISTINCT m.media_id, m.duration_seconds, cp.package_id, cp.remote_path,
            library_folder_id(cp.package_id) AS folder_id,
            library_date(cp.remote_path) AS day,
            library_date_basis(cp.remote_path) AS basis
@@ -65,8 +65,12 @@ class PlayerLibraryRepositoryMixin:
     @staticmethod
     def _library_folder(row) -> dict[str, object]:
         identity = str(row["folder_id"])
-        # Deliberately not a remote basename: legacy names can contain private data.
-        return {"id": identity, "label": "批次 " + identity[7:19],
+        # Archive batches never show a remote basename: legacy names can contain private
+        # data. A plain folder (no date in its path) is the owner's own name for it.
+        label = "批次 " + identity[7:19]
+        if row["basis"] == "unknown" and row["remote_path"]:
+            label = PurePosixPath(str(row["remote_path"])).name or label
+        return {"id": identity, "label": label,
                 "date": row["day"], "date_basis": row["basis"],
                 "video_count": int(row["video_count"])}
 
@@ -98,7 +102,7 @@ class PlayerLibraryRepositoryMixin:
             clause = "day IS ?"
             params = (None if date_filter == "unknown" else date_filter,)
         rows = self._library_connection().execute(_ELIGIBLE + f"""
-            SELECT folder_id, day, basis, COUNT(DISTINCT media_id) AS video_count
+            SELECT folder_id, day, basis, MIN(remote_path) AS remote_path, COUNT(DISTINCT media_id) AS video_count
             FROM eligible WHERE {clause} GROUP BY folder_id, day, basis
             ORDER BY day IS NULL, day DESC, folder_id
         """, params).fetchall()
@@ -116,7 +120,7 @@ class PlayerLibraryRepositoryMixin:
             raise ValueError("invalid cursor")
         conn = self._library_connection()
         folder = conn.execute(_ELIGIBLE + """
-            SELECT folder_id, day, basis, COUNT(DISTINCT media_id) AS video_count
+            SELECT folder_id, day, basis, MIN(remote_path) AS remote_path, COUNT(DISTINCT media_id) AS video_count
             FROM eligible WHERE folder_id=? GROUP BY folder_id, day, basis
         """, (folder_id,)).fetchone()
         if folder is None:

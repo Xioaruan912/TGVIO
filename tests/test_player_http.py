@@ -1270,6 +1270,29 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         finally:
             await client.close()
 
+    async def test_the_rebuilt_front_end_is_home_and_the_old_one_moves_to_old(self) -> None:
+        old_dir = Path(self.tmp.name) / "old"
+        new_dir = Path(self.tmp.name) / "new"
+        (old_dir / "assets").mkdir(parents=True)
+        (new_dir / "assets").mkdir(parents=True)
+        (old_dir / "index.html").write_text("old", encoding="utf-8")
+        (new_dir / "index.html").write_text("new", encoding="utf-8")
+        (new_dir / "assets" / "app.js").write_text("1", encoding="utf-8")
+        server = PlayerHttpServer(
+            self.repo, SessionService(self.repo, access_secret="s" * 32), ShuffleDeckService(self.repo),
+            ReadOnlyWebDavAdapter(self.read_client), static_dir=old_dir, next_static_dir=new_dir,
+        )
+        client = TestClient(TestServer(server.application()))
+        await client.start_server()
+        try:
+            self.assertEqual(await (await client.get("/")).text(), "new")
+            self.assertEqual(await (await client.get("/old/")).text(), "old")
+            self.assertEqual(await (await client.get("/next/")).text(), "new")
+            asset = await client.get("/next/assets/app.js")
+            self.assertEqual(asset.headers["Cache-Control"], "public, max-age=31536000, immutable")
+        finally:
+            await client.close()
+
     async def test_health_reports_saturated_playback_capacity(self) -> None:
         self.assertTrue(await self.server._acquire_stream("client-a"))
         self.assertTrue(await self.server._acquire_stream("client-b"))

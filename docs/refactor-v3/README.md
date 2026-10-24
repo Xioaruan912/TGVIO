@@ -70,3 +70,11 @@ containers, archive the old front-end repository; the owner decides on the Bot.
   folder-browser API. Phase 2 started: `web/` (React 19, Vite, Tailwind v4, Motion)
   with the short-video feed, login and a small settings page, served at `/next/`.
   Still missing before the cut-over: cover blur, privacy lock and idle exit.
+- 2026-10-24: phase 3 and the cut-over. The new front end has the feed (with
+  delete and undo), library (short, long, folders by name), long-video player
+  (resume, speed, low-res, ±10 s), favorites with collections, settings (four
+  storage fields, folder picker, status, read mode, privacy) and the privacy
+  cover. It is served at `/`; the previous one stays at `/old/` for tags,
+  organize mode and duplicate review. Not done: env reduction (the access secret
+  stays in the env on purpose), stopping the covers and renditions containers
+  (archive packages still use them), the Bot decision.
