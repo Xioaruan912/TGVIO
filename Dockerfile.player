@@ -17,6 +17,15 @@ COPY --from=player-web public ./public
 COPY --from=player-web src ./src
 RUN npm run build
 
+# The rebuilt front end in web/ (refactor v3), served under /next/ until the cut-over.
+FROM ${NODE_IMAGE} AS web-next-build
+WORKDIR /web
+COPY web/package.json web/package-lock.json ./
+RUN npm ci
+COPY web/index.html web/tsconfig.json web/vite.config.ts ./
+COPY web/src ./src
+RUN npm run build
+
 FROM ${PYTHON_IMAGE} AS player-runtime
 WORKDIR /app
 # ffmpeg makes the 480p copies of plain-folder videos (rendition_maker.py).
@@ -50,6 +59,7 @@ RUN groupadd --gid 65532 tgvio-player \
     && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin tgvio-player
 COPY src/tgvio_player ./src/tgvio_player
 COPY --from=player-web-build --chown=65532:65532 /web/dist ./player-web
+COPY --from=web-next-build --chown=65532:65532 /web/dist ./web-next
 USER 65532:65532
 
 CMD ["python", "-m", "tgvio_player.main"]

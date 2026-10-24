@@ -31,3 +31,5 @@ docs
 **/AGENTS.md
 .github
 .superpowers
+web/node_modules
+web/dist

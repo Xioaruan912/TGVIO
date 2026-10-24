@@ -34,6 +34,9 @@ trap 'bash "$repo_root/scripts/player_web_source.sh" --remove "$web_source"' EXI
 web_commit=$(bash scripts/player_web_source.sh --dest "$web_source")
 npm --prefix "$web_source" ci --no-audit --no-fund
 npm --prefix "$web_source" run check
+# The rebuilt front end (refactor v3) in this repository.
+npm --prefix "$repo_root/web" ci --no-audit --no-fund
+npm --prefix "$repo_root/web" run check
 if [[ "$browser" == true ]]; then
     npm --prefix "$web_source" run test:browser
 fi

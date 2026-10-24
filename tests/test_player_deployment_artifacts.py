@@ -40,9 +40,13 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
                 "COPY --from=player-web index.html tsconfig.json vite.config.ts ./",
                 "COPY --from=player-web public ./public",
                 "COPY --from=player-web src ./src",
+                "COPY web/package.json web/package-lock.json ./",
+                "COPY web/index.html web/tsconfig.json web/vite.config.ts ./",
+                "COPY web/src ./src",
                 "COPY requirements.player.lock ./requirements.player.lock",
                 "COPY src/tgvio_player ./src/tgvio_player",
                 "COPY --from=player-web-build --chown=65532:65532 /web/dist ./player-web",
+                "COPY --from=web-next-build --chown=65532:65532 /web/dist ./web-next",
             ],
         )
 
