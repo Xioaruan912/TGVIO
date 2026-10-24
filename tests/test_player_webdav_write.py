@@ -196,6 +196,20 @@ class WebDavWriteTransportTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(raised.exception.category, category)
             self.assertEqual(raised.exception.status_code, status)
 
+    async def test_stat_reads_size_and_etag_with_propfind_not_head(self) -> None:
+        session = FakeSession(207)
+        session.response_chunks = (
+            b'<?xml version="1.0"?><d:multistatus xmlns:d="DAV:"><d:response><d:href>/dav/root/file</d:href>'
+            b'<d:propstat><d:prop><d:getcontentlength>36</d:getcontentlength><d:getetag>"e1"</d:getetag>'
+            b'</d:prop></d:propstat></d:response></d:multistatus>',
+        )
+        client = AioHttpWebDavWriteClient("https://dav.example.test", "u", "p", session=session)
+        stat = await client.stat("root/file")
+        self.assertEqual((stat.size_bytes, stat.etag), (36, '"e1"'))
+        self.assertEqual(session.calls[0][0], "PROPFIND", "HEAD is redirected to the CDN by OpenList")
+        self.assertIsNone(await AioHttpWebDavWriteClient(
+            "https://dav.example.test", "u", "p", session=FakeSession(404)).stat("root/file"))
+
     async def test_redirects_are_rejected_and_unsupported_move_is_classified(self) -> None:
         redirected = AioHttpWebDavWriteClient("https://dav.example.test", "u", "p", session=FakeSession(302))
         with self.assertRaises(WebDavWriteError) as raised:

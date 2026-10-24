@@ -256,7 +256,15 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(slashed.status, 200, "a leading or trailing slash is not an error")
         self.assertEqual((await slashed.json())["favorites_dir"], "Favorites")
-        self.assertEqual([item.archive_root for item in applied], ["115/TGVIO"])
+        relogin = await self.client.put(
+            "/api/v1/settings/storage",
+            json={"endpoint_url": "https://other.example.test/dav", "username": "bob", "password": "pw"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(relogin.status, 200, "reading the video folder proves the account")
+        self.assertEqual(checked[-1], "115/TGVIO")
+        self.assertEqual((await self.repo.get_storage_settings()).endpoint_url, "https://other.example.test/dav")
+        self.assertTrue(applied and all(item.archive_root == "115/TGVIO" for item in applied))
         stored = await self.repo.get_storage_settings()
         self.assertEqual(stored.archive_root, "115/TGVIO")
         self.assertGreater(stored.revision, 0)
