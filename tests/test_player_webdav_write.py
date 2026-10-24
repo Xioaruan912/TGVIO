@@ -237,6 +237,21 @@ class WebDavWriteTransportTests(unittest.IsolatedAsyncioTestCase):
             await client.get_bytes("root/config", max_bytes=4)
         self.assertEqual(raised.exception.category, "response_too_large")
 
+    async def test_get_follows_one_https_redirect_without_credentials(self) -> None:
+        dav = FakeSession(302, {"Location": "https://cdn.example.test/file?sig=1"})
+        cdn = FakeSession(200, {"Content-Length": "4"})
+        cdn.response_chunks = (b"abcd",)
+        client = AioHttpWebDavWriteClient("https://dav.example.test", "u", "p", session=dav, api_session=cdn)
+        self.assertEqual(await client.get_bytes("root/config", max_bytes=4), b"abcd")
+        self.assertEqual(cdn.calls[0][:2], ("GET", "https://cdn.example.test/file?sig=1"))
+        self.assertNotIn("auth", cdn.calls[0][2], "the OpenList account never goes to the CDN")
+
+        plain = FakeSession(302, {"Location": "http://cdn.example.test/file"})
+        insecure = AioHttpWebDavWriteClient("https://dav.example.test", "u", "p", session=plain, api_session=cdn)
+        with self.assertRaises(WebDavWriteError) as raised:
+            await insecure.get_bytes("root/config", max_bytes=4)
+        self.assertEqual(raised.exception.category, "unsafe_redirect")
+
     async def test_get_missing_is_idempotent_but_open_stream_requires_existing_file(self) -> None:
         client = AioHttpWebDavWriteClient(
             "https://dav.example.test", "u", "p", session=FakeSession(404),

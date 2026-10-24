@@ -82,8 +82,10 @@ class PlayerStorageSettingsHttpMixin:
             username_ciphertext = old.username_ciphertext
             password_ciphertext = old.password_ciphertext
 
+        # Without explicit backup folders the backup sits in the video folder (place_backup_under).
+        auto_backup = bool(archive_root) and "player_root" not in payload and "favorites_dir" not in payload
         # Only a new backup folder moves the backed-up favorites; a new address just saves.
-        target_changed = (player_root, favorites_dir) != (old.player_root, old.favorites_dir)
+        target_changed = not auto_backup and (player_root, favorites_dir) != (old.player_root, old.favorites_dir)
         archive_changed = archive_root != old.archive_root
         if (not target_changed and not credentials_changed and not archive_changed
                 and endpoint == old.endpoint_url):
@@ -116,6 +118,8 @@ class PlayerStorageSettingsHttpMixin:
                         probe["category"], probe["status_code"],
                     )
                     raise RecoveryError("WebDAV credentials could not write the configured target")
+                if auto_backup:
+                    new_settings = await self._recovery_service.place_backup_under(new_settings)
                 await self._repository.save_storage_settings(new_settings)
                 try:
                     await self._recovery_service.export_state()

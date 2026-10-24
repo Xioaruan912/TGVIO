@@ -560,6 +560,16 @@ class WebDavCatalogSourceTests(unittest.IsolatedAsyncioTestCase):
         catalog.set_remote_root("TGVIO")
         self.assertTrue((await catalog.discover()).complete_scan)
 
+    async def test_only_date_folders_are_scanned(self) -> None:
+        source = FakeWebDavClient()
+        source.entries["TGVIO"] = (
+            WebDavCollectionEntry("收藏", True), WebDavCollectionEntry(".staging", True),
+            WebDavCollectionEntry("2026-09-22", True),
+        )
+        source.entries["TGVIO/2026-09-22"] = ()
+        discovery = await WebDavArchiveCatalogSource(source, remote_root="TGVIO").discover()
+        self.assertTrue(discovery.complete_scan, "the backup folder is never listed, so it cannot fail the scan")
+
     async def test_recent_scan_lists_only_the_newest_date_folders(self) -> None:
         source = FakeWebDavClient()
         source.entries["TGVIO"] = tuple(

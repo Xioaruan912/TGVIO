@@ -212,10 +212,29 @@ class AioHttpWebDavWriteClient:
         finally:
             response.release()
 
+    async def _get(self, path: str):
+        """GET that follows OpenList's one redirect to the cloud-drive CDN.
+
+        The CDN hop goes through the credential-free session (public addresses only),
+        so the OpenList account never leaves for another host, and only to https.
+        """
+        response = await self._request("GET", safe_storage_relpath(path), operation="get")
+        if response.status not in {301, 302, 303, 307, 308}:
+            return response
+        location = response.headers.get("Location", "")
+        response.release()
+        parsed = urlsplit(location)
+        if parsed.scheme != "https" or not parsed.hostname or parsed.username or parsed.password:
+            raise WebDavWriteError("get", "unsafe_redirect", response.status)
+        try:
+            return await self._api_request("GET", location)
+        except WebDavWriteError as exc:
+            raise WebDavWriteError("get", exc.category, exc.status_code) from exc
+
     async def get_bytes(self, path: str, *, max_bytes: int) -> bytes | None:
         if max_bytes < 1:
             raise ValueError("max_bytes must be positive")
-        response = await self._request("GET", safe_storage_relpath(path), operation="get")
+        response = await self._get(path)
         try:
             if response.status == 404:
                 return None
@@ -230,7 +249,7 @@ class AioHttpWebDavWriteClient:
             response.release()
 
     async def open_stream(self, path: str) -> tuple[int, str | None, AsyncIterator[bytes]]:
-        response = await self._request("GET", safe_storage_relpath(path), operation="get")
+        response = await self._get(path)
         if response.status == 404:
             response.release()
             raise WebDavWriteError("get", "not_found", 404)
