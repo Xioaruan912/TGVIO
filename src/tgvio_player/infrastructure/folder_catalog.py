@@ -6,6 +6,7 @@ import re
 
 from tgvio_player.domain.catalog import (
     ArchiveDiscovery,
+    CatalogCover,
     CatalogLocation,
     CatalogMedia,
     CatalogPackage,
@@ -25,12 +26,22 @@ _VIDEO_TYPES = {
 # The backup folder, and folders tools keep for themselves (.staging, _thumbnails).
 _SKIPPED_FOLDERS = frozenset({"收藏"})
 _MAX_DEPTH = 4
+# Low-res copies the player made itself: <library>/.tgvio/<media_id>/480.mp4.
+RENDITIONS_DIR = ".tgvio"
+_RENDITION_FILE = re.compile(r"(480|720)\.mp4")
+_MEDIA_ID = re.compile(r"[0-9a-f]{64}")
+COVER_FILE = "cover.jpg"
+COVER_ALGORITHM = "player-frame-v1"
 _MAX_FOLDERS = 5000
 
 
 def plain_media_id(size_bytes: int, name: str) -> str:
     """A plain file's id: size and name, not the path, so a moved file keeps its favorites."""
     return hashlib.sha256(f"tgvio-file-v1\n{size_bytes}\n{name}".encode()).hexdigest()
+
+
+def rendition_media_id(parent_media_id: str, height: int) -> str:
+    return hashlib.sha256(f"tgvio-rendition-v1\n{parent_media_id}\n{height}".encode()).hexdigest()
 
 
 def _skipped(name: str) -> bool:
@@ -85,6 +96,10 @@ class LibraryCatalogSource:
                 found = await self._walk(root, entries)
             packages.extend(found.packages)
             complete = complete and found.complete_scan
+            if recent_dates is None and any(e.is_collection and e.name == RENDITIONS_DIR for e in entries):
+                copies, copies_complete = await self._renditions(root)
+                packages.extend(copies)
+                complete = complete and copies_complete
         return ArchiveDiscovery(packages=tuple(packages), complete_scan=complete)
 
     async def _walk(self, root: str, root_entries: tuple[WebDavCollectionEntry, ...]) -> ArchiveDiscovery:
@@ -122,6 +137,48 @@ class LibraryCatalogSource:
                 if depth + 1 <= _MAX_DEPTH:
                     queue.append((f"{path}/{child}", depth + 1, None))
         return ArchiveDiscovery(packages=tuple(packages), complete_scan=complete)
+
+    async def _renditions(self, root: str) -> tuple[list[CatalogPackage], bool]:
+        try:
+            parents = await self._client.list_collection(f"{root}/{RENDITIONS_DIR}")
+        except Exception:
+            return [], False
+        packages: list[CatalogPackage] = []
+        complete = True
+        for parent in parents:
+            if not parent.is_collection or not _MEDIA_ID.fullmatch(parent.name):
+                continue
+            path = f"{root}/{RENDITIONS_DIR}/{parent.name}"
+            try:
+                files = await self._client.list_collection(path)
+            except Exception:
+                complete = False
+                continue
+            copies = [(entry, int(entry.name[:3])) for entry in files
+                      if not entry.is_collection and entry.size_bytes and _RENDITION_FILE.fullmatch(entry.name)]
+            cover = next((entry for entry in files
+                          if not entry.is_collection and entry.name == COVER_FILE and entry.size_bytes), None)
+            if not copies and cover is None:
+                continue
+            package_id = hashlib.sha256(f"tgvio-folder-v1\n{path}".encode()).hexdigest()
+            media = tuple(
+                CatalogMedia(rendition_media_id(parent.name, height), "video", entry.size_bytes, "video/mp4",
+                             height=height, variant_of=parent.name, label=f"{height}p")
+                for entry, height in copies
+            )
+            listing = sorted((entry.name, entry.size_bytes, entry.etag) for entry, _ in copies)
+            if cover is not None:
+                listing.append((cover.name, cover.size_bytes, cover.etag))
+            packages.append(CatalogPackage(
+                package_id=package_id, remote_path=path,
+                manifest_sha256=hashlib.sha256(json.dumps(listing).encode()).hexdigest(),
+                manifest_etag=None, complete_etag=None, media=media,
+                locations=tuple(CatalogLocation(rendition_media_id(parent.name, height), package_id, entry.name, entry.etag)
+                                for entry, height in copies),
+                covers=() if cover is None else (CatalogCover(
+                    parent.name, package_id, COVER_FILE, cover.size_bytes, "image/jpeg", COVER_ALGORITHM),),
+            ))
+        return packages, complete
 
     @staticmethod
     def _folder_package(path: str, entries: tuple[WebDavCollectionEntry, ...]) -> CatalogPackage | None:

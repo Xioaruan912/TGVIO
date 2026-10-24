@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from dataclasses import replace
+
 import asyncio
 import base64
 from contextlib import asynccontextmanager
@@ -14,6 +16,7 @@ from typing import AsyncIterator
 
 from tgvio_player.domain.catalog import CatalogPackage
 from tgvio_player.infrastructure.migration import run_migrations
+from tgvio_player.infrastructure.sqlite_media_work import PlayerMediaWorkRepositoryMixin
 from tgvio_player.infrastructure.sqlite_collection_backups import PlayerCollectionBackupRepositoryMixin
 from tgvio_player.infrastructure.sqlite_collections import PlayerCollectionRepositoryMixin
 from tgvio_player.infrastructure.sqlite_duplicates import PlayerDuplicateReviewRepositoryMixin
@@ -35,6 +38,7 @@ _DATE_GROUP_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 
 class PlayerCatalogRepositorySQLite(
+    PlayerMediaWorkRepositoryMixin,
     PlayerTagRepositoryMixin,
     PlayerWatchedRepositoryMixin,
     PlayerDuplicateCopyRepositoryMixin,
@@ -94,6 +98,20 @@ class PlayerCatalogRepositorySQLite(
 
     async def apply_package(self, package: CatalogPackage) -> None:
         async with self._write_transaction() as conn:
+            # A copy whose original is gone (deleted or not scanned yet) is left out; linked to
+            # nothing it would show up as a video of its own.
+            primaries = {item.media_id for item in package.media if not item.is_rendition}
+            orphans = {
+                item.media_id for item in package.media
+                if item.is_rendition and item.variant_of not in primaries
+                and conn.execute("SELECT 1 FROM media WHERE media_id=?", (item.variant_of,)).fetchone() is None
+            }
+            if orphans:
+                package = replace(
+                    package,
+                    media=tuple(item for item in package.media if item.media_id not in orphans),
+                    locations=tuple(item for item in package.locations if item.media_id not in orphans),
+                )
             conn.execute(
                 """
                 INSERT INTO catalog_packages(
@@ -756,25 +774,6 @@ class PlayerCatalogRepositorySQLite(
             (media_id,),
         ).fetchone()
         return None if row is None else dict(row)
-
-    async def list_unprobed_video_ids(self, *, limit: int) -> list[str]:
-        """Active videos still without a duration: plain files the probe has not read yet."""
-        rows = self._require().execute(
-            "SELECT media_id FROM media WHERE active=1 AND kind='video' AND duration_seconds IS NULL "
-            "ORDER BY first_seen_at DESC, media_id LIMIT ?",
-            (int(limit),),
-        ).fetchall()
-        return [str(row["media_id"]) for row in rows]
-
-    async def save_media_probe(
-        self, media_id: str, duration_seconds: float | None, width: int | None, height: int | None,
-    ) -> None:
-        async with self._write_transaction() as conn:
-            conn.execute(
-                "UPDATE media SET duration_seconds=COALESCE(?, duration_seconds), "
-                "width=COALESCE(?, width), height=COALESCE(?, height) WHERE media_id=?",
-                (duration_seconds, width, height, media_id),
-            )
 
     async def active_variants(self, media_id: str) -> list[dict[str, object]]:
         rows = self._require().execute(

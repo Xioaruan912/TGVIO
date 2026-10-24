@@ -28,6 +28,7 @@ class LibraryCatalogSourceTests(unittest.IsolatedAsyncioTestCase):
                 Entry("Series", True), Entry("_thumbnails", True), Entry(".tgvio", True), Entry("收藏", True),
             ),
             "长视频/Series": (Entry("ep1.mkv", False, None, 500), Entry("readme.txt", False, None, 3)),
+            "长视频/.tgvio": (),
         })
         found = await LibraryCatalogSource(dav, roots=("长视频",)).discover()
 
