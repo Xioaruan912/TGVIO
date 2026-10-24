@@ -269,6 +269,33 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored.archive_root, "115/TGVIO")
         self.assertGreater(stored.revision, 0)
 
+    async def test_several_video_folders_are_all_checked_and_the_first_holds_the_backup(self) -> None:
+        checked: list[str] = []
+
+        async def archive_check(settings: PlayerStorageSettings) -> None:
+            checked.append(settings.archive_root)
+            if settings.archive_root == "Missing":
+                raise RuntimeError("404")
+
+        await self._enable_storage_services(archive_check=archive_check)
+        cookie = await self._login()
+        bad = await self.client.put(
+            "/api/v1/settings/storage", json={"libraries": ["短视频", "Missing"]},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(bad.status, 400)
+        self.assertEqual(await self.repo.get_libraries(), (), "nothing is saved when one folder fails")
+
+        saved = await self.client.put(
+            "/api/v1/settings/storage", json={"libraries": ["/115/短视频/", "", "115/长视频", "115/短视频"]},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(saved.status, 200)
+        body = await saved.json()
+        self.assertEqual(body["libraries"], ["115/短视频", "115/长视频"])
+        self.assertEqual(body["archive_root"], "115/短视频")
+        self.assertEqual(checked[-2:], ["115/短视频", "115/长视频"])
+
     async def test_auth_feed_and_favorite_never_expose_location(self) -> None:
         self.assertEqual((await self.client.get("/api/v1/feed")).status, 401)
         self.assertEqual((await self.client.post("/api/v1/auth/login", json={"secret": "wrong"})).status, 401)

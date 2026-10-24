@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from dataclasses import replace
 import logging
 import time
 import uuid
@@ -42,6 +43,13 @@ class PlayerStorageSettingsHttpMixin:
         player_root = payload.get("player_root", old.player_root)
         favorites_dir = payload.get("favorites_dir", old.favorites_dir)
         archive_root = payload.get("archive_root", old.archive_root)
+        old_libraries = await self._repository.get_libraries()
+        libraries_input = payload.get("libraries")
+        if libraries_input is not None:
+            if (not isinstance(libraries_input, list) or len(libraries_input) > 20
+                    or not all(isinstance(item, str) and len(item) <= 2048 for item in libraries_input)):
+                raise web.HTTPBadRequest(text="invalid storage settings")
+            archive_root = next((item for item in libraries_input if item.strip().strip("/")), "")
         username_input = payload.get("username", "")
         password_input = payload.get("password", "")
         if not all(isinstance(item, str) for item in (
@@ -60,6 +68,12 @@ class PlayerStorageSettingsHttpMixin:
             archive_root = archive_root.strip().strip("/")
             if archive_root:
                 safe_storage_relpath(archive_root)
+            # The first library is the video folder (archive_root); an old client sending only
+            # archive_root keeps the other libraries.
+            raw = libraries_input if libraries_input is not None else [archive_root, *old_libraries[1:]]
+            libraries = tuple(dict.fromkeys(
+                safe_storage_relpath(item.strip().strip("/")) for item in raw if item.strip().strip("/")
+            ))
             if "\x00" in username_input + password_input:
                 raise ValueError
         except ValueError:
@@ -86,7 +100,7 @@ class PlayerStorageSettingsHttpMixin:
         auto_backup = bool(archive_root) and "player_root" not in payload and "favorites_dir" not in payload
         # Only a new backup folder moves the backed-up favorites; a new address just saves.
         target_changed = not auto_backup and (player_root, favorites_dir) != (old.player_root, old.favorites_dir)
-        archive_changed = archive_root != old.archive_root
+        archive_changed = archive_root != old.archive_root or libraries != old_libraries
         if (not target_changed and not credentials_changed and not archive_changed
                 and endpoint == old.endpoint_url):
             return web.json_response(await self._storage_settings_dto())
@@ -97,7 +111,8 @@ class PlayerStorageSettingsHttpMixin:
         if archive_root and self._archive_check is not None:
             # A wrong folder must fail here, not empty the wall at the next catalog scan.
             try:
-                await self._archive_check(new_settings)
+                for root in libraries:
+                    await self._archive_check(replace(new_settings, archive_root=root))
             except Exception as exc:
                 _LOG.warning(
                     "Player archive folder check failed: category=%s", type(exc).__name__,
@@ -106,6 +121,7 @@ class PlayerStorageSettingsHttpMixin:
         try:
             if target_changed:
                 await self._recovery_service.migrate_target(new_settings)
+                await self._repository.save_libraries(libraries)
             else:
                 # With a video folder, reading it already proved the account; no test file is written.
                 probe = (
@@ -121,6 +137,7 @@ class PlayerStorageSettingsHttpMixin:
                 if auto_backup:
                     new_settings = await self._recovery_service.place_backup_under(new_settings)
                 await self._repository.save_storage_settings(new_settings)
+                await self._repository.save_libraries(libraries)
                 try:
                     await self._recovery_service.export_state()
                 except Exception as exc:
@@ -212,6 +229,7 @@ class PlayerStorageSettingsHttpMixin:
             "player_root": settings.player_root,
             "favorites_dir": settings.favorites_dir,
             "archive_root": settings.archive_root,
+            "libraries": list(await self._repository.get_libraries()),
             "archive_configured": bool(settings.archive_root),
             "storage_configured": settings.endpoint_url != "https://webdav.example.invalid/dav",
             "credentials_configured": bool(

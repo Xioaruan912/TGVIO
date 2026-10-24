@@ -37,7 +37,7 @@ class ArchivePackageCandidate:
 
 @dataclass(frozen=True, slots=True)
 class ArchiveDiscovery:
-    packages: tuple[ArchivePackageCandidate, ...]
+    packages: tuple[ArchivePackageCandidate | CatalogPackage, ...]
     complete_scan: bool = True
 
 

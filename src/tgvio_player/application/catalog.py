@@ -68,7 +68,8 @@ class CatalogSyncService:
             if discovered_id is not None:
                 discovered_package_ids.add(discovered_id)
             try:
-                package = self._validate(candidate)
+                # Plain folders arrive already built; Archive packages are validated here.
+                package = candidate if isinstance(candidate, CatalogPackage) else self._validate(candidate)
                 await self._repository.apply_package(package)
             except (CatalogValidationError, TypeError, ValueError) as exc:
                 rejected += 1
@@ -275,8 +276,10 @@ class CatalogSyncService:
 
     @staticmethod
     def _candidate_package_id(
-        candidate: ArchivePackageCandidate,
+        candidate: ArchivePackageCandidate | CatalogPackage,
     ) -> str | None:
+        if isinstance(candidate, CatalogPackage):
+            return candidate.package_id
         if not isinstance(candidate.manifest, dict) or not isinstance(candidate.complete, dict):
             return None
         manifest_id = str(candidate.manifest.get("package_id") or "").strip()

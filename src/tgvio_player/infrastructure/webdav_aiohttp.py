@@ -21,7 +21,7 @@ from tgvio_player.infrastructure.webdav_read import WebDavRangeResponse
 
 _DAV: Final = "DAV:"
 _PROPFIND_BODY: Final = b"""<?xml version="1.0" encoding="utf-8"?>
-<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getetag/></d:prop></d:propfind>"""
+<d:propfind xmlns:d="DAV:"><d:prop><d:resourcetype/><d:getetag/><d:getcontentlength/></d:prop></d:propfind>"""
 
 
 class PublicOnlyResolver(AbstractResolver):
@@ -156,7 +156,10 @@ class AioHttpReadOnlyWebDavClient:
             resource_type = item.find(f".//{{{_DAV}}}resourcetype")
             is_collection = resource_type is not None and resource_type.find(f"{{{_DAV}}}collection") is not None
             etag = item.findtext(f".//{{{_DAV}}}getetag")
-            entries.append(WebDavCollectionEntry(name, is_collection, etag or None))
+            # OpenList leaves the size empty for folders.
+            length = (item.findtext(f".//{{{_DAV}}}getcontentlength") or "").strip()
+            size = int(length) if length.isdigit() else None
+            entries.append(WebDavCollectionEntry(name, is_collection, etag or None, size))
         return tuple(entries)
 
     async def get_json(self, remote_path: str, *, max_bytes: int) -> object | None:

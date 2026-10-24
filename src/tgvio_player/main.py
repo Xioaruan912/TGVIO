@@ -20,6 +20,7 @@ from tgvio_player.application.duplicate_copies import DuplicateCopyCleaner
 from tgvio_player.application.favorite_backup import FavoriteBackupService, SourceMediaError
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
+from tgvio_player.application.media_probe import MediaProbeBackfill
 from tgvio_player.application.player_recovery import PlayerRecoveryService
 from tgvio_player.application.cover_warm import CoverWarm
 from tgvio_player.application.range_cache import MediaRangeCache
@@ -36,7 +37,7 @@ from tgvio_player.infrastructure.webdav_aiohttp import (
     AioHttpReadOnlyWebDavClient,
     WebDavClientSettings,
 )
-from tgvio_player.infrastructure.webdav_catalog import WebDavArchiveCatalogSource
+from tgvio_player.infrastructure.folder_catalog import LibraryCatalogSource
 from tgvio_player.infrastructure.webdav_read import (
     OpenListBatchDeleteAdapter,
     ReadOnlyWebDavAdapter,
@@ -181,7 +182,7 @@ _RECENT_DATES = 2
 
 
 async def _catalog_poll(
-    sync: CatalogSyncService, source: WebDavArchiveCatalogSource, seconds: int, stop: asyncio.Event
+    sync: CatalogSyncService, source: LibraryCatalogSource, seconds: int, stop: asyncio.Event
 ) -> None:
     loop = asyncio.get_running_loop()
     full_due = 0.0
@@ -338,9 +339,9 @@ async def run(settings: PlayerSettings) -> None:
                 OpenListBatchDeleteAdapter(client, direct_reader)
                 if direct_reader is not None else WebDavDeleteAdapter(client)
             )
-        catalog_source = WebDavArchiveCatalogSource(client, remote_root=storage_settings.archive_root)
-        if not storage_settings.archive_root:
-            _LOG.warning("Player catalog sync paused: set the Archive folder in the storage settings page")
+        catalog_source = LibraryCatalogSource(client, roots=await repository.get_libraries())
+        if not await repository.get_libraries():
+            _LOG.warning("Player catalog sync paused: set the video folder in the storage settings page")
 
         async def check_archive_root(storage: PlayerStorageSettings) -> None:
             probe = AioHttpReadOnlyWebDavClient(read_settings(storage))
@@ -353,7 +354,7 @@ async def run(settings: PlayerSettings) -> None:
             await client.reconfigure(read_settings(storage))
             if direct_reader is not None:
                 direct_reader.set_credentials(*recovery.credentials_for(storage))
-            catalog_source.set_remote_root(storage.archive_root)
+            catalog_source.set_roots(await repository.get_libraries())
         sync = CatalogSyncService(catalog_source, repository)
         faststart = FaststartService(
             FaststartStore(settings.data_dir / "faststart"), repository, reader
@@ -410,6 +411,9 @@ async def run(settings: PlayerSettings) -> None:
             asyncio.create_task(_favorite_sync_poll(favorite_backup, 5, stop)),
             asyncio.create_task(_collection_backup_poll(collection_backup, 5, stop)),
         ]
+        # Plain files arrive without a duration; read it from the MP4 header, paused while playing.
+        probe = MediaProbeBackfill(repository, reader, should_pause=lambda: server.active_playback_streams > 0)
+        tasks.append(asyncio.create_task(probe.run(stop)))
         if server.media_deletions is not None:
             # Queued permanent deletes, including any left unfinished by a restart.
             tasks.append(asyncio.create_task(server.media_deletions.run(stop)))
