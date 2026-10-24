@@ -90,6 +90,13 @@ class LibraryTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn('private-batch', str(data))
         self.assertEqual((await self.get('folders?date=unknown'))['total'], 2)
 
+    async def test_plain_folders_are_named_after_their_folder(self):
+        await self.package('p' * 64, '115/长视频/SNOS-141', [7])
+        labels = {f['label'] for f in (await self.get('folders?date=unknown'))['items']}
+        self.assertIn('SNOS-141', labels)
+        dated = (await self.get('folders?date=2026-09-22'))['items']
+        self.assertTrue(all(f['label'].startswith('批次 ') for f in dated), "archive batches stay opaque")
+
     async def test_membership_is_independent_of_groups(self):
         data = await self.get('folders?media_id=' + mid(1))
         self.assertEqual(data['total'], 4)

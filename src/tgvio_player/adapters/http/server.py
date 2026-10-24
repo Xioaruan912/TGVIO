@@ -275,6 +275,8 @@ class PlayerHttpServer(PlayerStatusHttpMixin, PlayerTagHttpMixin, PlayerDuplicat
         app.router.add_delete("/api/v1/media/{media_id}/progress", self._delete_long_video_progress)
         if self._static_dir is not None:
             app.router.add_get("/", self._frontend_index)
+            app.router.add_get("/old", self._frontend_index)
+            app.router.add_get("/old/", self._frontend_index)
             assets = self._static_dir / "assets"
             if assets.is_dir():
                 app.router.add_static("/assets", assets, show_index=False, follow_symlinks=False)
@@ -404,7 +406,7 @@ class PlayerHttpServer(PlayerStatusHttpMixin, PlayerTagHttpMixin, PlayerDuplicat
         if request_id:
             response.headers["X-Request-ID"] = request_id
         path = request.path
-        if path.startswith("/assets/"):
+        if path.startswith(("/assets/", "/next/assets/")):
             # Vite emits content-hashed filenames, so these are immutable.
             response.headers["Cache-Control"] = "public, max-age=31536000, immutable"
         elif path == "/healthz" or path.startswith("/api/"):
@@ -514,7 +516,12 @@ class PlayerHttpServer(PlayerStatusHttpMixin, PlayerTagHttpMixin, PlayerDuplicat
         return web.Response(status=204)
 
     async def _frontend_index(self, request: web.Request) -> web.FileResponse:
-        del request
+        # The rebuilt front end is the home page once it is in the image; the previous one
+        # stays at /old/ for the transition.
+        if request.path == "/" and self._next_static_dir is not None:
+            rebuilt = self._next_static_dir / "index.html"
+            if rebuilt.is_file():
+                return web.FileResponse(rebuilt, headers={"Cache-Control": "no-cache"})
         assert self._static_dir is not None
         index = self._static_dir / "index.html"
         if not index.is_file():
