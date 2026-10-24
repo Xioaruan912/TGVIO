@@ -51,6 +51,17 @@ class PlayerFavoriteRepositoryMixin:
                  settings.archive_root),
             )
 
+    async def get_libraries(self) -> tuple[str, ...]:
+        rows = self._require().execute("SELECT root FROM player_libraries ORDER BY position").fetchall()
+        return tuple(str(row["root"]) for row in rows)
+
+    async def save_libraries(self, roots: tuple[str, ...]) -> None:
+        async with self._write_transaction() as conn:
+            conn.execute("DELETE FROM player_libraries")
+            conn.executemany(
+                "INSERT INTO player_libraries(position, root) VALUES(?, ?)", list(enumerate(roots)),
+            )
+
     async def set_global_favorite(self, media_id: str, enabled: bool) -> None:
         async with self._write_transaction() as conn:
             if enabled:

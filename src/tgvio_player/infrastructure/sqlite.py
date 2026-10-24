@@ -757,6 +757,25 @@ class PlayerCatalogRepositorySQLite(
         ).fetchone()
         return None if row is None else dict(row)
 
+    async def list_unprobed_video_ids(self, *, limit: int) -> list[str]:
+        """Active videos still without a duration: plain files the probe has not read yet."""
+        rows = self._require().execute(
+            "SELECT media_id FROM media WHERE active=1 AND kind='video' AND duration_seconds IS NULL "
+            "ORDER BY first_seen_at DESC, media_id LIMIT ?",
+            (int(limit),),
+        ).fetchall()
+        return [str(row["media_id"]) for row in rows]
+
+    async def save_media_probe(
+        self, media_id: str, duration_seconds: float | None, width: int | None, height: int | None,
+    ) -> None:
+        async with self._write_transaction() as conn:
+            conn.execute(
+                "UPDATE media SET duration_seconds=COALESCE(?, duration_seconds), "
+                "width=COALESCE(?, width), height=COALESCE(?, height) WHERE media_id=?",
+                (duration_seconds, width, height, media_id),
+            )
+
     async def active_variants(self, media_id: str) -> list[dict[str, object]]:
         rows = self._require().execute(
             """

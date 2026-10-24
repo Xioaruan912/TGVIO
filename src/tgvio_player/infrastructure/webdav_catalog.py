@@ -24,6 +24,7 @@ class WebDavCollectionEntry:
     name: str
     is_collection: bool
     etag: str | None = None
+    size_bytes: int | None = None
 
 
 class WebDavCatalogClient(Protocol):
