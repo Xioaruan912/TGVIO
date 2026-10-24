@@ -209,6 +209,15 @@ class WebDavWriteTransportTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(session.calls[0][0], "PROPFIND", "HEAD is redirected to the CDN by OpenList")
         self.assertIsNone(await AioHttpWebDavWriteClient(
             "https://dav.example.test", "u", "p", session=FakeSession(404)).stat("root/file"))
+        folder = FakeSession(207)
+        folder.response_chunks = (
+            b'<?xml version="1.0" encoding="UTF-8"?><D:multistatus xmlns:D="DAV:"><D:response>'
+            b'<D:href>/dav/root/</D:href><D:propstat><D:prop><D:getcontentlength></D:getcontentlength>'
+            b'<D:getetag></D:getetag></D:prop><D:status>HTTP/1.1 404 Not Found</D:status></D:propstat>'
+            b'</D:response></D:multistatus>',
+        )
+        found = await AioHttpWebDavWriteClient("https://dav.example.test", "u", "p", session=folder).stat("root")
+        self.assertEqual((found.size_bytes, found.etag), (0, None), "OpenList's answer for a folder")
 
     async def test_redirects_are_rejected_and_unsupported_move_is_classified(self) -> None:
         redirected = AioHttpWebDavWriteClient("https://dav.example.test", "u", "p", session=FakeSession(302))
