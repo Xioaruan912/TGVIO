@@ -21,6 +21,7 @@ from tgvio_player.application.favorite_backup import FavoriteBackupService, Sour
 from tgvio_player.application.faststart import FaststartBackfill, FaststartService
 from tgvio_player.application.feed import ShuffleDeckService
 from tgvio_player.application.media_probe import MediaProbeBackfill
+from tgvio_player.application.sync_status import SyncStatus
 from tgvio_player.application.player_recovery import PlayerRecoveryService
 from tgvio_player.application.cover_warm import CoverWarm
 from tgvio_player.application.range_cache import MediaRangeCache
@@ -182,7 +183,8 @@ _RECENT_DATES = 2
 
 
 async def _catalog_poll(
-    sync: CatalogSyncService, source: LibraryCatalogSource, seconds: int, stop: asyncio.Event
+    sync: CatalogSyncService, source: LibraryCatalogSource, seconds: int, stop: asyncio.Event,
+    status: SyncStatus,
 ) -> None:
     loop = asyncio.get_running_loop()
     full_due = 0.0
@@ -200,9 +202,11 @@ async def _catalog_poll(
                     source.metadata_reads - reads, source.metadata_hits - hits,
                 )
             active = result.active_videos
+            status.record(full=full, active_videos=result.active_videos, rejected=result.rejected)
             if full:
                 full_due = loop.time() + seconds
         except Exception:
+            status.failed()
             _LOG.exception("Player catalog sync failed")
         try:
             await asyncio.wait_for(stop.wait(), timeout=min(seconds, _RECENT_SCAN_SECONDS))
@@ -350,6 +354,12 @@ async def run(settings: PlayerSettings) -> None:
             finally:
                 await probe.close()
 
+        async def list_folders(path: str) -> list[str]:
+            entries = await client.list_collection(path)
+            return sorted(entry.name for entry in entries if entry.is_collection and not entry.name.startswith("."))
+
+        sync_status = SyncStatus()
+
         async def apply_storage(storage: PlayerStorageSettings) -> None:
             await client.reconfigure(read_settings(storage))
             if direct_reader is not None:
@@ -400,6 +410,8 @@ async def run(settings: PlayerSettings) -> None:
             read_mode=read_mode,
             archive_check=check_archive_root,
             on_storage_changed=apply_storage,
+            list_folders=list_folders,
+            sync_status=sync_status,
         )
         server_ref[0] = server
         runner = server.runner()
@@ -407,7 +419,7 @@ async def run(settings: PlayerSettings) -> None:
         site = web.TCPSite(runner, settings.host, settings.port)
         await site.start()
         tasks: list[asyncio.Task[object]] = [
-            asyncio.create_task(_catalog_poll(sync, catalog_source, settings.catalog_poll_seconds, stop)),
+            asyncio.create_task(_catalog_poll(sync, catalog_source, settings.catalog_poll_seconds, stop, sync_status)),
             asyncio.create_task(_favorite_sync_poll(favorite_backup, 5, stop)),
             asyncio.create_task(_collection_backup_poll(collection_backup, 5, stop)),
         ]

@@ -146,11 +146,12 @@ class AioHttpReadOnlyWebDavClient:
             root = ElementTree.fromstring(payload)
         except ElementTree.ParseError as exc:
             raise RuntimeError("WebDAV collection response is invalid XML") from exc
-        parent = safe_remote_path(remote_path, relative=False)
+        # "" is the WebDAV root itself (the settings folder browser starts there).
+        parent = safe_remote_path(remote_path, relative=False) if remote_path else ""
         entries: list[WebDavCollectionEntry] = []
         for item in root.findall(f"{{{_DAV}}}response"):
             href = item.findtext(f"{{{_DAV}}}href")
-            name = self._entry_name(href, parent)
+            name = self._entry_name(href, parent) if parent else self._root_entry_name(href)
             if name is None:
                 continue
             resource_type = item.find(f".//{{{_DAV}}}resourcetype")
@@ -211,7 +212,22 @@ class AioHttpReadOnlyWebDavClient:
         assert self._session is not None
         return await self._session.request(method, self._url(remote_path), **kwargs)
 
+    def _root_entry_name(self, href: str | None) -> str | None:
+        base = urlsplit(self._base_url).path.rstrip("/") + "/"
+        path = urlsplit(href or "").path
+        if not path.startswith(base):
+            return None
+        tail = unquote(path[len(base):].strip("/"))
+        if not tail or "/" in tail:
+            return None
+        try:
+            return safe_remote_path(tail, relative=True)
+        except ValueError:
+            return None
+
     def _url(self, remote_path: str) -> str:
+        if not remote_path:
+            return f"{self._base_url}/"
         path = safe_remote_path(remote_path, relative=False)
         return f"{self._base_url}/{quote(path, safe='/')}"
 
