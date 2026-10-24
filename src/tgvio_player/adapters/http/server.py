@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 import re
 import time
-from typing import Any, Callable
+from typing import Any, Awaitable, Callable
 import uuid
 from urllib.parse import urlsplit
 
@@ -125,6 +125,8 @@ class PlayerHttpServer(PlayerTagHttpMixin, PlayerDuplicateReviewHttpMixin, Playe
         cover_mirror: CoverMirror | None = None,
         cover_mirror_counters: CoverMirrorCounters | None = None,
         read_mode: object | None = None,
+        archive_check: Callable[[PlayerStorageSettings], Awaitable[None]] | None = None,
+        on_storage_changed: Callable[[PlayerStorageSettings], Awaitable[None]] | None = None,
     ) -> None:
         if min(
             max_streams, max_streams_per_client, max_header_size, stream_chunk_size, startup_range_bytes
@@ -155,6 +157,9 @@ class PlayerHttpServer(PlayerTagHttpMixin, PlayerDuplicateReviewHttpMixin, Playe
         self._media_deletions = self.media_deletions
         self._recovery_service = recovery_service
         self._storage_client_factory = storage_client_factory
+        # main owns the Archive read clients; these let a saved setting reach them.
+        self._archive_check = archive_check
+        self._on_storage_changed = on_storage_changed
         self._storage_rate: dict[str, list[float]] = {}
         self._max_streams = max_streams
         self._stream_slots = asyncio.BoundedSemaphore(max_streams)

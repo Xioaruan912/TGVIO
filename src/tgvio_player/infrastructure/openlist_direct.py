@@ -14,7 +14,7 @@ User-Agent is sent to OpenList and to the CDN.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 import time
 from typing import Callable
 from urllib.parse import parse_qs, urlsplit
@@ -87,6 +87,11 @@ class OpenListDirectReader:
                 # The CDN link carries its own signature; no cookies are kept.
                 cookie_jar=DummyCookieJar(),
             )
+
+    def set_credentials(self, username: str, password: str) -> None:
+        self._settings = replace(self._settings, username=username, password=password)
+        self._token = None
+        self._links.clear()
 
     async def close(self) -> None:
         session, self._session = self._session, None

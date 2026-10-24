@@ -24,6 +24,7 @@ from tgvio_player.application.player_recovery import PlayerRecoveryService
 from tgvio_player.application.cover_warm import CoverWarm
 from tgvio_player.application.range_cache import MediaRangeCache
 from tgvio_player.application.warm_backfill import MediaWarmBackfill
+from tgvio_player.domain.storage_settings import PlayerStorageSettings
 from tgvio_player.infrastructure.cover_mirror import CoverMirror, CoverMirrorCounters
 from tgvio_player.infrastructure.faststart_store import FaststartStore
 from tgvio_player.infrastructure.openlist_direct import DEFAULT_USER_AGENT, OpenListDirectReader, OpenListDirectSettings
@@ -53,10 +54,6 @@ class PlayerSettings:
     data_dir: Path
     access_secret: str
     recovery_key: str = field(repr=False)
-    webdav_url: str
-    webdav_user: str
-    webdav_password: str
-    remote_root: str
     host: str
     port: int
     catalog_poll_seconds: int
@@ -90,7 +87,7 @@ class PlayerSettings:
         get = lambda name: values.get(f"TGVIO_PLAYER_{name}", "").strip()
         if get("ENABLED").lower() != "true":
             raise ValueError("TGVIO_PLAYER_ENABLED must be true")
-        required = ("DATA_DIR", "ACCESS_SECRET", "RECOVERY_KEY", "WEBDAV_URL", "WEBDAV_USER", "WEBDAV_PASSWORD", "REMOTE_ROOT")
+        required = ("DATA_DIR", "ACCESS_SECRET", "RECOVERY_KEY")
         missing = [f"TGVIO_PLAYER_{name}" for name in required if not get(name)]
         if missing:
             raise ValueError("missing required Player settings: " + ", ".join(missing))
@@ -108,8 +105,7 @@ class PlayerSettings:
         except ValueError as exc:
             raise ValueError("TGVIO_PLAYER_HOST must be an IP address") from exc
         return cls(
-            Path(get("DATA_DIR")), secret, recovery_key, get("WEBDAV_URL"), get("WEBDAV_USER"),
-            get("WEBDAV_PASSWORD"), get("REMOTE_ROOT"), host,
+            Path(get("DATA_DIR")), secret, recovery_key, host,
             cls._integer(get("PORT") or "8790", "PORT", 1, 65535),
             cls._integer(get("CATALOG_POLL_SECONDS") or "60", "CATALOG_POLL_SECONDS", 5, 86400),
             cls._integer(get("MAX_STREAMS") or "4", "MAX_STREAMS", 1, 64),
@@ -262,11 +258,17 @@ async def run(settings: PlayerSettings) -> None:
         return client
 
     recovery = PlayerRecoveryService(repository, cipher, storage_client_factory)
-    client = AioHttpReadOnlyWebDavClient(WebDavClientSettings(
-        settings.webdav_internal_url or settings.webdav_url,
-        settings.webdav_user, settings.webdav_password,
-        allow_plain_http=bool(settings.webdav_internal_url),
-    ))
+
+    def read_settings(storage: PlayerStorageSettings) -> WebDavClientSettings:
+        # The Archive is read with the account and address set in the web page;
+        # only the same-host shortcut to that server stays an operator setting.
+        username, password = recovery.credentials_for(storage)
+        return WebDavClientSettings(
+            settings.webdav_internal_url or storage.endpoint_url, username, password,
+            allow_plain_http=bool(settings.webdav_internal_url),
+        )
+
+    client: AioHttpReadOnlyWebDavClient | None = None
     stop = asyncio.Event()
     loop = asyncio.get_running_loop()
     for sig in (signal.SIGINT, signal.SIGTERM):
@@ -277,11 +279,12 @@ async def run(settings: PlayerSettings) -> None:
     await repository.open()
     direct_reader: OpenListDirectReader | None = None
     try:
-        await client.open()
-        archive_reader = ReadOnlyWebDavAdapter(client)
         await repository.recover_interrupted_favorite_sync()
         storage_settings = await repository.get_storage_settings()
         username, password = recovery.credentials_for(storage_settings)
+        client = AioHttpReadOnlyWebDavClient(read_settings(storage_settings))
+        await client.open()
+        archive_reader = ReadOnlyWebDavAdapter(client)
         favorite_writer = storage_client_factory(
             storage_settings.endpoint_url, username, password,
         )
@@ -316,7 +319,7 @@ async def run(settings: PlayerSettings) -> None:
         )
         direct_reader = (
             OpenListDirectReader(OpenListDirectSettings(
-                settings.openlist_api_url, settings.webdav_user, settings.webdav_password,
+                settings.openlist_api_url, username, password,
                 user_agent=settings.direct_user_agent,
             ))
             if settings.openlist_api_url else None
@@ -335,7 +338,22 @@ async def run(settings: PlayerSettings) -> None:
                 OpenListBatchDeleteAdapter(client, direct_reader)
                 if direct_reader is not None else WebDavDeleteAdapter(client)
             )
-        catalog_source = WebDavArchiveCatalogSource(client, remote_root=settings.remote_root)
+        catalog_source = WebDavArchiveCatalogSource(client, remote_root=storage_settings.archive_root)
+        if not storage_settings.archive_root:
+            _LOG.warning("Player catalog sync paused: set the Archive folder in the storage settings page")
+
+        async def check_archive_root(storage: PlayerStorageSettings) -> None:
+            probe = AioHttpReadOnlyWebDavClient(read_settings(storage))
+            try:
+                await probe.list_collection(storage.archive_root)
+            finally:
+                await probe.close()
+
+        async def apply_storage(storage: PlayerStorageSettings) -> None:
+            await client.reconfigure(read_settings(storage))
+            if direct_reader is not None:
+                direct_reader.set_credentials(*recovery.credentials_for(storage))
+            catalog_source.set_remote_root(storage.archive_root)
         sync = CatalogSyncService(catalog_source, repository)
         faststart = FaststartService(
             FaststartStore(settings.data_dir / "faststart"), repository, reader
@@ -379,6 +397,8 @@ async def run(settings: PlayerSettings) -> None:
             cover_mirror=cover_mirror,
             cover_mirror_counters=cover_mirror_counters,
             read_mode=read_mode,
+            archive_check=check_archive_root,
+            on_storage_changed=apply_storage,
         )
         server_ref[0] = server
         runner = server.runner()
@@ -443,7 +463,8 @@ async def run(settings: PlayerSettings) -> None:
     finally:
         for write_client in write_clients:
             await write_client.close()
-        await client.close()
+        if client is not None:
+            await client.close()
         if direct_reader is not None:
             await direct_reader.close()
         await repository.close()

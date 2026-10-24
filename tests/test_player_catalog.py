@@ -547,6 +547,19 @@ class WebDavCatalogSourceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(discovery.packages[0].manifest_etag, '"m"')
         self.assertTrue(all(limit <= 512 * 1024 for _, limit in source.reads))
 
+    async def test_unset_archive_folder_never_scans_the_webdav_root(self) -> None:
+        source = FakeWebDavClient()
+        source.entries[""] = source.entries["/"] = ()
+        source.entries["TGVIO"] = ()
+        catalog = WebDavArchiveCatalogSource(source, remote_root="")
+
+        discovery = await catalog.discover()
+
+        self.assertEqual(discovery.packages, ())
+        self.assertFalse(discovery.complete_scan, "an unset folder must not retire the catalog")
+        catalog.set_remote_root("TGVIO")
+        self.assertTrue((await catalog.discover()).complete_scan)
+
     async def test_recent_scan_lists_only_the_newest_date_folders(self) -> None:
         source = FakeWebDavClient()
         source.entries["TGVIO"] = tuple(

@@ -142,7 +142,9 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
     def test_player_env_template_has_no_bot_credentials(self) -> None:
         template = (ROOT / "deploy" / "player.env.example").read_text(encoding="utf-8")
         self.assertIn("TGVIO_PLAYER_ACCESS_SECRET=", template)
-        self.assertIn("TGVIO_PLAYER_WEBDAV_PASSWORD=", template)
+        for moved in ("TGVIO_PLAYER_WEBDAV_URL=", "TGVIO_PLAYER_WEBDAV_USER=",
+                      "TGVIO_PLAYER_WEBDAV_PASSWORD=", "TGVIO_PLAYER_REMOTE_ROOT="):
+            self.assertNotIn(moved, template, "WebDAV is configured in the web page")
         for forbidden in ("BOT_TOKEN=", "API_HASH=", "API_ID=", "TGVIO_SOURCE_SESSION="):
             self.assertNotIn(forbidden, template)
 
@@ -162,10 +164,6 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
             "TGVIO_PLAYER_HOST_DATA_DIR": "/tmp/tgvio-player-test-data",
             "TGVIO_PLAYER_ACCESS_SECRET": "test-only-access-secret",
             "TGVIO_PLAYER_RECOVERY_KEY": "r" * 43,
-            "TGVIO_PLAYER_WEBDAV_URL": "https://webdav.invalid/read-only",
-            "TGVIO_PLAYER_WEBDAV_USER": "test-reader",
-            "TGVIO_PLAYER_WEBDAV_PASSWORD": "test-only-password",
-            "TGVIO_PLAYER_REMOTE_ROOT": "TGVIO",
         }
         with tempfile.NamedTemporaryFile("w", encoding="utf-8") as handle:
             handle.write("".join(f"{key}={value}\n" for key, value in values.items()))

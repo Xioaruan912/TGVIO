@@ -95,6 +95,17 @@ class AioHttpReadOnlyWebDavClient:
     """Bounded Player WebDAV transport with opt-in single-file deletion."""
 
     def __init__(self, settings: WebDavClientSettings) -> None:
+        self._session: ClientSession | None = None
+        self._configure(settings)
+
+    async def reconfigure(self, settings: WebDavClientSettings) -> None:
+        """Use a new address or account; requests already streaming are cut off."""
+        self._configure(settings)
+        session, self._session = self._session, None
+        if session is not None:
+            await session.close()
+
+    def _configure(self, settings: WebDavClientSettings) -> None:
         parsed = urlsplit(settings.base_url)
         schemes = {"https", "http"} if settings.allow_plain_http else {"https"}
         if parsed.scheme not in schemes or not parsed.netloc or parsed.username or parsed.password:
@@ -108,7 +119,6 @@ class AioHttpReadOnlyWebDavClient:
             connect=settings.connect_timeout_seconds,
             sock_read=settings.read_timeout_seconds,
         )
-        self._session: ClientSession | None = None
 
     async def open(self) -> None:
         if self._session is None:

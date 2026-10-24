@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import hashlib
 import json
 from pathlib import Path
@@ -315,6 +316,20 @@ class PlayerRecoveryTests(unittest.IsolatedAsyncioTestCase):
             partial.endpoint_url, partial.player_root, partial.favorites_dir,
             partial.username_ciphertext, partial.password_ciphertext, retried.revision,
         ))
+    async def test_archive_folder_travels_with_the_backup(self) -> None:
+        await self.repo.save_storage_settings(replace(self.settings, archive_root="115/TGVIO"))
+        await self.service.export_state()
+
+        new_repo = PlayerCatalogRepositorySQLite(self.path / "archive-root.sqlite3")
+        await new_repo.open()
+        try:
+            await PlayerRecoveryService(new_repo, self.cipher, self.factory).restore(
+                WebDavBootstrap(self.settings.endpoint_url, "player", "alice", "old-password")
+            )
+            self.assertEqual((await new_repo.get_storage_settings()).archive_root, "115/TGVIO")
+        finally:
+            await new_repo.close()
+
     async def test_collections_travel_with_the_backup_and_come_back(self) -> None:
         manual = await self.repo.create("旅行", "manual", None)
         await self.repo.add_item(manual.collection_id, self.media_id)

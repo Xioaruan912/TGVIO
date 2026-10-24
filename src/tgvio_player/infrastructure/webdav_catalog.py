@@ -41,12 +41,20 @@ class WebDavArchiveCatalogSource:
 
     def __init__(self, client: WebDavCatalogClient, *, remote_root: str) -> None:
         self._client = client
-        self._remote_root = safe_remote_path(remote_root, relative=False)
+        self._remote_root: str | None = None
         # remote path -> (etag, parsed payload) of the last successful read.
         self._metadata: dict[str, tuple[str, Any]] = {}
         self._seen: set[str] = set()
         self.metadata_reads = 0
         self.metadata_hits = 0
+        self.set_remote_root(remote_root)
+
+    def set_remote_root(self, remote_root: str) -> None:
+        """Point the scan at another Archive folder; empty pauses discovery."""
+        root = safe_remote_path(remote_root, relative=False) if remote_root else None
+        if root != self._remote_root:
+            self._remote_root = root
+            self._metadata = {}
 
     async def discover(self, *, recent_dates: int | None = None) -> ArchiveDiscovery:
         """List committed packages; ``recent_dates`` keeps only the newest date folders.
@@ -55,8 +63,12 @@ class WebDavArchiveCatalogSource:
         reported as incomplete and leaves the metadata cache untouched.
         """
         self._seen = set()
+        root = self._remote_root
+        if root is None:
+            # Never scan the WebDAV root: a "complete" scan of it would retire every video.
+            return ArchiveDiscovery(packages=(), complete_scan=False)
         try:
-            date_entries = await self._client.list_collection(self._remote_root)
+            date_entries = await self._client.list_collection(root)
         except Exception:
             return ArchiveDiscovery(packages=(), complete_scan=False)
         if recent_dates is not None:
@@ -68,7 +80,7 @@ class WebDavArchiveCatalogSource:
         for date_entry in date_entries:
             if not date_entry.is_collection:
                 continue
-            date_path = self._child(self._remote_root, date_entry.name)
+            date_path = self._child(root, date_entry.name)
             if date_path is None:
                 complete_scan = False
                 continue

@@ -11,7 +11,7 @@ class PlayerFavoriteRepositoryMixin:
         row = self._require().execute(
             """
             SELECT endpoint_url, player_root, favorites_dir,
-                   username_ciphertext, password_ciphertext, revision
+                   username_ciphertext, password_ciphertext, revision, archive_root
             FROM player_storage_settings WHERE singleton=1
             """
         ).fetchone()
@@ -26,6 +26,7 @@ class PlayerFavoriteRepositoryMixin:
             password_ciphertext=bytes(row["password_ciphertext"])
             if row["password_ciphertext"] is not None else None,
             revision=int(row["revision"]),
+            archive_root=str(row["archive_root"]),
         )
 
     async def save_storage_settings(self, settings: PlayerStorageSettings) -> None:
@@ -34,18 +35,20 @@ class PlayerFavoriteRepositoryMixin:
                 """
                 INSERT INTO player_storage_settings(
                     singleton, endpoint_url, player_root, favorites_dir,
-                    username_ciphertext, password_ciphertext, revision
-                ) VALUES(1,?,?,?,?,?,?)
+                    username_ciphertext, password_ciphertext, revision, archive_root
+                ) VALUES(1,?,?,?,?,?,?,?)
                 ON CONFLICT(singleton) DO UPDATE SET
                     endpoint_url=excluded.endpoint_url,
                     player_root=excluded.player_root,
                     favorites_dir=excluded.favorites_dir,
                     username_ciphertext=excluded.username_ciphertext,
                     password_ciphertext=excluded.password_ciphertext,
-                    revision=excluded.revision
+                    revision=excluded.revision,
+                    archive_root=excluded.archive_root
                 """,
                 (settings.endpoint_url, settings.player_root, settings.favorites_dir,
-                 settings.username_ciphertext, settings.password_ciphertext, settings.revision),
+                 settings.username_ciphertext, settings.password_ciphertext, settings.revision,
+                 settings.archive_root),
             )
 
     async def set_global_favorite(self, media_id: str, enabled: bool) -> None:

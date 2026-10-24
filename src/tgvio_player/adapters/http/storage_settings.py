@@ -41,13 +41,14 @@ class PlayerStorageSettingsHttpMixin:
         endpoint = payload.get("endpoint_url", old.endpoint_url)
         player_root = payload.get("player_root", old.player_root)
         favorites_dir = payload.get("favorites_dir", old.favorites_dir)
+        archive_root = payload.get("archive_root", old.archive_root)
         username_input = payload.get("username", "")
         password_input = payload.get("password", "")
         if not all(isinstance(item, str) for item in (
-            endpoint, player_root, favorites_dir, username_input, password_input,
+            endpoint, player_root, favorites_dir, archive_root, username_input, password_input,
         )):
             raise web.HTTPBadRequest(text="invalid storage settings")
-        if any(len(item) > 2048 for item in (endpoint, player_root, favorites_dir)):
+        if any(len(item) > 2048 for item in (endpoint, player_root, favorites_dir, archive_root)):
             raise web.HTTPBadRequest(text="invalid storage settings")
         if len(username_input) > 256 or len(password_input) > 1024:
             raise web.HTTPBadRequest(text="invalid storage credentials")
@@ -55,6 +56,9 @@ class PlayerStorageSettingsHttpMixin:
             endpoint = validate_webdav_endpoint(endpoint)
             player_root = safe_storage_relpath(player_root)
             favorites_dir = safe_storage_relpath(favorites_dir)
+            archive_root = archive_root.strip().strip("/")
+            if archive_root:
+                safe_storage_relpath(archive_root)
             if "\x00" in username_input + password_input:
                 raise ValueError
         except ValueError:
@@ -80,17 +84,30 @@ class PlayerStorageSettingsHttpMixin:
         target_changed = (
             endpoint, player_root, favorites_dir
         ) != (old.endpoint_url, old.player_root, old.favorites_dir)
-        if not target_changed and not credentials_changed:
+        archive_changed = archive_root != old.archive_root
+        if not target_changed and not credentials_changed and not archive_changed:
             return web.json_response(await self._storage_settings_dto())
         new_settings = PlayerStorageSettings(
             endpoint, player_root, favorites_dir,
-            username_ciphertext, password_ciphertext, old.revision + 1,
+            username_ciphertext, password_ciphertext, old.revision + 1, archive_root,
         )
+        if archive_root and self._archive_check is not None:
+            # A wrong folder must fail here, not empty the wall at the next catalog scan.
+            try:
+                await self._archive_check(new_settings)
+            except Exception as exc:
+                _LOG.warning(
+                    "Player archive folder check failed: category=%s", type(exc).__name__,
+                )
+                raise web.HTTPBadRequest(text="archive folder could not be read") from None
         try:
             if target_changed:
                 await self._recovery_service.migrate_target(new_settings)
             else:
-                probe = await self._probe_storage_target(endpoint, player_root, username, password)
+                probe = (
+                    await self._probe_storage_target(endpoint, player_root, username, password)
+                    if credentials_changed else {"ok": True}
+                )
                 if not probe["ok"]:
                     _LOG.warning(
                         "Player storage save preflight failed: operation=probe category=%s status=%s",
@@ -104,6 +121,7 @@ class PlayerStorageSettingsHttpMixin:
                     await self._repository.save_storage_settings(old)
                     raise
             await self._replace_favorite_writer(new_settings)
+            await self._apply_storage_settings()
         except Exception as exc:
             root_cause: BaseException = exc
             while root_cause.__cause__ is not None:
@@ -167,6 +185,7 @@ class PlayerStorageSettingsHttpMixin:
             )
         except RecoveryError:
             raise web.HTTPBadRequest(text="Player state recovery failed") from None
+        await self._apply_storage_settings()
         return web.json_response({
             "restored": result.restored,
             "revision": result.revision,
@@ -186,6 +205,8 @@ class PlayerStorageSettingsHttpMixin:
             "endpoint_url": settings.endpoint_url,
             "player_root": settings.player_root,
             "favorites_dir": settings.favorites_dir,
+            "archive_root": settings.archive_root,
+            "archive_configured": bool(settings.archive_root),
             "storage_configured": settings.endpoint_url != "https://webdav.example.invalid/dav",
             "credentials_configured": bool(
                 settings.username_ciphertext and settings.password_ciphertext
@@ -274,6 +295,10 @@ class PlayerStorageSettingsHttpMixin:
             "category": category,
             "status_code": status_code,
         }
+
+    async def _apply_storage_settings(self) -> None:
+        if self._on_storage_changed is not None:
+            await self._on_storage_changed(await self._repository.get_storage_settings())
 
     async def _replace_favorite_writer(self, settings: PlayerStorageSettings) -> None:
         if self._favorite_backup is None or self._storage_client_factory is None:
