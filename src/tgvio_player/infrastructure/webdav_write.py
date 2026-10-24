@@ -202,8 +202,9 @@ class AioHttpWebDavWriteClient:
                     raise WebDavWriteError("stat", "response_too_large", response.status)
             try:
                 root = ElementTree.fromstring(bytes(payload))
-                length = root.findtext(".//{DAV:}getcontentlength")
-                size_bytes = int(length) if length is not None else 0
+                # Folders come back with an empty getcontentlength.
+                length = (root.findtext(".//{DAV:}getcontentlength") or "").strip()
+                size_bytes = int(length) if length else 0
             except (ElementTree.ParseError, ValueError):
                 raise WebDavWriteError("stat", "invalid_response", response.status) from None
             if size_bytes < 0:
