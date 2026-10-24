@@ -250,6 +250,12 @@ class PlayerHttpTests(unittest.IsolatedAsyncioTestCase):
             ("115/TGVIO", True),
         )
         self.assertEqual(checked, ["Missing", "115/TGVIO"])
+        slashed = await self.client.put(
+            "/api/v1/settings/storage", json={"favorites_dir": "/Favorites/"},
+            cookies={"tgvio_player_session": cookie},
+        )
+        self.assertEqual(slashed.status, 200, "a leading or trailing slash is not an error")
+        self.assertEqual((await slashed.json())["favorites_dir"], "Favorites")
         self.assertEqual([item.archive_root for item in applied], ["115/TGVIO"])
         stored = await self.repo.get_storage_settings()
         self.assertEqual(stored.archive_root, "115/TGVIO")

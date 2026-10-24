@@ -54,8 +54,9 @@ class PlayerStorageSettingsHttpMixin:
             raise web.HTTPBadRequest(text="invalid storage credentials")
         try:
             endpoint = validate_webdav_endpoint(endpoint)
-            player_root = safe_storage_relpath(player_root)
-            favorites_dir = safe_storage_relpath(favorites_dir)
+            # Folders are relative to the WebDAV root; stray slashes are not an error.
+            player_root = safe_storage_relpath(player_root.strip().strip("/"))
+            favorites_dir = safe_storage_relpath(favorites_dir.strip().strip("/"))
             archive_root = archive_root.strip().strip("/")
             if archive_root:
                 safe_storage_relpath(archive_root)
@@ -157,7 +158,7 @@ class PlayerStorageSettingsHttpMixin:
             raise web.HTTPBadRequest(text="invalid storage test settings")
         try:
             endpoint = validate_webdav_endpoint(endpoint)
-            root = safe_storage_relpath(root)
+            root = safe_storage_relpath(root.strip().strip("/"))
         except ValueError:
             raise web.HTTPBadRequest(text="invalid storage test settings") from None
         current_username, current_password = self._recovery_service.credentials_for(old)
@@ -181,7 +182,7 @@ class PlayerStorageSettingsHttpMixin:
             raise web.HTTPBadRequest(text="invalid recovery settings")
         try:
             result = await self._recovery_service.restore(
-                WebDavBootstrap(endpoint, player_root, username, password)
+                WebDavBootstrap(endpoint, player_root.strip().strip("/"), username, password)
             )
         except RecoveryError:
             raise web.HTTPBadRequest(text="Player state recovery failed") from None
