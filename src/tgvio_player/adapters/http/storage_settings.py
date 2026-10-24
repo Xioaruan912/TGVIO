@@ -82,11 +82,11 @@ class PlayerStorageSettingsHttpMixin:
             username_ciphertext = old.username_ciphertext
             password_ciphertext = old.password_ciphertext
 
-        target_changed = (
-            endpoint, player_root, favorites_dir
-        ) != (old.endpoint_url, old.player_root, old.favorites_dir)
+        # Only a new backup folder moves the backed-up favorites; a new address just saves.
+        target_changed = (player_root, favorites_dir) != (old.player_root, old.favorites_dir)
         archive_changed = archive_root != old.archive_root
-        if not target_changed and not credentials_changed and not archive_changed:
+        if (not target_changed and not credentials_changed and not archive_changed
+                and endpoint == old.endpoint_url):
             return web.json_response(await self._storage_settings_dto())
         new_settings = PlayerStorageSettings(
             endpoint, player_root, favorites_dir,
@@ -105,9 +105,10 @@ class PlayerStorageSettingsHttpMixin:
             if target_changed:
                 await self._recovery_service.migrate_target(new_settings)
             else:
+                # With a video folder, reading it already proved the account; no test file is written.
                 probe = (
                     await self._probe_storage_target(endpoint, player_root, username, password)
-                    if credentials_changed else {"ok": True}
+                    if credentials_changed and not (archive_root and self._archive_check) else {"ok": True}
                 )
                 if not probe["ok"]:
                     _LOG.warning(
@@ -118,9 +119,9 @@ class PlayerStorageSettingsHttpMixin:
                 await self._repository.save_storage_settings(new_settings)
                 try:
                     await self._recovery_service.export_state()
-                except Exception:
-                    await self._repository.save_storage_settings(old)
-                    raise
+                except Exception as exc:
+                    # The backup snapshot catches up on the next favorite sync; it never blocks a save.
+                    _LOG.warning("Player state export after save failed: category=%s", type(exc).__name__)
             await self._replace_favorite_writer(new_settings)
             await self._apply_storage_settings()
         except Exception as exc:

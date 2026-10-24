@@ -5,6 +5,7 @@ import json
 from pathlib import PurePosixPath
 import re
 from urllib.parse import quote, urlsplit
+from xml.etree import ElementTree
 
 from aiohttp import BasicAuth, ClientSession, ClientTimeout, TCPConnector
 
@@ -16,6 +17,12 @@ from tgvio_player.infrastructure.webdav_read import WebDavRangeResponse
 
 
 _CONTENT_TYPE_RE = re.compile(r"^[A-Za-z0-9!#$&^_.+-]+/[A-Za-z0-9!#$&^_.+-]+$")
+
+
+_STAT_BODY = (
+    b'<?xml version="1.0" encoding="utf-8"?>'
+    b'<d:propfind xmlns:d="DAV:"><d:prop><d:getcontentlength/><d:getetag/></d:prop></d:propfind>'
+)
 
 
 class AioHttpWebDavWriteClient:
@@ -179,19 +186,29 @@ class AioHttpWebDavWriteClient:
             response.release()
 
     async def stat(self, path: str) -> RemoteFileStat | None:
-        response = await self._request("HEAD", safe_storage_relpath(path), operation="stat")
+        # PROPFIND, not HEAD: OpenList answers HEAD on cloud-drive files with a 302 to the CDN.
+        response = await self._request(
+            "PROPFIND", safe_storage_relpath(path), operation="stat",
+            headers={"Depth": "0", "Content-Type": "application/xml"}, data=_STAT_BODY,
+        )
         try:
             if response.status == 404:
                 return None
-            self._check(response.status, {200, 204}, "stat")
-            length = response.headers.get("Content-Length")
+            self._check(response.status, {207}, "stat")
+            payload = bytearray()
+            async for chunk in response.content.iter_chunked(64 * 1024):
+                payload.extend(chunk)
+                if len(payload) > 64 * 1024:
+                    raise WebDavWriteError("stat", "response_too_large", response.status)
             try:
+                root = ElementTree.fromstring(bytes(payload))
+                length = root.findtext(".//{DAV:}getcontentlength")
                 size_bytes = int(length) if length is not None else 0
-            except ValueError:
+            except (ElementTree.ParseError, ValueError):
                 raise WebDavWriteError("stat", "invalid_response", response.status) from None
             if size_bytes < 0:
                 raise WebDavWriteError("stat", "invalid_response", response.status)
-            return RemoteFileStat(size_bytes, response.headers.get("ETag"))
+            return RemoteFileStat(size_bytes, root.findtext(".//{DAV:}getetag") or None)
         finally:
             response.release()
 
