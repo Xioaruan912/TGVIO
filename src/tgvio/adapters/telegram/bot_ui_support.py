@@ -18,13 +18,6 @@ COMMANDS: tuple[tuple[str, str], ...] = (
 
 NAV_HOME = "🏠 首页"
 NAV_JOBS = "📋 我的任务"
-NAV_STATUS = "📊 状态"
-NAV_ARCHIVE = "☁️ 归档"
-NAV_CACHE = "🧹 缓存"
-NAV_MORE = "ℹ️ 更多"
-NAV_HISTORY = "🗂 发布历史"
-NAV_DRAFTS = "📝 我的草稿"
-NAV_STYLE = "🎨 发布风格"
 NAV_SETTINGS = "⚙️ 设置"
 NAV_HELP = "❓ 怎么用"
 COLLECTION_BEGIN_BUTTON = "📥 开始合集"
@@ -35,13 +28,6 @@ NAV_BUTTONS = frozenset(
     {
         NAV_HOME,
         NAV_JOBS,
-        NAV_STATUS,
-        NAV_ARCHIVE,
-        NAV_CACHE,
-        NAV_MORE,
-        NAV_HISTORY,
-        NAV_DRAFTS,
-        NAV_STYLE,
         NAV_SETTINGS,
         NAV_HELP,
     }

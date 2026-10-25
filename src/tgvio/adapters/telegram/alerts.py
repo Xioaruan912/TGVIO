@@ -49,7 +49,7 @@ def render_alert(payload: dict[str, object]) -> str:
     if isinstance(reserve_bytes, int):
         lines.append(f"预留：{_human_bytes(reserve_bytes)}")
     lines.append("")
-    lines.append("详情见 /jobs 与 /diag。")
+    lines.append("详情见 /jobs。")
     text = "\n".join(lines)
     return text[:_MAX_ALERT_CHARS]
 

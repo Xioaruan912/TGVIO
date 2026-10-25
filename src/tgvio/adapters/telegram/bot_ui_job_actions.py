@@ -24,7 +24,6 @@ from tgvio.application.auto_recovery import (
     job_failure_waits_for_recovery,
     job_recovery_state,
 )
-from tgvio.application.diagnostics import DiagnosticSnapshotService
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
@@ -38,7 +37,6 @@ from tgvio.domain.archive import (
     ArchivePackage,
     ArchivePackageState,
 )
-from tgvio.domain.diagnostics import DiagnosticSnapshot
 from tgvio.domain.job import Job, JobState, MediaKind, job_failure_code
 from tgvio.domain.job_query import (
     FailurePage,

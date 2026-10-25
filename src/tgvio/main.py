@@ -29,11 +29,6 @@ from tgvio.application.auto_recovery import (
 )
 from tgvio.application.cache_cleanup import CacheCleanupRuntime, CacheCleanupService
 from tgvio.application.flood_wait import FloodWaitGate
-from tgvio.application.diagnostics import (
-    DiagnosticFeatureConfig,
-    DiagnosticSnapshotService,
-    static_proxy_health_detail,
-)
 from tgvio.application.alerts import AlertRuntime
 from tgvio.application.maintenance import HistoryMaintenanceRuntime, HistoryMaintenanceService
 from tgvio.application.runtime_flags import RuntimeFlags
@@ -132,8 +127,10 @@ async def run(*, check_only: bool = False) -> None:
         await repository.set_runtime_health(
             "static_proxy",
             proxy_probe.state.value,
-            detail=static_proxy_health_detail(
-                checked_at_epoch=proxy_probe.checked_at_epoch,
+            detail=(
+                {"version": 1}
+                if proxy_probe.checked_at_epoch is None
+                else {"version": 1, "checked_at_epoch": max(0, int(proxy_probe.checked_at_epoch))}
             ),
         )
         log_event(
@@ -369,23 +366,6 @@ async def run(*, check_only: bool = False) -> None:
             poll_seconds=settings.auto_retry_poll_seconds,
             flood_gate=flood_gate,
         )
-        diagnostic_service = DiagnosticSnapshotService(
-            repository,
-            features=DiagnosticFeatureConfig(
-                run_bot=settings.run_bot,
-                publish_enabled=settings.publish_enabled,
-                url_enabled=settings.url_enabled,
-                url_private_network_policy=settings.url_private_network_policy,
-                archive_enabled=settings.archive_enabled,
-                archive_profile_id=settings.archive_profile_id,
-                archive_policy=settings.archive_policy,
-                collections_enabled=settings.collections_enabled,
-                auto_retry_enabled=settings.auto_retry_enabled,
-                static_proxy_configured=bool(settings.static_proxy_url),
-            ),
-            schema_status=repository.schema_status,
-            capabilities=lambda: capabilities,
-        )
         alert_user_id = settings.alert_user_id or settings.allowed_users[0]
         primary_notifier = TelegramOwnerNotifier(
             lambda text: gateway.client.send_message(
@@ -434,7 +414,6 @@ async def run(*, check_only: bool = False) -> None:
                 else None,
             ),
             operation_tokens=operation_tokens,
-            diagnostic_service=diagnostic_service,
             runtime_flags=runtime_flags,
             intake=intake,
             source_coordinator=source_coordinator,
