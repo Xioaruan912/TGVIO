@@ -19,11 +19,6 @@ from tgvio.application.archive_capabilities import (
     ArchiveCapabilityStatus,
     get_archive_capability_status,
 )
-from tgvio.application.archive_deletion import (
-    ArchiveDeletionOperationInvalidError,
-    ArchiveDeletionService,
-    ArchiveDeletionUnavailableError,
-)
 from tgvio.application.auto_recovery import (
     archive_failure_waits_for_recovery,
     archive_recovery_state,
@@ -39,14 +34,8 @@ from tgvio.application.operation_tokens import (
     OperationTokenService,
 )
 from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepository
-from tgvio.application.undo import (
-    UndoOperationInvalidError,
-    UndoService,
-    UndoUnavailableError,
-)
 from tgvio.config import Settings
 from tgvio.domain.archive import (
-    ArchiveDeletionStatus,
     ArchivePackage,
     ArchivePackageState,
 )
@@ -60,7 +49,6 @@ from tgvio.domain.job_query import (
     JobPage,
 )
 from tgvio.domain.maintenance import business_day_bounds
-from tgvio.domain.operations import UndoStatus
 from tgvio.domain.publish import PublishPlan, PublishStepKind, PublishStepState, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
@@ -88,22 +76,6 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
 
     async def _job_label(self, job: Job) -> str:
         return self._job_number(await self._display_number(job))
-
-    async def _safe_undo_status(self, job: Job) -> UndoStatus | None:
-        if self._undo_service is None:
-            return None
-        try:
-            return await self._undo_service.status(job)
-        except Exception as exc:
-            log_event(
-                self._log,
-                logging.WARNING,
-                "telegram.undo.status_failed",
-                "Unable to read durable publish undo status",
-                job_id=job.id,
-                exception_type=type(exc).__name__,
-            )
-            return None
 
     async def _owned_job(self, owner_id: int, job_id: str) -> Job | None:
         if not job_id or len(job_id) > 40:
@@ -386,38 +358,6 @@ class BotUIJobsMixin(BotUIJobActionsMixin):
             deep=deep,
             accepted_order=await self._display_number(job),
         )
-        if self._undo_service is not None and job.terminal:
-            undo_status = await self._safe_undo_status(job)
-            if undo_status is not None and undo_status.total_messages > 0:
-                if undo_status.complete:
-                    text += (
-                        f"\n\n↩️ **发布撤销** · 已删除 `{undo_status.deleted_messages}/"
-                        f"{undo_status.total_messages}` 条频道消息。"
-                    )
-                elif undo_status.deleted_messages or undo_status.failed_messages:
-                    text += (
-                        f"\n\n↩️ **发布撤销** · 已删除 `{undo_status.deleted_messages}/"
-                        f"{undo_status.total_messages}`，仍需处理 `{undo_status.remaining_messages}` 条。"
-                    )
-        package = await self._repository.get_archive_package_for_job(job.id)
-        if package is not None:
-            deletion = await self._safe_archive_deletion_status(package)
-            if deletion is not None:
-                if deletion.complete:
-                    text += (
-                        "\n\n🗑 **云端备份** · 已全部删除；"
-                        "Telegram 与删除审计仍保留。"
-                    )
-                elif deletion.commit_boundary_invalidated:
-                    text += (
-                        f"\n\n🧹 **云端备份删除中** · 已删 `{deletion.deleted_targets}/"
-                        f"{deletion.total_targets}`，剩余 `{deletion.remaining_count}` 个精确文件。"
-                    )
-                else:
-                    text += (
-                        f"\n\n⚠️ **云端备份等待删除确认** · 共 "
-                        f"`{deletion.remaining_count}` 个，尚未开始删除内容。"
-                    )
         control = await self._repository.get_job_control(job.id)
         if control.hold_requested and not job.terminal:
             text += "\n\n⏸ **任务已暂停** · 恢复后会接着做。"

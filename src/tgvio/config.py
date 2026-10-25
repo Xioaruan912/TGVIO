@@ -62,8 +62,6 @@ class Settings:
     environment: str
     run_bot: bool
     publish_enabled: bool
-    live_fixture_enabled: bool
-    live_fixture_max_bytes: int
     data_dir: Path
     download_dir: Path
     log_level: str
@@ -216,9 +214,6 @@ class Settings:
         auto_retry_poll_seconds = _int("TGVIO_AUTO_RETRY_POLL_SECONDS", 2)
         if not 1 <= auto_retry_poll_seconds <= 300:
             raise ConfigError("TGVIO_AUTO_RETRY_POLL_SECONDS out of range")
-        live_fixture_max_mb = _int("TGVIO_LIVE_FIXTURE_MAX_MB", 100)
-        if not 1 <= live_fixture_max_mb <= 512:
-            raise ConfigError("TGVIO_LIVE_FIXTURE_MAX_MB out of range")
         log_level = os.getenv("TGVIO_LOG_LEVEL", "INFO").strip().upper() or "INFO"
         if log_level not in {"DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"}:
             raise ConfigError("TGVIO_LOG_LEVEL must be DEBUG/INFO/WARNING/ERROR/CRITICAL")
@@ -350,8 +345,6 @@ class Settings:
             environment=os.getenv("TGVIO_ENV", "development").strip() or "development",
             run_bot=_bool("TGVIO_RUN_BOT", False),
             publish_enabled=_bool("TGVIO_PUBLISH_ENABLED", False),
-            live_fixture_enabled=_bool("TGVIO_LIVE_FIXTURE_ENABLED", False),
-            live_fixture_max_bytes=live_fixture_max_mb * 1024 * 1024,
             data_dir=Path(os.getenv("TGVIO_DATA_DIR", "/app/data")),
             download_dir=Path(os.getenv("TGVIO_DOWNLOAD_DIR", "/app/downloads")),
             log_level=log_level,
@@ -436,8 +429,6 @@ class Settings:
             "environment": self.environment,
             "run_bot": self.run_bot,
             "publish_enabled": self.publish_enabled,
-            "live_fixture_enabled": self.live_fixture_enabled,
-            "live_fixture_max_mb": self.live_fixture_max_bytes // (1024 * 1024),
             "allowed_users_count": len(self.allowed_users),
             "destination_kind": "username" if self.destination.startswith("@") else "id",
             "cover_mode": self.cover_mode,

@@ -4,7 +4,6 @@ from dataclasses import dataclass
 
 from tgvio.application.ports import JobRepository
 from tgvio.domain.job import DOWNLOAD_SKIPPED_CODE_KEY, Job, JobState, item_download_skipped
-from tgvio.domain.operations import RevocationState
 
 _VISIBLE_EFFECT_TYPES = {
     "telegram_channel_message",
@@ -22,8 +21,6 @@ class ResultCard:
     archive_state: str | None
     link_url: str | None
     link_reason: str | None
-    undo_remaining: int = 0
-    favorited: bool = False
     channel_message_ids: tuple[str, ...] = ()
     discussion_message_ids: tuple[str, ...] = ()
     skipped_items: int = 0
@@ -67,19 +64,12 @@ class ResultCardService:
     async def build(
         self,
         job: Job,
-        *,
-        favorited: bool = False,
-        undo_remaining: int = 0,
     ) -> ResultCard:
         plan = await self._repository.get_publish_plan(job.id)
         effects = await self._repository.list_publish_effects(plan.id) if plan else []
         visible = [
             effect for effect in effects if effect.effect_type in _VISIBLE_EFFECT_TYPES
         ]
-        revocations = await self._repository.list_publish_effect_revocations(job.id)
-        deleted_ids = {r.effect_id for r in revocations if r.state == RevocationState.DELETED}
-        deleted = [e for e in visible if e.id in deleted_ids]
-        visible = [e for e in visible if e.id not in deleted_ids]
         channel_ids = list(
             dict.fromkeys(
                 str(effect.external_message_id)
@@ -97,9 +87,7 @@ class ResultCardService:
         package = await self._repository.get_archive_package_for_job(job.id)
         archive_state = package.state.value if package is not None else None
 
-        if deleted:
-            telegram_state = "partially_revoked" if visible else "revoked"
-        elif job.state == JobState.SUCCEEDED:
+        if job.state == JobState.SUCCEEDED:
             telegram_state = "succeeded"
         elif job.state == JobState.FAILED and job.error_code in {
             "publish_partial",
@@ -135,8 +123,6 @@ class ResultCardService:
             archive_state=archive_state,
             link_url=link_url,
             link_reason=link_reason,
-            undo_remaining=int(undo_remaining),
-            favorited=bool(favorited),
             channel_message_ids=tuple(channel_ids),
             discussion_message_ids=tuple(discussion_ids),
             skipped_items=len(skipped),

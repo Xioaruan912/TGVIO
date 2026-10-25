@@ -14,7 +14,7 @@ from tgvio.application.auto_recovery import (
 )
 from tgvio.application.ports import CacheOperator, JobRepository, PublishedMessageRemover
 from tgvio.application.runtime_flags import RuntimeFlags
-from tgvio.domain.archive import ArchiveDeletionState, ArchivePackageState, ArchivePolicy
+from tgvio.domain.archive import ArchivePackageState, ArchivePolicy
 from tgvio.domain.job import Job, JobState
 from tgvio.domain.maintenance import (
     BusinessDay,
@@ -265,8 +265,6 @@ class HistoryMaintenanceService:
             return False
         if await self._repository.job_has_unsettled_publish_step(job.id):
             return False
-        if await self._repository.job_has_pending_revocation(job.id):
-            return False
         package = await self._repository.get_archive_package_for_job(job.id)
         if package is not None:
             if package.state in _ARCHIVE_ACTIVE:
@@ -276,9 +274,6 @@ class HistoryMaintenanceService:
                     return False
                 if archive_failure_waits_for_recovery(job, package):
                     return False
-            deletion = await self._repository.get_archive_deletion(package.id)
-            if deletion is not None and deletion.state != ArchiveDeletionState.DELETED:
-                return False
         return True
 
     async def _delete_status_bounded(self, chat_id: int, message_id: int) -> bool:

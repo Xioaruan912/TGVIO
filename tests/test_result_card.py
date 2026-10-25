@@ -13,7 +13,6 @@ from tgvio.domain.job import (
     MediaItem,
     MediaKind,
 )
-from tgvio.domain.operations import RevocationState
 from tgvio.domain.publish import PublishEffect, PublishPlan
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
 
@@ -35,7 +34,7 @@ class PublicPostLinkTests(unittest.TestCase):
         self.assertIsNotNone(reason)
 
 
-class FavoritesAndResultTests(unittest.IsolatedAsyncioTestCase):
+class ResultTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
         self.tmp = TemporaryDirectory()
         self.repo = SQLiteJobRepository(Path(self.tmp.name) / "state.sqlite3")
@@ -49,35 +48,6 @@ class FavoritesAndResultTests(unittest.IsolatedAsyncioTestCase):
         job = Job(owner_id=owner_id, destination=destination, items=[], id=job_id)
         await self.repo.create(job)
         return job
-
-    async def test_favorites_are_owner_scoped_and_idempotent(self) -> None:
-        await self._job("j1")
-        await self._job("foreign", owner_id=9)
-
-        self.assertTrue(await self.repo.add_favorite(7, "j1"))
-        self.assertFalse(await self.repo.add_favorite(7, "j1"))
-        self.assertTrue(await self.repo.is_favorite(7, "j1"))
-        self.assertFalse(await self.repo.is_favorite(9, "j1"))
-        self.assertFalse(await self.repo.add_favorite(7, "foreign"))
-        self.assertFalse(await self.repo.add_favorite(9, "missing"))
-
-        self.assertEqual(await self.repo.count_favorites(7), 1)
-        jobs = await self.repo.list_favorite_jobs(7)
-        self.assertEqual([item.id for item in jobs], ["j1"])
-        self.assertEqual(await self.repo.favorite_job_ids(7, ("j1", "foreign")), {"j1"})
-
-        self.assertTrue(await self.repo.remove_favorite(7, "j1"))
-        self.assertFalse(await self.repo.is_favorite(7, "j1"))
-        self.assertEqual(await self.repo.count_favorites(7), 0)
-
-    async def test_favorites_survive_hidden_history(self) -> None:
-        job = await self._job("j1")
-        await self.repo.add_favorite(7, "j1")
-        await self.repo.hide_jobs(("j1",), reason="daily_rollover", now=1.0)
-        self.assertTrue(await self.repo.is_favorite(7, "j1"))
-        jobs = await self.repo.list_favorite_jobs(7)
-        self.assertEqual([item.id for item in jobs], ["j1"])
-        self.assertIsNotNone(await self.repo.get("j1"))
 
     async def test_quiet_mode_and_style_preferences_round_trip(self) -> None:
         pref = await self.repo.get_user_preference(7)
@@ -120,23 +90,11 @@ class FavoritesAndResultTests(unittest.IsolatedAsyncioTestCase):
         job.state = JobState.SUCCEEDED
         await self.repo.save(job)
 
-        card = await ResultCardService(self.repo).build(job, favorited=True)
+        card = await ResultCardService(self.repo).build(job)
         self.assertEqual(card.telegram_state, "succeeded")
         self.assertEqual(card.confirmed_messages, 1)
         self.assertEqual(card.link_url, "https://t.me/mychannel/55")
         self.assertIsNone(card.archive_state)
-        self.assertTrue(card.favorited)
-        from tgvio.domain.operations import RevocationState
-        effects = await self.repo.list_publish_effects(plan.id)
-        ids = tuple(e.id for e in effects if e.effect_type == "telegram_channel_message")
-        await self.repo.ensure_publish_effect_revocations(job.id, ids)
-        await self.repo.checkpoint_publish_effect_revocations(
-            job.id, ids, state=RevocationState.DELETED,
-        )
-        revoked = await ResultCardService(self.repo).build(job)
-        self.assertEqual(revoked.telegram_state, "revoked")
-        self.assertIsNone(revoked.link_url)
-        self.assertEqual(revoked.confirmed_messages, 0)
 
     async def test_result_card_counts_skipped_items(self) -> None:
         job = Job(
@@ -325,25 +283,6 @@ class ResultCardIdempotencyTests(unittest.IsolatedAsyncioTestCase):
         card = await ResultCardService(self.repo).build(job)
         self.assertEqual(card.link_url, "https://t.me/mychannel/55")
         self.assertEqual(card.telegram_state, "succeeded")
-
-    async def test_revoked_channel_cover_removes_link_and_marks_partial(self) -> None:
-        job = await self._job_with_effects(
-            [
-                ("telegram_channel_message", "55"),
-                ("telegram_discussion_message", "77"),
-            ]
-        )
-        plan = await self.repo.get_publish_plan(job.id)
-        assert plan is not None
-        effects = await self.repo.list_publish_effects(plan.id)
-        channel_effect = next(e for e in effects if e.effect_type == "telegram_channel_message")
-        await self.repo.ensure_publish_effect_revocations(job.id, (channel_effect.id,))
-        await self.repo.checkpoint_publish_effect_revocations(
-            job.id, (channel_effect.id,), state=RevocationState.DELETED
-        )
-        card = await ResultCardService(self.repo).build(job)
-        self.assertEqual(card.telegram_state, "partially_revoked")
-        self.assertIsNone(card.link_url)
 
     async def test_public_post_link_dedupes_and_requires_username(self) -> None:
         self.assertEqual(

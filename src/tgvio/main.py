@@ -19,7 +19,6 @@ from tgvio.adapters.telegram.source_runtime import SourceCoordinator
 from tgvio.adapters.telegram.user_source import UserSourceDownloader
 from tgvio.adapters.url_downloader import UrlMediaDownloader
 from tgvio.adapters.webdav_archive import WebDavArchiveTransport
-from tgvio.application.archive_deletion import ArchiveDeletionService
 from tgvio.application.archive_planner import ArchivePlanner, publish_thumbnail_cover_provider
 from tgvio.application.archive_runtime import ArchiveRuntime, ArchiveService
 from tgvio.application.auto_recovery import (
@@ -63,7 +62,6 @@ from tgvio.application.processor import IngestionProcessor
 from tgvio.application.reference_cache import TelegramReferenceEnricher
 from tgvio.application.runtime_health import RuntimeHealthHeartbeat
 from tgvio.application.scheduler import RuntimeLeaseGuard
-from tgvio.application.undo import UndoService
 from tgvio.config import Settings, load_dotenv
 from tgvio.infrastructure.media_inspector import FFprobeMediaInspector
 from tgvio.infrastructure.log_reader import JsonlOperationalLogReader
@@ -313,7 +311,7 @@ async def run(*, check_only: bool = False) -> None:
             control,
         )
         execution = None
-        if settings.publish_enabled or settings.live_fixture_enabled:
+        if settings.publish_enabled:
             execution = PublishExecutionEngine(
                 repository,
                 TelethonPublishTransport(
@@ -388,20 +386,6 @@ async def run(*, check_only: bool = False) -> None:
             poll_seconds=settings.auto_retry_poll_seconds,
             flood_gate=flood_gate,
         )
-        archive_deletion_service = (
-            ArchiveDeletionService(
-                repository,
-                archive_transport,
-                operation_tokens=operation_tokens,
-            )
-            if archive_transport is not None
-            else None
-        )
-        undo_service = UndoService(
-            repository,
-            TelethonPublishedMessageRemover(gateway.client),
-            operation_tokens=operation_tokens,
-        )
         diagnostic_service = DiagnosticSnapshotService(
             repository,
             features=DiagnosticFeatureConfig(
@@ -414,7 +398,6 @@ async def run(*, check_only: bool = False) -> None:
                 archive_policy=settings.archive_policy,
                 collections_enabled=settings.collections_enabled,
                 auto_retry_enabled=settings.auto_retry_enabled,
-                live_fixture_enabled=settings.live_fixture_enabled,
                 static_proxy_configured=bool(settings.static_proxy_url),
             ),
             schema_status=repository.schema_status,
@@ -457,13 +440,9 @@ async def run(*, check_only: bool = False) -> None:
             gateway.client,
             settings,
             repository,
-            fixture_execution=(
-                execution if settings.live_fixture_enabled else None
-            ),
             control=control,
             schedule_job=intake_runtime.schedule,
             archive_operator=archive_runtime,
-            archive_deletion_service=archive_deletion_service,
             cache_operator=cache_runtime,
             job_diagnostics=JobDiagnosticService(
                 repository,
@@ -471,7 +450,6 @@ async def run(*, check_only: bool = False) -> None:
                 if settings.log_file_enabled
                 else None,
             ),
-            undo_service=undo_service,
             operation_tokens=operation_tokens,
             diagnostic_service=diagnostic_service,
             runtime_flags=runtime_flags,
