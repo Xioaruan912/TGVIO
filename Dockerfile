@@ -3,6 +3,17 @@
 # Pin the complete multi-platform index. HostDZire selects the linux/amd64
 # manifest from this immutable digest (Python 3.11.16, Debian trixie-slim).
 ARG PYTHON_IMAGE=python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
+ARG NODE_IMAGE=node:20-bookworm-slim
+
+# The web console in console/ (React + Vite), served by the bot at /.
+FROM ${NODE_IMAGE} AS console-build
+WORKDIR /console
+COPY console/package.json console/package-lock.json ./
+RUN npm ci --no-audit --no-fund
+COPY console/index.html console/tsconfig.json console/vite.config.ts ./
+COPY console/public ./public
+COPY console/src ./src
+RUN npm run build
 
 FROM ${PYTHON_IMAGE} AS dependencies
 WORKDIR /build
@@ -50,6 +61,7 @@ CMD ["sh", "scripts/check_foundation.sh"]
 
 FROM runtime-base AS runtime
 COPY src ./src
+COPY --from=console-build /console/dist ./console-web
 COPY scripts/healthcheck.py scripts/image_inspect.py scripts/login_source_session.py ./scripts/
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD ["python", "scripts/healthcheck.py"]
