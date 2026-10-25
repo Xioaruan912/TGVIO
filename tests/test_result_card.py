@@ -196,11 +196,11 @@ class PublishStyleTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_named_custom_and_reset_style(self) -> None:
-        from tgvio.application.publish_styles import PublishStyleService, resolve_style
+        from tgvio.application.publish_styles import PublishStyleService, resolve_style, style_policy
 
-        self.assertEqual(resolve_style(None)[0], 'cover')
-        service = PublishStyleService(self.repo)
-        self.assertTrue((await service.current(7))['cover_mode'])
+        self.assertEqual(resolve_style(None)[0], 'default')
+        service = PublishStyleService(self.repo, style_policy(cover_mode=True, forward_caption=True))
+        self.assertEqual(await service.current(7), {'cover_mode': True, 'forward_caption': True})
 
         await service.set_named(7, 'minimal')
         policy = await service.current(7)
@@ -213,9 +213,8 @@ class PublishStyleTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(policy['forward_caption'])
 
         await service.reset(7)
-        policy = await service.current(7)
-        self.assertTrue(policy['cover_mode'])
-        self.assertFalse(policy['forward_caption'])
+        # Reset goes back to the configured baseline, not to a built-in preset.
+        self.assertEqual(await service.current(7), {'cover_mode': True, 'forward_caption': True})
 
     async def test_style_snapshot_overrides_global_planning_policy(self) -> None:
         from tgvio.application.orchestrator import JobOrchestrator, PlanningPolicy

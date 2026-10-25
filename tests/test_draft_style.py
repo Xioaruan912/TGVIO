@@ -39,6 +39,33 @@ class DraftStyleTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.close()
         self.tmp.cleanup()
 
+    async def test_collection_without_a_chosen_style_follows_the_configured_baseline(self) -> None:
+        # Nothing chosen: the job carries no style snapshot, so the planner uses
+        # COVER_MODE / FORWARD_CAPTION exactly like a single forwarded post.
+        session = await self.intake.begin_collection(owner_id=7, chat_id=42)
+        await self.intake.add_collection_media(session, [_media(9)])
+        draft = await self.editing.draft(session.id)
+        assert draft is not None
+        self.assertEqual(await self.editing.effective_style(7, session.id), {})
+        token = await self.editing.issue_confirm(
+            owner_id=7,
+            session_id=session.id,
+            expected_revision=draft.revision,
+            spoiler_mode=SpoilerMode.SOURCE,
+        )
+        result = await self.editing.confirm(
+            owner_id=7, chat_id=42, token=token, destination="@channel",
+            max_items=100, ask_timeout_seconds=60,
+        )
+        self.assertNotIn("publish_style", result.jobs[0].job.policy)
+
+    def test_unset_style_reports_the_baseline_it_will_use(self) -> None:
+        from tgvio.application.publish_styles import resolve_style, style_policy
+
+        baseline = style_policy(cover_mode=True, forward_caption=True)
+        self.assertEqual(resolve_style(None, baseline), ("default", baseline))
+        self.assertEqual(resolve_style(None), ("default", {}))
+
     async def test_draft_override_takes_priority_without_changing_owner_default(self) -> None:
         await self.styles.set_named(7, "minimal")
         session = await self.intake.begin_collection(owner_id=7, chat_id=42)

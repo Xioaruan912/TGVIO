@@ -403,10 +403,14 @@ class IntakeEditMixin:
         editing = await self._editing_service()
         if editing is None:
             return
-        from tgvio.application.publish_styles import BUILTIN_STYLES, STYLE_ORDER, resolve_style
+        from tgvio.application.publish_styles import BUILTIN_STYLES, STYLE_ORDER, resolve_style, style_policy
 
         owned = await self._repository.get_user_preference(int(owner_id))
-        _, owner_policy = resolve_style(owned.style_json)
+        baseline = style_policy(
+            cover_mode=bool(self._settings.cover_mode),
+            forward_caption=bool(self._settings.forward_caption),
+        )
+        _, owner_policy = resolve_style(owned.style_json, baseline)
         name, policy = resolve_style(draft.style_json) if draft.style_json else ("__default__", owner_policy)
         source = "草稿覆盖" if draft.style_json else "owner 默认"
         cover_label = "开" if policy.get("cover_mode") else "关"

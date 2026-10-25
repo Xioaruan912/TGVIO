@@ -25,7 +25,8 @@ BUILTIN_STYLES: dict[str, dict[str, object]] = {
         "forward_caption": True,
     },
 }
-DEFAULT_STYLE = "cover"
+DEFAULT_STYLE = "default"
+DEFAULT_LABEL = "跟随配置"
 STYLE_ORDER = ("minimal", "cover", "photo_text")
 
 
@@ -33,8 +34,16 @@ def style_policy(*, cover_mode: bool, forward_caption: bool) -> dict[str, object
     return {"cover_mode": bool(cover_mode), "forward_caption": bool(forward_caption)}
 
 
-def resolve_style(style_json: str | None) -> tuple[str, dict[str, object]]:
-    """Return (style label key, effective policy) for a stored preference."""
+def resolve_style(
+    style_json: str | None, baseline: dict[str, object] | None = None
+) -> tuple[str, dict[str, object]]:
+    """Return (style key, effective policy) for a stored preference.
+
+    With nothing chosen the key is ``default`` and the policy is ``baseline``
+    (COVER_MODE / FORWARD_CAPTION from the env), or empty when no baseline is
+    given: an empty policy freezes no override, so collections publish exactly
+    like single forwarded posts.
+    """
     data: dict[str, object] = {}
     if style_json:
         try:
@@ -55,22 +64,21 @@ def resolve_style(style_json: str | None) -> tuple[str, dict[str, object]]:
             cover_mode=bool(data.get("cover_mode", True)),
             forward_caption=bool(data.get("forward_caption", False)),
         )
-    builtin = BUILTIN_STYLES[DEFAULT_STYLE]
-    return DEFAULT_STYLE, style_policy(
-        cover_mode=bool(builtin["cover_mode"]),
-        forward_caption=bool(builtin["forward_caption"]),
-    )
+    return DEFAULT_STYLE, dict(baseline or {})
 
 
 class PublishStyleService:
     """Owner-scoped publish style presets plus a single-use custom override."""
 
-    def __init__(self, repository: JobRepository) -> None:
+    def __init__(
+        self, repository: JobRepository, baseline: dict[str, object] | None = None
+    ) -> None:
         self._repository = repository
+        self._baseline = baseline
 
     async def current(self, owner_id: int) -> dict[str, object]:
         preference = await self._repository.get_user_preference(int(owner_id))
-        _, policy = resolve_style(preference.style_json)
+        _, policy = resolve_style(preference.style_json, self._baseline)
         return policy
 
     async def current_name(self, owner_id: int) -> str:
