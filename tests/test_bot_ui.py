@@ -381,6 +381,8 @@ def settings(**overrides):
         "environment": "test",
         "worker_concurrency": 2,
         "url_private_network_policy": "block",
+        "cover_mode": True,
+        "forward_caption": True,
     }
     values.update(overrides)
     return SimpleNamespace(**values)

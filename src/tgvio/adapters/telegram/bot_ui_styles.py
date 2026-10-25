@@ -5,21 +5,29 @@ from telethon import Button
 from tgvio.adapters.telegram.bot_ui_support import *  # noqa: F401,F403
 from tgvio.application.publish_styles import (
     BUILTIN_STYLES,
+    DEFAULT_LABEL,
     DEFAULT_STYLE,
     PublishStyleService,
     STYLE_ORDER,
     resolve_style,
+    style_policy,
 )
 
 
 class BotUIStylesMixin:
     def _style_service(self) -> PublishStyleService:
-        return PublishStyleService(self._repository)
+        return PublishStyleService(self._repository, self._style_baseline())
+
+    def _style_baseline(self) -> dict[str, object]:
+        return style_policy(
+            cover_mode=bool(self._settings.cover_mode),
+            forward_caption=bool(self._settings.forward_caption),
+        )
 
     async def _render_styles(self, owner_id: int) -> tuple[str, list]:
         preference = await self._repository.get_user_preference(int(owner_id))
-        name, policy = resolve_style(preference.style_json)
-        active = BUILTIN_STYLES.get(name, {}).get("label", "自定义")
+        name, policy = resolve_style(preference.style_json, self._style_baseline())
+        active = DEFAULT_LABEL if name == DEFAULT_STYLE else BUILTIN_STYLES.get(name, {}).get("label", "自定义")
         cover_label = "开" if policy["cover_mode"] else "关"
         caption_label = "保留" if policy["forward_caption"] else "不保留"
         lines = [
