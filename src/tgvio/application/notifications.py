@@ -1,13 +1,8 @@
 from __future__ import annotations
 
 import asyncio
-import hashlib
-import hmac
-import json
 import logging
 import time
-import urllib.parse
-from dataclasses import dataclass
 from typing import Callable, Protocol
 
 from tgvio.application.auto_recovery import recovery_status_is_final
@@ -25,89 +20,12 @@ class WebhookDeliveryError(RuntimeError):
         self.code = code
 
 
-# Generic delivery failure for any outbox channel (Telegram owner DM, webhook).
+# Delivery failure for the outbox channel (the owner's Telegram DM).
 NotificationDeliveryError = WebhookDeliveryError
 
 
 class Notifier(Protocol):
     async def deliver(self, payload: dict[str, object]) -> None: ...
-
-
-class WebhookNotifier:
-    """Deliver one redacted event to an HTTPS endpoint with an HMAC signature.
-
-    The endpoint URL and token are never logged or persisted; only a normalized
-    error code is returned to the outbox.
-    """
-
-    def __init__(
-        self,
-        url: str,
-        token: str,
-        *,
-        timeout_seconds: float = 10.0,
-        sender: Callable[[str, dict[str, str], bytes, float], None] | None = None,
-    ) -> None:
-        parsed = urllib.parse.urlsplit(url.strip())
-        if parsed.scheme != "https" or not parsed.hostname:
-            raise WebhookDeliveryError("webhook_not_https", "webhook URL must be HTTPS")
-        if parsed.username or parsed.password:
-            raise WebhookDeliveryError(
-                "webhook_url_credentials",
-                "webhook URL must not contain embedded credentials",
-            )
-        if not token:
-            raise WebhookDeliveryError("webhook_token_missing", "webhook token is required")
-        self._url = url.strip()
-        self._token = token
-        self._timeout = max(1.0, float(timeout_seconds))
-        self._sender = sender or self._send_http
-
-    async def deliver(self, payload: dict[str, object]) -> None:
-        body = json.dumps(payload, ensure_ascii=False, separators=(",", ":")).encode("utf-8")
-        signature = hmac.new(
-            self._token.encode("utf-8"),
-            body,
-            hashlib.sha256,
-        ).hexdigest()
-        headers = {
-            "Content-Type": "application/json",
-            "User-Agent": "tgvio-notifier/1",
-            "X-TGVIO-Signature": f"sha256={signature}",
-        }
-        try:
-            await asyncio.to_thread(self._sender, self._url, headers, body, self._timeout)
-        except WebhookDeliveryError:
-            raise
-        except Exception as exc:  # noqa: BLE001 - normalized to a safe code
-            raise WebhookDeliveryError("webhook_transport", type(exc).__name__) from exc
-
-    def _send_http(
-        self,
-        url: str,
-        headers: dict[str, str],
-        body: bytes,
-        timeout: float,
-    ) -> None:
-        import http.client
-
-        parsed = urllib.parse.urlsplit(url)
-        path = parsed.path or "/"
-        if parsed.query:
-            path = f"{path}?{parsed.query}"
-        connection = http.client.HTTPSConnection(
-            parsed.hostname,
-            parsed.port or 443,
-            timeout=timeout,
-        )
-        try:
-            connection.request("POST", path, body=body, headers=headers)
-            response = connection.getresponse()
-            response.read()
-            if not 200 <= response.status < 300:
-                raise WebhookDeliveryError(f"webhook_http_{response.status}")
-        finally:
-            connection.close()
 
 
 class OutboxService:
@@ -129,7 +47,6 @@ class NotificationRuntime:
         repository: JobRepository,
         notifier: Notifier,
         *,
-        secondary_notifier: Notifier | None = None,
         primary_accepts: frozenset[str] | None = None,
         poll_seconds: float = 15.0,
         max_attempts: int = 5,
@@ -141,7 +58,6 @@ class NotificationRuntime:
     ) -> None:
         self._repository = repository
         self._notifier = notifier
-        self._secondary = secondary_notifier
         self._primary_accepts = primary_accepts
         self._poll_seconds = max(1.0, float(poll_seconds))
         self._max_attempts = max(1, int(max_attempts))
@@ -214,35 +130,13 @@ class NotificationRuntime:
         return {"claimed": len(entries), "sent": sent, "failed": failed}
 
     async def _deliver_entry(self, entry) -> None:
-        """Deliver one outbox entry.
+        """Deliver one outbox entry; a failure retries it.
 
-        The primary channel is authoritative (its failure retries the entry).
-        The secondary channel is best-effort fire-and-forget so a webhook outage
-        never blocks the owner alert. Event scoping lets the owner channel carry
-        only failures/anomalies while a webhook can receive the full stream.
+        The owner channel carries only the events it accepts (failures and
+        anomalies); anything else is settled without sending.
         """
-        primary_accepts = (
-            self._primary_accepts is None or entry.event_type in self._primary_accepts
-        )
-        delivered = False
-        if primary_accepts:
+        if self._primary_accepts is None or entry.event_type in self._primary_accepts:
             await self._notifier.deliver(entry.delivery_signature)
-            delivered = True
-        if self._secondary is not None:
-            try:
-                await self._secondary.deliver(entry.delivery_signature)
-                delivered = True
-            except WebhookDeliveryError as exc:
-                log_event(
-                    self._log,
-                    logging.WARNING,
-                    "notification.secondary.failed",
-                    notification_id=entry.id,
-                    event_type=entry.event_type,
-                    error_code=exc.code,
-                )
-        # No channel accepted this event; nothing to deliver, so settle it.
-        _ = delivered
 
     async def _enqueue_feed(self, now: float) -> int:
         candidates = await self._repository.get_notification_candidates(

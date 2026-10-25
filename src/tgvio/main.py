@@ -30,18 +30,15 @@ from tgvio.application.auto_recovery import (
 )
 from tgvio.application.cache_cleanup import CacheCleanupRuntime, CacheCleanupService
 from tgvio.application.flood_wait import FloodWaitGate
-from tgvio.adapters.web.dashboard import DashboardServer
-from tgvio.application.dashboard import DashboardService
 from tgvio.application.diagnostics import (
     DiagnosticFeatureConfig,
     DiagnosticSnapshotService,
     static_proxy_health_detail,
 )
-from tgvio.application.metrics import MetricsService
 from tgvio.application.alerts import AlertRuntime
 from tgvio.application.maintenance import HistoryMaintenanceRuntime, HistoryMaintenanceService
 from tgvio.application.runtime_flags import RuntimeFlags
-from tgvio.application.notifications import NotificationRuntime, Notifier, WebhookNotifier
+from tgvio.application.notifications import NotificationRuntime
 from tgvio.adapters.telegram.alerts import TelegramOwnerNotifier
 from tgvio.domain.notifications import ALERT_EVENT_TYPES
 from tgvio.application.execution import PublishExecutionEngine
@@ -423,27 +420,6 @@ async def run(*, check_only: bool = False) -> None:
             schema_status=repository.schema_status,
             capabilities=lambda: capabilities,
         )
-        dashboard_server: DashboardServer | None = None
-        notification_runtime: NotificationRuntime | None = None
-        alert_runtime: AlertRuntime | None = None
-        maintenance_runtime: HistoryMaintenanceRuntime | None = None
-        dashboard_service: DashboardService | None = None
-        if settings.dashboard_enabled:
-            dashboard_service = DashboardService(
-                repository,
-                diagnostic_service,
-                disk_usage=lambda: _disk_snapshot(settings.download_dir),
-            )
-            dashboard_server = DashboardServer(
-                dashboard_service,
-                MetricsService(repository, diagnostic_service),
-                host=settings.dashboard_host,
-                port=settings.dashboard_port,
-                token=settings.dashboard_token,
-            )
-        primary_notifier: Notifier | None = None
-        secondary_notifier: Notifier | None = None
-        primary_accepts: frozenset[str] | None = None
         alert_user_id = settings.alert_user_id or settings.allowed_users[0]
         primary_notifier = TelegramOwnerNotifier(
             lambda text: gateway.client.send_message(
@@ -453,21 +429,11 @@ async def run(*, check_only: bool = False) -> None:
             ),
             enabled=lambda: runtime_flags.bool("alerts_enabled", True),
         )
-        primary_accepts = ALERT_EVENT_TYPES
-        if settings.webhook_enabled:
-            webhook_notifier = WebhookNotifier(
-                settings.webhook_url,
-                settings.webhook_token,
-                timeout_seconds=settings.webhook_timeout_seconds,
-            )
-            secondary_notifier = webhook_notifier
         notification_runtime = NotificationRuntime(
             repository,
             primary_notifier,
-            secondary_notifier=secondary_notifier,
-            primary_accepts=primary_accepts,
+            primary_accepts=ALERT_EVENT_TYPES,
             poll_seconds=settings.notification_poll_seconds,
-            max_attempts=settings.webhook_max_attempts,
         )
         alert_runtime = AlertRuntime(
             repository,
@@ -541,14 +507,9 @@ async def run(*, check_only: bool = False) -> None:
         intake_runtime.register()
         if archive_runtime is not None:
             await archive_runtime.start()
-        if dashboard_server is not None:
-            await dashboard_server.start()
-        if notification_runtime is not None:
-            await notification_runtime.start()
-        if alert_runtime is not None:
-            await alert_runtime.start()
-        if maintenance_runtime is not None:
-            await maintenance_runtime.start()
+        await notification_runtime.start()
+        await alert_runtime.start()
+        await maintenance_runtime.start()
         if preview_service is not None:
             await preview_service.mark_interrupted()
         recoverable = await repository.list_by_states(
@@ -631,14 +592,9 @@ async def run(*, check_only: bool = False) -> None:
                 for sig in registered_signals:
                     loop.remove_signal_handler(sig)
         finally:
-            if alert_runtime is not None:
-                await alert_runtime.stop()
-            if maintenance_runtime is not None:
-                await maintenance_runtime.stop()
-            if notification_runtime is not None:
-                await notification_runtime.stop()
-            if dashboard_server is not None:
-                await dashboard_server.stop()
+            await alert_runtime.stop()
+            await maintenance_runtime.stop()
+            await notification_runtime.stop()
             await auto_recovery_runtime.stop()
             await intake_runtime.stop()
             await bot_ui.stop()
@@ -668,11 +624,7 @@ def _disk_snapshot(path: Path) -> dict[str, int] | None:
         usage = shutil.disk_usage(path if path.exists() else path.parent)
     except OSError:
         return None
-    return {
-        "total_bytes": int(usage.total),
-        "used_bytes": int(usage.used),
-        "free_bytes": int(usage.free),
-    }
+    return {"free_bytes": int(usage.free)}
 
 
 def main() -> None:

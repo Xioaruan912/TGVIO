@@ -11,7 +11,6 @@ from tgvio.application.notifications import (
     NotificationRuntime,
     OutboxService,
     WebhookDeliveryError,
-    WebhookNotifier,
 )
 from tgvio.domain.notifications import NotificationEvent, OutboxState
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
@@ -108,41 +107,6 @@ class NotificationOutboxTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["sent"], 1)
         candidates = await self.repo.get_notification_candidates(since_epoch=0)
         self.assertTrue(any(row["job_id"] == "job-9" for row in candidates))
-
-
-class WebhookNotifierTests(unittest.IsolatedAsyncioTestCase):
-    async def test_signature_is_hmac_sha256_over_body(self) -> None:
-        captured: dict[str, object] = {}
-
-        def sender(url, headers, body, timeout):
-            captured["url"] = url
-            captured["headers"] = headers
-            captured["body"] = body
-
-        notifier = WebhookNotifier("https://example.invalid/hook", "topsecret-token-xxx", sender=sender)
-        await notifier.deliver({"event": "job.succeeded", "job_id": "job-1"})
-        body = captured["body"]
-        headers = captured["headers"]
-        assert isinstance(body, bytes) and isinstance(headers, dict)
-        expected = hmac.new(b"topsecret-token-xxx", body, hashlib.sha256).hexdigest()
-        self.assertEqual(headers["X-TGVIO-Signature"], f"sha256={expected}")
-        self.assertNotIn("topsecret", repr(notifier))
-
-    async def test_http_and_credentials_are_rejected(self) -> None:
-        with self.assertRaises(WebhookDeliveryError):
-            WebhookNotifier("http://example.invalid/hook", "token")
-        with self.assertRaises(WebhookDeliveryError):
-            WebhookNotifier("https://user:pw@example.invalid/hook", "token")
-
-    async def test_transport_failures_are_normalized(self) -> None:
-        def sender(url, headers, body, timeout):
-            raise OSError("https://user:pw@example.invalid")
-
-        notifier = WebhookNotifier("https://example.invalid/hook", "token", sender=sender)
-        with self.assertRaises(WebhookDeliveryError) as ctx:
-            await notifier.deliver({"event": "job.succeeded"})
-        self.assertEqual(ctx.exception.code, "webhook_transport")
-        self.assertNotIn("example.invalid", str(ctx.exception))
 
 
 class AlertFinalGateTests(unittest.TestCase):
