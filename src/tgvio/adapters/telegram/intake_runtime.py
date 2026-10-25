@@ -25,7 +25,6 @@ class TelethonIntakeRuntime(
         processor: JobRunner,
         flags: object | None = None,
         editing: object | None = None,
-        previews: object | None = None,
         source_client: object | None = None,
         source_reader: object | None = None,
         source_owner_id: int | None = None,
@@ -37,7 +36,6 @@ class TelethonIntakeRuntime(
         self._processor = processor
         self._flags = flags
         self._editing = editing
-        self._previews = previews
         self._source = source_coordinator
         self._source_client = source_client
         self._source_reader = source_reader
@@ -49,7 +47,6 @@ class TelethonIntakeRuntime(
         self._confirmation_lock = asyncio.Lock()
         self._pending_batches: dict[tuple[int, int], _PendingBatch] = {}
         self._flush_tasks: set[asyncio.Task] = set()
-        self._preview_tasks: set[asyncio.Task] = set()
         self._preview_sent: dict[str, int] = {}
         self._semaphore = asyncio.Semaphore(settings.worker_concurrency)
         repository = getattr(processor, "repository", None)
@@ -149,12 +146,6 @@ class TelethonIntakeRuntime(
                 task.cancel()
             await asyncio.gather(*confirmation_tasks, return_exceptions=True)
             self._confirmation_tasks.clear()
-        if self._preview_tasks:
-            preview_tasks = tuple(self._preview_tasks)
-            for task in preview_tasks:
-                task.cancel()
-            await asyncio.gather(*preview_tasks, return_exceptions=True)
-            self._preview_tasks.clear()
 
     async def _on_message(self, event) -> None:
         from tgvio.domain.intake import CollectionAlreadySubmittedError

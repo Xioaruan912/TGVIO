@@ -356,10 +356,7 @@ class IntakeCollectionMixin:
         encoded = session_id.encode("utf-8")
         if self._editing_enabled() and revision is not None:
             rev = str(int(revision)).encode("utf-8")
-            preview_rows = [[Button.inline(
-                    "🖼 生成效果预览", b"intake:pv:" + encoded + b":" + rev,
-                )]] if getattr(self, "_previews", None) is not None else []
-            return preview_rows + [
+            return [
                 [
                     Button.inline(
                         "✏️ 编辑合集",

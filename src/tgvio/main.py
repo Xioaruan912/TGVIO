@@ -45,11 +45,9 @@ from tgvio.application.intake import IntakeService
 from tgvio.application.item_recovery import SkippedItemRecoveryService
 from tgvio.application.bulk_retry import BulkRetryService
 from tgvio.application.collection_editing import CollectionEditingService
-from tgvio.application.previews import PreviewService
 from tgvio.application.pick_previews import PickPreviewService
 from tgvio.infrastructure.thumbnail_grid import ThumbnailGridBuilder
 from tgvio.infrastructure.video_frame import VideoFrameExtractor
-from tgvio.adapters.telegram.preview_sender import TelethonPreviewSender
 from tgvio.application.job_diagnostics import JobDiagnosticService
 from tgvio.application.job_control import JobControlService
 from tgvio.application.job_runner import JobRunner
@@ -261,20 +259,6 @@ async def run(*, check_only: bool = False) -> None:
             ),
             download_routes,
         )
-        preview_service = (
-            PreviewService(
-                repository,
-                routed_downloader,
-                FFmpegMediaTransformer(),
-                TelethonPreviewSender(gateway.client),
-                cache_root=settings.download_dir,
-                max_source_bytes=settings.preview_max_source_bytes,
-                timeout_seconds=settings.preview_timeout_seconds,
-                cover_width=settings.cover_width,
-            )
-            if settings.preview_enabled
-            else None
-        )
         flood_gate = FloodWaitGate(repository)
         downloader = JobDownloader(
             repository,
@@ -342,7 +326,6 @@ async def run(*, check_only: bool = False) -> None:
             runner,
             flags=runtime_flags,
             editing=collection_editing,
-            previews=preview_service,
             source_coordinator=source_coordinator,
         )
         if source_coordinator is not None:
@@ -488,8 +471,6 @@ async def run(*, check_only: bool = False) -> None:
         await notification_runtime.start()
         await alert_runtime.start()
         await maintenance_runtime.start()
-        if preview_service is not None:
-            await preview_service.mark_interrupted()
         recoverable = await repository.list_by_states(
             (
                 JobState.RECEIVED,
