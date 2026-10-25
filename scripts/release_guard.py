@@ -235,10 +235,7 @@ MAX_SOURCE_FILE_LINES = 1000
 
 def check_architecture(root: Path) -> dict[str, object]:
     root = root.resolve()
-    package_roots = {
-        "tgvio": root / "src" / "tgvio",
-        "tgvio_player": root / "src" / "tgvio_player",
-    }
+    package_roots = {"tgvio": root / "src" / "tgvio"}
     if not package_roots["tgvio"].is_dir():
         raise GuardError(f"missing package root: {package_roots['tgvio']}")
 
@@ -267,14 +264,9 @@ def check_architecture(root: Path) -> dict[str, object]:
                     imports.append(node.module)
 
             for imported in imports:
-                if package_name == "tgvio" and imported.startswith("tgvio_player"):
+                if imported == "ppvio" or imported.startswith(("ppvio.", "tgvio_player")):
                     problems.append(
-                        f"{relative}: Bot package must not depend on Player package {imported}"
-                    )
-                    continue
-                if package_name == "tgvio_player" and imported.startswith("tgvio."):
-                    problems.append(
-                        f"{relative}: Player package must not depend on Bot package {imported}"
+                        f"{relative}: the bot must not depend on the PPVIO player ({imported})"
                     )
                     continue
 
@@ -294,18 +286,8 @@ def check_architecture(root: Path) -> dict[str, object]:
                     problems.append(f"{relative}: application imports {imported}")
                 elif layer == "infrastructure":
                     allowed = {"infrastructure", "domain", "observability"}
-                    if package_name == "tgvio_player":
-                        allowed.add("application")
                     if imported_layer not in allowed:
                         problems.append(f"{relative}: infrastructure imports {imported}")
-                elif package_name == "tgvio_player" and layer == "testing":
-                    if imported_layer not in {
-                        "testing",
-                        "application",
-                        "domain",
-                        "infrastructure",
-                    }:
-                        problems.append(f"{relative}: testing imports {imported}")
             checked += 1
     if problems:
         raise GuardError("architecture boundary rejected:\n" + "\n".join(problems))

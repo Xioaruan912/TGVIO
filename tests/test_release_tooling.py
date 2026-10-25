@@ -106,7 +106,7 @@ class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
         self.assertEqual(result["status"], "passed")
-        self.assertGreaterEqual(result["python_files"], 152)
+        self.assertGreaterEqual(result["python_files"], 120)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -120,29 +120,16 @@ class ArchitectureGateTests(unittest.TestCase):
             with self.assertRaisesRegex(GuardError, "domain imports"):
                 check_architecture(root)
 
-    def test_bot_cannot_import_player_package(self) -> None:
+    def test_bot_cannot_import_the_player(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             root = Path(temporary)
             application = root / "src" / "tgvio" / "application"
             application.mkdir(parents=True)
             (application / "bad.py").write_text(
-                "from tgvio_player.application import catalog\n",
+                "from ppvio.application import catalog\n",
                 encoding="utf-8",
             )
-            with self.assertRaisesRegex(GuardError, "must not depend on Player"):
-                check_architecture(root)
-
-    def test_player_cannot_import_bot_package(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            root = Path(temporary)
-            (root / "src" / "tgvio").mkdir(parents=True)
-            application = root / "src" / "tgvio_player" / "application"
-            application.mkdir(parents=True)
-            (application / "bad.py").write_text(
-                "from tgvio.domain import archive\n",
-                encoding="utf-8",
-            )
-            with self.assertRaisesRegex(GuardError, "must not depend on Bot"):
+            with self.assertRaisesRegex(GuardError, "must not depend on the PPVIO player"):
                 check_architecture(root)
 
     def test_oversized_source_file_is_rejected(self) -> None:

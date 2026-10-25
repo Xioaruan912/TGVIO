@@ -15,7 +15,7 @@ from pathlib import PurePosixPath
 
 REQUIRED = (
     "AGENTS.md", "AI_DEVELOPMENT.md",
-    "src/tgvio/AGENTS.md", "src/tgvio_player/AGENTS.md",
+    "src/tgvio/AGENTS.md",
     "docs/README.md", "docs/development/README.md",
     "docs/development/ARCHITECTURE.md", "docs/operations/README.md",
     "docs/archive/README.md", "docs/refactor-v2/README.md",

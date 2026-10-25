@@ -1,8 +1,8 @@
 #!/usr/bin/env python3
 """Build one release from a pushed commit and deliver it to HostDZire.
 
-One entry for both services: `--target all` (default) releases the Bot and then the
-Player (with the front end pinned in player-web.lock); `bot` or `player` releases one.
+Releases the TGVIO bot. The player is its own project now (PPVIO, with its own
+release script); `--target bot` is kept so existing invocations still work.
 """
 
 from __future__ import annotations
@@ -20,7 +20,6 @@ import subprocess
 import sys
 import tempfile
 
-from player_hostdzire import PlayerDeployError, deploy_player
 from release_guard import (
     GuardError,
     git_source_manifest,
@@ -283,12 +282,7 @@ def deploy(args: argparse.Namespace) -> int:
         raise DeployError("working source manifest differs from the pushed commit")
     ssh = _ssh_base(repo, key)
     scp = _scp_base(repo, key)
-    if args.target in ("bot", "all"):
-        _deploy_bot(args, repo, head, expected_source_manifest, ssh, scp)
-    if args.target in ("player", "all"):
-        print(f"player_release_start={head[:12]}", flush=True)
-        release = deploy_player(repo, head, ssh, scp, f"{USER}@{HOST}")
-        print(f"player_release_complete={release}", flush=True)
+    _deploy_bot(args, repo, head, expected_source_manifest, ssh, scp)
     return 0
 
 
@@ -376,9 +370,9 @@ def parser() -> argparse.ArgumentParser:
     result = argparse.ArgumentParser(description=__doc__)
     result.add_argument(
         "--target",
-        choices=("all", "bot", "player"),
-        default="all",
-        help="which service to release; all releases the Bot, then the Player",
+        choices=("bot",),
+        default="bot",
+        help="kept for compatibility; only the bot is released from this repository",
     )
     result.add_argument(
         "--phase",
@@ -415,7 +409,7 @@ def parser() -> argparse.ArgumentParser:
 def main() -> int:
     try:
         return deploy(parser().parse_args())
-    except (DeployError, GuardError, PlayerDeployError, OSError, subprocess.CalledProcessError) as exc:
+    except (DeployError, GuardError, OSError, subprocess.CalledProcessError) as exc:
         print(f"deployment failed: {exc}", file=sys.stderr)
         return 2
 

@@ -14,54 +14,33 @@
 
 ## 2. 项目边界
 
-- 定位：Player 是主程序（个人短/长视频播放器，读网盘）；Bot 是采集器（收集 → 组合 → 发布到自己频道 → 归档 WebDAV）。收藏、删除、去重、封面与低清副本都归 Player，不在 Bot 重建。
-- Bot：`src/tgvio/`，入口 `python -m tgvio.main`。
-- Player 后端：`src/tgvio_player/`，独立进程、容器及 player.sqlite3。
-- Player 前端：本仓库 `web/`（React 19 + Vite + Tailwind v4 + Motion），由 Player 在 `/` 提供；`npm --prefix web run check`。旧的 TGVIO-Player 仓库自 2026-10-25 起不再使用。
-- Bot 与 Player 不相互 import；Player 不读写 Bot 主库，不读取 Bot token/session，不挂载 Bot 下载卷。
-- Archive 的 `manifest.json + _COMPLETE.json` 是媒体交接合同；Player 只消费 committed package。
+- 定位：TGVIO 是采集机器人（收集 → 组合 → 发布到自己频道 → 归档 WebDAV）。播放器是独立项目 [PPVIO](https://github.com/Xioaruan912/PPVIO)；收藏、删除、去重、封面与低清副本都归 PPVIO，不在本仓库重建。
+- 本仓库只有 Bot：`src/tgvio/`，入口 `python -m tgvio.main`。不得 import 或读写 PPVIO 的代码、数据库与配置（release_guard 检查）。
+- Archive 的 `manifest.json + _COMPLETE.json` 是与 PPVIO 的唯一交接合同；改动其格式要先确认 PPVIO 兼容。
 - 不为整理项目替换框架、数据库、消息队列、传输协议或依赖版本；依赖变更必须有任务理由并同步 lock。
-- 在既有层和模块扩展；禁止复制出第二套配置解析、播放器、收藏队列、请求层或发布流程。
+- 在既有层和模块扩展；禁止复制出第二套配置解析、请求层或发布流程。
 
 ## 3. 代码地图（先按这里定位，再只读目标文件）
 
-数据流：Telegram → Bot 建 Job（SQLite）→ 下载/分析 → 按序发布 → 归档包写 WebDAV（`manifest.json` + `_COMPLETE.json`，可选 `covers.json`、`renditions.json`）→ Player 轮询目录投影进 `player.sqlite3` → 浏览器经 Player API 按 Range 取流。
-运行时 2 个容器：`tgvio`（Bot）、`tgvio-player`（封面与 480p 副本也在其中生成，见 infrastructure/rendition_maker.py）；`tgvio-covers`/`tgvio-renditions` 已于 2026-10-25 退役；网盘由宿主机 OpenList（115List `tgvio` 分支）提供。
+数据流：Telegram → Bot 建 Job（SQLite）→ 下载/分析 → 按序发布 → 归档包写 WebDAV（`<归档根>/YYYY-MM-DD/<包>/`）→ PPVIO 扫描网盘播放。
+同机运行：`tgvio`（本仓库）、`ppvio`（PPVIO，独立发布）；网盘由宿主机 OpenList（115List `tgvio` 分支）提供。
 
-**Bot `src/tgvio/`**（入口 main.py 装配；配置 config.py ↔ .env.example）
+（入口 main.py 装配；配置 config.py ↔ .env.example）
 
 | 关注点 | 文件 |
 |---|---|
 | Telegram 输入/按钮 | adapters/telegram/intake_*.py、bot_ui*.py（按功能拆分：jobs、drafts、source、archive、system） |
 | Job 生命周期 | application/intake.py → orchestrator.py → execution.py / job_runner.py；scheduler.py、auto_recovery.py |
 | 下载与分析 | application/media_downloader.py、media_analyzer.py；adapters/url_downloader.py（yt-dlp） |
-| 发布 | adapters/telegram/publish_*.py（相册分组、大文件、引用） |
-| 归档 | application/archive_planner.py（清单）→ archive_executor.py → archive_commit.py；adapters/webdav_archive.py（删除归档由 Player 负责） |
+| 发布 | adapters/telegram/publish_*.py（相册分组、大文件、引用）；发布风格 application/publish_styles.py |
+| 归档 | application/archive_planner.py（清单）→ archive_executor.py → archive_commit.py；adapters/webdav_archive.py |
 | 存储 | infrastructure/sqlite_*.py（按聚合拆 mixin）；迁移 infrastructure/migrations/NNNN_*.sql |
 
-**Player 后端 `src/tgvio_player/`**（入口 main.py：PlayerSettings 读 env，装配服务与后台任务）
-
-| 关注点 | 文件 |
-|---|---|
-| HTTP 路由 | adapters/http/server.py（总表、鉴权、限流）；按功能的 mixin：streaming.py、media.py、library.py、storage_settings.py、read_mode.py、watched.py、duplicates.py |
-| 目录同步 | application/catalog.py + infrastructure/webdav_catalog.py（只读 committed 包） |
-| 播放读取 | application/archive_read.py（WebDAV / OpenList 直连路由）、range_cache.py + infrastructure/range_store.py（1MB 块磁盘缓存）、faststart.py、warm_backfill.py |
-| 用户状态 | 收藏 favorite_backup.py；集合 collection_backup.py（网盘同名文件夹）；恢复快照 player_recovery.py；看过 domain/watched.py |
-| 删除与去重 | media_deletion.py（持久队列 + 撤销）；duplicate_copies.py（同片多份只留一份）；domain/duplicates.py（疑似重复分组） |
-| 查询 | infrastructure/video_query.py（片库筛选/排序 SQL）、domain/library_filters.py |
-| 存储 | infrastructure/sqlite.py 聚合 sqlite_*.py mixin；迁移 infrastructure/migrations/NNNN_*.sql（只增不改） |
-
-API 前缀 `/api/v1`：auth、feed/random、videos、library/*、groups、favorites、collections、media/{id}（stream、cover、similar、favorite、progress、watched、DELETE 删除/撤销）、duplicates、settings/*（storage、read-mode、watched、recover）、media-deletions。新路由在对应 mixin 的 `_register_*_routes` 里加，server.py 只加一行注册。
-
-**前端**在 `web/src`：`api.ts` 接口、`feed/` 刷片、`player/` 长视频、`pages/` 片库收藏与重复、`Settings.tsx`、`ui/` 公共组件。
-
-**测试**：`tests/test_player_*.py`（Player，aiohttp TestServer + 临时库）、其余 `tests/test_*.py`（Bot 与发布工具）。全部离线；fake 在测试文件内或 `src/tgvio_player/testing/`。
+**测试**：`tests/test_*.py`，全部离线，fake 在测试文件内。
 
 常见改动路径：
-- Player 新接口：domain 值 → sqlite_* mixin（加进 sqlite.py 基类列表）→ adapters/http 新 mixin → 测试 → `web/src/api.ts` 消费。
-- 新表：新增 `NNNN_name.sql`，同步 tests/test_player_migration.py 的迁移列表；在生产库副本（SQLite backup API）演练后，用 `deploy_hostdzire.py --migration NNNN_name` 发布。
-- 新 Player 配置：main.py 的 PlayerSettings + deploy/player.env.example + docker-compose.player.yml。
-- 后台任务：仿 duplicate_copies.py（有界、可暂停、播放时让路），在 main.py 的 tasks 列表里启动。
+- 新表：新增 `NNNN_name.sql`，同步迁移测试；在生产库副本（SQLite backup API）演练后，用 `deploy_hostdzire.py --migration NNNN_name` 发布。
+- 新配置：config.py 的 Settings + .env.example。
 
 ## 4. 实现规则
 
@@ -79,11 +58,10 @@ API 前缀 `/api/v1`：auth、feed/random、videos、library/*、groups、favori
 在仓库根执行：
 
 ```sh
-bash scripts/check.sh                 # 规范、架构、秘密扫描、Python、TS、前端测试和构建
-bash scripts/check.sh --browser       # 加上隔离 Chrome 布局回归
+bash scripts/check.sh                 # 规范、架构、秘密扫描与 Python 测试
 ```
 
-- 快速检查：`python3 scripts/repository_hygiene.py`；前端 `npm --prefix web run check`（check.sh 已包含）。
+- 快速检查：`python3 scripts/repository_hygiene.py`。
 - 发布前跑完整检查；数据库变更额外做生产副本 migration rehearsal，运行镜像按既有发布门禁检查。
 - 测试用 fake、临时库与本地 fixture；不得连接生产 Telegram/WebDAV或使用生产 Cookie/session。
 - 不把本地测试写成真机或生产验收；分别记录验证范围、失败项、未验证项。
@@ -96,7 +74,7 @@ bash scripts/check.sh --browser       # 加上隔离 Chrome 布局回归
 - 遵守 [运维入口](docs/operations/README.md)。生产 .env、session、data、downloads、logs 以 VPS 为准。
 - 同一 BOT_TOKEN/session 只允许一个 Bot 实例；不得本地启动生产身份。
 - 仅同步文档、规范、测试/开发工具时无需重建或重启服务。应用发布必须来自 clean、已推送提交，保留回滚并完成后验。
-- Player-only 更新仅操作 tgvio-player；核对 Bot 容器 ID 与重启计数不变。
+- 同机的 ppvio 由 PPVIO 仓库发布；本仓库发布不得改动 ppvio 容器。
 - 禁止容器内临时改源码、docker cp 热补丁、复制整工作区部署、覆盖运行卷或根据旧文档重启。
 - 清理先 inventory/dry-run，精确列出路径、类型、大小和保留理由；执行前再次核验路径、符号链接、运行挂载和版本。
 - 清理下载目录必须通过既有 Job/Archive/claim/保护期规则；禁止 `rm -rf downloads` 或绕过仓储直接删。

@@ -8,19 +8,11 @@
 | 开发、依赖、验证 | [development/README.md](development/README.md) |
 | 架构与行为边界 | [development/ARCHITECTURE.md](development/ARCHITECTURE.md) |
 | 部署、回滚、清理 | [operations/README.md](operations/README.md) |
-| 前端代码 | 本仓库 `web/`；重构计划见 [refactor-v3](refactor-v3/README.md) |
+| 播放器 | 独立项目 [PPVIO](https://github.com/Xioaruan912/PPVIO)（2026-10-25 起）；本仓库内的 Player 文档只作历史 |
 | 最新工作交接与候选功能 | [handoffs/2026-10-09-115-link-load.md](handoffs/2026-10-09-115-link-load.md) |
-| 前端重设计交接 | [handoffs/2026-10-01-player-redesign.md](handoffs/2026-10-01-player-redesign.md) |
 | 标准化阶段记录 | [handoffs/2026-10-01-standardization.md](handoffs/2026-10-01-standardization.md) |
 | 历史材料说明 | [archive/README.md](archive/README.md) |
 
 规范与执行日志分开维护。docs/refactor-v2、docs/superpowers、docs/product 为历史设计或证据，不决定当前线上版本，也不能授权部署。
 
-当前缓存提示与播放排查见 [交接记录](handoffs/2026-10-01-player-cache-size.md)，证据见 [播放排查](operations/2026-10-01-player-playback.md)。
-
-当前运行版本见 [Player VPS 发布](operations/2026-10-01-player-deployment.md)；
-归档多清晰度与旧代码差异见 [核查交接](handoffs/2026-10-01-archive-quality-audit.md)。
-
-低清副本合同与维护入口见 [归档副本补齐](operations/RENDITION_BACKFILL.md)。
-
-当前副本补齐发布与进度见 [工作交接](handoffs/2026-10-01-rendition-backfill.md)。
+Player、封面与低清副本相关的交接和运维记录均为 PPVIO 拆分前的历史材料。
