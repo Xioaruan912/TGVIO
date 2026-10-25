@@ -526,14 +526,6 @@ class JobRepository(Protocol):
 
     async def get_diagnostic_aggregates(self) -> dict[str, object]: ...
 
-    async def get_admin_job_page(
-        self,
-        *,
-        states: tuple[str, ...] = (),
-        page: int = 0,
-        page_size: int = 20,
-    ) -> dict[str, object]: ...
-
     async def enqueue_notification(self, event: NotificationEvent, *, now: float) -> bool: ...
 
     async def claim_due_notifications(
