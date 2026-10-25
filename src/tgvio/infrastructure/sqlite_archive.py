@@ -7,12 +7,6 @@ import aiosqlite
 from tgvio.domain.archive import (
     ARCHIVE_OBJECT_TRANSITIONS,
     ARCHIVE_PACKAGE_TRANSITIONS,
-    ArchiveDeletion,
-    ArchiveDeletionEvent,
-    ArchiveDeletionState,
-    ArchiveDeletionTarget,
-    ArchiveDeletionTargetKind,
-    ArchiveDeletionTargetState,
     ArchiveEvent,
     ArchiveObject,
     ArchiveObjectRole,
@@ -24,10 +18,9 @@ from tgvio.domain.archive import (
 )
 
 
-from tgvio.infrastructure.sqlite_archive_deletion import SQLiteArchiveDeletionRepositoryMixin
 
 
-class SQLiteArchiveRepositoryMixin(SQLiteArchiveDeletionRepositoryMixin):
+class SQLiteArchiveRepositoryMixin:
     async def save_archive_plan(self, plan: ArchivePlan) -> ArchivePackage:
         package = plan.package
         async with self._write_transaction() as conn:

@@ -24,8 +24,6 @@ class SettingsTests(unittest.TestCase):
             settings = Settings.from_env()
         self.assertFalse(settings.run_bot)
         self.assertFalse(settings.publish_enabled)
-        self.assertFalse(settings.live_fixture_enabled)
-        self.assertEqual(settings.live_fixture_max_bytes, 100 * 1024 * 1024)
         self.assertEqual(settings.vps_host, "199.47.242.40")
         self.assertEqual(settings.allowed_users, (42, 43))
         self.assertEqual(settings.channel_at, "@destination")
@@ -343,13 +341,6 @@ class SettingsTests(unittest.TestCase):
             clear=True,
         ):
             with self.assertRaisesRegex(ConfigError, "UPLOAD_PART_MB"):
-                Settings.from_env()
-        with patch.dict(
-            os.environ,
-            {**BASE_ENV, "TGVIO_LIVE_FIXTURE_MAX_MB": "0"},
-            clear=True,
-        ):
-            with self.assertRaisesRegex(ConfigError, "LIVE_FIXTURE_MAX_MB"):
                 Settings.from_env()
 
 

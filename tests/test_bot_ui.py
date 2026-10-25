@@ -12,10 +12,8 @@ from tgvio.adapters.telegram.bot_ui import (
     NAV_BUTTONS,
     TelethonBotUI,
 )
-from tgvio.application.archive_deletion import ArchiveDeletionOperationInvalidError
 from tgvio.application.job_control import RetryDecision
 from tgvio.application.operation_tokens import OperationTokenInvalidError
-from tgvio.application.undo import UndoOperationInvalidError
 from tgvio.domain.archive import (
     ArchiveObject,
     ArchiveObjectRole,
@@ -56,16 +54,12 @@ class FakeClient:
 
 
 class FakeRepository:
-    async def list_publish_effect_revocations(self, job_id):
-        return []
-
     def __init__(self, jobs=(), *, archives=(), plans=()) -> None:
         self.jobs = {job.id: job for job in jobs}
         self.archives = {package.job_id: package for package in archives}
         self.plans = {plan.job_id: plan for plan in plans}
         self.controls = {job.id: JobControlState(job_id=job.id) for job in jobs}
         self.accepted_orders = {job.id: index for index, job in enumerate(jobs, start=1)}
-        self.favorites: set[str] = set()
         self.quiet_mode = False
         self.style_json = None
         self.queue_control = QueueControlState()
@@ -104,34 +98,6 @@ class FakeRepository:
     async def set_user_style(self, owner_id, style_json):
         self.style_json = style_json
         return await self.get_user_preference(owner_id)
-
-    async def add_favorite(self, owner_id, job_id):
-        job = self.jobs.get(job_id)
-        if job is None or job.owner_id != owner_id:
-            return False
-        self.favorites.add(job_id)
-        return True
-
-    async def remove_favorite(self, owner_id, job_id):
-        self.favorites.discard(job_id)
-        return True
-
-    async def is_favorite(self, owner_id, job_id):
-        job = self.jobs.get(job_id)
-        return job_id in self.favorites and job is not None and job.owner_id == owner_id
-
-    async def favorite_job_ids(self, owner_id, job_ids):
-        return {job_id for job_id in job_ids if await self.is_favorite(owner_id, job_id)}
-
-    async def count_favorites(self, owner_id):
-        return len(self.favorites)
-
-    async def list_favorite_jobs(self, owner_id, *, limit=20, offset=0):
-        jobs = [self.jobs[job_id] for job_id in self.favorites if job_id in self.jobs]
-        return jobs[offset : offset + limit]
-
-    async def list_favorite_ids(self, owner_id, *, limit=20, offset=0):
-        return list(self.favorites)[offset : offset + limit]
 
     async def list_drafts(self, owner_id, *, limit=20):
         return []
@@ -394,128 +360,6 @@ class FakeOperationTokens:
         return operation
 
 
-class FakeUndoService:
-    def __init__(
-        self,
-        *,
-        partial: bool = False,
-        invalid: bool = False,
-        error: bool = False,
-        status_error: bool = False,
-    ) -> None:
-        self.prepare_calls = 0
-        self.confirm_calls = 0
-        self.partial = partial
-        self.invalid = invalid
-        self.error = error
-        self.status_error = status_error
-        self.completed = False
-
-    async def status(self, job):
-        if self.status_error:
-            raise RuntimeError("fixture status unavailable")
-        return SimpleNamespace(remaining_messages=0 if self.completed else 2)
-
-    async def prepare(self, job, *, owner_id):
-        self.prepare_calls += 1
-        status = SimpleNamespace(
-            remaining_messages=2,
-            channel_messages=1,
-            discussion_messages=1,
-            remaining_channel_messages=1,
-            remaining_discussion_messages=1,
-        )
-        return SimpleNamespace(
-            operation=SimpleNamespace(token="undo-token-1234"),
-            status=status,
-        )
-
-    async def confirm(self, *, owner_id, token):
-        self.confirm_calls += 1
-        if self.invalid:
-            raise UndoOperationInvalidError("expired")
-        if self.error:
-            raise RuntimeError("fixture checkpoint unavailable")
-        if self.partial:
-            return SimpleNamespace(
-                job_id="a" * 32,
-                complete=False,
-                deleted_now=1,
-                deleted_total=1,
-                total_messages=2,
-                remaining_messages=1,
-            )
-        self.completed = True
-        return SimpleNamespace(
-            job_id="a" * 32,
-            complete=True,
-            deleted_now=2,
-            deleted_total=2,
-            total_messages=2,
-            remaining_messages=0,
-        )
-
-
-class FakeArchiveDeletionService:
-    def __init__(self, *, partial: bool = False) -> None:
-        self.prepare_calls = 0
-        self.confirm_calls = 0
-        self.partial = partial
-        self.completed = False
-        self.invalid_tokens: set[str] = set()
-        self.status_value = None
-
-    async def status(self, package):
-        if self.completed:
-            return SimpleNamespace(complete=True, remaining_count=0)
-        return self.status_value
-
-    async def prepare(self, job, *, owner_id):
-        self.prepare_calls += 1
-        status = SimpleNamespace(
-            complete=False,
-            remaining_count=2,
-            remaining_objects=1,
-            commit_boundary_invalidated=False,
-        )
-        self.status_value = status
-        return SimpleNamespace(
-            operation=SimpleNamespace(token="archive-delete-token"),
-            status=status,
-        )
-
-    async def confirm(self, *, owner_id, token):
-        self.confirm_calls += 1
-        if token in self.invalid_tokens or token != "archive-delete-token":
-            raise ArchiveDeletionOperationInvalidError("expired or stale")
-        self.invalid_tokens.add(token)
-        if self.partial:
-            self.status_value = SimpleNamespace(
-                complete=False,
-                remaining_count=1,
-                remaining_objects=0,
-                commit_boundary_invalidated=True,
-            )
-            return SimpleNamespace(
-                job_id="a" * 32,
-                complete=False,
-                deleted_now=1,
-                deleted_total=1,
-                total_targets=2,
-                remaining_targets=1,
-            )
-        self.completed = True
-        self.status_value = SimpleNamespace(complete=True, remaining_count=0)
-        return SimpleNamespace(
-            job_id="a" * 32,
-            complete=True,
-            deleted_now=2,
-            deleted_total=2,
-            total_targets=2,
-            remaining_targets=0,
-        )
-
-
 class FakeCacheOperator:
     def __init__(self) -> None:
         self.cleanup_calls = 0
@@ -587,7 +431,6 @@ class FakeDiagnosticService:
                 archive_policy="required",
                 collections_enabled=True,
                 auto_retry_enabled=True,
-                live_fixture_enabled=False,
             ),
             static_proxy=StaticProxyDiagnostic(
                 state=StaticProxyState.REACHABLE,
@@ -602,7 +445,6 @@ def settings(**overrides):
         "publish_enabled": True,
         "archive_enabled": True,
         "url_enabled": True,
-        "live_fixture_enabled": False,
         "download_dir": "/tmp",
         "environment": "test",
         "worker_concurrency": 2,
@@ -781,10 +623,6 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
             "resume",
             "archive-retry",
             "archive-retry-confirm",
-            "undo",
-            "undo-confirm",
-            "archive-delete",
-            "archive-delete-confirm",
         ):
             payload = ui._callback_data(action, "f" * 32)
             self.assertLessEqual(len(payload), 64)
@@ -822,266 +660,6 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("State：`reachable`", text)
         for forbidden in ("token", "password", "/root/", "http://", "@channel"):
             self.assertNotIn(forbidden, text.lower())
-
-    async def test_undo_requires_confirmation_before_service_confirm(self) -> None:
-        completed = job(state=JobState.SUCCEEDED, error_code=None)
-        repository = FakeRepository([completed])
-        undo = FakeUndoService()
-        ui = TelethonBotUI(
-            FakeClient(),
-            settings(),
-            repository,
-            undo_service=undo,  # type: ignore[arg-type]
-        )
-
-        buttons = await ui._job_buttons(completed)
-        payloads = [
-            button.data
-            for row in buttons
-            for button in row
-            if getattr(button, "data", None)
-        ]
-        self.assertIn(f"ui:undo:{completed.id}".encode(), payloads)
-
-        request = FakeEvent(data=f"ui:undo:{completed.id}".encode())
-        await ui._on_callback(request)
-        self.assertEqual(undo.prepare_calls, 1)
-        self.assertEqual(undo.confirm_calls, 0)
-        self.assertIn("确认撤销发布", request.edits[0][0])
-        confirm_payloads = [
-            button.data
-            for row in request.edits[0][1]["buttons"]
-            for button in row
-            if getattr(button, "data", None)
-        ]
-        self.assertIn(b"ui:undo-confirm:undo-token-1234", confirm_payloads)
-
-        confirm = FakeEvent(data=b"ui:undo-confirm:undo-token-1234")
-        await ui._on_callback(confirm)
-        self.assertEqual(undo.confirm_calls, 1)
-        self.assertIn("撤销完成", confirm.edits[0][0])
-        self.assertTrue(confirm.answers)
-
-    async def test_partial_undo_offers_continue_without_reusing_successful_items(self) -> None:
-        completed = job(state=JobState.SUCCEEDED, error_code=None)
-        repository = FakeRepository([completed])
-        undo = FakeUndoService(partial=True)
-        ui = TelethonBotUI(
-            FakeClient(),
-            settings(),
-            repository,
-            undo_service=undo,  # type: ignore[arg-type]
-        )
-        event = FakeEvent(data=b"ui:undo-confirm:undo-token-1234")
-
-        await ui._on_callback(event)
-
-        self.assertIn("撤销未完全完成", event.edits[0][0])
-        payloads = [
-            button.data
-            for row in event.edits[0][1]["buttons"]
-            for button in row
-            if getattr(button, "data", None)
-        ]
-        self.assertIn(f"ui:undo:{completed.id}".encode(), payloads)
-
-    async def test_expired_undo_token_does_not_call_delete_path_twice(self) -> None:
-        completed = job(state=JobState.SUCCEEDED, error_code=None)
-        undo = FakeUndoService(invalid=True)
-        ui = TelethonBotUI(
-            FakeClient(),
-            settings(),
-            FakeRepository([completed]),
-            undo_service=undo,  # type: ignore[arg-type]
-        )
-        event = FakeEvent(data=b"ui:undo-confirm:expired-token")
-
-        await ui._on_callback(event)
-
-        self.assertEqual(undo.confirm_calls, 1)
-        self.assertIn("这个操作已过期", event.edits[0][0])
-
-    async def test_undo_infrastructure_error_keeps_task_ui_usable(self) -> None:
-        completed = job(state=JobState.SUCCEEDED, error_code=None)
-        undo = FakeUndoService(error=True, status_error=True)
-        ui = TelethonBotUI(
-            FakeClient(),
-            settings(),
-            FakeRepository([completed]),
-            undo_service=undo,  # type: ignore[arg-type]
-        )
-
-        text = await ui._job_text(42, completed.id)
-        buttons = await ui._job_buttons(completed)
-        self.assertIn("任务详情", text)
-        self.assertNotIn(
-            f"ui:undo:{completed.id}".encode(),
-            [button.data for row in buttons for button in row if getattr(button, "data", None)],
-        )
-
-        event = FakeEvent(data=b"ui:undo-confirm:broken-token")
-        await ui._on_callback(event)
-        self.assertIn("撤销暂未完成", event.edits[0][0])
-
-    async def test_archive_delete_committed_terminal_job_requires_confirmation(self) -> None:
-        completed = job(state=JobState.SUCCEEDED, error_code=None)
-        package = ArchivePackage(
-            id=f"arc_{completed.id}",
-            job_id=completed.id,
-            layout_version="v1",
-            remote_path="archive/x",
-            staging_path=".staging/x",
-            state=ArchivePackageState.COMMITTED,
-            manifest={},
-            objects=(),
-        )
-        repository = FakeRepository([completed], archives=[package])
-        deletion = FakeArchiveDeletionService()
-        ui = TelethonBotUI(
-            FakeClient(),
-            settings(),
-            repository,
-            archive_deletion_service=deletion,  # type: ignore[arg-type]
-        )
-
-        buttons = await ui._job_buttons(completed)
-        payloads = [
-            button.data
-            for row in buttons
-            for button in row
-            if getattr(button, "data", None)
-        ]
-        self.assertIn(f"ui:archive-delete:{completed.id}".encode(), payloads)
-
-        request = FakeEvent(data=f"ui:archive-delete:{completed.id}".encode())
-        await ui._on_callback(request)
-
-        self.assertEqual(deletion.prepare_calls, 1)
-        self.assertEqual(deletion.confirm_calls, 0)
-        self.assertIn("确认删除远端归档", request.edits[0][0])
-        confirm_payloads = [
-            button.data
-            for row in request.edits[0][1]["buttons"]
-            for button in row
-            if getattr(button, "data", None)
-        ]
-        self.assertIn(b"ui:archive-delete-confirm:archive-delete-token", confirm_payloads)
-
-        confirm = FakeEvent(data=b"ui:archive-delete-confirm:archive-delete-token")
-        await ui._on_callback(confirm)
-        self.assertEqual(deletion.confirm_calls, 1)
-        self.assertIn("远端归档已删除", confirm.edits[0][0])
-
-        final_buttons = await ui._job_buttons(completed)
-        final_payloads = [
-            button.data
-            for row in final_buttons
-            for button in row
-            if getattr(button, "data", None)
-        ]
-        self.assertNotIn(f"ui:archive-delete:{completed.id}".encode(), final_payloads)
-
-    async def test_archive_delete_cross_owner_is_rejected_before_prepare(self) -> None:
-        completed = job(owner_id=7, state=JobState.SUCCEEDED, error_code=None)
-        package = ArchivePackage(
-            id=f"arc_{completed.id}",
-            job_id=completed.id,
-            layout_version="v1",
-            remote_path="archive/x",
-            staging_path=".staging/x",
-            state=ArchivePackageState.COMMITTED,
-            manifest={},
-            objects=(),
-        )
-        deletion = FakeArchiveDeletionService()
-        ui = TelethonBotUI(
-            FakeClient(),
-            settings(),
-            FakeRepository([completed], archives=[package]),
-            archive_deletion_service=deletion,  # type: ignore[arg-type]
-        )
-        event = FakeEvent(sender_id=42, data=f"ui:archive-delete:{completed.id}".encode())
-
-        await ui._on_callback(event)
-
-        self.assertEqual(deletion.prepare_calls, 0)
-        self.assertEqual(deletion.confirm_calls, 0)
-        self.assertIn("任务不存在或无权限", event.answers[0][0])
-
-    async def test_archive_delete_replay_and_stale_confirmation_fail_closed(self) -> None:
-        completed = job(state=JobState.SUCCEEDED, error_code=None)
-        package = ArchivePackage(
-            id=f"arc_{completed.id}",
-            job_id=completed.id,
-            layout_version="v1",
-            remote_path="archive/x",
-            staging_path=".staging/x",
-            state=ArchivePackageState.COMMITTED,
-            manifest={},
-            objects=(),
-        )
-        repository = FakeRepository([completed], archives=[package])
-        deletion = FakeArchiveDeletionService()
-        ui = TelethonBotUI(
-            FakeClient(),
-            settings(),
-            repository,
-            archive_deletion_service=deletion,  # type: ignore[arg-type]
-        )
-
-        stale = FakeEvent(data=b"ui:archive-delete-confirm:stale-token")
-        await ui._on_callback(stale)
-        self.assertEqual(deletion.confirm_calls, 1)
-        self.assertIn("删除确认已失效", stale.edits[0][0])
-
-        first = FakeEvent(data=f"ui:archive-delete:{completed.id}".encode())
-        await ui._on_callback(first)
-        confirm = FakeEvent(data=b"ui:archive-delete-confirm:archive-delete-token")
-        await ui._on_callback(confirm)
-        replay = FakeEvent(data=b"ui:archive-delete-confirm:archive-delete-token")
-        await ui._on_callback(replay)
-
-        self.assertEqual(deletion.confirm_calls, 3)
-        self.assertIn("删除确认已失效", replay.edits[0][0])
-
-    async def test_partial_archive_delete_offers_continue_and_only_hides_after_complete(self) -> None:
-        completed = job(state=JobState.SUCCEEDED, error_code=None)
-        package = ArchivePackage(
-            id=f"arc_{completed.id}",
-            job_id=completed.id,
-            layout_version="v1",
-            remote_path="archive/x",
-            staging_path=".staging/x",
-            state=ArchivePackageState.COMMITTED,
-            manifest={},
-            objects=(),
-        )
-        repository = FakeRepository([completed], archives=[package])
-        deletion = FakeArchiveDeletionService(partial=True)
-        ui = TelethonBotUI(
-            FakeClient(),
-            settings(),
-            repository,
-            archive_deletion_service=deletion,  # type: ignore[arg-type]
-        )
-
-        prepare = FakeEvent(data=f"ui:archive-delete:{completed.id}".encode())
-        await ui._on_callback(prepare)
-        confirm = FakeEvent(data=b"ui:archive-delete-confirm:archive-delete-token")
-        await ui._on_callback(confirm)
-
-        self.assertIn("仅完成部分清理", confirm.edits[0][0])
-        payloads = [
-            button.data
-            for row in confirm.edits[0][1]["buttons"]
-            for button in row
-            if getattr(button, "data", None)
-        ]
-        self.assertIn(f"ui:archive-delete:{completed.id}".encode(), payloads)
-
-        buttons = await ui._job_buttons(completed)
-        labels = [button.text for row in buttons for button in row]
-        self.assertIn("🧹 继续删除云端备份", labels)
 
     async def test_jobs_page_uses_direct_buttons_and_friendly_failure_text(self) -> None:
         failed = job()
@@ -1776,80 +1354,8 @@ class BotUIConfigurationTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(cache.cleanup_calls, 0)
         self.assertIn("确认操作已过期", confirm.answers[0][0])
 
-    def test_live_fixture_gate_accepts_only_small_planned_jobs(self) -> None:
-        settings = SimpleNamespace(
-            allowed_users=(42,),
-            live_fixture_max_bytes=100 * 1024 * 1024,
-        )
-        ui = TelethonBotUI(FakeClient(), settings, SimpleNamespace())
-        job = Job(
-            owner_id=42,
-            destination="@channel",
-            state=JobState.PLANNED,
-            items=[
-                MediaItem(
-                    index=0,
-                    kind=MediaKind.PHOTO,
-                    source="fixture",
-                    size_bytes=1024,
-                )
-            ],
-        )
-        plan = PublishPlan(
-            job_id=job.id,
-            summary={},
-            steps=(
-                PublishStep(
-                    index=0,
-                    kind=PublishStepKind.CHANNEL_MEDIA_GROUP,
-                    target=PublishTarget.CHANNEL,
-                    item_indexes=(0,),
-                    params={"strategies": {"0": "native"}},
-                ),
-            ),
-        )
-        self.assertIsNone(ui._fixture_validation_error(job, plan))
-
-        job.state = JobState.ANALYZED
-        self.assertIn("PLANNED", ui._fixture_validation_error(job, plan) or "")
-
-    def test_live_fixture_gate_rejects_large_file_strategies(self) -> None:
-        settings = SimpleNamespace(
-            allowed_users=(42,),
-            live_fixture_max_bytes=100 * 1024 * 1024,
-        )
-        ui = TelethonBotUI(FakeClient(), settings, SimpleNamespace())
-        job = Job(
-            owner_id=42,
-            destination="@channel",
-            state=JobState.PLANNED,
-            items=[
-                MediaItem(
-                    index=0,
-                    kind=MediaKind.VIDEO,
-                    source="fixture",
-                    size_bytes=1024,
-                )
-            ],
-        )
-        plan = PublishPlan(
-            job_id=job.id,
-            summary={},
-            steps=(
-                PublishStep(
-                    index=0,
-                    kind=PublishStepKind.CHANNEL_MEDIA_GROUP,
-                    target=PublishTarget.CHANNEL,
-                    item_indexes=(0,),
-                    params={"strategies": {"0": "split_playable"}},
-                ),
-            ),
-        )
-        self.assertIn("分段/分卷", ui._fixture_validation_error(job, plan) or "")
-
-
 class BotUIResultTests(unittest.IsolatedAsyncioTestCase):
-    async def test_result_card_favorite_and_favorites_page(self) -> None:
+    async def test_result_card_renders_with_short_callbacks(self) -> None:
         done = job(state=JobState.SUCCEEDED, error_code=None)
         repository = FakeRepository([done])
         ui = TelethonBotUI(FakeClient(), settings(), repository)
@@ -1860,14 +1366,6 @@ class BotUIResultTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(
             all(len(btn.data) <= 64 for row in result.edits[0][1]['buttons'] for btn in row if getattr(btn, 'data', None))
         )
-
-        favorite = FakeEvent(data=f'ui:fav:{done.id}'.encode())
-        await ui._on_callback(favorite)
-        self.assertTrue(await repository.is_favorite(42, done.id))
-
-        page = FakeEvent(data=b'ui:favorites:0')
-        await ui._on_callback(page)
-        self.assertIn('收藏夹', page.edits[0][0])
 
     async def test_result_card_rejects_foreign_owner(self) -> None:
         done = job(owner_id=9, state=JobState.SUCCEEDED, error_code=None)
@@ -1938,25 +1436,3 @@ class BotUIResultTests(unittest.IsolatedAsyncioTestCase):
         await ui._on_callback(event)
         texts = [text for text, _ in event.answers]
         self.assertTrue(any(text and '已发送' not in text for text in texts))
-
-    async def test_favorite_actions_are_idempotent_target_state(self) -> None:
-        done = job(owner_id=42, state=JobState.SUCCEEDED, error_code=None)
-        repository = FakeRepository([done])
-        ui = TelethonBotUI(FakeClient(), settings(), repository)
-
-        for _ in range(2):
-            await ui._on_callback(FakeEvent(data=f'ui:fav:{done.id}'.encode()))
-        self.assertTrue(await repository.is_favorite(42, done.id))
-
-        for _ in range(2):
-            await ui._on_callback(FakeEvent(data=f'ui:unfav:{done.id}'.encode()))
-        self.assertFalse(await repository.is_favorite(42, done.id))
-
-    async def test_favorite_rejects_foreign_owner(self) -> None:
-        foreign = job(owner_id=9, state=JobState.SUCCEEDED, error_code=None)
-        repository = FakeRepository([foreign])
-        ui = TelethonBotUI(FakeClient(), settings(), repository)
-        event = FakeEvent(sender_id=42, data=f'ui:fav:{foreign.id}'.encode())
-        await ui._on_callback(event)
-        self.assertFalse(await repository.is_favorite(9, foreign.id))
-        self.assertTrue(any(alert for _, alert in [(a[0], a[1].get('alert')) for a in event.answers]))

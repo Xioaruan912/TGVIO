@@ -47,7 +47,6 @@ class DiagnosticFeatureConfig:
     archive_policy: str
     collections_enabled: bool
     auto_retry_enabled: bool
-    live_fixture_enabled: bool
     static_proxy_configured: bool
 
 
@@ -126,7 +125,6 @@ class DiagnosticSnapshotService:
             archive_policy=_safe_enum(self._features.archive_policy, fallback="unknown"),
             collections_enabled=bool(self._features.collections_enabled),
             auto_retry_enabled=bool(self._features.auto_retry_enabled),
-            live_fixture_enabled=bool(self._features.live_fixture_enabled),
         )
         return DiagnosticSnapshot(
             release_id=_safe_release_identity(os.getenv("RELEASE_ID"), kind="release"),

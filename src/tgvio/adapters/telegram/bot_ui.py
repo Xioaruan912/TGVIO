@@ -18,11 +18,6 @@ from tgvio.application.archive_capabilities import (
     ArchiveCapabilityStatus,
     get_archive_capability_status,
 )
-from tgvio.application.archive_deletion import (
-    ArchiveDeletionOperationInvalidError,
-    ArchiveDeletionService,
-    ArchiveDeletionUnavailableError,
-)
 from tgvio.application.auto_recovery import (
     archive_failure_waits_for_recovery,
     archive_recovery_state,
@@ -30,7 +25,6 @@ from tgvio.application.auto_recovery import (
     job_recovery_state,
 )
 from tgvio.application.diagnostics import DiagnosticSnapshotService
-from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
 from tgvio.application.operation_tokens import (
@@ -40,14 +34,8 @@ from tgvio.application.operation_tokens import (
 from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepository
 from tgvio.application.item_recovery import SkippedItemRecoveryService
 from tgvio.application.bulk_retry import BulkRetryService
-from tgvio.application.undo import (
-    UndoOperationInvalidError,
-    UndoService,
-    UndoUnavailableError,
-)
 from tgvio.config import Settings
 from tgvio.domain.archive import (
-    ArchiveDeletionStatus,
     ArchivePackage,
     ArchivePackageState,
 )
@@ -60,7 +48,6 @@ from tgvio.domain.job_query import (
     JobListFilter,
     JobPage,
 )
-from tgvio.domain.operations import UndoStatus
 from tgvio.domain.publish import PublishPlan, PublishStepKind, PublishStepState, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
@@ -73,13 +60,11 @@ from tgvio.adapters.telegram.bot_ui_styles import BotUIStylesMixin
 from tgvio.adapters.telegram.bot_ui_content import BotUIContentMixin
 from tgvio.adapters.telegram.bot_ui_source import BotUISourceMixin
 from tgvio.adapters.telegram.bot_ui_archive import BotUIArchiveMixin
-from tgvio.adapters.telegram.bot_ui_fixture import BotUIFixtureMixin
 from tgvio.adapters.telegram.bot_ui_system import BotUISystemMixin
 from tgvio.adapters.telegram.bot_ui_retry_all import BotUIRetryAllMixin
 class TelethonBotUI(
     BotUIRetryAllMixin,
     BotUISystemMixin,
-    BotUIFixtureMixin,
     BotUIArchiveMixin,
     BotUIResultMixin,
     BotUIDraftsMixin,
@@ -94,14 +79,11 @@ class TelethonBotUI(
         client: TelegramClient,
         settings: Settings,
         repository: JobRepository,
-        fixture_execution: PublishExecutionEngine | None = None,
         control: JobControlService | None = None,
         schedule_job: Callable | None = None,
         archive_operator: ArchiveOperator | None = None,
-        archive_deletion_service: ArchiveDeletionService | None = None,
         cache_operator: CacheOperator | None = None,
         job_diagnostics: JobDiagnosticService | None = None,
-        undo_service: UndoService | None = None,
         operation_tokens: OperationTokenService | None = None,
         diagnostic_service: DiagnosticSnapshotService | None = None,
         runtime_flags: object | None = None,
@@ -115,14 +97,11 @@ class TelethonBotUI(
         self._client = client
         self._settings = settings
         self._repository = repository
-        self._fixture_execution = fixture_execution
         self._control = control
         self._schedule_job = schedule_job
         self._archive_operator = archive_operator
-        self._archive_deletion_service = archive_deletion_service
         self._cache_operator = cache_operator
         self._job_diagnostics = job_diagnostics or JobDiagnosticService(repository)
-        self._undo_service = undo_service
         self._operation_tokens = operation_tokens
         self._diagnostic_service = diagnostic_service
         self._runtime_flags = runtime_flags
@@ -297,12 +276,6 @@ class TelethonBotUI(
             await self._archive_command(event, int(event.sender_id), argument.strip())
         elif command == "cache":
             await self._cache_command(event, argument.strip())
-        elif command == "publish":
-            await self._request_fixture_publish(
-                event,
-                int(event.sender_id),
-                argument.strip() or None,
-            )
 
     async def _on_nav_button(self, event) -> None:
         if not self._authorized(event.sender_id):
@@ -358,14 +331,6 @@ class TelethonBotUI(
             return
         action = bytes(event.data or b"").decode("utf-8", "replace")
         owner_id = int(event.sender_id)
-        if action.startswith("ui:fixture-confirm:"):
-            job_id = action.split(":", 2)[2]
-            await self._confirm_fixture_publish(event, owner_id, job_id)
-            return
-        if action == "ui:fixture-cancel":
-            await self._edit_page(event, "已取消受控发布。", self._nav_buttons())
-            return
-
         if action == "ui:home":
             text, buttons = await self._context_home(owner_id, int(event.chat_id))
             await self._edit_page(event, text, buttons)
@@ -571,10 +536,6 @@ class TelethonBotUI(
         job_actions = (
             ("ui:item-recover-confirm:", self._run_item_recovery_callback),
             ("ui:item-recover:", self._confirm_item_recovery_callback),
-            ("ui:undo-confirm:", self._run_undo_callback),
-            ("ui:undo:", self._confirm_undo_callback),
-            ("ui:archive-delete-confirm:", self._run_archive_delete_callback),
-            ("ui:archive-delete:", self._confirm_archive_delete_callback),
             ("ui:archive-retry-confirm:", self._run_archive_retry_callback),
             ("ui:archive-retry:", self._confirm_archive_retry_callback),
             ("ui:retry-confirm:", self._run_retry_callback),
@@ -590,9 +551,6 @@ class TelethonBotUI(
             ("ui:share:", self._share_callback),
             ("ui:repost:", self._repost_callback),
             ("ui:restyle:", self._restyle_callback),
-            ("ui:favorites:", self._favorites_page_callback),
-            ("ui:unfav:", self._favorite_off_callback),
-            ("ui:fav:", self._favorite_on_callback),
             ("ui:drafts:", self._show_drafts_callback),
             ("ui:draft-open:", self._draft_open_callback),
             ("ui:draft-del:", self._draft_delete_callback),
@@ -730,39 +688,6 @@ class TelethonBotUI(
                     )
                 ]
             )
-
-        if (
-            package is not None
-            and package.state == ArchivePackageState.COMMITTED
-            and job.terminal
-            and self._archive_deletion_service is not None
-        ):
-            deletion = await self._safe_archive_deletion_status(package)
-            if deletion is None or not deletion.complete:
-                rows.append(
-                    [
-                        Button.inline(
-                            (
-                                "🧹 继续删除云端备份"
-                                if deletion is not None
-                                else "🗑 删除云端备份"
-                            ),
-                            self._callback_data("archive-delete", job.id),
-                        )
-                    ]
-                )
-
-        if self._undo_service is not None and job.terminal:
-            undo_status = await self._safe_undo_status(job)
-            if undo_status is not None and undo_status.remaining_messages > 0:
-                rows.append(
-                    [
-                        Button.inline(
-                            "↩️ 撤销发布",
-                            self._callback_data("undo", job.id),
-                        )
-                    ]
-                )
 
         plan = await self._repository.get_publish_plan(job.id)
         detail_row = []

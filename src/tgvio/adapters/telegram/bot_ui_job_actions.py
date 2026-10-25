@@ -18,11 +18,6 @@ from tgvio.application.archive_capabilities import (
     ArchiveCapabilityStatus,
     get_archive_capability_status,
 )
-from tgvio.application.archive_deletion import (
-    ArchiveDeletionOperationInvalidError,
-    ArchiveDeletionService,
-    ArchiveDeletionUnavailableError,
-)
 from tgvio.application.auto_recovery import (
     archive_failure_waits_for_recovery,
     archive_recovery_state,
@@ -38,14 +33,8 @@ from tgvio.application.operation_tokens import (
     OperationTokenService,
 )
 from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepository
-from tgvio.application.undo import (
-    UndoOperationInvalidError,
-    UndoService,
-    UndoUnavailableError,
-)
 from tgvio.config import Settings
 from tgvio.domain.archive import (
-    ArchiveDeletionStatus,
     ArchivePackage,
     ArchivePackageState,
 )
@@ -58,7 +47,6 @@ from tgvio.domain.job_query import (
     JobListFilter,
     JobPage,
 )
-from tgvio.domain.operations import UndoStatus
 from tgvio.domain.publish import PublishPlan, PublishStepKind, PublishStepState, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
@@ -335,118 +323,6 @@ class BotUIJobActionsMixin:
         text = await self._resume_exact(job)
         current = await self._owned_job(owner_id, job.id)
         buttons = await self._job_buttons(current) if current is not None else self._nav_buttons()
-        await self._edit_page(event, text, buttons)
-
-    async def _confirm_undo_callback(self, event, owner_id: int, job_id: str) -> None:
-        if self._undo_service is None:
-            await self._safe_answer(event, "撤销服务未启用", alert=True)
-            return
-        job = await self._owned_job(owner_id, job_id)
-        if job is None:
-            await self._safe_answer(event, "任务不存在或无权限", alert=True)
-            return
-        try:
-            confirmation = await self._undo_service.prepare(job, owner_id=owner_id)
-        except UndoUnavailableError:
-            await self._safe_answer(event, "当前没有可撤销的已发布消息", alert=True)
-            return
-        except Exception as exc:
-            log_event(
-                self._log,
-                logging.ERROR,
-                "telegram.undo.prepare_failed",
-                "Unable to prepare durable publish undo",
-                job_id=job.id,
-                exception_type=type(exc).__name__,
-                exc_info=True,
-            )
-            await self._safe_answer(event, "暂时无法准备撤销，请稍后重试", alert=True)
-            return
-        status = confirmation.status
-        label = await self._job_label(job)
-        await self._edit_page(
-            event,
-            (
-                f"**⚠️ 确认撤销发布 · {label}**\n\n"
-                f"将从频道删除这个任务发出的 `{status.remaining_messages}` 条消息\n"
-                f"频道：`{status.remaining_channel_messages}` · 评论区：`{status.remaining_discussion_messages}`\n\n"
-                "只删这个任务发出的消息；任务记录和云端备份都保留。\n"
-                "5 分钟内有效。"
-            ),
-            [
-                [
-                    Button.inline(
-                        "⚠️ 确认撤销",
-                        self._callback_data("undo-confirm", confirmation.operation.token),
-                    ),
-                    Button.inline("返回", self._callback_data("job", job.id)),
-                ]
-            ],
-        )
-
-    async def _run_undo_callback(self, event, owner_id: int, token: str) -> None:
-        if self._undo_service is None:
-            await self._safe_answer(event, "撤销服务未启用", alert=True)
-            return
-        await self._safe_answer(event, "正在撤销已确认的消息…")
-        try:
-            result = await self._undo_service.confirm(owner_id=owner_id, token=token)
-        except UndoOperationInvalidError:
-            await self._edit_page(
-                event,
-                "**这个操作已过期**\n\n情况已经变了，请重新打开任务再试。",
-                self._nav_buttons(),
-            )
-            return
-        except Exception as exc:
-            log_event(
-                self._log,
-                logging.ERROR,
-                "telegram.undo.execution_failed",
-                "Durable publish undo did not complete",
-                exception_type=type(exc).__name__,
-                exc_info=True,
-            )
-            await self._edit_page(
-                event,
-                (
-                    "**撤销暂未完成**\n\n"
-                    "系统已保留每条消息的处理记录，不会把失败伪装成成功。\n\n"
-                    "请重新打开任务详情，只会继续处理尚未确认删除的消息。"
-                ),
-                self._nav_buttons(),
-            )
-            return
-        job = await self._owned_job(owner_id, result.job_id)
-        label = await self._job_label(job) if job is not None else "任务"
-        if result.complete:
-            text = (
-                f"**✅ 撤销完成 · {label}**\n\n"
-                f"已删除 `{result.deleted_total}/{result.total_messages}` 条频道消息。\n"
-                "原始发布事实和撤销审计记录仍保留。"
-            )
-            buttons = (
-                await self._job_buttons(job)
-                if job is not None
-                else self._nav_buttons()
-            )
-        else:
-            text = (
-                f"**⚠️ 撤销未完全完成 · {label}**\n\n"
-                f"本次删除：`{result.deleted_now}` 条\n"
-                f"累计已删除：`{result.deleted_total}/{result.total_messages}` 条\n"
-                f"仍需处理：`{result.remaining_messages}` 条\n\n"
-                "已成功删除的消息不会再次删除；可继续处理剩余项。"
-            )
-            buttons = [
-                [
-                    Button.inline(
-                        "↩️ 继续撤销剩余消息",
-                        self._callback_data("undo", result.job_id),
-                    )
-                ],
-                [Button.inline("🔎 任务详情", self._callback_data("job", result.job_id))],
-            ]
         await self._edit_page(event, text, buttons)
 
     async def _retry_exact(self, job: Job, *, chat_id: int) -> str:

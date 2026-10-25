@@ -73,7 +73,6 @@ class FeatureDiagnostics:
     archive_policy: str
     collections_enabled: bool
     auto_retry_enabled: bool
-    live_fixture_enabled: bool
 
 
 @dataclass(frozen=True, slots=True)

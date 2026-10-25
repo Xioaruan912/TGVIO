@@ -18,11 +18,6 @@ from tgvio.application.archive_capabilities import (
     ArchiveCapabilityStatus,
     get_archive_capability_status,
 )
-from tgvio.application.archive_deletion import (
-    ArchiveDeletionOperationInvalidError,
-    ArchiveDeletionService,
-    ArchiveDeletionUnavailableError,
-)
 from tgvio.application.auto_recovery import (
     archive_failure_waits_for_recovery,
     archive_recovery_state,
@@ -38,14 +33,8 @@ from tgvio.application.operation_tokens import (
     OperationTokenService,
 )
 from tgvio.application.ports import ArchiveOperator, CacheOperator, JobRepository
-from tgvio.application.undo import (
-    UndoOperationInvalidError,
-    UndoService,
-    UndoUnavailableError,
-)
 from tgvio.config import Settings
 from tgvio.domain.archive import (
-    ArchiveDeletionStatus,
     ArchivePackage,
     ArchivePackageState,
 )
@@ -58,7 +47,6 @@ from tgvio.domain.job_query import (
     JobListFilter,
     JobPage,
 )
-from tgvio.domain.operations import UndoStatus
 from tgvio.domain.publish import PublishPlan, PublishStepKind, PublishStepState, PublishTarget
 from tgvio.domain.progress import JobProgress
 from tgvio.observability import log_event
@@ -150,15 +138,10 @@ class BotUIFormatMixin:
             "大部分问题会自动重试，不用管。需要你处理时首页会提示，点“🔁 全部重试”就行。\n\n"
             "**下方按钮**\n"
             "📋 我的任务：看进度、看发过的内容\n"
-            "⚙️ 设置：发布风格、草稿、收藏、系统状态"
+            "⚙️ 设置：发布风格、草稿、系统状态"
         )
         if self._settings.url_enabled:
             text += "\n\n🔗 也可以直接发一个视频网页链接给我。"
-        if getattr(self._settings, "live_fixture_enabled", False):
-            text += (
-                "\n\n🧪 受控发布已启用：`/publish #任务序号`，例如 `/publish #24`。"
-                "该命令需要二次确认，且只允许小型安全 fixture。"
-            )
         return text
 
     @staticmethod
@@ -246,8 +229,7 @@ class BotUIFormatMixin:
             (
                 f"Archive `{on_off(snapshot.features.archive_enabled)}`/`{snapshot.features.archive_policy}` · "
                 f"Collections `{on_off(snapshot.features.collections_enabled)}` · "
-                f"Auto-retry `{on_off(snapshot.features.auto_retry_enabled)}` · "
-                f"Fixture `{on_off(snapshot.features.live_fixture_enabled)}`"
+                f"Auto-retry `{on_off(snapshot.features.auto_retry_enabled)}`"
             ),
             "",
             "**Static proxy**",
@@ -858,7 +840,7 @@ class BotUIFormatMixin:
                 Button.inline(f"🔕 安静 {toggle_label(quiet)}", b"set:quiet_mode"),
             ],
             [Button.inline("🎨 发布风格", b"ui:styles"), Button.inline("📝 草稿", b"ui:drafts:0")],
-            [Button.inline("⭐ 收藏", b"ui:favorites:0"), Button.inline("🗂 发过的内容", b"ui:jobs:history:0")],
+            [Button.inline("🗂 发过的内容", b"ui:jobs:history:0")],
             [Button.inline("🧩 内容与下载", b"ui:content"), Button.inline("🔐 来源账号", b"ui:source")],
             [Button.inline("🔧 系统状态", b"ui:status")],
             [Button.inline("🏠 首页", b"ui:home")],

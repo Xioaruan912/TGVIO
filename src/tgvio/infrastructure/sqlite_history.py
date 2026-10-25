@@ -169,22 +169,6 @@ class SQLiteHistoryRepositoryMixin:
         await cursor.close()
         return row is not None
 
-    async def job_has_pending_revocation(self, job_id: str) -> bool:
-        conn = self._require()
-        cursor = await conn.execute(
-            """
-            SELECT 1 FROM publish_effect_revocations r
-            JOIN publish_effects e ON e.id = r.effect_id
-            JOIN publish_plans p ON p.id = e.plan_id
-            WHERE p.job_id=? AND r.state IN ('pending','failed')
-            LIMIT 1
-            """,
-            (str(job_id),),
-        )
-        row = await cursor.fetchone()
-        await cursor.close()
-        return row is not None
-
     async def get_maintenance_run(
         self,
         *,

@@ -4,11 +4,7 @@ import json
 
 import aiosqlite
 
-from tgvio.domain.operations import (
-    OperationToken,
-    PublishEffectRevocation,
-    RevocationState,
-)
+from tgvio.domain.operations import OperationToken
 
 
 class SQLiteOperationRepositoryMixin:
@@ -122,126 +118,6 @@ class SQLiteOperationRepositoryMixin:
             )
         return await self.get_operation_token(token)
 
-    async def ensure_publish_effect_revocations(
-        self,
-        job_id: str,
-        effect_ids: tuple[int, ...],
-    ) -> None:
-        ids = tuple(sorted(set(int(value) for value in effect_ids)))
-        if not ids:
-            return
-        placeholders = ",".join("?" for _ in ids)
-        async with self._write_transaction() as conn:
-            cursor = await conn.execute(
-                f"""
-                SELECT pe.id
-                FROM publish_effects pe
-                JOIN publish_plans pp ON pp.id=pe.plan_id
-                WHERE pp.job_id=? AND pe.id IN ({placeholders})
-                """,
-                (job_id, *ids),
-            )
-            rows = await cursor.fetchall()
-            await cursor.close()
-            owned = {int(row["id"]) for row in rows}
-            if owned != set(ids):
-                raise ValueError("publish effect does not belong to job")
-            await conn.executemany(
-                "INSERT OR IGNORE INTO publish_effect_revocations(effect_id) VALUES(?)",
-                ((effect_id,) for effect_id in ids),
-            )
-
-    async def list_publish_effect_revocations(
-        self,
-        job_id: str,
-    ) -> list[PublishEffectRevocation]:
-        conn = self._require()
-        cursor = await conn.execute(
-            """
-            SELECT r.*
-            FROM publish_effect_revocations r
-            JOIN publish_effects pe ON pe.id=r.effect_id
-            JOIN publish_plans pp ON pp.id=pe.plan_id
-            WHERE pp.job_id=?
-            ORDER BY r.effect_id
-            """,
-            (job_id,),
-        )
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return [self._revocation_from_row(row) for row in rows]
-
-    async def checkpoint_publish_effect_revocations(
-        self,
-        job_id: str,
-        effect_ids: tuple[int, ...],
-        *,
-        state: RevocationState,
-        error_code: str | None = None,
-    ) -> list[PublishEffectRevocation]:
-        if state not in {RevocationState.DELETED, RevocationState.FAILED}:
-            raise ValueError("revocation checkpoint must be deleted or failed")
-        ids = tuple(sorted(set(int(value) for value in effect_ids)))
-        if not ids:
-            return []
-        await self.ensure_publish_effect_revocations(job_id, ids)
-        safe_error = None if error_code is None else str(error_code)[:80]
-        event_type = "delete_succeeded" if state == RevocationState.DELETED else "delete_failed"
-        async with self._write_transaction() as conn:
-            for effect_id in ids:
-                cursor = await conn.execute(
-                    """
-                    UPDATE publish_effect_revocations
-                    SET state=?,
-                        attempt_count=attempt_count + 1,
-                        error_code=?,
-                        deleted_at=CASE WHEN ?='deleted' THEN CURRENT_TIMESTAMP ELSE deleted_at END,
-                        updated_at=CURRENT_TIMESTAMP
-                    WHERE effect_id=? AND state!='deleted'
-                    """,
-                    (state.value, safe_error, state.value, effect_id),
-                )
-                if cursor.rowcount == 0:
-                    continue
-                await conn.execute(
-                    """
-                    INSERT INTO publish_effect_revocation_events(effect_id, event_type, error_code)
-                    VALUES(?,?,?)
-                    """,
-                    (effect_id, event_type, safe_error),
-                )
-        current = await self.list_publish_effect_revocations(job_id)
-        by_id = {item.effect_id: item for item in current}
-        return [by_id[effect_id] for effect_id in ids if effect_id in by_id]
-
-    async def list_publish_effect_revocation_events(
-        self,
-        job_id: str,
-    ) -> list[dict[str, object]]:
-        conn = self._require()
-        cursor = await conn.execute(
-            """
-            SELECT e.effect_id, e.event_type, e.error_code, e.created_at
-            FROM publish_effect_revocation_events e
-            JOIN publish_effects pe ON pe.id=e.effect_id
-            JOIN publish_plans pp ON pp.id=pe.plan_id
-            WHERE pp.job_id=?
-            ORDER BY e.id
-            """,
-            (job_id,),
-        )
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return [
-            {
-                "effect_id": int(row["effect_id"]),
-                "event_type": str(row["event_type"]),
-                "error_code": row["error_code"],
-                "created_at": row["created_at"],
-            }
-            for row in rows
-        ]
-
     @staticmethod
     def _operation_token_from_row(row: aiosqlite.Row) -> OperationToken:
         return OperationToken(
@@ -256,15 +132,4 @@ class SQLiteOperationRepositoryMixin:
             expires_at=int(row["expires_at"]),
             consumed_at=(None if row["consumed_at"] is None else int(row["consumed_at"])),
             created_at=row["created_at"],
-        )
-
-    @staticmethod
-    def _revocation_from_row(row: aiosqlite.Row) -> PublishEffectRevocation:
-        return PublishEffectRevocation(
-            effect_id=int(row["effect_id"]),
-            state=RevocationState(row["state"]),
-            attempt_count=int(row["attempt_count"]),
-            error_code=row["error_code"],
-            deleted_at=row["deleted_at"],
-            updated_at=row["updated_at"],
         )

@@ -6,10 +6,6 @@ from typing import Callable, Protocol
 from tgvio.domain.archive import (
     ArchiveCapabilities,
     ArchiveDeleteReceipt,
-    ArchiveDeletion,
-    ArchiveDeletionEvent,
-    ArchiveDeletionTarget,
-    ArchiveDeletionTargetState,
     ArchiveEvent,
     ArchiveObject,
     ArchiveObjectState,
@@ -36,9 +32,8 @@ from tgvio.domain.intake import (
 )
 from tgvio.domain.job import Job, JobEvent, JobState, MediaItem, MediaKind
 from tgvio.domain.job_query import FailurePage, JobListFilter, JobPage
-from tgvio.domain.operations import OperationToken, PublishEffectRevocation, RevocationState
+from tgvio.domain.operations import OperationToken
 from tgvio.domain.preview import PreviewRequest, PreviewState
-from tgvio.domain.suggestion import SuggestionApplication
 from tgvio.domain.publish import (
     PublishEffect,
     PublishPlan,
@@ -279,16 +274,6 @@ class JobRepository(Protocol):
         expected_revision: int,
     ) -> CollectionDraft | None: ...
 
-    async def create_suggestion_application(
-        self, application: SuggestionApplication
-    ) -> SuggestionApplication: ...
-
-    async def get_active_suggestion_application(
-        self, session_id: str
-    ) -> SuggestionApplication | None: ...
-
-    async def consume_suggestion_application(self, application_id: str) -> bool: ...
-
     async def create_preview_request(self, request: PreviewRequest) -> PreviewRequest: ...
     async def list_preview_request_ids(
         self, *, limit: int = 200, offset: int = 0
@@ -327,35 +312,6 @@ class JobRepository(Protocol):
         self, owner_id: int, *, preset: str, audio_only: bool
     ) -> UserPreference: ...
 
-    async def add_favorite(self, owner_id: int, job_id: str) -> bool: ...
-
-    async def remove_favorite(self, owner_id: int, job_id: str) -> bool: ...
-
-    async def is_favorite(self, owner_id: int, job_id: str) -> bool: ...
-
-    async def favorite_job_ids(
-        self,
-        owner_id: int,
-        job_ids: tuple[str, ...],
-    ) -> set[str]: ...
-
-    async def count_favorites(self, owner_id: int) -> int: ...
-
-    async def list_favorite_ids(
-        self,
-        owner_id: int,
-        *,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> list[str]: ...
-
-    async def list_favorite_jobs(
-        self,
-        owner_id: int,
-        *,
-        limit: int = 20,
-        offset: int = 0,
-    ) -> list[Job]: ...
 
     async def get_job_display_message(self, job_id: str) -> JobDisplayMessage | None: ...
 
@@ -446,8 +402,6 @@ class JobRepository(Protocol):
     async def job_has_active_claim(self, job_id: str, *, now: float) -> bool: ...
 
     async def job_has_unsettled_publish_step(self, job_id: str) -> bool: ...
-
-    async def job_has_pending_revocation(self, job_id: str) -> bool: ...
 
     async def get_maintenance_run(
         self,
@@ -629,31 +583,6 @@ class JobRepository(Protocol):
         payload_hash: str,
     ) -> OperationToken | None: ...
 
-    async def ensure_publish_effect_revocations(
-        self,
-        job_id: str,
-        effect_ids: tuple[int, ...],
-    ) -> None: ...
-
-    async def list_publish_effect_revocations(
-        self,
-        job_id: str,
-    ) -> list[PublishEffectRevocation]: ...
-
-    async def checkpoint_publish_effect_revocations(
-        self,
-        job_id: str,
-        effect_ids: tuple[int, ...],
-        *,
-        state: RevocationState,
-        error_code: str | None = None,
-    ) -> list[PublishEffectRevocation]: ...
-
-    async def list_publish_effect_revocation_events(
-        self,
-        job_id: str,
-    ) -> list[dict[str, object]]: ...
-
     async def get_telegram_reference(
         self,
         sha256: str,
@@ -737,47 +666,6 @@ class JobRepository(Protocol):
     ) -> list[ArchivePackage]: ...
 
     async def list_archive_events(self, package_id: str) -> list[ArchiveEvent]: ...
-
-    async def ensure_archive_deletion(
-        self,
-        package_id: str,
-        *,
-        target_set_hash: str,
-        targets: tuple[ArchiveDeletionTarget, ...],
-    ) -> ArchiveDeletion: ...
-
-    async def get_archive_deletion(self, package_id: str) -> ArchiveDeletion | None: ...
-
-    async def begin_archive_deletion(
-        self,
-        package_id: str,
-        *,
-        expected_revision: int,
-    ) -> ArchiveDeletion: ...
-
-    async def begin_archive_deletion_target(
-        self,
-        package_id: str,
-        target_id: int,
-    ) -> ArchiveDeletionTarget: ...
-
-    async def checkpoint_archive_deletion_target(
-        self,
-        package_id: str,
-        target_id: int,
-        *,
-        state: ArchiveDeletionTargetState,
-        error_code: str | None = None,
-        verification_method: str | None = None,
-        already_missing: bool = False,
-    ) -> ArchiveDeletion: ...
-
-    async def finalize_archive_deletion(self, package_id: str) -> ArchiveDeletion: ...
-
-    async def list_archive_deletion_events(
-        self,
-        package_id: str,
-    ) -> list[ArchiveDeletionEvent]: ...
 
     async def update_archive_package_state(
         self,
