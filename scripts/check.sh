@@ -22,5 +22,8 @@ export PYTHONDONTWRITEBYTECODE=1
 "$python_bin" scripts/release_guard.py architecture .
 "$python_bin" -m compileall -q src tests scripts
 "$python_bin" -m unittest discover -s tests
+# The web console front end (console/).
+npm --prefix "$repo_root/console" ci --no-audit --no-fund
+npm --prefix "$repo_root/console" run check
 git diff --check
 printf 'project_checks=passed python=%s\n' "$("$python_bin" --version)"

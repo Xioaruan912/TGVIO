@@ -1,0 +1,15 @@
+{
+  "id": "/",
+  "name": "TGVIO 控制台",
+  "short_name": "TGVIO",
+  "start_url": "/",
+  "scope": "/",
+  "display": "standalone",
+  "background_color": "#0e0f11",
+  "theme_color": "#0e0f11",
+  "icons": [
+    { "src": "/apple-touch-icon.png", "sizes": "180x180", "type": "image/png" },
+    { "src": "/console-icon-192.png", "sizes": "192x192", "type": "image/png", "purpose": "any maskable" },
+    { "src": "/console-icon.svg", "sizes": "any", "type": "image/svg+xml" }
+  ]
+}
