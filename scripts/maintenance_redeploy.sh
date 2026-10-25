@@ -6,6 +6,11 @@
 # Usage: bash scripts/maintenance_redeploy.sh [commit]   (default: origin/main)
 # Env: TGVIO_MAINTENANCE_ENV (archive env file), TGVIO_RENDITIONS_WORK, TGVIO_COVERS_WORK.
 set -Eeuo pipefail
+# Retired 2026-10-25: tgvio-player makes covers and 480p copies itself (rendition_maker.py).
+if [[ ${TGVIO_MAINTENANCE_FORCE:-} != 1 ]]; then
+    printf 'maintenance containers are retired; tgvio-player makes covers and copies. Set TGVIO_MAINTENANCE_FORCE=1 to run anyway.\n' >&2
+    exit 2
+fi
 
 repo=$(CDPATH= cd -- "$(dirname -- "$0")/.." && pwd)
 env_file=${TGVIO_MAINTENANCE_ENV:-/root/tgvio-renditions/archive.env}

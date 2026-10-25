@@ -31,6 +31,8 @@ RENDITIONS_DIR = ".tgvio"
 _RENDITION_FILE = re.compile(r"(480|720)\.mp4")
 _MEDIA_ID = re.compile(r"[0-9a-f]{64}")
 COVER_FILE = "cover.jpg"
+# cover-<16 hex>.jpg carries the cover's fingerprint for duplicate review.
+_COVER_NAME = re.compile(r"cover(?:-([0-9a-f]{16}))?\.jpg")
 COVER_ALGORITHM = "player-frame-v1"
 _MAX_FOLDERS = 5000
 
@@ -156,8 +158,10 @@ class LibraryCatalogSource:
                 continue
             copies = [(entry, int(entry.name[:3])) for entry in files
                       if not entry.is_collection and entry.size_bytes and _RENDITION_FILE.fullmatch(entry.name)]
-            cover = next((entry for entry in files
-                          if not entry.is_collection and entry.name == COVER_FILE and entry.size_bytes), None)
+            covers = sorted((entry for entry in files
+                             if not entry.is_collection and entry.size_bytes and _COVER_NAME.fullmatch(entry.name)),
+                            key=lambda entry: entry.name != COVER_FILE, reverse=True)
+            cover = covers[0] if covers else None  # a fingerprinted cover wins over a plain one
             if not copies and cover is None:
                 continue
             package_id = hashlib.sha256(f"tgvio-folder-v1\n{path}".encode()).hexdigest()
@@ -176,7 +180,8 @@ class LibraryCatalogSource:
                 locations=tuple(CatalogLocation(rendition_media_id(parent.name, height), package_id, entry.name, entry.etag)
                                 for entry, height in copies),
                 covers=() if cover is None else (CatalogCover(
-                    parent.name, package_id, COVER_FILE, cover.size_bytes, "image/jpeg", COVER_ALGORITHM),),
+                    parent.name, package_id, cover.name, cover.size_bytes, "image/jpeg", COVER_ALGORITHM,
+                    _COVER_NAME.fullmatch(cover.name).group(1)),),
             ))
         return packages, complete
 

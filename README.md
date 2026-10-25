@@ -17,7 +17,7 @@
 - 转发视频/图片或发链接即可发布；支持合集、发布前预览与排序、选封面、改文字、撤销。
 - 每次转发打成一个“归档包”（原片 + `manifest.json` + `_COMPLETE.json`）写入网盘；发布与归档互不阻塞，失败自动重试。
 - `/source` 登录自己的账号后，可用 `/pick` 从白名单来源挑选内容发布。
-- 附带两个可选维护进程：为旧视频补封面、补 480p/720p 低清副本。
+- 封面与 480p 低清副本由播放器自己生成（空闲时，最低优先级），不再需要单独的维护容器。
 
 **播放器（Player）**
 
@@ -67,7 +67,6 @@ bash install.sh      # 选「1) 安装并启动」，按提示填 5 项
 ```bash
 python3 scripts/deploy_hostdzire.py                    # 机器人 + 播放器
 python3 scripts/deploy_hostdzire.py --target player    # 只发播放器（核实机器人未被动到）
-bash scripts/maintenance_redeploy.sh                   # 封面/副本维护进程
 bash scripts/player_browser_smoke.sh feed,settings     # 真 Chrome 只读冒烟
 ```
 
