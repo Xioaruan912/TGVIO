@@ -2,9 +2,9 @@ import react from "@vitejs/plugin-react";
 import tailwindcss from "@tailwindcss/vite";
 import { defineConfig } from "vite";
 
-// Served under /next/ next to the current front end until the cut-over (phase 4).
+// The player serves this build at / (src/tgvio_player/adapters/http/server.py).
 export default defineConfig({
-  base: "/next/",
+  base: "/",
   plugins: [react(), tailwindcss()],
   server: { proxy: { "/api": "http://127.0.0.1:8790" } },
   test: { environment: "jsdom" },

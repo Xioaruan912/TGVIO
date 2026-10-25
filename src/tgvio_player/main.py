@@ -399,7 +399,6 @@ async def run(settings: PlayerSettings) -> None:
             max_streams=settings.max_streams,
             max_streams_per_client=settings.max_streams_per_client,
             static_dir=Path("/app/player-web"),
-            next_static_dir=Path("/app/web-next"),
             faststart=faststart,
             range_cache=range_cache,
             large_video_seconds=settings.large_video_seconds,
