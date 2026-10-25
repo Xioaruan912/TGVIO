@@ -7,13 +7,9 @@ Player 的 WebDavArchiveCatalogSource 只在目录声明 covers.json 时读取�
 CatalogSyncService 校验已提交 manifest/_COMPLETE 后，cover_sidecar 验证可选封面。
 原归档 manifest 内有效封面优先，旧视频使用绑定原包的追加索引。
 
-生成与写入由独立 tgvio.interfaces.backfill_covers 维护 worker 拥有。
-cover_backfill_runner 的 CommittedCoverBackfill 编排；
-cover_archive 负责 Range/验证上传，cover_frames 负责本地有界取帧。
-legacy CoverBackfill/CoverBackfillRunner 保留旧纯函数调用兼容，旧 Bot 内数据库
-CLI 已被独立维护入口替代；生产不启动第二个 Telegram 身份、不挂载主数据库。
-与副本 worker 共用既有 Archive transport/discovery 与 MaintenanceState 检查点
-实现，但容器、工作目录、数据库和锁独立。
+旧包的 covers.json 由已退役的维护 worker 写入，Player 仍按下面的合同读取。
+新封面由 Player 自己生成（src/tgvio_player/infrastructure/rendition_maker.py），
+写到 `<库>/.tgvio/<media_id>/cover-<dhash>.jpg`，不再写 covers.json。
 
 ## 提交合同
 
@@ -54,11 +50,6 @@ JPEG sha256、size_bytes、mime_type 和 cover/backfill/<sha256>.jpg。
 单个取帧/灰度检查超时尝试下一个有界候选时间，不放宽总采样、下载或内存预算。
 源超过 4GiB、损坏、被删除、全黑帧或超出取样预算可能无法生成，不宣称全覆盖。
 
-部署复用 Dockerfile.renditions 的维护环境，覆盖 entrypoint 为 backfill_covers；
-scripts/covers_deploy.sh 只创建 tgvio-covers，验证 Bot/Player/rendition 容器身份不变。
-仅四个 Archive env 字段，配置 0600；工作卷是专用目录，不含 Bot/Player 主库。
-部署前先 dry-run 和少量实际生成，再发布 Player 消费侧、启动持续补齐。
-优先列表为本机私有 opaque media ID JSON，不含路径/凭据，最多 64KiB。
 所有回归使用 fake/loopback/合成媒体；生产抽样是单独运维动作，日志只输出摘要。
 
 ## 权限与删除

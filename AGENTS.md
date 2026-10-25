@@ -14,6 +14,7 @@
 
 ## 2. 项目边界
 
+- 定位：Player 是主程序（个人短/长视频播放器，读网盘）；Bot 是采集器（收集 → 组合 → 发布到自己频道 → 归档 WebDAV）。收藏、删除、去重、封面与低清副本都归 Player，不在 Bot 重建。
 - Bot：`src/tgvio/`，入口 `python -m tgvio.main`。
 - Player 后端：`src/tgvio_player/`，独立进程、容器及 player.sqlite3。
 - Player 前端：本仓库 `web/`（React 19 + Vite + Tailwind v4 + Motion），由 Player 在 `/` 提供；`npm --prefix web run check`。旧的 TGVIO-Player 仓库自 2026-10-25 起不再使用。
@@ -32,11 +33,10 @@
 | 关注点 | 文件 |
 |---|---|
 | Telegram 输入/按钮 | adapters/telegram/intake_*.py、bot_ui*.py（按功能拆分：jobs、drafts、source、archive、system） |
-| Job 生命周期 | application/intake.py → orchestrator.py → execution.py / job_runner.py；scheduler.py、undo.py、auto_recovery.py |
+| Job 生命周期 | application/intake.py → orchestrator.py → execution.py / job_runner.py；scheduler.py、auto_recovery.py |
 | 下载与分析 | application/media_downloader.py、media_analyzer.py；adapters/url_downloader.py（yt-dlp） |
 | 发布 | adapters/telegram/publish_*.py（相册分组、大文件、引用） |
-| 归档 | application/archive_planner.py（清单）→ archive_executor.py → archive_commit.py；adapters/webdav_archive.py；删除 archive_deletion.py |
-| 维护进程（已退役，Bot 侧旧代码） | interfaces/backfill_covers.py、backfill_renditions.py → application/cover_backfill*.py、rendition_backfill.py；检查点 infrastructure/rendition_state.py |
+| 归档 | application/archive_planner.py（清单）→ archive_executor.py → archive_commit.py；adapters/webdav_archive.py（删除归档由 Player 负责） |
 | 存储 | infrastructure/sqlite_*.py（按聚合拆 mixin）；迁移 infrastructure/migrations/NNNN_*.sql |
 
 **Player 后端 `src/tgvio_player/`**（入口 main.py：PlayerSettings 读 env，装配服务与后台任务）
