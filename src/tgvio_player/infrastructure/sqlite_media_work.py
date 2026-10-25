@@ -14,10 +14,7 @@ class PlayerMediaWorkRepositoryMixin:
         return [str(row["media_id"]) for row in rows]
 
     async def list_rendition_candidates(self, *, limit: int) -> list[dict[str, object]]:
-        """Plain-folder videos taller than 480p with a known duration and no 480p copy yet.
-
-        Archive packages (.../YYYY-MM-DD/N) get their copies from the maintenance container.
-        """
+        """Videos taller than 480p with a known duration and no 480p copy yet."""
         rows = self._require().execute(
             """
             SELECT m.media_id, m.size_bytes, m.duration_seconds, m.height,
@@ -28,7 +25,6 @@ class PlayerMediaWorkRepositoryMixin:
             WHERE m.active=1 AND m.kind='video' AND m.height > 480 AND m.duration_seconds > 0
               AND m.media_id NOT IN (SELECT variant_media_id FROM media_variants)
               AND NOT EXISTS (SELECT 1 FROM media_variants mv WHERE mv.parent_media_id=m.media_id AND mv.height=480)
-              AND cp.remote_path NOT GLOB '*/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/*'
             GROUP BY m.media_id
             ORDER BY m.first_seen_at DESC, m.media_id
             LIMIT ?
@@ -48,7 +44,7 @@ class PlayerMediaWorkRepositoryMixin:
             )
 
     async def list_cover_candidates(self, *, limit: int) -> list[dict[str, object]]:
-        """Plain-folder videos with a known duration and no active cover."""
+        """Videos with a known duration and no active cover."""
         rows = self._require().execute(
             """
             SELECT m.media_id, m.size_bytes, m.duration_seconds, cp.remote_path, ml.remote_relpath
@@ -58,7 +54,6 @@ class PlayerMediaWorkRepositoryMixin:
             WHERE m.active=1 AND m.kind='video' AND m.duration_seconds > 0
               AND m.media_id NOT IN (SELECT variant_media_id FROM media_variants)
               AND NOT EXISTS (SELECT 1 FROM media_covers c WHERE c.media_id=m.media_id AND c.active=1)
-              AND cp.remote_path NOT GLOB '*/[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9]/*'
             GROUP BY m.media_id
             ORDER BY m.first_seen_at DESC, m.media_id
             LIMIT ?

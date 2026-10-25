@@ -66,7 +66,7 @@ class RenditionScanAndStoreTests(unittest.IsolatedAsyncioTestCase):
             "长视频": (Entry("Movie.mp4", False, None, 900), Entry(".tgvio", True)),
             "长视频/.tgvio": (Entry(parent, True), Entry("f" * 64, True), Entry("notes", True)),
             f"长视频/.tgvio/{parent}": (Entry("480.mp4", False, None, 90), Entry("tmp.part", False, None, 5),
-                                       Entry("cover.jpg", False, None, 12)),
+                                       Entry("cover.jpg", False, None, 12), Entry("cover-0123456789abcdef.jpg", False, None, 13)),
             f"长视频/.tgvio/{'f' * 64}": (Entry("480.mp4", False, None, 80),),
         }
 
@@ -84,7 +84,8 @@ class RenditionScanAndStoreTests(unittest.IsolatedAsyncioTestCase):
         linked = next(p for p in copies if parent in p.remote_path)
         self.assertEqual([(m.media_id, m.variant_of, m.height) for m in linked.media],
                          [(rendition_media_id(parent, 480), parent, 480)])
-        self.assertEqual([(c.media_id, c.remote_relpath) for c in linked.covers], [(parent, "cover.jpg")])
+        self.assertEqual([(c.media_id, c.remote_relpath, c.phash) for c in linked.covers],
+                         [(parent, "cover-0123456789abcdef.jpg", "0123456789abcdef")], "the fingerprinted cover wins")
 
         for item in found.packages:
             await self.repo.apply_package(item)
@@ -100,10 +101,10 @@ class RenditionScanAndStoreTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.apply_package(package("长视频", (tall, small), ("a.mp4", "b.mp4")))
         await self.repo.apply_package(package("短视频/2026-09-22/1", (archived,), ("c.mp4",)))
         await self.repo.refresh_media_activity()
-        self.assertEqual([row["media_id"] for row in await self.repo.list_rendition_candidates(limit=10)],
-                         ["b" * 64])
+        self.assertEqual(sorted(row["media_id"] for row in await self.repo.list_rendition_candidates(limit=10)),
+                         ["b" * 64, "d" * 64], "archive packages too: the player replaced the containers")
         self.assertEqual(sorted(row["media_id"] for row in await self.repo.list_cover_candidates(limit=10)),
-                         ["b" * 64, "c" * 64], "archive packages keep their own covers")
+                         ["b" * 64, "c" * 64, "d" * 64])
 
 
 class SourceServerTests(unittest.IsolatedAsyncioTestCase):
@@ -164,7 +165,10 @@ class RenditionMakerEncodeTests(unittest.IsolatedAsyncioTestCase):
                                                         "duration_seconds": 3.0}))
             finally:
                 await maker._source.close()
-            self.assertEqual(writer.files[f"长视频/.tgvio/{'e' * 64}/cover.jpg"][:3], b"\xff\xd8\xff", "a JPEG")
+            names = [path for path in writer.files if path.startswith(f"长视频/.tgvio/{'e' * 64}/cover")]
+            self.assertEqual(len(names), 1)
+            self.assertRegex(names[0], r"/cover-[0-9a-f]{16}\.jpg$", "a test pattern is no flat frame, so it is fingerprinted")
+            self.assertEqual(writer.files[names[0]][:3], b"\xff\xd8\xff", "a JPEG")
 
 
 if __name__ == "__main__":

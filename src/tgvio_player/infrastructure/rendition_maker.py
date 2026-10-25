@@ -1,4 +1,6 @@
-"""480p copies of plain-folder videos, made by the player itself.
+"""Covers and 480p copies, made by the player itself for every video that lacks them.
+
+This replaced the separate covers and renditions containers.
 
 The owner often watches the low-res copy: it caches and starts faster. ffmpeg
 reads the original through a loopback-only endpoint served by this process, so
@@ -22,6 +24,7 @@ import signal
 import aiohttp
 from aiohttp import web
 
+from tgvio_player.domain.cover_hash import dhash_gray32, flat_extreme_frame
 from tgvio_player.domain.ranges import ByteRange
 from tgvio_player.infrastructure.folder_catalog import COVER_FILE, RENDITIONS_DIR
 
@@ -31,6 +34,10 @@ _CHUNK = 1024 * 1024
 
 
 async def _run(*args: str, timeout: float) -> str:
+    return (await _run_bytes(*args, timeout=timeout)).decode("utf-8")
+
+
+async def _run_bytes(*args: str, timeout: float) -> bytes:
     proc = await asyncio.create_subprocess_exec(
         *args, stdin=asyncio.subprocess.DEVNULL,
         stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.PIPE)
@@ -43,7 +50,7 @@ async def _run(*args: str, timeout: float) -> str:
         raise
     if proc.returncode:
         raise RuntimeError("media command failed")
-    return out.decode("utf-8")
+    return out
 
 
 def ffmpeg_args(source_url: str, target: Path) -> list[str]:
@@ -199,13 +206,23 @@ class RenditionMaker:
         target = self._work_dir / f"{media_id}.cover.jpg"
         url = self._source.register(package_path, str(job["remote_relpath"]), int(job["size_bytes"]))
         try:
-            # A frame a tenth in, past intros and black openings; no later than ten minutes.
-            at = min(float(job["duration_seconds"]) * 0.1, 600.0)
-            await _run("nice", "-n", "19", "ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", f"{at:.2f}",
-                       "-i", url, "-frames:v", "1", "-vf", "scale=-2:720", "-q:v", "4", str(target), timeout=180)
-            if not target.exists() or target.stat().st_size == 0:
-                raise ValueError("no frame")
-            await self._upload(target, f"{root}/{RENDITIONS_DIR}/{media_id}/{COVER_FILE}", "image/jpeg")
+            duration = float(job["duration_seconds"])
+            # A frame a tenth in, past intros; a black or white one (a fade) is tried further on.
+            fingerprint = None
+            for share in (0.1, 0.25, 0.5):
+                at = min(duration * share, 600.0 if share == 0.1 else duration)
+                await _run("nice", "-n", "19", "ffmpeg", "-nostdin", "-y", "-v", "error", "-ss", f"{at:.2f}",
+                           "-i", url, "-frames:v", "1", "-vf", "scale=-2:720", "-q:v", "4", str(target), timeout=180)
+                if not target.exists() or target.stat().st_size == 0:
+                    raise ValueError("no frame")
+                gray = await _run_bytes("ffmpeg", "-nostdin", "-v", "error", "-i", str(target), "-vf",
+                                        "scale=32:32,format=gray", "-f", "rawvideo", "-", timeout=30)
+                if not flat_extreme_frame(gray):
+                    fingerprint = dhash_gray32(gray)
+                    break
+            # The fingerprint rides in the name, so a scan reads it without fetching anything.
+            name = f"cover-{fingerprint}.jpg" if fingerprint else COVER_FILE
+            await self._upload(target, f"{root}/{RENDITIONS_DIR}/{media_id}/{name}", "image/jpeg")
             return True
         finally:
             self._source.forget(url)

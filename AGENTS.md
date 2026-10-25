@@ -25,7 +25,7 @@
 ## 3. 代码地图（先按这里定位，再只读目标文件）
 
 数据流：Telegram → Bot 建 Job（SQLite）→ 下载/分析 → 按序发布 → 归档包写 WebDAV（`manifest.json` + `_COMPLETE.json`，可选 `covers.json`、`renditions.json`）→ Player 轮询目录投影进 `player.sqlite3` → 浏览器经 Player API 按 Range 取流。
-运行时 5 个容器：`tgvio`（Bot）、`tgvio-player`、`tgvio-covers`/`tgvio-renditions`（维护，镜像 Dockerfile.renditions）；网盘由宿主机 OpenList（115List `tgvio` 分支）提供。
+运行时 2 个容器：`tgvio`（Bot）、`tgvio-player`（封面与 480p 副本也在其中生成，见 infrastructure/rendition_maker.py）；`tgvio-covers`/`tgvio-renditions` 已于 2026-10-25 退役；网盘由宿主机 OpenList（115List `tgvio` 分支）提供。
 
 **Bot `src/tgvio/`**（入口 main.py 装配；配置 config.py ↔ .env.example）
 
@@ -36,7 +36,7 @@
 | 下载与分析 | application/media_downloader.py、media_analyzer.py；adapters/url_downloader.py（yt-dlp） |
 | 发布 | adapters/telegram/publish_*.py（相册分组、大文件、引用） |
 | 归档 | application/archive_planner.py（清单）→ archive_executor.py → archive_commit.py；adapters/webdav_archive.py；删除 archive_deletion.py |
-| 维护进程 | interfaces/backfill_covers.py、backfill_renditions.py → application/cover_backfill*.py、rendition_backfill.py；检查点 infrastructure/rendition_state.py |
+| 维护进程（已退役，Bot 侧旧代码） | interfaces/backfill_covers.py、backfill_renditions.py → application/cover_backfill*.py、rendition_backfill.py；检查点 infrastructure/rendition_state.py |
 | 存储 | infrastructure/sqlite_*.py（按聚合拆 mixin）；迁移 infrastructure/migrations/NNNN_*.sql |
 
 **Player 后端 `src/tgvio_player/`**（入口 main.py：PlayerSettings 读 env，装配服务与后台任务）
