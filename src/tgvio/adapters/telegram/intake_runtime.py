@@ -427,6 +427,7 @@ class TelethonIntakeRuntime(
         media: Iterable[IncomingMedia],
         *,
         policy_extra: dict | None = None,
+        spoiler_mode: SpoilerMode | None = None,
     ) -> tuple[int, int]:
         """Accept one batch; returns ``(accepted_items, skipped_items)``."""
 
@@ -442,7 +443,7 @@ class TelethonIntakeRuntime(
                 destination=self._settings.destination,
                 media=batch,
                 policy=policy,
-                spoiler_mode=preference.spoiler_mode,
+                spoiler_mode=spoiler_mode or preference.spoiler_mode,
                 ask_timeout_seconds=int(
                     getattr(self._settings, "spoiler_confirm_timeout_seconds", 60)
                 ),

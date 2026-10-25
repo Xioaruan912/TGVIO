@@ -81,17 +81,22 @@ class IntakeSourceMixin:
         media,
         label: str = "",
         merge: bool = False,
+        options: dict | None = None,
     ) -> tuple[int, int]:
         policy: dict = {}
         if str(label).strip():
             policy["source_label"] = str(label).strip()
         if merge:
             policy["merge_album"] = True
+        options = options or {}
+        if options.get("archive_only"):
+            policy["archive_only"] = True
         return await self._accept_and_schedule(
             int(owner_id),
             int(owner_id),
             media,
             policy_extra=policy or None,
+            spoiler_mode=options.get("spoiler_mode"),
         )
 
     async def notify_source_owner(self, text: str) -> None:

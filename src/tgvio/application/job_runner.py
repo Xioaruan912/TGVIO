@@ -74,6 +74,19 @@ class JobRunner:
             return job
         if job.state not in {JobState.PLANNED, JobState.PUBLISHING}:
             return job
+        if job.policy.get("archive_only"):
+            # Chosen in the web console: keep the files on the drive only. The
+            # archive was queued when the Job was planned; nothing is sent.
+            if job.state == JobState.PLANNED:
+                job = await self._repository.transition(
+                    job.id, JobState.PUBLISHING, event_type="archive_only", detail="no channel post"
+                )
+            result = await self._repository.transition(
+                job.id, JobState.SUCCEEDED, event_type="archive_only", detail="no channel post"
+            )
+            log_event(self._log, logging.INFO, "job.run.completed", job_id=job.id,
+                      state=result.state.value, archive_only=True)
+            return result
         plan = await self._repository.get_publish_plan(job.id)
         if plan is None:
             raise RuntimeError(f"{job.state.value} job has no PublishPlan: {job.id}")

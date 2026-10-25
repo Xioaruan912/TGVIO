@@ -39,6 +39,9 @@ from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.intake import IntakeService
 from tgvio.application.item_recovery import SkippedItemRecoveryService
 from tgvio.application.bulk_retry import BulkRetryService
+from tgvio.application.console import ConsoleBaseline, ConsoleService
+from tgvio.adapters.web.auth import ConsoleSessions
+from tgvio.adapters.web.server import ConsoleServer
 from tgvio.application.collection_editing import CollectionEditingService
 from tgvio.application.pick_previews import PickPreviewService
 from tgvio.infrastructure.thumbnail_grid import ThumbnailGridBuilder
@@ -399,6 +402,19 @@ async def run(*, check_only: bool = False) -> None:
             ),
             runtime_flags,
         )
+        pick_previews = (
+            PickPreviewService(
+                source_coordinator.thumbnail,
+                ThumbnailGridBuilder(),
+                cache_root=settings.download_dir,
+                frame_extractor=VideoFrameExtractor(),
+                key_provider=source_coordinator.source_key,
+                concurrency=2,
+                timeout_seconds=settings.preview_timeout_seconds,
+            )
+            if source_coordinator is not None
+            else None
+        )
         bot_ui = TelethonBotUI(
             gateway.client,
             settings,
@@ -417,19 +433,7 @@ async def run(*, check_only: bool = False) -> None:
             runtime_flags=runtime_flags,
             intake=intake,
             source_coordinator=source_coordinator,
-            pick_previews=(
-                PickPreviewService(
-                    source_coordinator.thumbnail,
-                    ThumbnailGridBuilder(),
-                    cache_root=settings.download_dir,
-                    frame_extractor=VideoFrameExtractor(),
-                    key_provider=source_coordinator.source_key,
-                    concurrency=2,
-                    timeout_seconds=settings.preview_timeout_seconds,
-                )
-                if source_coordinator is not None
-                else None
-            ),
+            pick_previews=pick_previews,
             item_recovery=SkippedItemRecoveryService(repository),
             bulk_retry=BulkRetryService(
                 repository,
@@ -441,6 +445,45 @@ async def run(*, check_only: bool = False) -> None:
                 JsonlOperationalLogReader(settings.log_dir) if settings.log_file_enabled else None
             ),
         )
+        console_server: ConsoleServer | None = None
+        if settings.console_enabled:
+            owner_id = int(settings.allowed_users[0])
+            console_server = ConsoleServer(
+                ConsoleService(
+                    repository,
+                    owner_id=owner_id,
+                    baseline=ConsoleBaseline(
+                        destination=settings.destination,
+                        cover_mode=settings.cover_mode,
+                        forward_caption=settings.forward_caption,
+                        archive_enabled=settings.archive_enabled,
+                        archive_root=settings.archive_remote_root if settings.archive_enabled else "",
+                        download_dir=settings.download_dir,
+                    ),
+                    control=control,
+                    schedule=intake_runtime.schedule,
+                    bulk_retry=BulkRetryService(
+                        repository,
+                        control,
+                        item_recovery=SkippedItemRecoveryService(repository),
+                        archive_operator=archive_runtime if settings.archive_enabled else None,
+                    ),
+                    runtime_flags=runtime_flags,
+                    archive=archive_runtime,
+                    cache=cache_runtime,
+                ),
+                ConsoleSessions(settings.console_secret),
+                host="0.0.0.0",
+                port=settings.console_port,
+                static_dir=Path("/app/console-web"),
+                source=source_coordinator,
+                previews=pick_previews,
+                submit_media=lambda media, options: intake_runtime.accept_source_media(
+                    owner_id, media, "网页链接", False, options
+                ),
+                url_enabled=settings.url_enabled,
+                archive_enabled=settings.archive_enabled,
+            )
         bot_ui.register()
         await bot_ui.configure_server_menu()
         await intake_runtime.start()
@@ -448,6 +491,8 @@ async def run(*, check_only: bool = False) -> None:
         if archive_runtime is not None:
             await archive_runtime.start()
         await notification_runtime.start()
+        if console_server is not None:
+            await console_server.start()
         await alert_runtime.start()
         await maintenance_runtime.start()
         recoverable = await repository.list_by_states(
@@ -530,6 +575,8 @@ async def run(*, check_only: bool = False) -> None:
                 for sig in registered_signals:
                     loop.remove_signal_handler(sig)
         finally:
+            if console_server is not None:
+                await console_server.stop()
             await alert_runtime.stop()
             await maintenance_runtime.stop()
             await notification_runtime.stop()

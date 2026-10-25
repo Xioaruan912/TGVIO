@@ -218,6 +218,32 @@ class PickPreviewService:
             )
             return None
 
+    async def thumbnail(self, source_index: int, message_id: int) -> Path | None:
+        """One cached preview image for the web console, or None when there is none."""
+
+        cache_dir = self._cache_dir(source_index)
+        cached = self._cached_image(cache_dir, message_id)
+        if cached is not None:
+            return cached
+        self._root.mkdir(parents=True, exist_ok=True)
+        directory = self._root / f"pickpreview-{secrets.token_hex(8)}"
+        directory.mkdir()
+        try:
+            candidate = await asyncio.wait_for(
+                self._fetch(int(source_index), int(message_id), directory), timeout=self._timeout
+            )
+            image = await self._resolve_image(candidate, directory, int(message_id))
+            if image is None or not image.is_file():
+                return None
+            stored = self._store_image(cache_dir, message_id, image)
+            return stored if stored != image else None
+        except (asyncio.TimeoutError, OSError) as exc:
+            log_event(self._log, logging.INFO, "telegram.preview.thumbnail_failed",
+                      "Single thumbnail could not be fetched", exception_type=type(exc).__name__)
+            return None
+        finally:
+            shutil.rmtree(directory, ignore_errors=True)
+
     # ---------------------------------------------------------------- builds
     async def build_page(
         self,
