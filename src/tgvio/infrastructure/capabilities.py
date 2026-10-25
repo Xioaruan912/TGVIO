@@ -18,7 +18,7 @@ def probe_environment_capabilities() -> CapabilitiesDiagnostic:
 
     This is a non-fatal, read-only self-check so environment drift (e.g. a
     missing `hachoir` that degrades Telethon video metadata) becomes visible in
-    `/diag` instead of silently producing broken previews.
+    the status page instead of silently producing broken previews.
     """
 
     return CapabilitiesDiagnostic(

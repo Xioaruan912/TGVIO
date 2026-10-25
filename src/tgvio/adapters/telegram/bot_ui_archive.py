@@ -24,7 +24,6 @@ from tgvio.application.auto_recovery import (
     job_failure_waits_for_recovery,
     job_recovery_state,
 )
-from tgvio.application.diagnostics import DiagnosticSnapshotService
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
@@ -38,7 +37,6 @@ from tgvio.domain.archive import (
     ArchivePackage,
     ArchivePackageState,
 )
-from tgvio.domain.diagnostics import DiagnosticSnapshot
 from tgvio.domain.job import Job, JobState, MediaKind
 from tgvio.domain.job_query import (
     FailurePage,
@@ -59,10 +57,6 @@ from tgvio.adapters.telegram.bot_ui_format import BotUIFormatMixin
 
 
 class BotUIArchiveMixin:
-    async def _respond_archive(self, event, owner_id: int) -> None:
-        text, buttons = await self._archive_page(owner_id)
-        await event.respond(text, buttons=buttons, parse_mode="md")
-
     async def _confirm_archive_retry_callback(
         self,
         event,

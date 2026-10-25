@@ -24,7 +24,6 @@ from tgvio.application.auto_recovery import (
     job_failure_waits_for_recovery,
     job_recovery_state,
 )
-from tgvio.application.diagnostics import DiagnosticSnapshotService
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
 from tgvio.application.operation_tokens import (
@@ -39,7 +38,6 @@ from tgvio.domain.archive import (
     ArchivePackage,
     ArchivePackageState,
 )
-from tgvio.domain.diagnostics import DiagnosticSnapshot
 from tgvio.domain.job import Job, JobState, MediaKind, job_failure_code
 from tgvio.domain.job_query import (
     FailurePage,
@@ -85,7 +83,6 @@ class TelethonBotUI(
         cache_operator: CacheOperator | None = None,
         job_diagnostics: JobDiagnosticService | None = None,
         operation_tokens: OperationTokenService | None = None,
-        diagnostic_service: DiagnosticSnapshotService | None = None,
         runtime_flags: object | None = None,
         intake: object | None = None,
         source_coordinator: object | None = None,
@@ -103,7 +100,6 @@ class TelethonBotUI(
         self._cache_operator = cache_operator
         self._job_diagnostics = job_diagnostics or JobDiagnosticService(repository)
         self._operation_tokens = operation_tokens
-        self._diagnostic_service = diagnostic_service
         self._runtime_flags = runtime_flags
         self._intake = intake
         self._source, self._pick_previews = source_coordinator, pick_previews
@@ -217,33 +213,6 @@ class TelethonBotUI(
             await self._respond_job(event, int(event.sender_id), argument.strip() or None)
         elif command == "plan":
             await self._respond_plan(event, int(event.sender_id), argument.strip() or None)
-        elif command == "stats":
-            await event.respond(
-                await self._stats_text(int(event.sender_id)),
-                buttons=self._more_buttons(),
-                parse_mode="md",
-            )
-        elif command == "health":
-            await event.respond(
-                await self._health_text(),
-                buttons=self._more_buttons(),
-                parse_mode="md",
-            )
-        elif command == "diag":
-            diag_argument = argument.strip()
-            if diag_argument.lower().startswith("job "):
-                text = await self._job_text(
-                    int(event.sender_id),
-                    diag_argument[4:].strip() or None,
-                    deep=True,
-                )
-            else:
-                text = await self._diag_text()
-            await event.respond(
-                text,
-                buttons=self._more_buttons(),
-                parse_mode="md",
-            )
         elif command == "settings":
             quiet = await self._quiet_enabled(int(event.sender_id))
             await event.respond(
@@ -291,30 +260,7 @@ class TelethonBotUI(
             )
         elif action == NAV_JOBS:
             await self._respond_jobs(event, owner_id)
-        elif action == NAV_HISTORY:
-            text, buttons = await self._jobs_page(owner_id, filter=JobListFilter.HISTORY)
-            await event.respond(text, buttons=buttons, parse_mode="md")
-        elif action == NAV_DRAFTS:
-            text, buttons = await self._render_drafts(owner_id, page=0)
-            await event.respond(text, buttons=buttons, parse_mode="md")
-        elif action == NAV_STYLE:
-            text, buttons = await self._render_styles(owner_id)
-            await event.respond(text, buttons=buttons, parse_mode="md")
-        elif action == NAV_STATUS:
-            await event.respond(
-                await self._status_text(owner_id),
-                buttons=await self._status_page_buttons(),
-                parse_mode="md",
-            )
-        elif action == NAV_ARCHIVE:
-            await self._respond_archive(event, owner_id)
-        elif action == NAV_CACHE:
-            await event.respond(
-                await self._cache_text(),
-                buttons=self._cache_buttons(),
-                parse_mode="md",
-            )
-        elif action in {NAV_SETTINGS, NAV_MORE}:
+        elif action == NAV_SETTINGS:
             quiet = await self._quiet_enabled(owner_id)
             await event.respond(
                 self._settings_page_text(quiet),
@@ -440,19 +386,6 @@ class TelethonBotUI(
             return
         if action.startswith("set:"):
             await self._toggle_setting_callback(event, action.split(":", 1)[1])
-            return
-        if action == "ui:stats":
-            await self._edit_page(
-                event,
-                await self._stats_text(owner_id),
-                self._more_buttons(),
-            )
-            return
-        if action == "ui:health":
-            await self._edit_page(event, await self._health_text(), self._more_buttons())
-            return
-        if action == "ui:diag":
-            await self._edit_page(event, await self._diag_text(), self._more_buttons())
             return
         if action == "ui:archive":
             text, buttons = await self._archive_page(owner_id)

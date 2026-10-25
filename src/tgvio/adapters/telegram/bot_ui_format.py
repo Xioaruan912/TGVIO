@@ -24,7 +24,6 @@ from tgvio.application.auto_recovery import (
     job_failure_waits_for_recovery,
     job_recovery_state,
 )
-from tgvio.application.diagnostics import DiagnosticSnapshotService
 from tgvio.application.execution import PublishExecutionEngine
 from tgvio.application.job_diagnostics import JobDiagnosticService, JobDiagnosticSnapshot
 from tgvio.application.job_control import JobControlService, UnsafeRetryError
@@ -38,7 +37,6 @@ from tgvio.domain.archive import (
     ArchivePackage,
     ArchivePackageState,
 )
-from tgvio.domain.diagnostics import DiagnosticSnapshot
 from tgvio.domain.job import Job, JobState, MediaKind, job_failure_code
 from tgvio.domain.job_query import (
     FailurePage,
@@ -147,112 +145,6 @@ class BotUIFormatMixin:
     @staticmethod
     def _help_buttons():
         return [[Button.inline("📋 我的任务", b"ui:jobs"), Button.inline("🏠 首页", b"ui:home")]]
-
-    async def _diag_text(self) -> str:
-        if self._diagnostic_service is None:
-            return (
-                "**TGVIO Diagnostic Snapshot**\n\n"
-                "诊断快照服务未启用。\n\n"
-                "本页不会主动连接 Telegram、WebDAV 或代理，也不会执行写探测。"
-            )
-        snapshot = await self._diagnostic_service.snapshot()
-        return self._render_diagnostic_snapshot(snapshot)
-
-    @staticmethod
-    def _render_diagnostic_snapshot(snapshot: DiagnosticSnapshot) -> str:
-        proxy_checked = (
-            "未检测"
-            if snapshot.static_proxy.checked_at_epoch is None
-            else datetime.fromtimestamp(
-                snapshot.static_proxy.checked_at_epoch,
-                tz=timezone.utc,
-            ).strftime("%Y-%m-%d %H:%M:%S UTC")
-        )
-        schema_version = (
-            "unknown"
-            if snapshot.schema.user_version is None
-            else str(snapshot.schema.user_version)
-        )
-        latest_version = (
-            "unknown"
-            if snapshot.schema.latest_version is None
-            else str(snapshot.schema.latest_version)
-        )
-        generation = (
-            "unknown"
-            if snapshot.runtime_lease.generation is None
-            else str(snapshot.runtime_lease.generation)
-        )
-        yes_no = lambda value: "yes" if value else "no"
-        on_off = lambda value: "on" if value else "off"
-        lines = [
-            "**TGVIO Diagnostic Snapshot**",
-            "",
-            "**Release identity**",
-            f"Release：`{snapshot.release_id}`",
-            f"Version：`{snapshot.app_version}`",
-            f"Commit：`{snapshot.commit}`",
-            f"Source manifest：`{snapshot.source_manifest}`",
-            "",
-            "**Schema / runtime**",
-            (
-                f"Schema：`v{schema_version}` / latest `v{latest_version}` · "
-                f"ledger contiguous `{yes_no(snapshot.schema.ledger_contiguous)}` · "
-                f"verification `{snapshot.schema.verification.value}`"
-            ),
-            (
-                f"Runtime lease：unique `{yes_no(snapshot.runtime_lease.unique)}` · "
-                f"generation `{generation}` · `{snapshot.runtime_lease.freshness.value}`"
-            ),
-            f"Aggregate query：`{snapshot.aggregate_status.value}`",
-            "",
-            "**Scheduler**",
-            f"Queue paused：`{yes_no(snapshot.scheduler.paused)}`",
-            (
-                f"Active `{snapshot.scheduler.active}` · Held `{snapshot.scheduler.held}` · "
-                f"Ready `{snapshot.scheduler.ready}` · Blocked `{snapshot.scheduler.blocked}`"
-            ),
-            "",
-            "**Archive**",
-            (
-                f"Planned `{snapshot.archive.planned}` · Transferring `{snapshot.archive.transferring}` · "
-                f"Committed `{snapshot.archive.committed}` · Failed `{snapshot.archive.failed}` · "
-                f"Retry-wait `{snapshot.archive.retry_wait}`"
-            ),
-            f"Capability freshness：`{snapshot.archive.capability_freshness}`",
-            "",
-            "**Feature flags**",
-            (
-                f"Bot `{on_off(snapshot.features.run_bot)}` · Publish `{on_off(snapshot.features.publish_enabled)}` · "
-                f"URL `{on_off(snapshot.features.url_enabled)}`/`{snapshot.features.url_private_network_policy}`"
-            ),
-            (
-                f"Archive `{on_off(snapshot.features.archive_enabled)}`/`{snapshot.features.archive_policy}` · "
-                f"Collections `{on_off(snapshot.features.collections_enabled)}` · "
-                f"Auto-retry `{on_off(snapshot.features.auto_retry_enabled)}`"
-            ),
-            "",
-            "**Static proxy**",
-            f"State：`{snapshot.static_proxy.state.value}` · Last check：`{proxy_checked}`",
-            "",
-            *(
-                [
-                    "**Capabilities**",
-                    (
-                        f"ffmpeg `{on_off(snapshot.capabilities.ffmpeg)}` · "
-                        f"ffprobe `{on_off(snapshot.capabilities.ffprobe)}` · "
-                        f"yt-dlp `{on_off(snapshot.capabilities.yt_dlp)}` · "
-                        f"cryptg `{on_off(snapshot.capabilities.cryptg)}` · "
-                        f"hachoir `{on_off(snapshot.capabilities.hachoir)}`"
-                    ),
-                    "",
-                ]
-                if snapshot.capabilities is not None
-                else []
-            ),
-            "只读本地 SQLite 与脱敏启动状态；不会主动连接 Telegram、WebDAV、代理或其它外部服务。",
-        ]
-        return "\n".join(lines)
 
     @staticmethod
     def _job_state_icon(state: JobState, *, held: bool = False) -> str:

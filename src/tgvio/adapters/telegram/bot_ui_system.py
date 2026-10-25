@@ -171,56 +171,6 @@ class BotUISystemMixin:
             return "时间未知"
         return moment.astimezone(ZoneInfo("Asia/Shanghai")).strftime("%m-%d %H:%M")
 
-    async def _stats_text(self, owner_id: int) -> str:
-        stats = await self._repository.get_stats_snapshot(owner_id=owner_id)
-        events = await self._repository.get_recent_event_counts(owner_id=owner_id, hours=24)
-        lines = [
-            "**TGVIO 统计**",
-            "",
-            f"任务总数：`{stats.get('jobs_total', 0)}`",
-            f"媒体项目：`{stats.get('media_items', 0)}`",
-            f"已处理媒体大小：`{self._human_bytes(stats.get('media_bytes', 0))}`",
-            f"完成 / 失败 / 取消：`{stats.get('succeeded', 0)}` / `{stats.get('failed', 0)}` / `{stats.get('cancelled', 0)}`",
-            "",
-            "**今天（UTC）**",
-            f"创建：`{stats.get('today_jobs', 0)}`",
-            f"完成：`{stats.get('today_succeeded', 0)}` · 失败：`{stats.get('today_failed', 0)}` · 取消：`{stats.get('today_cancelled', 0)}`",
-        ]
-        if events:
-            lines.extend(["", "**最近 24h 事件**"])
-            for event_type, count in list(events.items())[:8]:
-                lines.append(f"• `{event_type}`：`{count}`")
-        return "\n".join(lines)
-
-    async def _health_text(self) -> str:
-        runtime = await self._repository.get_runtime_health()
-        db_ok = await self._repository.quick_check()
-        disk = shutil.disk_usage(self._settings.download_dir)
-        runtime_state = runtime.get("runtime", {})
-        telegram_state = runtime.get("telegram", {})
-        telegram_ok = telegram_state.get("status") == "connected"
-        heartbeat_ok = runtime_state.get("status") == "alive"
-        overall = db_ok and telegram_ok and heartbeat_ok
-        lines = [
-            "**TGVIO Health**",
-            "",
-            f"总体：`{'healthy' if overall else 'degraded'}`",
-            f"SQLite：`{'ok' if db_ok else 'failed'}`",
-            f"Runtime heartbeat：`{runtime_state.get('status', 'unknown')}`",
-            f"Telegram：`{telegram_state.get('status', 'unknown')}`",
-            f"磁盘可用：`{self._human_bytes(disk.free)}` / `{self._human_bytes(disk.total)}`",
-        ]
-        last_seen = telegram_state.get("updated_at")
-        if last_seen:
-            lines.append(f"最近 Telegram heartbeat：`{last_seen}` UTC")
-        lines.extend(
-            [
-                "",
-                "本页只读取本地 durable health，不会主动发送 Telegram 探测消息或访问 WebDAV。",
-            ]
-        )
-        return "\n".join(lines)
-
     async def _cache_text(self) -> str:
         if self._cache_operator is None:
             return "**本地缓存**\n\n缓存维护服务未启用。"
@@ -270,8 +220,7 @@ class BotUISystemMixin:
                 ),
                 Button.inline("🧹 清理临时文件", b"ui:cache-clean"),
             ],
-            [Button.inline("☁️ 云端备份", b"ui:archive"), Button.inline("📈 统计", b"ui:stats")],
-            [Button.inline("🩺 技术诊断", b"ui:diag"), Button.inline("🔄 刷新", b"ui:status")],
+            [Button.inline("☁️ 云端备份", b"ui:archive"), Button.inline("🔄 刷新", b"ui:status")],
             [Button.inline("⚙️ 设置", b"ui:settings"), Button.inline("🏠 首页", b"ui:home")],
         ]
         return rows
