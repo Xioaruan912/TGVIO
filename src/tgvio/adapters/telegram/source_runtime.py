@@ -390,6 +390,7 @@ class SourceCoordinator:
         message_id: int,
         *,
         fingerprint: str = "",
+        options: dict | None = None,
     ) -> tuple[int, str, int, int]:
         """Publish one specific message/album selected by the operator."""
 
@@ -401,7 +402,7 @@ class SourceCoordinator:
         media = await self._reader.capture_at(chat_id, int(message_id))
         if not media:
             return (0, label, 0, 0)
-        accepted = await self._dispatch(media, label)
+        accepted = await self._dispatch(media, label, options=options)
         accepted_count, skipped = _accepted_counts(accepted, len(media))
         if accepted_count == len(media) and not skipped:
             await self._remember_done(chat_id, [fingerprint])
@@ -419,6 +420,7 @@ class SourceCoordinator:
         selections: list[tuple[int, int]],
         *,
         fingerprints=(),
+        options: dict | None = None,
     ) -> tuple[int, str, int, int, int]:
         """Publish several picked rows as ONE job (merged album).
 
@@ -481,7 +483,7 @@ class SourceCoordinator:
             failed,
             label,
         )
-        accepted = await self._dispatch(merged, label, merge=True)
+        accepted = await self._dispatch(merged, label, merge=True, options=options)
         accepted_count, skipped = _accepted_counts(accepted, len(merged))
         touched = {chat_id for _ordinal, chat_id in completed_rows}
         # Intake only reports aggregate counts. Record a row fingerprint only
@@ -494,9 +496,13 @@ class SourceCoordinator:
             self._forget_scan(chat_id)
         return (len(merged), label, failed, accepted_count, skipped)
 
-    async def _dispatch(self, media: list, label: str = "", *, merge: bool = False):
+    async def _dispatch(self, media: list, label: str = "", *, merge: bool = False, options: dict | None = None):
         if self._on_source_media is None or self._user_id is None:
             return None
+        if options:
+            return await self._on_source_media(
+                int(self._user_id), media, str(label or ""), bool(merge), options
+            )
         return await self._on_source_media(
             int(self._user_id), media, str(label or ""), bool(merge)
         )
@@ -779,6 +785,41 @@ class SourceCoordinator:
         await self._flags.set(self._repository, _WHITELIST_FLAG, json.dumps(current))
         await self._ensure_reader()
         return f"已移除来源 `{removed}`。"
+
+    async def dialogs(self, *, limit: int = 300) -> list[dict[str, object]]:
+        """Channels and groups the personal account is in, for picking sources."""
+
+        client = self._client
+        if client is None:
+            raise SourceLoginError("请先登录来源账号")
+        from telethon import utils
+
+        listed: list[dict[str, object]] = []
+        async for dialog in client.iter_dialogs(limit=max(1, min(int(limit), 500))):
+            if not (dialog.is_channel or dialog.is_group):
+                continue
+            entity = dialog.entity
+            listed.append(
+                {
+                    "id": str(int(utils.get_peer_id(entity))),
+                    "title": str(dialog.name or "")[:120],
+                    "username": getattr(entity, "username", None),
+                    "kind": "channel" if dialog.is_channel and not dialog.is_group else "group",
+                    "restricted": bool(getattr(entity, "noforwards", False)),
+                }
+            )
+        return listed
+
+    def sources(self) -> list[dict[str, object]]:
+        """Resolved whitelist entries in picker order (their index is the source index)."""
+
+        reader = self._reader
+        if reader is None:
+            return []
+        return [
+            {"index": index, "id": str(int(chat_id)), "label": reader.label_for(chat_id)}
+            for index, chat_id in enumerate(reader.ordered_chats())
+        ]
 
     def whitelist(self) -> list[str]:
         return list(self.effective_chats())

@@ -1,5 +1,6 @@
 # Direct application dependencies. Keep these versions aligned with
 # requirements.lock; production/release installs must use the hashed lock.
+aiohttp==3.12.15
 aiosqlite==0.22.1
 telethon==1.44.0
 cryptg==0.6.0

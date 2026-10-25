@@ -137,6 +137,10 @@ class Settings:
     vps_app_dir: str
     github_repo: str
     github_branch: str
+    # Web console (adapters/web): off unless an access secret is configured.
+    console_enabled: bool = False
+    console_port: int = 8792
+    console_secret: str = field(default="", repr=False)
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -260,6 +264,15 @@ class Settings:
                 alert_user_id = int(alert_user_raw)
             except ValueError as exc:
                 raise ConfigError("TGVIO_ALERT_USER_ID must be an integer") from exc
+        console_enabled = _bool("TGVIO_CONSOLE_ENABLED", False)
+        console_port = _int("TGVIO_CONSOLE_PORT", 8792)
+        if not 1024 <= console_port <= 65535:
+            raise ConfigError("TGVIO_CONSOLE_PORT out of range")
+        console_secret = os.getenv("TGVIO_CONSOLE_SECRET", "").strip()
+        if console_enabled and not (
+            len(console_secret) >= 32 or (len(console_secret) == 9 and console_secret.isdigit())
+        ):
+            raise ConfigError("TGVIO_CONSOLE_SECRET must be at least 32 characters or a 9-digit PIN")
         alert_cooldown_seconds = _int("TGVIO_ALERT_COOLDOWN_SECONDS", 3600)
         if not 60 <= alert_cooldown_seconds <= 86400:
             raise ConfigError("TGVIO_ALERT_COOLDOWN_SECONDS out of range")
@@ -392,6 +405,9 @@ class Settings:
             alert_user_id=alert_user_id,
             alert_cooldown_seconds=alert_cooldown_seconds,
             alert_poll_seconds=alert_poll_seconds,
+            console_enabled=console_enabled,
+            console_port=console_port,
+            console_secret=console_secret,
             collection_preview_enabled=collection_preview_enabled,
             collection_editing_enabled=collection_editing_enabled,
             preview_timeout_seconds=preview_timeout_seconds,
@@ -461,6 +477,8 @@ class Settings:
             "alerts_enabled": self.alerts_enabled,
             "alert_cooldown_seconds": self.alert_cooldown_seconds,
             "alert_poll_seconds": self.alert_poll_seconds,
+            "console_enabled": self.console_enabled,
+            "console_port": self.console_port,
             "collection_preview_enabled": self.collection_preview_enabled,
             "collection_editing_enabled": self.collection_editing_enabled,
             "archive_enabled": self.archive_enabled,

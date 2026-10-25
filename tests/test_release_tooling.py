@@ -420,11 +420,14 @@ class BuildContractTests(unittest.TestCase):
         }
         self.assertEqual(
             direct,
-            {name: locked[name] for name in ("aiosqlite", "telethon", "cryptg", "yt-dlp")},
+            {name: locked[name] for name in ("aiohttp", "aiosqlite", "telethon", "cryptg", "yt-dlp")},
         )
+        # aiohttp (the web console) brings its own pinned dependencies.
         self.assertEqual(
             set(locked),
-            {"aiosqlite", "cryptg", "pyaes", "pyasn1", "rsa", "telethon", "yt-dlp"},
+            {"aiosqlite", "cryptg", "pyaes", "pyasn1", "rsa", "telethon", "yt-dlp",
+             "aiohttp", "aiohappyeyeballs", "aiosignal", "attrs", "frozenlist", "idna",
+             "multidict", "propcache", "typing_extensions", "yarl"},
         )
         for line in (ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines():
             if "==" in line and not line.startswith("#"):

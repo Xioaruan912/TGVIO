@@ -8,7 +8,7 @@ from typing import Iterable
 
 from telethon import Button, TelegramClient, events
 
-from tgvio.adapters.telegram.user_messages import (
+from tgvio.application.user_messages import (
     describe_archive_failure,
     describe_job_failure,
 )

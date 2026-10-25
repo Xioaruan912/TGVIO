@@ -11,7 +11,7 @@ from zoneinfo import ZoneInfo
 from telethon import Button, TelegramClient, events
 from telethon.tl import functions, types
 
-from tgvio.adapters.telegram.user_messages import (
+from tgvio.application.user_messages import (
     describe_archive_failure,
     describe_job_failure,
 )
