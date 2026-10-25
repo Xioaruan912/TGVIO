@@ -78,3 +78,9 @@ containers, archive the old front-end repository; the owner decides on the Bot.
   organize mode and duplicate review. Not done: env reduction (the access secret
   stays in the env on purpose), stopping the covers and renditions containers
   (archive packages still use them), the Bot decision.
+- 2026-10-25: the covers and renditions containers are retired and deleted; the
+  player makes covers (with the duplicate-review fingerprint) and 480p copies for
+  every video (R2-71). The new front end gained tags, add to collection (and new
+  collections), organize mode, duplicate review and the watched window, so the
+  previous front end is gone: no /old/, no /next/, no player-web.lock; the image
+  builds web/ only. The Bot is a separate project and is left as it is.

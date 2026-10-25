@@ -20,7 +20,6 @@ REQUIRED = (
     "docs/development/ARCHITECTURE.md", "docs/operations/README.md",
     "docs/archive/README.md", "docs/refactor-v2/README.md",
     "scripts/check.sh", "scripts/repository_hygiene.py",
-    "player-web.lock", "scripts/player_web_source.sh",
 )
 GOVERNANCE_LIMIT = 160
 LINK = re.compile(r"\[[^\]]*\]\(([^)]+)\)")

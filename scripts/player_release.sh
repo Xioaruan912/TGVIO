@@ -27,15 +27,11 @@ done
 [[ "$commit" =~ ^([0-9a-f]{40}|unknown)$ ]] || { printf 'invalid commit\n' >&2; exit 2; }
 [[ "$release_id" =~ ^[A-Za-z0-9._-]+$ ]] || { printf 'invalid release id\n' >&2; exit 2; }
 
-# The front end is the exact commit pinned in player-web.lock, exported from Git
-# objects; a missing, unpushed or mismatched source stops the build here.
-web_source=$(mktemp -d "${TMPDIR:-/tmp}/tgvio-player-web.XXXXXX")
-trap 'bash "$repo_root/scripts/player_web_source.sh" --remove "$web_source"' EXIT
-web_commit=$(bash "$repo_root/scripts/player_web_source.sh" --dest "$web_source")
+# The front end lives in web/ of this repository, so its revision is this commit.
+web_commit=$commit
 
 DOCKER_BUILDKIT=1 docker build --pull=false \
   --file Dockerfile.player \
-  --build-context "player-web=$web_source" \
   --build-arg "PLAYER_COMMIT=$commit" \
   --build-arg "PLAYER_RELEASE_ID=$release_id" \
   --build-arg "PLAYER_WEB_COMMIT=$web_commit" \

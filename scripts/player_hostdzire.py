@@ -1,7 +1,7 @@
 """Player half of the HostDZire release, driven by deploy_hostdzire.py.
 
-The image is built locally by player_release.sh from the pushed commit and the
-TGVIO-Player commit pinned in player-web.lock, its labels are checked, then the
+The image is built locally by player_release.sh from the pushed commit (front end
+included, from web/), its labels are checked, then the
 image and the release source travel to HostDZire with SHA-256 checks on both
 ends. scripts/player_remote_release.sh performs the switch there.
 """
@@ -11,7 +11,6 @@ from __future__ import annotations
 from datetime import datetime, timezone
 import hashlib
 from pathlib import Path
-import re
 import shlex
 import subprocess
 import tempfile
@@ -31,13 +30,6 @@ def _sha256(path: Path) -> str:
     return digest.hexdigest()
 
 
-def _locked_web_commit(repo: Path) -> str:
-    match = re.search(r"^commit=([0-9a-f]{40})$", (repo / "player-web.lock").read_text(encoding="utf-8"), re.M)
-    if not match:
-        raise PlayerDeployError("player-web.lock does not pin a full commit")
-    return match.group(1)
-
-
 def _label(image: str, name: str) -> str:
     return subprocess.run(
         ["docker", "image", "inspect", "--format", f'{{{{index .Config.Labels "{name}"}}}}', image],
@@ -50,7 +42,7 @@ def deploy_player(repo: Path, head: str, ssh: list[str], scp: list[str], target:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%SZ")
     release_id = f"player-{head[:7]}-{timestamp}"
     tag = f"tgvio-player:{release_id}"
-    web_commit = _locked_web_commit(repo)
+    web_commit = head  # the front end is web/ of this same commit
 
     subprocess.run(
         ["bash", str(repo / "scripts" / "player_release.sh"), "--tag", tag, "--commit", head, "--release-id", release_id],
@@ -59,7 +51,7 @@ def deploy_player(repo: Path, head: str, ssh: list[str], scp: list[str], target:
     if _label(tag, "org.opencontainers.image.revision") != head:
         raise PlayerDeployError("candidate image revision label does not match HEAD")
     if _label(tag, "io.tgvio.player-web.revision") != web_commit:
-        raise PlayerDeployError("candidate image front-end label does not match player-web.lock")
+        raise PlayerDeployError("candidate image front-end label does not match HEAD")
 
     remote_dir = f"{PLAYER_ROOT}/releases/{release_id}"
     with tempfile.TemporaryDirectory(prefix="tgvio-player-release-") as temporary:

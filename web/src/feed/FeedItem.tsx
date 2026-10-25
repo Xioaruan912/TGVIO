@@ -1,10 +1,11 @@
-import { DotsThreeIcon, HeartIcon, SpeakerHighIcon, SpeakerSlashIcon, PlayIcon, TrashIcon } from "@phosphor-icons/react";
+import { DotsThreeIcon, HeartIcon, SpeakerHighIcon, SpeakerSlashIcon, PlayIcon } from "@phosphor-icons/react";
 import { AnimatePresence, motion } from "motion/react";
 import { useEffect, useRef, useState } from "react";
 import { api, chooseStream, type Media } from "../api";
 import { setPref, usePrefs } from "../prefs";
 import { useLocked } from "../ui/privacy";
 import { GestureRecognizer } from "./gestures";
+import { MediaActions } from "./MediaActions";
 
 interface Props {
   media: Media;
@@ -15,11 +16,13 @@ interface Props {
   onFavorite: (id: string, on: boolean) => void;
   /** Present when the server allows deleting this clip. */
   onRemove?: (media: Media) => void;
+  /** 整理模式 buttons sit at the bottom; the rail moves up out of their way. */
+  raised?: boolean;
 }
 
 interface Burst { id: number; x: number; y: number }
 
-export function FeedItem({ media, active, mounted, onFavorite, onRemove }: Props) {
+export function FeedItem({ media, active, mounted, onFavorite, onRemove, raised = false }: Props) {
   const prefs = usePrefs();
   const locked = useLocked();
   const [menu, setMenu] = useState(false);
@@ -134,16 +137,14 @@ export function FeedItem({ media, active, mounted, onFavorite, onRemove }: Props
         <p className="pointer-events-none absolute inset-x-0 top-1/2 text-center text-[14px] text-muted">播放失败，上滑看下一条</p>
       )}
 
-      <div className="absolute bottom-[calc(5.5rem+env(safe-area-inset-bottom))] right-3 flex flex-col items-center gap-5">
+      <div className={`absolute right-3 flex flex-col items-center gap-5 transition-[bottom] ${raised ? "bottom-[calc(9.5rem+env(safe-area-inset-bottom))]" : "bottom-[calc(5.5rem+env(safe-area-inset-bottom))]"}`}>
         <RailButton label={media.favorite ? "取消收藏" : "收藏"} onClick={() => favorite(!media.favorite)}>
           <HeartIcon size={30} weight="fill" className={media.favorite ? "text-accent" : "text-white"} />
         </RailButton>
         <RailButton label={prefs.muted ? "打开声音" : "静音"} onClick={() => setPref("muted", !prefs.muted)}>
           {prefs.muted ? <SpeakerSlashIcon size={28} weight="fill" /> : <SpeakerHighIcon size={28} weight="fill" />}
         </RailButton>
-        {onRemove && (
-          <RailButton label="更多" onClick={() => setMenu(true)}><DotsThreeIcon size={30} weight="bold" /></RailButton>
-        )}
+        <RailButton label="更多" onClick={() => setMenu(true)}><DotsThreeIcon size={30} weight="bold" /></RailButton>
         {hasLow && (
           <button type="button" onClick={() => setPref("lowRes", !prefs.lowRes)} aria-label="切换清晰度"
             className="rounded-full bg-black/45 px-2.5 py-1 text-[12px] font-semibold text-white backdrop-blur-sm">
@@ -152,21 +153,7 @@ export function FeedItem({ media, active, mounted, onFavorite, onRemove }: Props
         )}
       </div>
 
-      <AnimatePresence>
-        {menu && onRemove && (
-          <motion.div key="menu" className="fixed inset-0 z-40 flex items-end bg-black/50" onClick={() => setMenu(false)}
-            initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }}>
-            <motion.div className="w-full rounded-t-[20px] bg-surface p-3 pb-[max(1rem,env(safe-area-inset-bottom))]" onClick={event => event.stopPropagation()}
-              initial={{ y: 40 }} animate={{ y: 0 }} exit={{ y: 40 }}>
-              <button type="button" className="flex h-13 w-full items-center gap-3 rounded-[14px] px-4 text-[16px] text-accent active:bg-raised"
-                onClick={() => { setMenu(false); onRemove(media); }}>
-                <TrashIcon size={22} />删除这个视频（网盘里的文件也会删掉）
-              </button>
-              <button type="button" className="mt-1 h-13 w-full rounded-[14px] text-[16px] text-muted active:bg-raised" onClick={() => setMenu(false)}>取消</button>
-            </motion.div>
-          </motion.div>
-        )}
-      </AnimatePresence>
+      <MediaActions media={media} open={menu} onClose={() => setMenu(false)} onRemove={onRemove} />
 
       {/* Thin progress line; pressing it widens it and seeks. */}
       <div className={`absolute inset-x-0 bottom-[calc(4.25rem+env(safe-area-inset-bottom))] flex items-end px-3 ${seeking ? "h-6" : "h-4"}`}

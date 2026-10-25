@@ -8,7 +8,7 @@
 | 开发、依赖、验证 | [development/README.md](development/README.md) |
 | 架构与行为边界 | [development/ARCHITECTURE.md](development/ARCHITECTURE.md) |
 | 部署、回滚、清理 | [operations/README.md](operations/README.md) |
-| 前端代码、设计与边界 | [TGVIO-Player](https://github.com/Xioaruan912/TGVIO-Player)（docs/DESIGN.md）；本仓库固定提交见 player-web.lock |
+| 前端代码 | 本仓库 `web/`；重构计划见 [refactor-v3](refactor-v3/README.md) |
 | 最新工作交接与候选功能 | [handoffs/2026-10-09-115-link-load.md](handoffs/2026-10-09-115-link-load.md) |
 | 前端重设计交接 | [handoffs/2026-10-01-player-redesign.md](handoffs/2026-10-01-player-redesign.md) |
 | 标准化阶段记录 | [handoffs/2026-10-01-standardization.md](handoffs/2026-10-01-standardization.md) |

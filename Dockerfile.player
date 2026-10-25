@@ -5,24 +5,13 @@
 ARG PYTHON_IMAGE=python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
 ARG NODE_IMAGE=node:20-bookworm-slim
 
-# The front end lives in the TGVIO-Player repository. scripts/player_release.sh
-# exports the commit pinned in player-web.lock and passes it as the named build
-# context "player-web"; a build without that context has no source and fails.
+# The front end in web/ (React + Vite), served by the player at /.
 FROM ${NODE_IMAGE} AS player-web-build
-WORKDIR /web
-COPY --from=player-web package.json package-lock.json ./
-RUN npm ci
-COPY --from=player-web index.html tsconfig.json vite.config.ts ./
-COPY --from=player-web public ./public
-COPY --from=player-web src ./src
-RUN npm run build
-
-# The rebuilt front end in web/ (refactor v3), served under /next/ until the cut-over.
-FROM ${NODE_IMAGE} AS web-next-build
 WORKDIR /web
 COPY web/package.json web/package-lock.json ./
 RUN npm ci
 COPY web/index.html web/tsconfig.json web/vite.config.ts ./
+COPY web/public ./public
 COPY web/src ./src
 RUN npm run build
 
@@ -59,7 +48,6 @@ RUN groupadd --gid 65532 tgvio-player \
     && useradd --uid 65532 --gid 65532 --no-create-home --shell /usr/sbin/nologin tgvio-player
 COPY src/tgvio_player ./src/tgvio_player
 COPY --from=player-web-build --chown=65532:65532 /web/dist ./player-web
-COPY --from=web-next-build --chown=65532:65532 /web/dist ./web-next
 USER 65532:65532
 
 CMD ["python", "-m", "tgvio_player.main"]

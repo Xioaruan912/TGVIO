@@ -9,6 +9,7 @@ export interface Media {
   width: number | null;
   height: number | null;
   duration_seconds: number | null;
+  size_bytes?: number | null;
   stream_url: string;
   cover_url: string | null;
   favorite: boolean;
@@ -40,6 +41,7 @@ export interface Status {
   backup: { pending: number; failed: number; last_success_at: number | null };
 }
 export type Category = "short" | "long" | "all";
+export interface Tag { id: number; name: string; count: number }
 
 const q = (params: Record<string, string | number | null | undefined>) =>
   new URLSearchParams(Object.entries(params).filter(([, v]) => v !== null && v !== undefined && v !== "").map(([k, v]) => [k, String(v)])).toString();
@@ -50,8 +52,19 @@ export const api = {
   logout: () => request<{ authenticated: boolean }>("/api/v1/auth/logout", json("POST")),
   feed: (limit = 6) => request<{ items: Media[] }>(`/api/v1/feed?limit=${limit}`),
   favorite: (id: string, on: boolean) => request<{ favorite: boolean }>(`/api/v1/media/${id}/favorite`, { method: on ? "PUT" : "DELETE" }),
-  videos: (category: Category, offset: number, limit = 20) =>
-    request<Page>(`/api/v1/videos?${q({ category, offset, limit, sort: "newest" })}`),
+  videos: (category: Category, offset: number, limit = 20, tag: number | null = null) =>
+    request<Page>(`/api/v1/videos?${q({ category, offset, limit, sort: "newest", tag })}`),
+  tags: () => request<{ items: Tag[] }>("/api/v1/tags"),
+  createTag: (name: string) => request<Tag>("/api/v1/tags", json("POST", { name })),
+  mediaTags: (id: string) => request<{ ids: number[] }>(`/api/v1/media/${id}/tags`),
+  setMediaTag: (id: string, tag: number, on: boolean) => request<{ ids: number[] }>(`/api/v1/media/${id}/tags/${tag}`, json(on ? "PUT" : "DELETE")),
+  createCollection: (name: string) => request<Collection>("/api/v1/collections", json("POST", { name, kind: "manual" })),
+  addToCollection: (collection: string, id: string) =>
+    request<unknown>(`/api/v1/collections/${encodeURIComponent(collection)}/items/${id}`, json("PUT")),
+  duplicates: () => request<{ groups: { items: Media[] }[]; total: number }>("/api/v1/duplicates"),
+  dismissDuplicates: (ids: string[]) => request<{ dismissed: number }>("/api/v1/duplicates/dismiss", json("POST", { media_ids: ids })),
+  watched: () => request<{ forget_after_days: number | null; choices: (number | null)[] }>("/api/v1/settings/watched"),
+  setWatched: (days: number | null) => request<unknown>("/api/v1/settings/watched", json("PUT", { forget_after_days: days })),
   libraryDates: () => request<{ items: LibraryDate[] }>("/api/v1/library/dates"),
   libraryFolders: (date: string | null) => request<{ items: LibraryFolder[] }>(`/api/v1/library/folders?${q({ date: date ?? "unknown" })}`),
   folderVideos: (folderId: string, cursor: string | null, limit = 20) =>

@@ -1,6 +1,6 @@
 import { CaretLeftIcon, CaretRightIcon, FolderIcon } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
-import { api, type LibraryDate, type LibraryFolder, type Media } from "../api";
+import { api, type LibraryDate, type LibraryFolder, type Media, type Tag } from "../api";
 import { BlurToggle, Grid, usePages } from "../ui/Grid";
 
 export type Open = (items: Media[], index: number, more?: () => void) => void;
@@ -35,13 +35,28 @@ export function Library({ onOpen }: { onOpen: Open }) {
 }
 
 function CategoryWall({ category, onOpen }: { category: "short" | "long"; onOpen: Open }) {
-  const fetchPage = useCallback((_: string | null, offset: number) => api.videos(category, offset), [category]);
-  const pages = usePages(fetchPage, category);
-  useEffect(() => { void pages.more(); }, [category]);
-  if (pages.error && !pages.items.length) return <Empty>加载失败，下拉刷新或稍后再试</Empty>;
-  if (pages.done && !pages.items.length) return <Empty>{category === "long" ? "还没有长视频" : "还没有短视频"}</Empty>;
-  return <Grid items={pages.items} wide={category === "long"} done={pages.done} onEnd={() => void pages.more()}
-    onOpen={index => onOpen(pages.items, index, () => void pages.more())} />;
+  const [tags, setTags] = useState<Tag[]>([]);
+  const [tag, setTag] = useState<number | null>(null);
+  useEffect(() => { void api.tags().then(t => setTags(t.items.filter(x => x.count > 0))).catch(() => undefined); }, []);
+  const fetchPage = useCallback((_: string | null, offset: number) => api.videos(category, offset, 20, tag), [category, tag]);
+  const pages = usePages(fetchPage, `${category}:${tag}`);
+  useEffect(() => { void pages.more(); }, [category, tag]);
+  return (
+    <>
+      {tags.length > 0 && (
+        <div className="-mx-3 mb-3 flex gap-2 overflow-x-auto px-3 [scrollbar-width:none]">
+          {[{ id: null, name: "全部" } as { id: number | null; name: string }, ...tags].map(t => (
+            <button key={String(t.id)} type="button" onClick={() => setTag(t.id)}
+              className={`h-8 shrink-0 rounded-full px-3.5 text-[13px] ${tag === t.id ? "bg-ink font-semibold text-bg" : "bg-surface text-muted"}`}>{t.name}</button>
+          ))}
+        </div>
+      )}
+      {pages.error && !pages.items.length ? <Empty>加载失败，稍后再试</Empty>
+        : pages.done && !pages.items.length ? <Empty>{tag !== null ? "这个标签下还没有视频" : category === "long" ? "还没有长视频" : "还没有短视频"}</Empty>
+        : <Grid items={pages.items} wide={category === "long"} done={pages.done} onEnd={() => void pages.more()}
+            onOpen={index => onOpen(pages.items, index, () => void pages.more())} />}
+    </>
+  );
 }
 
 function FolderWall({ folder, onOpen }: { folder: LibraryFolder; onOpen: Open }) {

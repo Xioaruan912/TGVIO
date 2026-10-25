@@ -16,7 +16,7 @@
 
 - Bot：`src/tgvio/`，入口 `python -m tgvio.main`。
 - Player 后端：`src/tgvio_player/`，独立进程、容器及 player.sqlite3。
-- Player 前端：独立仓库 [TGVIO-Player](https://github.com/Xioaruan912/TGVIO-Player)（Vite + TypeScript），前端改动在该仓库进行并遵守其 AGENTS.md。TGVIO 只用 `player-web.lock` 固定其已推送提交；检查和 Player 镜像只经 `scripts/player_web_source.sh` 导出该提交，改锁须单独提交并重跑检查。
+- Player 前端：本仓库 `web/`（React 19 + Vite + Tailwind v4 + Motion），由 Player 在 `/` 提供；`npm --prefix web run check`。旧的 TGVIO-Player 仓库自 2026-10-25 起不再使用。
 - Bot 与 Player 不相互 import；Player 不读写 Bot 主库，不读取 Bot token/session，不挂载 Bot 下载卷。
 - Archive 的 `manifest.json + _COMPLETE.json` 是媒体交接合同；Player 只消费 committed package。
 - 不为整理项目替换框架、数据库、消息队列、传输协议或依赖版本；依赖变更必须有任务理由并同步 lock。
@@ -53,12 +53,12 @@
 
 API 前缀 `/api/v1`：auth、feed/random、videos、library/*、groups、favorites、collections、media/{id}（stream、cover、similar、favorite、progress、watched、DELETE 删除/撤销）、duplicates、settings/*（storage、read-mode、watched、recover）、media-deletions。新路由在对应 mixin 的 `_register_*_routes` 里加，server.py 只加一行注册。
 
-**前端**在 TGVIO-Player 仓库，其 AGENTS.md 有模块地图。新功能放独立模块，经 `api.request` 调接口，不让 main.ts/api.ts 变长。
+**前端**在 `web/src`：`api.ts` 接口、`feed/` 刷片、`player/` 长视频、`pages/` 片库收藏与重复、`Settings.tsx`、`ui/` 公共组件。
 
 **测试**：`tests/test_player_*.py`（Player，aiohttp TestServer + 临时库）、其余 `tests/test_*.py`（Bot 与发布工具）。全部离线；fake 在测试文件内或 `src/tgvio_player/testing/`。
 
 常见改动路径：
-- Player 新接口：domain 值 → sqlite_* mixin（加进 sqlite.py 基类列表）→ adapters/http 新 mixin → 测试 → 前端仓库消费 → 改 player-web.lock。
+- Player 新接口：domain 值 → sqlite_* mixin（加进 sqlite.py 基类列表）→ adapters/http 新 mixin → 测试 → `web/src/api.ts` 消费。
 - 新表：新增 `NNNN_name.sql`，同步 tests/test_player_migration.py 的迁移列表；在生产库副本（SQLite backup API）演练后，用 `deploy_hostdzire.py --migration NNNN_name` 发布。
 - 新 Player 配置：main.py 的 PlayerSettings + deploy/player.env.example + docker-compose.player.yml。
 - 后台任务：仿 duplicate_copies.py（有界、可暂停、播放时让路），在 main.py 的 tasks 列表里启动。
@@ -83,7 +83,7 @@ bash scripts/check.sh                 # 规范、架构、秘密扫描、Python�
 bash scripts/check.sh --browser       # 加上隔离 Chrome 布局回归
 ```
 
-- 快速检查：`python3 scripts/repository_hygiene.py`；前端在 TGVIO-Player 仓库 `npm run check`，check.sh 另行检查锁定提交。
+- 快速检查：`python3 scripts/repository_hygiene.py`；前端 `npm --prefix web run check`（check.sh 已包含）。
 - 发布前跑完整检查；数据库变更额外做生产副本 migration rehearsal，运行镜像按既有发布门禁检查。
 - 测试用 fake、临时库与本地 fixture；不得连接生产 Telegram/WebDAV或使用生产 Cookie/session。
 - 不把本地测试写成真机或生产验收；分别记录验证范围、失败项、未验证项。

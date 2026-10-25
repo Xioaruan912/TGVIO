@@ -3,6 +3,7 @@ import { useCallback, useState } from "react";
 import type { Media } from "./api";
 import { ClipList, Feed } from "./feed/Feed";
 import { Login } from "./Login";
+import { Duplicates } from "./pages/Duplicates";
 import { Favorites } from "./pages/Favorites";
 import { Library } from "./pages/Library";
 import { LongPlayer } from "./player/LongPlayer";
@@ -11,7 +12,7 @@ import { PrivacyGuard } from "./ui/privacy";
 import { Toasts } from "./ui/toast";
 
 type Tab = "feed" | "library" | "favorites" | "settings";
-type Overlay = { kind: "clips"; items: Media[]; index: number } | { kind: "long"; media: Media } | null;
+type Overlay = { kind: "clips"; items: Media[]; index: number } | { kind: "long"; media: Media } | { kind: "duplicates" } | null;
 
 /** A short clip opens the swipe list of the short clips around it; a long one opens the film player. */
 export function overlayFor(items: Media[], index: number): Overlay {
@@ -35,10 +36,11 @@ export function App() {
       {tab === "feed" && !overlay && <Feed onUnauthorized={onUnauthorized} />}
       {tab === "library" && <Library onOpen={open} />}
       {tab === "favorites" && <Favorites onOpen={open} />}
-      {tab === "settings" && <Settings onLoggedOut={onUnauthorized} />}
+      {tab === "settings" && <Settings onLoggedOut={onUnauthorized} onDuplicates={() => setOverlay({ kind: "duplicates" })} />}
 
       {overlay?.kind === "clips" && <OverlayClips items={overlay.items} start={overlay.index} onClose={() => setOverlay(null)} />}
       {overlay?.kind === "long" && <LongPlayer media={overlay.media} onClose={() => setOverlay(null)} />}
+      {overlay?.kind === "duplicates" && <Duplicates onClose={() => setOverlay(null)} />}
 
       {!overlay && (
         <nav className={`fixed inset-x-0 bottom-0 z-10 flex justify-around px-2 pb-[max(0.75rem,env(safe-area-inset-bottom))] pt-6 ${tab === "feed" ? "bg-gradient-to-t from-black/80 to-transparent" : "border-t border-line bg-bg/90 pt-2 backdrop-blur-md"}`} aria-label="导航">

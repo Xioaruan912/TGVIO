@@ -36,36 +36,32 @@ class PlayerDeploymentArtifactTests(unittest.TestCase):
         self.assertEqual(
             copy_lines,
             [
-                "COPY --from=player-web package.json package-lock.json ./",
-                "COPY --from=player-web index.html tsconfig.json vite.config.ts ./",
-                "COPY --from=player-web public ./public",
-                "COPY --from=player-web src ./src",
                 "COPY web/package.json web/package-lock.json ./",
                 "COPY web/index.html web/tsconfig.json web/vite.config.ts ./",
+                "COPY web/public ./public",
                 "COPY web/src ./src",
                 "COPY requirements.player.lock ./requirements.player.lock",
                 "COPY src/tgvio_player ./src/tgvio_player",
                 "COPY --from=player-web-build --chown=65532:65532 /web/dist ./player-web",
-                "COPY --from=web-next-build --chown=65532:65532 /web/dist ./web-next",
             ],
         )
 
-    def test_player_image_records_the_pinned_front_end(self) -> None:
+    def test_player_image_records_its_front_end_as_the_same_commit(self) -> None:
         dockerfile = (ROOT / "Dockerfile.player").read_text(encoding="utf-8")
         release = (ROOT / "scripts" / "player_release.sh").read_text(encoding="utf-8")
         self.assertIn("io.tgvio.player-web.revision=${PLAYER_WEB_COMMIT}", dockerfile)
-        self.assertIn('--build-context "player-web=$web_source"', release)
+        self.assertIn("web_commit=$commit", release, "the front end is web/ of this commit")
         self.assertIn('--build-arg "PLAYER_WEB_COMMIT=$web_commit"', release)
-        self.assertIn("scripts/player_web_source.sh", release)
+        self.assertNotIn("--build-context", release)
 
     def test_bot_images_carry_no_front_end_sources(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
         test_stage = dockerfile.split("FROM runtime-base AS test", 1)[1].split(
             "FROM runtime-base AS runtime", 1
         )[0]
-        # The front end lives in TGVIO-Player; offline tests only need its pin.
         self.assertNotIn("COPY player", dockerfile)
-        self.assertIn("player-web.lock", test_stage)
+        self.assertNotIn("COPY web", dockerfile, "the Bot image carries no front end")
+        self.assertIn("requirements.player.lock", test_stage)
 
     def test_player_lock_excludes_bot_dependencies(self) -> None:
         lock = (ROOT / "requirements.player.lock").read_text(encoding="utf-8")

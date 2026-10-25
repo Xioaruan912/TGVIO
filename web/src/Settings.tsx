@@ -10,7 +10,7 @@ export function normalizeFolder(value: string): string {
   return value.trim().replace(/^\/+|\/+$/g, "");
 }
 
-export function Settings({ onLoggedOut }: { onLoggedOut: () => void }) {
+export function Settings({ onLoggedOut, onDuplicates }: { onLoggedOut: () => void; onDuplicates: () => void }) {
   return (
     <main className="mx-auto min-h-dvh max-w-xl px-4 pb-32 pt-[max(1.25rem,env(safe-area-inset-top))]">
       <h1 className="px-1 text-[26px] font-semibold tracking-tight">设置</h1>
@@ -21,9 +21,8 @@ export function Settings({ onLoggedOut }: { onLoggedOut: () => void }) {
         <Toggle pref="coverBlur" title="封面模糊" hint="片库和收藏里的封面先模糊，点眼睛图标临时显示" />
         <Toggle pref="privacyLock" title="离开时遮住画面" hint="一分钟没操作或切到后台时盖住，点一下继续；看长视频时不会" />
       </Section>
-      {/* Tags, organize mode and duplicate review live in the previous front end for now. */}
-      <a href="/old/" className="mt-8 block text-center text-[13px] text-faint underline underline-offset-4">打开旧版界面（标签、整理、疑似重复）</a>
-      <button className="mt-4 h-12 w-full rounded-full border border-line text-[15px] text-muted"
+      <Library onDuplicates={onDuplicates} />
+      <button className="mt-8 h-12 w-full rounded-full border border-line text-[15px] text-muted"
         onClick={() => void api.logout().finally(onLoggedOut)}>退出登录</button>
     </main>
   );
@@ -203,6 +202,35 @@ function Playback() {
             onChange={e => { const next = e.target.checked ? "direct" : "webdav"; void api.setReadMode(next).then(() => setMode({ ...mode, mode: next })).catch(() => toast("切换失败")); }} />
         </label>
       )}
+    </Section>
+  );
+}
+
+function Library({ onDuplicates }: { onDuplicates: () => void }) {
+  const [watched, setWatched] = useState<{ forget_after_days: number | null; choices: (number | null)[] } | null>(null);
+  const [dupes, setDupes] = useState<number | null>(null);
+  useEffect(() => {
+    void api.watched().then(setWatched).catch(() => undefined);
+    void api.duplicates().then(d => setDupes(d.total)).catch(() => undefined);
+  }, []);
+  return (
+    <Section title="片库">
+      {watched && (
+        <label className="flex items-center justify-between gap-4 px-4 py-3.5">
+          <span><span className="block text-[15px]">看过的视频</span><span className="block text-[13px] text-muted">多久后重新算作没看过，刷的时候会再出现</span></span>
+          <select value={watched.forget_after_days ?? ""} className="h-9 rounded-[10px] border border-line bg-bg px-2 text-[14px]"
+            onChange={e => {
+              const days = e.target.value === "" ? null : Number(e.target.value);
+              void api.setWatched(days).then(() => setWatched({ ...watched, forget_after_days: days })).catch(() => toast("保存失败"));
+            }}>
+            {watched.choices.map(c => <option key={String(c)} value={c ?? ""}>{c === null ? "永不" : `${c} 天`}</option>)}
+          </select>
+        </label>
+      )}
+      <button type="button" onClick={onDuplicates} className="flex w-full items-center justify-between px-4 py-3.5 text-left">
+        <span><span className="block text-[15px]">疑似重复</span><span className="block text-[13px] text-muted">封面和时长几乎一样的视频，留一个删其余</span></span>
+        <span className="flex items-center gap-1 text-[14px] text-muted">{dupes ? `${dupes} 组` : ""}<CaretRightIcon size={14} /></span>
+      </button>
     </Section>
   );
 }

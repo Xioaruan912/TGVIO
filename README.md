@@ -32,7 +32,6 @@
 | 仓库 | 内容 |
 |---|---|
 | [TGVIO](https://github.com/Xioaruan912/TGVIO)（本仓库） | Bot、Player 后端、维护进程、镜像与部署脚本 |
-| [TGVIO-Player](https://github.com/Xioaruan912/TGVIO-Player) | Player 网页前端（Vite + TypeScript）；本仓库用 `player-web.lock` 固定所用提交 |
 | [115List](https://github.com/Xioaruan912/115List) `tgvio` 分支 | 适配 TGVIO 的 OpenList：115 取链防风控、链接缓存、批量删除后核实；构建与升级见该分支 `tgvio/README.md` |
 
 ## 安装机器人
@@ -54,7 +53,7 @@ bash install.sh      # 选「1) 安装并启动」，按提示填 5 项
 播放器是独立容器，只读取网盘里已完成的归档包，不碰机器人的数据和登录信息。
 
 1. 复制 `deploy/player.env.example` 到仓库外（权限 `0600`），填写访问口令、恢复密钥（32 字节随机，换机器要沿用）、WebDAV 地址/账号、归档根目录，并设 `TGVIO_PLAYER_ENABLED=true`。
-2. 构建镜像：`bash scripts/player_release.sh --tag tgvio-player:local`（前端按 `player-web.lock` 自动取用）。
+2. 构建镜像：`bash scripts/player_release.sh --tag tgvio-player:local`（前端来自本仓库 `web/`）。
 3. 把 env 中 `TGVIO_PLAYER_IMAGE` 改为该标签，启动：`bash scripts/player_deploy.sh --env-file /path/player.env --execute`。
 4. 播放器只监听本机 `127.0.0.1:8790`，请用你自己的反向代理（HTTPS）对外提供。
 
