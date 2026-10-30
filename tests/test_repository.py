@@ -172,33 +172,3 @@ class SQLiteJobRepositoryTests(unittest.IsolatedAsyncioTestCase):
             (JobState.RECEIVED, JobState.DOWNLOADING, JobState.DOWNLOADED, JobState.ANALYZING)
         )
         self.assertEqual([job.id for job in rows], [received.id])
-
-    async def test_stats_and_event_summary_are_owner_scoped(self) -> None:
-        own = Job(
-            owner_id=42,
-            destination="@channel",
-            items=[MediaItem(index=0, kind=MediaKind.PHOTO, source="a", size_bytes=10)],
-        )
-        foreign = Job(
-            owner_id=99,
-            destination="@channel",
-            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="b", size_bytes=20)],
-        )
-        await self.repo.create(own)
-        await self.repo.create(foreign)
-        await self.repo.transition(
-            own.id,
-            JobState.FAILED,
-            event_type="forced_failure",
-            error_code="test",
-        )
-        stats = await self.repo.get_stats_snapshot(owner_id=42)
-        self.assertEqual(stats["jobs_total"], 1)
-        self.assertEqual(stats["media_items"], 1)
-        self.assertEqual(stats["media_bytes"], 10)
-        self.assertEqual(stats["failed"], 1)
-        events = await self.repo.get_recent_event_counts(owner_id=42, hours=24)
-        self.assertEqual(events["job_created"], 1)
-        self.assertEqual(events["forced_failure"], 1)
-        self.assertNotIn("telegram_cache_entries", stats)
-        self.assertTrue(await self.repo.quick_check())

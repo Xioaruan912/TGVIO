@@ -49,19 +49,10 @@ class ResultTests(unittest.IsolatedAsyncioTestCase):
         await self.repo.create(job)
         return job
 
-    async def test_quiet_mode_and_style_preferences_round_trip(self) -> None:
-        pref = await self.repo.get_user_preference(7)
-        self.assertFalse(pref.quiet_mode)
-        self.assertIsNone(pref.style_json)
-
-        await self.repo.set_user_quiet_mode(7, True)
+    async def test_style_preference_round_trip(self) -> None:
+        self.assertIsNone((await self.repo.get_user_preference(7)).style_json)
         await self.repo.set_user_style(7, '{"cover_mode": true}')
-        pref = await self.repo.get_user_preference(7)
-        self.assertTrue(pref.quiet_mode)
-        self.assertEqual(pref.style_json, '{"cover_mode": true}')
-
-        await self.repo.set_user_quiet_mode(7, False)
-        self.assertFalse((await self.repo.get_user_preference(7)).quiet_mode)
+        self.assertEqual((await self.repo.get_user_preference(7)).style_json, '{"cover_mode": true}')
 
     async def test_result_card_reports_telegram_and_archive_independently(self) -> None:
         job = await self._job("j1")

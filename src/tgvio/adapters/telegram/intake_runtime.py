@@ -1,90 +1,78 @@
+"""Telegram intake for the collector bot.
+
+The bot has no menus: everything is driven from the web console. What remains
+here is the input side (media, albums, Telegram links and web URLs the owner
+forwards to the bot), the picks the console submits through the personal
+session, and the durable scheduling of every Job (prepare, then the ordered
+publish dispatcher). Each forwarded batch gets one short reply that points to
+the console; failures reach the owner through the notification runtime.
+"""
+
 from __future__ import annotations
 
-from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
-from tgvio.adapters.telegram.intake_runtime_support import _PendingBatch
-from tgvio.adapters.telegram.intake_status import IntakeStatusMixin
-from tgvio.adapters.telegram.intake_collection import IntakeCollectionMixin
-from tgvio.adapters.telegram.intake_edit import IntakeEditMixin
-from tgvio.adapters.telegram.intake_source import IntakeSourceMixin
+import asyncio
+from dataclasses import dataclass, field
+import logging
+from typing import Iterable
+
+from telethon import TelegramClient, events
+from telethon.tl import functions, types
+
 from tgvio.adapters.telegram.intake_media import IntakeMediaMixin
-from tgvio.adapters.telegram.bot_ui_support import NAV_BUTTONS, COLLECTION_BUTTONS
+from tgvio.application.intake import IncomingMedia, IntakeAcceptResult, IntakeService
+from tgvio.application.job_control import JobCancelRequested, JobHoldRequested
+from tgvio.application.job_runner import JobRunner
+from tgvio.application.publish_styles import resolve_style
+from tgvio.application.scheduler import OrderedPublishDispatcher, PhaseClaimGuard, PhaseClaimLostError
+from tgvio.config import Settings
+from tgvio.domain.intake import SpoilerMode
+from tgvio.domain.job import Job
+from tgvio.domain.telegram_links import is_telegram_link
+from tgvio.observability import log_event
 
 
-class TelethonIntakeRuntime(
-    IntakeStatusMixin,
-    IntakeCollectionMixin,
-    IntakeEditMixin,
-    IntakeSourceMixin,
-    IntakeMediaMixin,
-):
+@dataclass(slots=True)
+class _PendingBatch:
+    chat_id: int
+    sender_id: int
+    media: list[IncomingMedia] = field(default_factory=list)
+    first_seen: float = 0.0
+    flush_task: asyncio.Task | None = None
+
+
+class TelethonIntakeRuntime(IntakeMediaMixin):
     def __init__(
         self,
         client: TelegramClient,
         settings: Settings,
         intake: IntakeService,
         processor: JobRunner,
-        flags: object | None = None,
-        editing: object | None = None,
-        source_client: object | None = None,
-        source_reader: object | None = None,
-        source_owner_id: int | None = None,
-        source_coordinator: object | None = None,
+        *,
+        console_url: str = "",
     ) -> None:
         self._client = client
         self._settings = settings
         self._intake = intake
         self._processor = processor
-        self._flags = flags
-        self._editing = editing
-        self._source = source_coordinator
-        self._source_client = source_client
-        self._source_reader = source_reader
-        self._source_owner_id = int(source_owner_id) if source_owner_id else None
+        self._console_url = console_url.strip()
+        self._source_reader = None
+        self._source_owner_id: int | None = None
         self._log = logging.getLogger("tgvio.telegram.intake")
         self._tasks: set[asyncio.Task] = set()
-        self._status_tasks: dict[str, asyncio.Task] = {}
-        self._confirmation_tasks: dict[str, asyncio.Task] = {}
-        self._confirmation_lock = asyncio.Lock()
         self._pending_batches: dict[tuple[int, int], _PendingBatch] = {}
         self._flush_tasks: set[asyncio.Task] = set()
-        self._preview_sent: dict[str, int] = {}
         self._semaphore = asyncio.Semaphore(settings.worker_concurrency)
-        repository = getattr(processor, "repository", None)
-        if repository is None:
-            repository = getattr(intake, "repository", None)
-        self._repository = repository
+        self._repository = getattr(processor, "repository", None)
         self._dispatcher = (
-            OrderedPublishDispatcher(repository, processor)
-            if repository is not None and hasattr(processor, "prepare")
+            OrderedPublishDispatcher(self._repository, processor)
+            if self._repository is not None and hasattr(processor, "prepare")
             else None
         )
 
+    # -------------------------------------------------------------- lifecycle
     async def start(self) -> None:
         if self._dispatcher is not None:
             await self._dispatcher.start()
-        if self._editing is not None:
-            self._submission_recovery_task = asyncio.create_task(self._recover_submissions())
-
-    async def _recover_submissions(self) -> None:
-        after = ""
-        while True:
-            try:
-                pending = await self._repository.page_pending_submissions(after=after, limit=20)
-                for submission in pending:
-                    after = submission.session_id
-                    try:
-                        result = await self._editing.recover_submission(submission.session_id)
-                        if result is not None:
-                            await self._announce_finalize_result(
-                                result.session.chat_id, submission.owner_id, result, confirmation=True,
-                            )
-                    except Exception:
-                        self._log.warning("Frozen submission recovery deferred; snapshot retained")
-                if len(pending) < 20:
-                    after = ""
-            except Exception:
-                self._log.warning("Frozen submission recovery query deferred")
-            await asyncio.sleep(10)
 
     def register(self) -> None:
         self._client.add_event_handler(self._on_album, events.Album())
@@ -92,245 +80,122 @@ class TelethonIntakeRuntime(
             self._on_message,
             events.NewMessage(incoming=True, func=lambda event: event.message.grouped_id is None),
         )
-        self._client.add_event_handler(
-            self._on_intake_command,
-            events.NewMessage(
-                incoming=True,
-                func=lambda event: (event.raw_text or "").lstrip().startswith("/"),
-            ),
-        )
-        self._client.add_event_handler(
-            self._on_collection_button,
-            events.NewMessage(
-                incoming=True,
-                func=lambda event: (event.raw_text or "").strip()
-                in COLLECTION_BUTTONS,
-            ),
-        )
-        self._client.add_event_handler(
-            self._on_intake_callback,
-            events.CallbackQuery(pattern=b"^intake:"),
-        )
+
+    async def configure_menu(self) -> None:
+        """One command, /start, which answers with the console address."""
+
+        try:
+            await self._client(functions.bots.SetBotCommandsRequest(
+                scope=types.BotCommandScopeDefault(), lang_code="",
+                commands=[types.BotCommand(command="start", description="打开网页控制台")],
+            ))
+            await self._client(functions.bots.SetBotMenuButtonRequest(
+                user_id=types.InputUserEmpty(), button=types.BotMenuButtonCommands(),
+            ))
+        except Exception as exc:  # noqa: BLE001 - the menu is cosmetic
+            log_event(self._log, logging.WARNING, "telegram.menu.failed", exception_type=type(exc).__name__)
 
     async def stop(self) -> None:
-        recovery = getattr(self, "_submission_recovery_task", None)
-        if recovery is not None:
-            recovery.cancel()
-            await asyncio.gather(recovery, return_exceptions=True)
         await self._flush_all_pending()
-        if not self._tasks:
-            pending = ()
-        else:
-            pending = tuple(self._tasks)
-        try:
-            if pending:
-                await asyncio.wait_for(
-                    asyncio.gather(*pending, return_exceptions=True),
-                    timeout=30,
-                )
-        except TimeoutError:
-            for task in pending:
-                task.cancel()
-            await asyncio.gather(*pending, return_exceptions=True)
+        pending = tuple(self._tasks)
+        if pending:
+            try:
+                await asyncio.wait_for(asyncio.gather(*pending, return_exceptions=True), timeout=30)
+            except TimeoutError:
+                for task in pending:
+                    task.cancel()
+                await asyncio.gather(*pending, return_exceptions=True)
         if self._dispatcher is not None:
             await self._dispatcher.stop()
-        if self._status_tasks:
-            status_tasks = tuple(self._status_tasks.values())
-            for task in status_tasks:
-                task.cancel()
-            await asyncio.gather(*status_tasks, return_exceptions=True)
-            self._status_tasks.clear()
-        if self._confirmation_tasks:
-            confirmation_tasks = tuple(self._confirmation_tasks.values())
-            for task in confirmation_tasks:
-                task.cancel()
-            await asyncio.gather(*confirmation_tasks, return_exceptions=True)
-            self._confirmation_tasks.clear()
 
+    # ---------------------------------------------------------- personal source
+    def set_source(self, client, reader, owner_id: int) -> None:
+        del client
+        self._source_reader = reader
+        self._source_owner_id = int(owner_id)
+        log_event(self._log, logging.INFO, "source.reader.ready", "Source reader attached",
+                  resolved_chats=len(getattr(reader, "allowed_ids", ()) or ()))
+
+    def clear_source(self) -> None:
+        self._source_reader = None
+
+    async def accept_source_media(
+        self,
+        owner_id: int,
+        media,
+        label: str = "",
+        merge: bool = False,
+        options: dict | None = None,
+    ) -> tuple[int, int]:
+        """Picks and links submitted from the web console; nothing is sent to the chat."""
+
+        policy: dict = {}
+        if str(label).strip():
+            policy["source_label"] = str(label).strip()
+        if merge:
+            policy["merge_album"] = True
+        options = options or {}
+        if options.get("archive_only"):
+            policy["archive_only"] = True
+        return await self._accept_and_schedule(
+            None, int(owner_id), media, policy_extra=policy, spoiler_mode=options.get("spoiler_mode"),
+        )
+
+    async def notify_source_owner(self, text: str) -> None:
+        owner_id = self._source_owner_id or (self._settings.allowed_users[0] if self._settings.allowed_users else None)
+        if owner_id is not None:
+            await self._safe_send(int(owner_id), text)
+
+    # ------------------------------------------------------------------ input
     async def _on_message(self, event) -> None:
-        from tgvio.domain.intake import CollectionAlreadySubmittedError
-        try:
-            await self._on_message_collect(event)
-        except CollectionAlreadySubmittedError:
-            await self._safe_send(event.chat_id, "⚠️ 上一合集已确认，正在完成提交。本次内容未加入，请稍后新建合集并重新转发。")
-
-    async def _on_message_collect(self, event) -> None:
         if not self._authorized(event.sender_id):
             return
         raw_text = (event.raw_text or "").strip()
-        if (
-            raw_text
-            and raw_text not in NAV_BUTTONS
-            and not raw_text.lstrip().startswith("/")
-            and raw_text not in COLLECTION_BUTTONS
-            and await self._apply_pending_caption(int(event.sender_id), int(event.chat_id), raw_text)
-        ):
-            return
-        if raw_text in NAV_BUTTONS or raw_text.lstrip().startswith("/") or raw_text in COLLECTION_BUTTONS:
-            return
-
-        # In-Bot source setup consumes the owner's next text (phone, code, chat).
-        if await self.handle_source_input(raw_text, int(event.chat_id), int(event.sender_id)):
-            return
-
+        if raw_text.startswith("/"):
+            if raw_text.split()[0].split("@", 1)[0].lower() == "/start":
+                await self._safe_send(event.chat_id, self._console_text("把视频、图片或链接转发给我就会开始下载。"))
+            raise events.StopPropagation
         incoming = self._from_message(event.message, event.chat_id)
         if incoming is not None:
-            session = await self._open_collection(event.sender_id, event.chat_id)
-            if session is not None:
-                inserted = await self._intake.add_collection_media(session, [incoming])
-                if inserted:
-                    log_event(
-                        self._log,
-                        logging.INFO,
-                        "intake.collection.media_added",
-                        collection_id=session.id,
-                        media_added=inserted,
-                    )
-                return
             await self._queue_batch(event.chat_id, event.sender_id, [incoming])
             return
-
-        # Owner-driven Telegram links are resolved with the personal session so
-        # content the bot cannot see (private chats, protected channels) still
-        # reaches the normal job pipeline.
-        if await self.handle_source_link(raw_text, event.chat_id, event.sender_id):
+        if self._source_reader is not None and raw_text and is_telegram_link(raw_text):
+            media = await self._source_reader.resolve_link(raw_text)
+            if media:
+                await self._accept_and_schedule(int(event.chat_id), int(event.sender_id), media)
+            else:
+                await self._safe_send(event.chat_id, "⚠️ 读不到这个 Telegram 链接：可能你的账号不在那个频道，或消息已删除。")
             return
-
-        # URL intake deliberately remains outside explicit collection sessions,
-        # matching the legacy behaviour and avoiding hidden yt-dlp work at /end.
         if self._settings.url_enabled:
             try:
                 incoming = self._from_url_message(event.message, event.chat_id)
             except ValueError:
-                await self._safe_send(event.chat_id, "🛡️ URL 已拒绝：不符合 TGVIO 安全策略。")
+                await self._safe_send(event.chat_id, "🛡️ 这个链接不符合安全策略，已拒绝。")
                 return
             if incoming is not None:
                 await self._queue_batch(event.chat_id, event.sender_id, [incoming])
                 return
-
-        session = await self._open_collection(event.sender_id, event.chat_id)
-        if session is not None and raw_text:
-            inserted = await self._intake.add_collection_text(
-                session,
-                text=raw_text,
-                source_chat_id=int(event.chat_id),
-                source_message_id=int(event.message.id),
-            )
-            if inserted:
-                log_event(
-                    self._log,
-                    logging.INFO,
-                    "intake.collection.text_added",
-                    collection_id=session.id,
-                )
+        if raw_text:
+            await self._safe_send(event.chat_id, self._console_text("这里只收视频、图片和链接。"))
 
     async def _on_album(self, event) -> None:
-        from tgvio.domain.intake import CollectionAlreadySubmittedError
-        try:
-            await self._on_album_collect(event)
-        except CollectionAlreadySubmittedError:
-            await self._safe_send(event.chat_id, "⚠️ 上一合集已确认，正在完成提交。本次相册未加入，请稍后新建合集并重新转发。")
-
-    async def _on_album_collect(self, event) -> None:
-        if not event.messages:
-            return
-        sender_id = event.messages[0].sender_id
-        if not self._authorized(sender_id):
+        if not event.messages or not self._authorized(event.messages[0].sender_id):
             return
         media = [
             incoming
             for incoming in (self._from_message(message, event.chat_id) for message in event.messages)
             if incoming is not None
         ]
-        if not media:
-            return
-        session = await self._open_collection(sender_id, event.chat_id)
-        if session is not None:
-            inserted = await self._intake.add_collection_media(session, media)
-            if inserted:
-                log_event(
-                    self._log,
-                    logging.INFO,
-                    "intake.collection.album_added",
-                    collection_id=session.id,
-                    media_added=inserted,
-                )
-            return
-        await self._queue_batch(event.chat_id, sender_id, media)
+        if media:
+            await self._queue_batch(event.chat_id, event.messages[0].sender_id, media)
 
-    async def _on_intake_command(self, event) -> None:
-        if not self._authorized(event.sender_id):
-            return
-        raw = (event.raw_text or "").strip()
-        head, _, argument = raw.partition(" ")
-        command = head[1:].split("@", 1)[0].lower()
-        if command in {"begin", "开始"}:
-            await self._begin_collection(event.chat_id, int(event.sender_id))
-        elif command in {"end", "结束"}:
-            await self._end_collection(event.chat_id, int(event.sender_id))
-        elif command == "mode":
-            requested = argument.strip().lower()
-            aliases = {
-                "source": SpoilerMode.SOURCE,
-                "inherit": SpoilerMode.SOURCE,
-                "ask": SpoilerMode.ASK,
-                "spoiler": SpoilerMode.ALWAYS_SPOILER,
-                "always_spoiler": SpoilerMode.ALWAYS_SPOILER,
-                "normal": SpoilerMode.ALWAYS_NORMAL,
-                "always_normal": SpoilerMode.ALWAYS_NORMAL,
-            }
-            if requested in aliases:
-                await self._intake.set_spoiler_mode(int(event.sender_id), aliases[requested])
-            await self._show_mode(event.chat_id, int(event.sender_id))
-        elif command in {"drafts", "草稿"}:
-            await self._show_drafts(event.chat_id, int(event.sender_id))
-        else:
-            return
-        raise events.StopPropagation
+    def _console_text(self, lead: str) -> str:
+        if not self._console_url:
+            return lead
+        return f"{lead}\n挑选频道里的视频、看进度和设置都在控制台：{self._console_url}"
 
-    async def _on_intake_callback(self, event) -> None:
-        if not self._authorized(event.sender_id):
-            await self._safe_answer(event, "无权限", alert=True)
-            return
-        action = bytes(event.data or b"").decode("utf-8", "replace")
-        owner_id = int(event.sender_id)
-        if action.startswith("intake:mode:"):
-            raw_mode = action.rsplit(":", 1)[-1]
-            try:
-                mode = SpoilerMode(raw_mode)
-            except ValueError:
-                await self._safe_answer(event, "模式无效", alert=True)
-                return
-            await self._intake.set_spoiler_mode(owner_id, mode)
-            await self._safe_answer(event, "模式已更新")
-            try:
-                await event.edit(self._mode_text(mode), buttons=self._mode_buttons(), parse_mode="md")
-            except Exception:
-                pass
-            return
-        if action.startswith("intake:spoiler:"):
-            parts = action.split(":", 3)
-            if len(parts) != 4:
-                await self._safe_answer(event, "操作无效", alert=True)
-                return
-            await self._handle_spoiler_choice(
-                event,
-                owner_id=owner_id,
-                job_id=parts[2],
-                choice=parts[3],
-            )
-            return
-        if await self._handle_edit_callback(event, action, owner_id):
-            return
-        if await self._handle_collection_callback(event, action, owner_id):
-            return
-
-    async def _queue_batch(
-        self,
-        chat_id: int,
-        sender_id: int,
-        media: Iterable[IncomingMedia],
-    ) -> None:
+    # --------------------------------------------------------------- batching
+    async def _queue_batch(self, chat_id: int, sender_id: int, media: Iterable[IncomingMedia]) -> None:
         incoming = list(media)
         if not incoming:
             return
@@ -342,19 +207,13 @@ class TelethonIntakeRuntime(
         loop = asyncio.get_running_loop()
         pending = self._pending_batches.get(key)
         if pending is None:
-            pending = _PendingBatch(
-                chat_id=int(chat_id),
-                sender_id=int(sender_id),
-                first_seen=loop.time(),
-            )
+            pending = _PendingBatch(chat_id=int(chat_id), sender_id=int(sender_id), first_seen=loop.time())
             self._pending_batches[key] = pending
         pending.media.extend(incoming)
-        pending.media.sort(
-            key=lambda item: (
-                item.source_message_id if item.source_message_id is not None else 2**63,
-                item.grouped_id if item.grouped_id is not None else 2**63,
-            )
-        )
+        pending.media.sort(key=lambda item: (
+            item.source_message_id if item.source_message_id is not None else 2**63,
+            item.grouped_id if item.grouped_id is not None else 2**63,
+        ))
         max_items = max(1, int(getattr(self._settings, "batch_max_items", 100)))
         while len(pending.media) >= max_items:
             chunk = pending.media[:max_items]
@@ -372,30 +231,19 @@ class TelethonIntakeRuntime(
         if pending.flush_task is not None:
             pending.flush_task.cancel()
         loop = asyncio.get_running_loop()
-        max_wait_ms = max(
-            int(getattr(self._settings, "batch_window_ms", 1500)),
-            int(getattr(self._settings, "batch_max_wait_ms", 5000)),
-        )
+        window = int(getattr(self._settings, "batch_window_ms", 1500))
+        max_wait_ms = max(window, int(getattr(self._settings, "batch_max_wait_ms", 5000)))
         elapsed = max(0.0, loop.time() - pending.first_seen)
-        delay = min(
-            int(getattr(self._settings, "batch_window_ms", 1500)) / 1000.0,
-            max(0.0, max_wait_ms / 1000.0 - elapsed),
-        )
-        task = asyncio.create_task(
-            self._flush_after(key, delay),
-            name=f"tgvio-intake-batch-{key[0]}-{key[1]}",
-        )
+        delay = min(window / 1000.0, max(0.0, max_wait_ms / 1000.0 - elapsed))
+        task = asyncio.create_task(self._flush_after(key, delay), name=f"tgvio-intake-batch-{key[0]}-{key[1]}")
         pending.flush_task = task
         self._flush_tasks.add(task)
         task.add_done_callback(self._flush_tasks.discard)
 
     async def _flush_after(self, key: tuple[int, int], delay: float) -> None:
-        try:
-            if delay > 0:
-                await asyncio.sleep(delay)
-            await self._flush_batch(key)
-        except asyncio.CancelledError:
-            raise
+        if delay > 0:
+            await asyncio.sleep(delay)
+        await self._flush_batch(key)
 
     async def _flush_batch(self, key: tuple[int, int]) -> None:
         pending = self._pending_batches.pop(key, None)
@@ -404,11 +252,7 @@ class TelethonIntakeRuntime(
         current = asyncio.current_task()
         if pending.flush_task is not None and pending.flush_task is not current:
             pending.flush_task.cancel()
-        await self._accept_and_schedule(
-            pending.chat_id,
-            pending.sender_id,
-            pending.media,
-        )
+        await self._accept_and_schedule(pending.chat_id, pending.sender_id, pending.media)
 
     async def _flush_all_pending(self) -> None:
         keys = tuple(self._pending_batches)
@@ -420,441 +264,90 @@ class TelethonIntakeRuntime(
         for key in keys:
             await self._flush_batch(key)
 
+    # --------------------------------------------------------------- accepting
     async def _accept_and_schedule(
         self,
-        chat_id: int,
-        sender_id: int,
+        chat_id: int | None,
+        owner_id: int,
         media: Iterable[IncomingMedia],
         *,
         policy_extra: dict | None = None,
         spoiler_mode: SpoilerMode | None = None,
     ) -> tuple[int, int]:
-        """Accept one batch; returns ``(accepted_items, skipped_items)``."""
+        """Accept one batch and schedule it; returns ``(accepted_items, skipped_items)``.
+
+        ``chat_id`` is the chat to acknowledge in, or None for console submissions.
+        """
 
         batch = list(media)
-        policy: dict = {"display_expected": True, **(policy_extra or {})}
-        if hasattr(self._intake, "accept_once") and hasattr(
-            self._intake,
-            "get_user_preference",
-        ):
-            preference = await self._intake.get_user_preference(int(sender_id))
-            accepted = await self._intake.accept_once(
-                owner_id=int(sender_id),
-                destination=self._settings.destination,
-                media=batch,
-                policy=policy,
-                spoiler_mode=spoiler_mode or preference.spoiler_mode,
-                ask_timeout_seconds=int(
-                    getattr(self._settings, "spoiler_confirm_timeout_seconds", 60)
-                ),
-            )
-        else:
-            job = await self._intake.accept(
-                owner_id=int(sender_id),
-                destination=self._settings.destination,
-                media=batch,
-            )
-            accepted = IntakeAcceptResult(job=job, created=True)
-
+        preference = await self._intake.get_user_preference(int(owner_id))
+        policy: dict = dict(policy_extra or {})
+        # The publish style chosen in the console applies to every new Job; with
+        # none chosen the process baseline (COVER_MODE / FORWARD_CAPTION) is used.
+        _name, style = resolve_style(preference.style_json)
+        if style:
+            policy["publish_style"] = style
+        mode = spoiler_mode or preference.spoiler_mode
+        if mode == SpoilerMode.ASK:  # asking needed a chat round-trip; the console has no such step
+            mode = SpoilerMode.SOURCE
+        accepted: IntakeAcceptResult = await self._intake.accept_once(
+            owner_id=int(owner_id),
+            destination=self._settings.destination,
+            media=batch,
+            policy=policy,
+            spoiler_mode=mode,
+        )
         if not accepted.created:
-            log_event(
-                self._log,
-                logging.INFO,
-                "intake.update.duplicate_suppressed",
-                job_id=accepted.job.id,
-                item_count=len(batch),
-            )
+            log_event(self._log, logging.INFO, "intake.update.duplicate_suppressed",
+                      job_id=accepted.job.id, item_count=len(batch))
+            if chat_id is not None:
+                await self._safe_send(chat_id, "这些内容之前已经收到过，不会重复下载。")
             return (0, len(batch))
         job = accepted.job
-        first = job.items[0] if job.items else None
-        groups = {item.grouped_id for item in job.items if item.grouped_id is not None}
-        log_event(
-            self._log,
-            logging.INFO,
-            "intake.job.accepted",
-            job_id=job.id,
-            job_no=await self._display_number(job),
-            item_count=len(job.items),
-            input_kinds=",".join(sorted({item.kind.value for item in job.items})),
-            source_chat_id=(first.source_chat_id if first is not None else None),
-            source_message_id=(first.source_message_id if first is not None else None),
-            grouped_id=(next(iter(groups)) if len(groups) == 1 else None),
-        )
-        await self._announce_job(int(chat_id), job)
+        number = await self._display_number(job.id)
+        log_event(self._log, logging.INFO, "intake.job.accepted", job_id=job.id, job_no=number,
+                  item_count=len(job.items), archive_only=bool(policy.get("archive_only")),
+                  input_kinds=",".join(sorted({item.kind.value for item in job.items})))
+        if chat_id is not None:
+            label = f"任务 #{number}" if number is not None else "任务"
+            await self._safe_send(chat_id, self._console_text(f"✅ 已收到 · {label} · {len(job.items)} 个媒体，开始下载。"))
+        self.schedule(job)
         return (len(job.items), max(0, len(batch) - len(job.items)))
 
-    async def _announce_job(
-        self,
-        chat_id: int,
-        job: Job,
-        *,
-        status_message_id: int | None = None,
-    ) -> None:
-        if hasattr(self._intake, "is_spoiler_pending") and self._intake.is_spoiler_pending(job):
-            await self._ensure_spoiler_confirmation(
-                job,
-                chat_id=chat_id,
-                status_message_id=status_message_id,
-            )
-            return
-
-        if status_message_id is None:
-            status_message = await self._safe_send(chat_id, await self._accepted_status_text(job))
-            status_message_id = getattr(status_message, "id", None)
-            if status_message_id is not None:
-                await self._save_display_message(job.id, chat_id, int(status_message_id))
-        else:
-            await self._safe_edit(
-                chat_id,
-                int(status_message_id),
-                await self._accepted_status_text(job),
-            )
-        self.schedule(
-            job,
-            chat_id=chat_id,
-            status_message_id=(int(status_message_id) if status_message_id is not None else None),
-        )
-
-    async def _accepted_order(self, job_id: str) -> int | None:
+    async def _display_number(self, job_id: str) -> int | None:
         repository = self._repository
-        if repository is None or not hasattr(repository, "get_accepted_order"):
+        if repository is None:
             return None
+        try:
+            value = await repository.get_display_no(job_id)
+        except Exception:  # noqa: BLE001 - fall back to the durable order
+            value = None
+        if value is not None:
+            return int(value)
         return await repository.get_accepted_order(job_id)
 
-    async def _display_number(self, job: Job | str) -> int | None:
-        job_id = job.id if hasattr(job, "id") else str(job)
-        repository = self._repository
-        getter = getattr(repository, "get_display_no", None)
-        if callable(getter):
-            try:
-                value = await getter(job_id)
-            except Exception:  # noqa: BLE001 - fall back to the durable order
-                value = None
-            if value is not None:
-                return int(value)
-        return await self._accepted_order(job_id)
-
-    async def _job_label(self, job: Job) -> str:
-        number = await self._display_number(job)
-        return f"任务 #{number}" if number is not None else "任务"
-
-    async def _accepted_status_text(self, job: Job) -> str:
-        label = await self._job_label(job)
-        return (
-            f"✅ 已接收 · **{label}**\n"
-            f"媒体：{len(job.items)}\n"
-            "正在下载和分析。"
-        )
-
-    async def _save_display_message(self, job_id: str, chat_id: int, message_id: int) -> None:
-        if self._repository is None or not hasattr(self._repository, "save_job_display_message"):
-            return
-        await self._repository.save_job_display_message(
-            JobDisplayMessage(
-                job_id=job_id,
-                chat_id=int(chat_id),
-                message_id=int(message_id),
-            )
-        )
-
+    # -------------------------------------------------------------- scheduling
     async def recover(self, job: Job) -> None:
-        ref = None
-        if self._repository is not None and hasattr(self._repository, "get_job_display_message"):
-            ref = await self._repository.get_job_display_message(job.id)
-        chat_id = (
-            ref.chat_id
-            if ref is not None
-            else next(
-                (item.source_chat_id for item in job.items if item.source_chat_id is not None),
-                None,
-            )
-        )
-        if hasattr(self._intake, "is_spoiler_pending") and self._intake.is_spoiler_pending(job):
-            await self._ensure_spoiler_confirmation(
-                job,
-                chat_id=chat_id,
-                status_message_id=(ref.message_id if ref is not None else None),
-            )
-            return
-        if (
-            ref is None
-            and bool(job.policy.get("display_expected"))
-            and chat_id is not None
-            and not job.terminal
-        ):
-            message = await self._safe_send(int(chat_id), await self._accepted_status_text(job))
-            message_id = getattr(message, "id", None)
-            if message_id is not None:
-                await self._save_display_message(job.id, int(chat_id), int(message_id))
-                ref = JobDisplayMessage(job.id, int(chat_id), int(message_id))
-        elif ref is not None and not job.terminal:
-            ref = await self._edit_or_replace_display(
-                job.id,
-                ref,
-                await self._accepted_status_text(job),
-            )
-        self.schedule(
-            job,
-            chat_id=(int(chat_id) if chat_id is not None else None),
-            status_message_id=(ref.message_id if ref is not None else None),
-        )
+        if self._intake.is_spoiler_pending(job):
+            # A Job left waiting for an in-chat spoiler answer: there is no chat
+            # prompt any more, so it continues the way a timeout always did.
+            job = await self._intake.apply_spoiler_decision(job, spoiler=False)
+        self.schedule(job)
 
-    async def _ensure_spoiler_confirmation(
-        self,
-        job: Job,
-        *,
-        chat_id: int | None,
-        status_message_id: int | None,
-    ) -> None:
-        if self._repository is None:
-            return
-        if chat_id is None:
-            chat_id = next(
-                (item.source_chat_id for item in job.items if item.source_chat_id is not None),
-                None,
-            )
-        if status_message_id is None and hasattr(self._repository, "get_job_display_message"):
-            ref = await self._repository.get_job_display_message(job.id)
-            if ref is not None:
-                chat_id = ref.chat_id
-                status_message_id = ref.message_id
-        if chat_id is None:
-            return
-        label = await self._job_label(job.id)
-        prompt = (
-            f"❓ **{label} 如何显示？**\n\n"
-            f"媒体：`{len(job.items)}`\n"
-            "请选择雪花遮挡或正常显示；超时会自动按正常显示处理。"
-        )
-        buttons = self._spoiler_buttons(job.id)
-        if status_message_id is not None:
-            ref = await self._repository.get_job_display_message(job.id)
-            if ref is None:
-                ref = JobDisplayMessage(
-                    job_id=job.id,
-                    chat_id=int(chat_id),
-                    message_id=int(status_message_id),
-                )
-                await self._repository.save_job_display_message(ref)
-            await self._edit_or_replace_display(
-                job.id,
-                ref,
-                prompt,
-                buttons=buttons,
-            )
-        else:
-            message = await self._safe_send(int(chat_id), prompt, buttons=buttons)
-            status_message_id = getattr(message, "id", None)
-            if status_message_id is not None:
-                await self._save_display_message(job.id, int(chat_id), int(status_message_id))
-        existing = self._confirmation_tasks.get(job.id)
-        if existing is None or existing.done():
-            task = asyncio.create_task(
-                self._spoiler_confirmation_timeout(job.id),
-                name=f"tgvio-spoiler-confirm-{job.id}",
-            )
-            self._confirmation_tasks[job.id] = task
-            task.add_done_callback(lambda _task, job_id=job.id: self._confirmation_tasks.pop(job_id, None))
-
-    @staticmethod
-    def _spoiler_buttons(job_id: str):
-        return [
-            [
-                Button.inline("🌨️ 雪花遮挡", f"intake:spoiler:{job_id}:spoiler".encode("utf-8")),
-                Button.inline("✅ 正常显示", f"intake:spoiler:{job_id}:normal".encode("utf-8")),
-            ],
-            [Button.inline("❌ 取消任务", f"intake:spoiler:{job_id}:cancel".encode("utf-8"))],
-        ]
-
-    async def _spoiler_confirmation_timeout(self, job_id: str) -> None:
-        try:
-            job = await self._repository.get(job_id)
-            if job is None or not self._intake.is_spoiler_pending(job):
-                return
-            deadline = int(job.policy.get("spoiler_deadline_epoch", int(time.time())))
-            delay = max(0.0, deadline - time.time())
-            if delay:
-                await asyncio.sleep(delay)
-            async with self._confirmation_lock:
-                job = await self._repository.get(job_id)
-                if job is None or job.state != JobState.RECEIVED or not self._intake.is_spoiler_pending(job):
-                    return
-                job = await self._intake.apply_spoiler_decision(job, spoiler=False)
-            log_event(
-                self._log,
-                logging.INFO,
-                "intake.spoiler.timeout_normal",
-                job_id=job.id,
-            )
-            await self._activate_confirmed_job(job)
-        except asyncio.CancelledError:
-            raise
-
-    async def _handle_spoiler_choice(
-        self,
-        event,
-        *,
-        owner_id: int,
-        job_id: str,
-        choice: str,
-    ) -> None:
-        if self._repository is None:
-            await self._safe_answer(event, "任务存储不可用", alert=True)
-            return
-        async with self._confirmation_lock:
-            job = await self._repository.get(job_id)
-            if job is None or job.owner_id != owner_id:
-                await self._safe_answer(event, "任务不存在或无权限", alert=True)
-                return
-            if job.state != JobState.RECEIVED or not self._intake.is_spoiler_pending(job):
-                await self._safe_answer(event, "这个选择已经失效", alert=True)
-                return
-            if choice == "cancel":
-                await self._repository.transition(
-                    job.id,
-                    JobState.CANCELLED,
-                    event_type="spoiler_confirmation_cancelled",
-                    detail="cancelled by owner before processing",
-                )
-                resolved = None
-            elif choice in {"spoiler", "normal"}:
-                resolved = await self._intake.apply_spoiler_decision(
-                    job,
-                    spoiler=(choice == "spoiler"),
-                )
-            else:
-                await self._safe_answer(event, "选择无效", alert=True)
-                return
-        timer = self._confirmation_tasks.pop(job_id, None)
-        if timer is not None and timer is not asyncio.current_task():
-            timer.cancel()
-        if resolved is None:
-            ref = await self._repository.get_job_display_message(job_id)
-            if ref is not None:
-                label = await self._job_label(job_id)
-                await self._safe_edit(ref.chat_id, ref.message_id, f"⛔ {label} 已取消。")
-            await self._safe_answer(event, "任务已取消")
-            return
-        await self._safe_answer(event, "已确认")
-        await self._activate_confirmed_job(resolved)
-
-    async def _activate_confirmed_job(self, job: Job) -> None:
-        ref = (
-            await self._repository.get_job_display_message(job.id)
-            if self._repository is not None
-            and hasattr(self._repository, "get_job_display_message")
-            else None
-        )
-        chat_id = (
-            ref.chat_id
-            if ref is not None
-            else next(
-                (item.source_chat_id for item in job.items if item.source_chat_id is not None),
-                None,
-            )
-        )
-        if chat_id is not None and ref is not None:
-            ref = await self._edit_or_replace_display(
-                job.id,
-                ref,
-                await self._accepted_status_text(job),
-            )
-        self.schedule(
-            job,
-            chat_id=(int(chat_id) if chat_id is not None else None),
-            status_message_id=(ref.message_id if ref is not None else None),
-        )
-
-    async def _edit_or_replace_display(
-        self,
-        job_id: str,
-        ref: JobDisplayMessage,
-        text: str,
-        *,
-        buttons=None,
-    ) -> JobDisplayMessage:
-        if await self._safe_edit(
-            ref.chat_id,
-            ref.message_id,
-            text,
-            buttons=buttons,
-        ):
-            return ref
-        if ref.replacement_count >= 1:
-            return ref
-        message = await self._safe_send(ref.chat_id, text, buttons=buttons)
-        message_id = getattr(message, "id", None)
-        if message_id is None:
-            return ref
-        replacement = JobDisplayMessage(
-            job_id=job_id,
-            chat_id=ref.chat_id,
-            message_id=int(message_id),
-            replacement_count=ref.replacement_count + 1,
-        )
-        return await self._repository.save_job_display_message(replacement)
-
-    @staticmethod
-    async def _safe_answer(event, text: str, *, alert: bool = False) -> None:
-        try:
-            await event.answer(text, alert=alert)
-        except Exception:
-            pass
-
-    def schedule(
-        self,
-        job: Job,
-        *,
-        chat_id: int | None = None,
-        status_message_id: int | None = None,
-    ) -> None:
-        if chat_id is None:
-            chat_id = next((item.source_chat_id for item in job.items if item.source_chat_id is not None), None)
-        if chat_id is not None and status_message_id is not None:
-            existing = self._status_tasks.get(job.id)
-            if existing is None or existing.done():
-                tracker = asyncio.create_task(
-                    self._track_status(int(chat_id), int(status_message_id), job.id),
-                    name=f"tgvio-status-{job.id}",
-                )
-                self._status_tasks[job.id] = tracker
-                tracker.add_done_callback(
-                    lambda completed, job_id=job.id: self._forget_status_task(
-                        job_id,
-                        completed,
-                    )
-                )
-        task = asyncio.create_task(
-            self._process_job(chat_id, job, status_message_id=status_message_id),
-            name=f"tgvio-job-{job.id}",
-        )
+    def schedule(self, job: Job, **_ignored) -> None:
+        task = asyncio.create_task(self._process_job(job), name=f"tgvio-job-{job.id}")
         self._tasks.add(task)
         task.add_done_callback(self._tasks.discard)
 
-    def _forget_status_task(self, job_id: str, completed: asyncio.Task) -> None:
-        if self._status_tasks.get(job_id) is completed:
-            self._status_tasks.pop(job_id, None)
-
-    async def _process_job(
-        self,
-        chat_id: int | None,
-        job: Job,
-        *,
-        status_message_id: int | None = None,
-    ) -> None:
+    async def _process_job(self, job: Job) -> None:
         async with self._semaphore:
-            repository = getattr(self._processor, "repository", None)
+            repository = self._repository
             if repository is None or not hasattr(self._processor, "prepare"):
                 await self._processor.process(job)
                 return
             claim = PhaseClaimGuard(repository, job.id, "prepare")
             if not await claim.start():
-                log_event(
-                    self._log,
-                    logging.INFO,
-                    "scheduler.prepare.duplicate_suppressed",
-                    job_id=job.id,
-                )
+                log_event(self._log, logging.INFO, "scheduler.prepare.duplicate_suppressed", job_id=job.id)
                 if self._dispatcher is not None:
                     self._dispatcher.notify()
                 return
@@ -864,128 +357,34 @@ class TelethonIntakeRuntime(
                 except asyncio.CancelledError:
                     raise
                 except PhaseClaimLostError:
-                    log_event(
-                        self._log,
-                        logging.WARNING,
-                        "scheduler.prepare.claim_lost",
-                        "Preparation stopped because its durable claim was lost",
-                        job_id=job.id,
-                    )
+                    log_event(self._log, logging.WARNING, "scheduler.prepare.claim_lost",
+                              "Preparation stopped because its durable claim was lost", job_id=job.id)
                     return
                 except JobCancelRequested:
-                    log_event(
-                        self._log,
-                        logging.WARNING,
-                        "job.run.cancelled",
-                        job_id=job.id,
-                    )
-                    if chat_id is not None and status_message_id is None:
-                        await self._safe_send(chat_id, f"⛔ {await self._job_label(job.id)} 已取消。")
+                    log_event(self._log, logging.WARNING, "job.run.cancelled", job_id=job.id)
                     return
                 except JobHoldRequested:
-                    log_event(
-                        self._log,
-                        logging.INFO,
-                        "job.run.held",
-                        "Preparation stopped at a safe boundary because the Job is held",
-                        job_id=job.id,
-                    )
+                    log_event(self._log, logging.INFO, "job.run.held",
+                              "Preparation stopped at a safe boundary because the Job is held", job_id=job.id)
                     return
                 except Exception as exc:
-                    log_event(
-                        self._log,
-                        logging.ERROR,
-                        "job.run.failed",
-                        "Job failed during intake preparation",
-                        job_id=job.id,
-                        exception_type=type(exc).__name__,
-                        exc_info=True,
-                    )
-                    if chat_id is not None and status_message_id is None:
-                        await self._safe_send(
-                            chat_id,
-                            f"❌ {await self._job_label(job.id)} 下载/分析失败。",
-                        )
+                    log_event(self._log, logging.ERROR, "job.run.failed", "Job failed during intake preparation",
+                              job_id=job.id, exception_type=type(exc).__name__, exc_info=True)
                     return
             finally:
                 await claim.stop()
-            log_event(
-                self._log,
-                logging.INFO,
-                "job.prepare.result",
-                job_id=completed.id,
-                state=completed.state.value,
-            )
+            log_event(self._log, logging.INFO, "job.prepare.result", job_id=completed.id, state=completed.state.value)
             if self._dispatcher is not None:
                 self._dispatcher.notify()
-            if (
-                chat_id is not None
-                and status_message_id is None
-                and completed.state == JobState.PLANNED
-                and not bool(getattr(self._processor, "publish_enabled", False))
-            ):
-                await self._safe_send(
-                    chat_id,
-                    f"🧠 {await self._job_label(completed.id)} 已完成分析与发布规划。\n"
-                    "打开“📋 我的任务”即可查看发布计划。",
-                )
 
+    # ----------------------------------------------------------------- helpers
     def _authorized(self, sender_id: int | None) -> bool:
         return sender_id is not None and int(sender_id) in self._settings.allowed_users
 
-    async def _safe_send(self, chat_id: int, text: str, *, buttons=None):
+    async def _safe_send(self, chat_id: int, text: str):
         try:
-            return await self._client.send_message(
-                chat_id,
-                text,
-                buttons=buttons,
-                parse_mode="md",
-            )
+            return await self._client.send_message(chat_id, text, link_preview=False)
         except Exception as exc:
-            log_event(
-                self._log,
-                logging.WARNING,
-                "telegram.status_send.failed",
-                "Failed to send status message",
-                exception_type=type(exc).__name__,
-                exc_info=True,
-            )
+            log_event(self._log, logging.WARNING, "telegram.send.failed", "Failed to send a message",
+                      exception_type=type(exc).__name__)
             return None
-
-    async def _safe_edit(
-        self,
-        chat_id: int,
-        message_id: int,
-        text: str,
-        *,
-        buttons=None,
-    ) -> bool:
-        try:
-            await self._client.edit_message(
-                chat_id,
-                message_id,
-                text,
-                buttons=buttons,
-                parse_mode="md",
-            )
-            return True
-        except Exception as exc:
-            if type(exc).__name__ == "MessageNotModifiedError":
-                return True
-            log_event(
-                self._log,
-                logging.WARNING,
-                "telegram.status_edit.failed",
-                "Failed to edit dynamic job status message",
-                exception_type=type(exc).__name__,
-            )
-            return False
-
-    @staticmethod
-    def _from_message(message, chat_id: int) -> IncomingMedia | None:
-        """Delegated to IntakeMediaMixin (kept as a thin alias for callers)."""
-        return IntakeMediaMixin._from_message(message, chat_id)
-
-    @staticmethod
-    def _from_url_message(message, chat_id: int) -> IncomingMedia | None:
-        return IntakeMediaMixin._from_url_message(message, chat_id)

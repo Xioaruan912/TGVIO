@@ -90,8 +90,6 @@ class Settings:
     batch_window_ms: int
     batch_max_wait_ms: int
     batch_max_items: int
-    collections_enabled: bool
-    spoiler_confirm_timeout_seconds: int
     disk_reserve_bytes: int
     upload_part_bytes: int
     cache_retention_hours: int
@@ -115,8 +113,6 @@ class Settings:
     alert_user_id: int | None
     alert_cooldown_seconds: int
     alert_poll_seconds: int
-    collection_preview_enabled: bool
-    collection_editing_enabled: bool
     preview_timeout_seconds: int
     archive_enabled: bool
     archive_url: str
@@ -141,6 +137,7 @@ class Settings:
     console_enabled: bool = False
     console_port: int = 8792
     console_secret: str = field(default="", repr=False)
+    console_url: str = ""
 
     @classmethod
     def from_env(cls) -> "Settings":
@@ -187,9 +184,6 @@ class Settings:
         batch_max_items = _int("TGVIO_BATCH_MAX_ITEMS", 100)
         if not 1 <= batch_max_items <= 500:
             raise ConfigError("TGVIO_BATCH_MAX_ITEMS out of range")
-        spoiler_confirm_timeout_seconds = _int("TGVIO_SPOILER_CONFIRM_TIMEOUT_SECONDS", 60)
-        if not 5 <= spoiler_confirm_timeout_seconds <= 3600:
-            raise ConfigError("TGVIO_SPOILER_CONFIRM_TIMEOUT_SECONDS out of range")
         disk_reserve_mb = _int("TGVIO_DISK_RESERVE_MB", 5120)
         if disk_reserve_mb < 0:
             raise ConfigError("TGVIO_DISK_RESERVE_MB must be >= 0")
@@ -269,6 +263,9 @@ class Settings:
         if not 1024 <= console_port <= 65535:
             raise ConfigError("TGVIO_CONSOLE_PORT out of range")
         console_secret = os.getenv("TGVIO_CONSOLE_SECRET", "").strip()
+        console_url = os.getenv("TGVIO_CONSOLE_URL", "").strip()
+        if console_url and not console_url.startswith("https://"):
+            raise ConfigError("TGVIO_CONSOLE_URL must be an https:// address")
         if console_enabled and not (
             len(console_secret) >= 32 or (len(console_secret) == 9 and console_secret.isdigit())
         ):
@@ -279,8 +276,6 @@ class Settings:
         alert_poll_seconds = _int("TGVIO_ALERT_POLL_SECONDS", 60)
         if not 5 <= alert_poll_seconds <= 3600:
             raise ConfigError("TGVIO_ALERT_POLL_SECONDS out of range")
-        collection_preview_enabled = _bool("TGVIO_COLLECTION_PREVIEW_ENABLED", True)
-        collection_editing_enabled = _bool("TGVIO_COLLECTION_EDITING_ENABLED", True)
         preview_timeout_seconds = _int("TGVIO_PREVIEW_TIMEOUT_SECONDS", 30)
         if not 5 <= preview_timeout_seconds <= 600:
             raise ConfigError("TGVIO_PREVIEW_TIMEOUT_SECONDS out of range")
@@ -380,8 +375,6 @@ class Settings:
             batch_window_ms=batch_window_ms,
             batch_max_wait_ms=batch_max_wait_ms,
             batch_max_items=batch_max_items,
-            collections_enabled=_bool("TGVIO_COLLECTIONS_ENABLED", True),
-            spoiler_confirm_timeout_seconds=spoiler_confirm_timeout_seconds,
             disk_reserve_bytes=disk_reserve_mb * 1024 * 1024,
             upload_part_bytes=upload_part_mb * 1024 * 1024,
             cache_retention_hours=cache_retention_hours,
@@ -408,8 +401,7 @@ class Settings:
             console_enabled=console_enabled,
             console_port=console_port,
             console_secret=console_secret,
-            collection_preview_enabled=collection_preview_enabled,
-            collection_editing_enabled=collection_editing_enabled,
+            console_url=console_url,
             preview_timeout_seconds=preview_timeout_seconds,
             archive_enabled=archive_enabled,
             archive_url=archive_url,
@@ -451,8 +443,6 @@ class Settings:
             "download_item_tolerance": self.download_item_tolerance,
             "batch_window_ms": self.batch_window_ms,
             "batch_max_items": self.batch_max_items,
-            "collections_enabled": self.collections_enabled,
-            "spoiler_confirm_timeout_seconds": self.spoiler_confirm_timeout_seconds,
             "disk_reserve_mb": self.disk_reserve_bytes // (1024 * 1024),
             "upload_part_mb": self.upload_part_bytes // (1024 * 1024),
             "cache_retention_hours": self.cache_retention_hours,
@@ -479,8 +469,6 @@ class Settings:
             "alert_poll_seconds": self.alert_poll_seconds,
             "console_enabled": self.console_enabled,
             "console_port": self.console_port,
-            "collection_preview_enabled": self.collection_preview_enabled,
-            "collection_editing_enabled": self.collection_editing_enabled,
             "archive_enabled": self.archive_enabled,
             "archive_configured": bool(self.archive_url and self.archive_user),
             "archive_remote_root_configured": bool(self.archive_remote_root),

@@ -99,7 +99,7 @@ class SQLiteRepositoryScalingTests(unittest.IsolatedAsyncioTestCase):
         async def pressure() -> None:
             for _ in range(20):
                 await self.repo.list_recent(owner_id=7, limit=50)
-                await self.repo.get_stats_snapshot(owner_id=7)
+                await self.repo.count_by_state(owner_id=7)
 
         ticker_task = asyncio.create_task(ticker())
         try:

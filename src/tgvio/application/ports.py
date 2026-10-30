@@ -16,15 +16,7 @@ from tgvio.domain.archive import (
     ArchiveStoreReceipt,
 )
 from tgvio.domain.control import JobControlState, QueueControlState
-from tgvio.domain.collection_editing import (
-    CollectionDraft,
-    CollectionSubmission,
-    DraftEntry,
-    EditingInteraction,
-)
 from tgvio.domain.intake import (
-    CollectionEntry,
-    CollectionSession,
     IntakeEventKey,
     JobDisplayMessage,
     SpoilerMode,
@@ -32,7 +24,6 @@ from tgvio.domain.intake import (
 )
 from tgvio.domain.job import Job, JobEvent, JobState, MediaItem, MediaKind
 from tgvio.domain.job_query import FailurePage, JobListFilter, JobPage
-from tgvio.domain.operations import OperationToken
 from tgvio.domain.publish import (
     PublishEffect,
     PublishPlan,
@@ -89,214 +80,13 @@ class JobRepository(Protocol):
         release_keys: tuple[IntakeEventKey, ...] = (),
     ) -> bool: ...
 
-    async def get_open_collection(
-        self,
-        owner_id: int,
-        chat_id: int,
-    ) -> CollectionSession | None: ...
-
-    async def get_collection(self, session_id: str) -> CollectionSession | None: ...
-
-    async def count_collection_entries(self, session_id: str) -> tuple[int, int]: ...
-
-    async def create_collection(
-        self, session: CollectionSession, *, style_json: str | None = None
-    ) -> CollectionSession: ...
-
-    async def set_collection_status_message(
-        self,
-        session_id: str,
-        chat_id: int,
-        message_id: int,
-    ) -> CollectionSession: ...
-
-    async def append_collection_entries(
-        self,
-        session_id: str,
-        entries: tuple[CollectionEntry, ...],
-    ) -> list[CollectionEntry]: ...
-
-    async def list_collection_entries(self, session_id: str) -> list[CollectionEntry]: ...
-
-    async def finalize_collection(
-        self,
-        session_id: str,
-        job_ids: tuple[str, ...],
-    ) -> CollectionSession: ...
-
-    async def cancel_collection(self, session_id: str) -> CollectionSession: ...
-
-    async def get_draft(self, session_id: str) -> CollectionDraft | None: ...
-
-    async def get_active_draft(self, owner_id: int, chat_id: int) -> CollectionDraft | None: ...
-
-    async def list_drafts(self, owner_id: int, *, limit: int = 20) -> list[CollectionDraft]: ...
-
-    async def create_draft(
-        self,
-        session_id: str,
-        owner_id: int,
-        chat_id: int,
-    ) -> CollectionDraft: ...
-
-    async def mark_draft_submitted(self, session_id: str) -> None: ...
-
-    async def mark_draft_discarded(self, session_id: str) -> None: ...
-
-    async def save_draft(
-        self, session_id: str, *, expected_revision: int
-    ) -> CollectionDraft | None: ...
-
-    async def activate_draft(
-        self, session_id: str, *, expected_revision: int | None = None
-    ) -> CollectionDraft | None: ...
-
-    async def set_draft_cover(
-        self,
-        session_id: str,
-        *,
-        entry_id: int | None,
-        expected_revision: int,
-    ) -> CollectionDraft | None: ...
-
-    async def set_draft_caption(
-        self,
-        session_id: str,
-        *,
-        text: str | None,
-        expected_revision: int,
-    ) -> CollectionDraft | None: ...
-
-    async def set_draft_style(
-        self,
-        session_id: str,
-        *,
-        style_json: str | None,
-        expected_revision: int,
-    ) -> CollectionDraft | None: ...
-
-    async def ensure_entry_edits(self, session_id: str) -> None: ...
-
-    async def list_draft_entries(self, session_id: str) -> list[DraftEntry]: ...
-
-    async def set_entry_excluded(
-        self,
-        session_id: str,
-        entry_id: int,
-        *,
-        excluded: bool,
-        expected_revision: int,
-    ) -> CollectionDraft | None: ...
-
-    async def move_draft_entry(
-        self,
-        session_id: str,
-        entry_id: int,
-        *,
-        direction: int,
-        expected_revision: int,
-    ) -> CollectionDraft | None: ...
-
-    async def get_submission(self, session_id: str) -> CollectionSubmission | None: ...
-    async def page_pending_submissions(self, *, after: str = "", limit: int = 20) -> list[CollectionSubmission]: ...
-
-    async def get_submission_by_token(self, token_id: str) -> CollectionSubmission | None: ...
-
-    async def commit_frozen_submission(
-        self,
-        *,
-        session_id: str,
-        owner_id: int,
-        revision: int,
-        snapshot_hash: str,
-        frozen_json: str,
-        token_id: str,
-        token: str,
-        action: str,
-        resource_type: str,
-        payload_hash: str,
-    ) -> tuple[CollectionSubmission, bool]: ...
-
-    async def append_submission_job(self, session_id: str, job_id: str) -> None: ...
-
-    async def record_collection_part_job(
-        self, session_id: str, part_index: int, job_id: str
-    ) -> None: ...
-
-    async def get_collection_part_job(
-        self, session_id: str, part_index: int
-    ) -> str | None: ...
-
-    async def begin_submission(
-        self,
-        session_id: str,
-        *,
-        owner_id: int,
-        revision: int,
-        snapshot_hash: str,
-    ) -> tuple[CollectionSubmission, bool]: ...
-
-    async def finish_submission(
-        self,
-        session_id: str,
-        *,
-        job_ids: tuple[str, ...],
-        state: str = "created",
-    ) -> None: ...
-
-    async def create_editing_interaction(
-        self,
-        interaction: EditingInteraction,
-    ) -> EditingInteraction: ...
-
-    async def get_active_editing_interaction(
-        self,
-        owner_id: int,
-        chat_id: int,
-    ) -> EditingInteraction | None: ...
-
-    async def consume_editing_interaction(
-        self,
-        interaction_id: str,
-        *,
-        owner_id: int,
-        expected_revision: int,
-    ) -> bool: ...
-
-    async def overlay_snapshot(self, session_id: str) -> dict[str, object]: ...
-
-    async def apply_overlay(
-        self,
-        session_id: str,
-        overlay: dict[str, object],
-        *,
-        expected_revision: int,
-    ) -> CollectionDraft | None: ...
-
     async def get_user_preference(self, owner_id: int) -> UserPreference: ...
 
     async def set_user_spoiler_mode(self, owner_id: int, mode: SpoilerMode) -> UserPreference: ...
 
-    async def set_user_quiet_mode(self, owner_id: int, enabled: bool) -> UserPreference: ...
-
     async def set_user_style(self, owner_id: int, style_json: str | None) -> UserPreference: ...
 
-    async def set_user_thumbnail_path(
-        self, owner_id: int, thumbnail_path: str | None
-    ) -> UserPreference: ...
-
-    async def set_user_caption_template(
-        self, owner_id: int, caption_template: str | None
-    ) -> UserPreference: ...
-
-    async def set_user_ytdlp_options(
-        self, owner_id: int, *, preset: str, audio_only: bool
-    ) -> UserPreference: ...
-
-
     async def get_job_display_message(self, job_id: str) -> JobDisplayMessage | None: ...
-
-    async def save_job_display_message(self, ref: JobDisplayMessage) -> JobDisplayMessage: ...
 
     async def save(self, job: Job) -> None: ...
 
@@ -344,25 +134,9 @@ class JobRepository(Protocol):
 
     async def count_by_state(self, *, owner_id: int | None = None) -> dict[JobState, int]: ...
 
-    async def get_stats_snapshot(
-        self,
-        *,
-        owner_id: int | None = None,
-        business_day: str | None = None,
-    ) -> dict[str, int]: ...
-
     async def get_display_no(self, job_id: str) -> int | None: ...
 
     async def get_display_identity(self, job_id: str) -> dict[str, object] | None: ...
-
-    async def display_numbers_for(self, job_ids: tuple[str, ...]) -> dict[str, int]: ...
-
-    async def get_by_display_number(
-        self,
-        owner_id: int,
-        business_day: str,
-        display_no: int,
-    ) -> Job | None: ...
 
     async def list_terminal_job_ids_before(
         self,
@@ -452,13 +226,6 @@ class JobRepository(Protocol):
 
     async def prune_settled_outbox(self, *, cutoff_epoch: float) -> int: ...
 
-    async def get_recent_event_counts(
-        self,
-        *,
-        owner_id: int | None = None,
-        hours: int = 24,
-    ) -> dict[str, int]: ...
-
     async def enqueue_notification(self, event: NotificationEvent, *, now: float) -> bool: ...
 
     async def claim_due_notifications(
@@ -534,34 +301,6 @@ class JobRepository(Protocol):
 
     async def list_publish_effects(self, plan_id: str) -> list[PublishEffect]: ...
 
-    async def create_operation_token(
-        self,
-        *,
-        token: str,
-        owner_id: int,
-        action: str,
-        resource_type: str,
-        resource_id: str,
-        expected_revision: int,
-        payload_hash: str,
-        payload: dict[str, object],
-        ttl_seconds: int,
-    ) -> OperationToken: ...
-
-    async def get_operation_token(self, token: str) -> OperationToken | None: ...
-
-    async def consume_operation_token(
-        self,
-        *,
-        token: str,
-        owner_id: int,
-        action: str,
-        resource_type: str,
-        resource_id: str,
-        expected_revision: int,
-        payload_hash: str,
-    ) -> OperationToken | None: ...
-
     async def get_telegram_reference(
         self,
         sha256: str,
@@ -636,13 +375,6 @@ class JobRepository(Protocol):
         *,
         owner_id: int | None = None,
     ) -> dict[ArchivePackageState, int]: ...
-
-    async def list_recent_archive_packages(
-        self,
-        *,
-        owner_id: int | None = None,
-        limit: int = 5,
-    ) -> list[ArchivePackage]: ...
 
     async def list_archive_events(self, package_id: str) -> list[ArchiveEvent]: ...
 
@@ -720,8 +452,6 @@ class JobRepository(Protocol):
     async def release_phase_claim(self, claim: PhaseClaim) -> bool: ...
 
     async def get_accepted_order(self, job_id: str) -> int | None: ...
-
-    async def get_by_accepted_order(self, owner_id: int, accepted_order: int) -> Job | None: ...
 
     async def get_next_publish_gate(self) -> PublishGate | None: ...
 

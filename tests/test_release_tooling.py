@@ -106,7 +106,7 @@ class ArchitectureGateTests(unittest.TestCase):
     def test_current_architecture_passes(self) -> None:
         result = check_architecture(ROOT)
         self.assertEqual(result["status"], "passed")
-        self.assertGreaterEqual(result["python_files"], 120)
+        self.assertGreaterEqual(result["python_files"], 90)
 
     def test_domain_cannot_import_an_adapter(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:

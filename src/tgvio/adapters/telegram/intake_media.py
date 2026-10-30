@@ -1,6 +1,8 @@
 from __future__ import annotations
 
-from tgvio.adapters.telegram.intake_runtime_support import *  # noqa: F401,F403
+from tgvio.application.intake import IncomingMedia
+from tgvio.domain.job import MediaKind
+from tgvio.infrastructure.url_security import validate_url_syntax
 
 
 class IntakeMediaMixin:

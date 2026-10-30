@@ -16,6 +16,7 @@
 ## 应用发布
 
 - 唯一正式入口：scripts/deploy_hostdzire.py（只发 Bot）；仅clean且已推送的main。Bot先核实线上源码、任务blocker、时钟、数据库、挂载和磁盘。
+- 网页控制台：2026-10-30 起，Bot 进程内监听容器 8792，compose 只映射到 `127.0.0.1:8792`；宿主机 nginx 站点 `/etc/nginx/sites-available/ds.722225.xyz` 以 HTTPS 反代（证书 certbot webroot `/var/www/console-acme`）。密码在 `.env` 的 `TGVIO_CONSOLE_SECRET`。Telegram 菜单与按钮已全部移除。
 - 播放器：2026-10-25 起为独立项目 PPVIO（容器 `ppvio`，`/root/ppvio`），由其仓库的 `scripts/release.py` 发布；本仓库发布不得改动它。
 - 每次保留当前/上一可用镜像、release source与schema兼容备份。数据库用SQLite backup API，不能cp活跃库冒充一致性备份。
 - 只用固定host key与专用SSH key；不输出秘密、不用sshpass/StrictHostKeyChecking=no。

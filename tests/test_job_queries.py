@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
@@ -145,13 +144,6 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(clamped.page, 1)
         self.assertEqual(len(clamped.entries), 3)
 
-        held_order = held.entries[0].accepted_order
-        assert held_order is not None
-        resolved = await self.repo.get_by_accepted_order(42, held_order)
-        foreign = await self.repo.get_by_accepted_order(7, held_order)
-        self.assertIsNotNone(resolved)
-        self.assertEqual(resolved.id, "job-held")
-        self.assertIsNone(foreign)
 
     async def test_failure_center_excludes_auto_recovery_pending_and_prioritizes_publish_review(self) -> None:
         recovery = {
@@ -347,17 +339,6 @@ class DurableJobQueryTests(unittest.IsolatedAsyncioTestCase):
             )
         self.assertEqual(await self.repo.get_display_no("a"), 1)
         self.assertEqual(await self.repo.get_display_no("c"), 3)
-        self.assertEqual(
-            await self.repo.display_numbers_for(("a", "c")),
-            {"a": 1, "c": 3},
-        )
-
-        day = business_day_bounds(time.time()).day
-        resolved = await self.repo.get_by_display_number(42, day, 2)
-        self.assertIsNotNone(resolved)
-        self.assertEqual(resolved.id, "b")
-        # Old/other business days no longer resolve a bare number.
-        self.assertIsNone(await self.repo.get_by_display_number(42, "1999-01-01", 1))
 
         page = await self.repo.page_jobs(owner_id=42, filter=JobListFilter.ALL, page_size=10)
         by_id = {entry.job.id: entry for entry in page.entries}

@@ -4,9 +4,7 @@ from pathlib import Path
 from tempfile import TemporaryDirectory
 import unittest
 
-from tgvio.adapters.telegram.bot_ui import TelethonBotUI
 from tgvio.application.bulk_retry import BulkRetryService
-from tgvio.application.operation_tokens import OperationTokenService
 from tgvio.application.item_recovery import SkippedItemRecoveryService
 from tgvio.application.job_control import JobControlService
 from tgvio.domain.job import (
@@ -18,7 +16,6 @@ from tgvio.domain.job import (
     MediaKind,
 )
 from tgvio.infrastructure.sqlite import SQLiteJobRepository
-from tests.test_bot_ui import FakeClient, FakeEvent, settings
 
 
 OWNER = 42
@@ -134,47 +131,6 @@ class BulkRetryTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result.retried, [])
         self.assertEqual(result.unchanged, 1)
-
-
-    def _ui(self, scheduled: list) -> TelethonBotUI:
-        return TelethonBotUI(
-            FakeClient(),
-            settings(),
-            self.repo,
-            control=JobControlService(self.repo),
-            schedule_job=lambda job, chat_id: scheduled.append(job.id),
-            operation_tokens=OperationTokenService(self.repo),
-            bulk_retry=self.service,
-        )
-
-    async def test_one_tap_confirms_then_schedules_everything(self) -> None:
-        failed = await self._failed_download("download_failed")
-        await self._succeeded_with_skipped("telegram_file_timeout")
-        scheduled: list[str] = []
-        ui = self._ui(scheduled)
-
-        page = FakeEvent(data=b"ui:failures:0")
-        await ui._on_callback(page)
-        buttons = [button for row in page.edits[-1][1]["buttons"] for button in row]
-        self.assertIn(b"ui:retry-all", [button.data for button in buttons])
-
-        ask = FakeEvent(data=b"ui:retry-all")
-        await ui._on_callback(ask)
-        text, kwargs = ask.edits[-1]
-        self.assertIn("重新处理 1 个失败的任务", text)
-        self.assertIn("补发 1 个之前没下载到的文件", text)
-        confirm = kwargs["buttons"][0][0].data
-
-        go = FakeEvent(data=confirm)
-        await ui._on_callback(go)
-        self.assertIn("已开始重试 2 项", go.edits[-1][0])
-        self.assertEqual(len(scheduled), 2)
-        self.assertIn(failed.id, scheduled)
-
-        again = FakeEvent(data=confirm)
-        await ui._on_callback(again)
-        self.assertIn("情况已经变了", again.edits[-1][0])
-        self.assertEqual(len(scheduled), 2)
 
 
 if __name__ == "__main__":

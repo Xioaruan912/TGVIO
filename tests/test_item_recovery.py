@@ -133,7 +133,7 @@ class SkippedItemRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(SkippedItemRecoveryUnavailableError):
             await self.service.recover(parent_job_id=parent.id, owner_id=99)
 
-        self.assertIsNone(await self.repo.get_by_accepted_order(42, 2))
+        self.assertEqual([job.id for job in await self.repo.list_recent(owner_id=42, limit=10)], [parent.id])
 
     async def test_refuses_nonterminal_or_parent_without_skipped_items(self) -> None:
         active = Job(

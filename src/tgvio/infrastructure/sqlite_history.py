@@ -1,12 +1,8 @@
 from __future__ import annotations
 
 import time
-from typing import TYPE_CHECKING
 
 from tgvio.domain.maintenance import business_day_bounds
-
-if TYPE_CHECKING:
-    from tgvio.domain.job import Job
 
 
 _TERMINAL_SQL = "('succeeded','failed','cancelled')"
@@ -46,41 +42,6 @@ class SQLiteHistoryRepositoryMixin:
         identity = await self.get_display_identity(job_id)
         return None if identity is None else int(identity["display_no"])
 
-    async def display_numbers_for(self, job_ids: tuple[str, ...]) -> dict[str, int]:
-        if not job_ids:
-            return {}
-        placeholders = ",".join("?" for _ in job_ids)
-        conn = self._require()
-        cursor = await conn.execute(
-            f"SELECT job_id, display_no FROM job_display_identity WHERE job_id IN ({placeholders})",
-            tuple(str(value) for value in job_ids),
-        )
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return {str(row["job_id"]): int(row["display_no"]) for row in rows}
-
-    async def get_by_display_number(
-        self,
-        owner_id: int,
-        business_day: str,
-        display_no: int,
-    ) -> Job | None:
-        conn = self._require()
-        cursor = await conn.execute(
-            """
-            SELECT j.id AS id
-            FROM job_display_identity d
-            JOIN jobs j ON j.id=d.job_id
-            WHERE j.owner_id=? AND d.business_day=? AND d.display_no=?
-            """,
-            (int(owner_id), str(business_day), int(display_no)),
-        )
-        row = await cursor.fetchone()
-        await cursor.close()
-        if row is None:
-            return None
-        return await self.get(str(row["id"]))
-
     async def hide_jobs(self, job_ids: tuple[str, ...], *, reason: str, now: float) -> int:
         if not job_ids:
             return 0
@@ -96,28 +57,6 @@ class SQLiteHistoryRepositoryMixin:
                 )
                 hidden += cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
         return hidden
-
-    async def is_job_hidden(self, job_id: str) -> bool:
-        conn = self._require()
-        cursor = await conn.execute(
-            "SELECT 1 FROM job_visibility WHERE job_id=?", (str(job_id),)
-        )
-        row = await cursor.fetchone()
-        await cursor.close()
-        return row is not None
-
-    async def hidden_job_ids(self, job_ids: tuple[str, ...]) -> set[str]:
-        if not job_ids:
-            return set()
-        placeholders = ",".join("?" for _ in job_ids)
-        conn = self._require()
-        cursor = await conn.execute(
-            f"SELECT job_id FROM job_visibility WHERE job_id IN ({placeholders})",
-            tuple(str(value) for value in job_ids),
-        )
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return {str(row["job_id"]) for row in rows}
 
     async def list_terminal_job_ids_before(
         self,
@@ -368,32 +307,6 @@ class SQLiteHistoryRepositoryMixin:
                 (str(status), None if error is None else str(error)[:200], phase, float(now), int(target_id)),
             )
 
-    async def list_job_display_messages_for(
-        self,
-        job_ids: tuple[str, ...],
-    ) -> list[dict[str, int]]:
-        if not job_ids:
-            return []
-        placeholders = ",".join("?" for _ in job_ids)
-        conn = self._require()
-        cursor = await conn.execute(
-            f"""
-            SELECT job_id, chat_id, message_id FROM job_display_messages
-            WHERE job_id IN ({placeholders})
-            """,
-            tuple(str(value) for value in job_ids),
-        )
-        rows = await cursor.fetchall()
-        await cursor.close()
-        return [
-            {
-                "job_id": str(row["job_id"]),
-                "chat_id": int(row["chat_id"]),
-                "message_id": int(row["message_id"]),
-            }
-            for row in rows
-        ]
-
     async def recycle_operation_tokens(
         self,
         *,
@@ -422,10 +335,3 @@ class SQLiteHistoryRepositoryMixin:
                 (float(cutoff_epoch),),
             )
             return cursor.rowcount if cursor.rowcount and cursor.rowcount > 0 else 0
-
-    async def count_hidden_jobs(self) -> int:
-        conn = self._require()
-        cursor = await conn.execute("SELECT COUNT(*) AS c FROM job_visibility")
-        row = await cursor.fetchone()
-        await cursor.close()
-        return int(row["c"]) if row is not None else 0
