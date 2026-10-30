@@ -16,12 +16,22 @@ import sys
 
 
 EXPECTED_PACKAGES = {
+    "aiohappyeyeballs": "2.7.1",
+    "aiohttp": "3.12.15",
+    "aiosignal": "1.4.0",
     "aiosqlite": "0.22.1",
+    "attrs": "26.1.0",
     "cryptg": "0.6.0",
+    "frozenlist": "1.8.0",
+    "idna": "3.20",
+    "multidict": "6.9.1",
+    "propcache": "0.5.4",
     "pyaes": "1.6.1",
     "pyasn1": "0.6.4",
     "rsa": "4.9.1",
     "telethon": "1.44.0",
+    "typing_extensions": "4.15.0",
+    "yarl": "1.25.1",
     "yt-dlp": "2026.8.19",
 }
 FORBIDDEN_PATHS = (

@@ -29,6 +29,7 @@ from release_guard import (  # noqa: E402
 )
 from write_release_manifest import build_manifest  # noqa: E402
 from remote_preflight import _database_schema_is_known  # noqa: E402
+from image_inspect import EXPECTED_PACKAGES  # noqa: E402
 
 
 class SourceGuardTests(unittest.TestCase):
@@ -432,6 +433,8 @@ class BuildContractTests(unittest.TestCase):
         for line in (ROOT / "requirements.lock").read_text(encoding="utf-8").splitlines():
             if "==" in line and not line.startswith("#"):
                 self.assertIn("\\", line)
+        # The release inspector checks the built image against this exact set.
+        self.assertEqual({name.lower(): version for name, version in EXPECTED_PACKAGES.items()}, locked)
 
     def test_dockerfile_has_isolated_test_and_runtime_targets(self) -> None:
         dockerfile = (ROOT / "Dockerfile").read_text(encoding="utf-8")
