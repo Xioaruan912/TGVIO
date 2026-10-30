@@ -22,14 +22,15 @@
 
 ## 3. 代码地图（先按这里定位，再只读目标文件）
 
-数据流：Telegram → Bot 建 Job（SQLite）→ 下载/分析 → 按序发布 → 归档包写 WebDAV（`<归档根>/YYYY-MM-DD/<包>/`）→ PPVIO 扫描网盘播放。
+数据流：网页控制台 / Telegram 转发 → Bot 建 Job（SQLite）→ 下载/分析 → 按序发布 → 归档包写 WebDAV（`<归档根>/YYYY-MM-DD/<包>/`）→ PPVIO 扫描网盘播放。
 同机运行：`tgvio`（本仓库）、`ppvio`（PPVIO，独立发布）；网盘由宿主机 OpenList（115List `tgvio` 分支）提供。
 
 （入口 main.py 装配；配置 config.py ↔ .env.example）
 
 | 关注点 | 文件 |
 |---|---|
-| Telegram 输入/按钮 | adapters/telegram/intake_*.py、bot_ui*.py（按功能拆分：jobs、drafts、source、archive、system） |
+| 网页控制台 | 后端 adapters/web/（server.py 任务/状态/设置，sources.py 账号/频道/挑选，auth.py 会话）→ application/console.py；前端 console/（React + Vite，构建进镜像 /app/console-web） |
+| Telegram 输入 | adapters/telegram/intake_runtime.py、intake_media.py（只收转发与链接，无按钮）；挑选来源 source_runtime.py |
 | Job 生命周期 | application/intake.py → orchestrator.py → execution.py / job_runner.py；scheduler.py、auto_recovery.py |
 | 下载与分析 | application/media_downloader.py、media_analyzer.py；adapters/url_downloader.py（yt-dlp） |
 | 发布 | adapters/telegram/publish_*.py（相册分组、大文件、引用）；发布风格 application/publish_styles.py |

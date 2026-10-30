@@ -62,7 +62,8 @@ class ArchiveRuntimeTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(first.id, second.id)
         self.assertTrue(first.remote_path.startswith("TGVIO/archive/"))
         self.assertTrue(first.staging_path.startswith("TGVIO/.staging/"))
-        self.assertEqual(len(await self.repo.list_recent_archive_packages(owner_id=42)), 1)
+        counts = await self.repo.count_archive_packages_by_state(owner_id=42)
+        self.assertEqual(sum(counts.values()), 1)
 
     async def test_run_pending_commits_archive_without_mutating_telegram_job(self) -> None:
         job = await self._job("commit")

@@ -8,7 +8,6 @@ from pathlib import Path
 import shutil
 import signal
 
-from tgvio.adapters.telegram.bot_ui import TelethonBotUI
 from tgvio.adapters.telegram.discussion_resolver import BotApiDiscussionResolver
 from tgvio.adapters.telegram.intake_runtime import TelethonIntakeRuntime
 from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
@@ -42,17 +41,13 @@ from tgvio.application.bulk_retry import BulkRetryService
 from tgvio.application.console import ConsoleBaseline, ConsoleService
 from tgvio.adapters.web.auth import ConsoleSessions
 from tgvio.adapters.web.server import ConsoleServer
-from tgvio.application.collection_editing import CollectionEditingService
 from tgvio.application.pick_previews import PickPreviewService
-from tgvio.infrastructure.thumbnail_grid import ThumbnailGridBuilder
 from tgvio.infrastructure.video_frame import VideoFrameExtractor
-from tgvio.application.job_diagnostics import JobDiagnosticService
 from tgvio.application.job_control import JobControlService
 from tgvio.application.job_runner import JobRunner
 from tgvio.application.media_analyzer import MediaAnalyzer
 from tgvio.application.media_downloader import JobDownloader
 from tgvio.application.media_router import RoutedMediaDownloader
-from tgvio.application.operation_tokens import OperationTokenService
 from tgvio.application.orchestrator import JobOrchestrator, PlanningPolicy
 from tgvio.application.processor import IngestionProcessor
 from tgvio.application.reference_cache import TelegramReferenceEnricher
@@ -60,7 +55,6 @@ from tgvio.application.runtime_health import RuntimeHealthHeartbeat
 from tgvio.application.scheduler import RuntimeLeaseGuard
 from tgvio.config import Settings, load_dotenv
 from tgvio.infrastructure.media_inspector import FFprobeMediaInspector
-from tgvio.infrastructure.log_reader import JsonlOperationalLogReader
 from tgvio.infrastructure.media_transformer import FFmpegMediaTransformer
 from tgvio.infrastructure.capabilities import probe_environment_capabilities
 from tgvio.infrastructure.proxy_probe import (
@@ -221,8 +215,6 @@ async def run(*, check_only: bool = False) -> None:
             repository,
             default_policy={AUTO_RECOVERY_POLICY_KEY: recovery_policy.frozen()},
         )
-        operation_tokens = OperationTokenService(repository)
-        collection_editing = CollectionEditingService(repository, intake, operation_tokens)
         source_coordinator: SourceCoordinator | None = None
         if settings.source_session is not None:
             source_coordinator = SourceCoordinator(
@@ -324,9 +316,7 @@ async def run(*, check_only: bool = False) -> None:
             settings,
             intake,
             runner,
-            flags=runtime_flags,
-            editing=collection_editing,
-            source_coordinator=source_coordinator,
+            console_url=settings.console_url,
         )
         if source_coordinator is not None:
             source_coordinator.set_hooks(
@@ -405,7 +395,6 @@ async def run(*, check_only: bool = False) -> None:
         pick_previews = (
             PickPreviewService(
                 source_coordinator.thumbnail,
-                ThumbnailGridBuilder(),
                 cache_root=settings.download_dir,
                 frame_extractor=VideoFrameExtractor(),
                 key_provider=source_coordinator.source_key,
@@ -414,36 +403,6 @@ async def run(*, check_only: bool = False) -> None:
             )
             if source_coordinator is not None
             else None
-        )
-        bot_ui = TelethonBotUI(
-            gateway.client,
-            settings,
-            repository,
-            control=control,
-            schedule_job=intake_runtime.schedule,
-            archive_operator=archive_runtime,
-            cache_operator=cache_runtime,
-            job_diagnostics=JobDiagnosticService(
-                repository,
-                JsonlOperationalLogReader(settings.log_dir)
-                if settings.log_file_enabled
-                else None,
-            ),
-            operation_tokens=operation_tokens,
-            runtime_flags=runtime_flags,
-            intake=intake,
-            source_coordinator=source_coordinator,
-            pick_previews=pick_previews,
-            item_recovery=SkippedItemRecoveryService(repository),
-            bulk_retry=BulkRetryService(
-                repository,
-                control,
-                item_recovery=SkippedItemRecoveryService(repository),
-                archive_operator=archive_runtime if settings.archive_enabled else None,
-            ),
-            problem_log=(
-                JsonlOperationalLogReader(settings.log_dir) if settings.log_file_enabled else None
-            ),
         )
         console_server: ConsoleServer | None = None
         if settings.console_enabled:
@@ -484,8 +443,7 @@ async def run(*, check_only: bool = False) -> None:
                 url_enabled=settings.url_enabled,
                 archive_enabled=settings.archive_enabled,
             )
-        bot_ui.register()
-        await bot_ui.configure_server_menu()
+        await intake_runtime.configure_menu()
         await intake_runtime.start()
         intake_runtime.register()
         if archive_runtime is not None:
@@ -582,7 +540,6 @@ async def run(*, check_only: bool = False) -> None:
             await notification_runtime.stop()
             await auto_recovery_runtime.stop()
             await intake_runtime.stop()
-            await bot_ui.stop()
             if archive_runtime is not None:
                 await archive_runtime.stop()
             await cache_runtime.stop()

@@ -35,8 +35,6 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.batch_window_ms, 1500)
         self.assertEqual(settings.batch_max_wait_ms, 5000)
         self.assertEqual(settings.batch_max_items, 100)
-        self.assertTrue(settings.collections_enabled)
-        self.assertEqual(settings.spoiler_confirm_timeout_seconds, 60)
         self.assertEqual(settings.disk_reserve_bytes, 5120 * 1024 * 1024)
         self.assertEqual(settings.upload_part_bytes, 1900 * 1024 * 1024)
         self.assertEqual(settings.cache_retention_hours, 24)
@@ -209,13 +207,6 @@ class SettingsTests(unittest.TestCase):
             clear=True,
         ):
             with self.assertRaisesRegex(ConfigError, "BATCH_MAX_ITEMS"):
-                Settings.from_env()
-        with patch.dict(
-            os.environ,
-            {**BASE_ENV, "TGVIO_SPOILER_CONFIRM_TIMEOUT_SECONDS": "4"},
-            clear=True,
-        ):
-            with self.assertRaisesRegex(ConfigError, "SPOILER_CONFIRM_TIMEOUT_SECONDS"):
                 Settings.from_env()
         with patch.dict(
             os.environ,
@@ -417,19 +408,16 @@ class YtdlpCookieSettingsTests(unittest.TestCase):
         self.assertFalse(default.safe_summary()["ytdlp_cookies_configured"])
 
 
-class AlertPreviewSettingsTests(unittest.TestCase):
-    def test_alerts_and_preview_default_on(self) -> None:
+class AlertSettingsTests(unittest.TestCase):
+    def test_alerts_default_on(self) -> None:
         with patch.dict(os.environ, BASE_ENV, clear=True):
             settings = Settings.from_env()
         self.assertTrue(settings.alerts_enabled)
-        self.assertTrue(settings.collection_preview_enabled)
-        self.assertTrue(settings.collection_editing_enabled)
         self.assertIsNone(settings.alert_user_id)
         self.assertEqual(settings.alert_cooldown_seconds, 3600)
         self.assertEqual(settings.alert_poll_seconds, 60)
         summary = settings.safe_summary()
         self.assertTrue(summary["alerts_enabled"])
-        self.assertTrue(summary["collection_preview_enabled"])
 
     def test_alert_user_must_be_integer_and_toggles_apply(self) -> None:
         with patch.dict(os.environ, {**BASE_ENV, "TGVIO_ALERT_USER_ID": "not-a-number"}, clear=True):
@@ -440,14 +428,12 @@ class AlertPreviewSettingsTests(unittest.TestCase):
             {
                 **BASE_ENV,
                 "TGVIO_ALERTS_ENABLED": "false",
-                "TGVIO_COLLECTION_PREVIEW_ENABLED": "false",
                 "TGVIO_ALERT_USER_ID": "99",
             },
             clear=True,
         ):
             settings = Settings.from_env()
         self.assertFalse(settings.alerts_enabled)
-        self.assertFalse(settings.collection_preview_enabled)
         self.assertEqual(settings.alert_user_id, 99)
 
 
@@ -476,3 +462,28 @@ class ArchiveTimeoutSettingsTests(unittest.TestCase):
         ):
             with self.assertRaisesRegex(ConfigError, "ARCHIVE_VERIFY_ATTEMPTS"):
                 Settings.from_env()
+
+
+class ConsoleSettingsTests(unittest.TestCase):
+    def test_console_is_off_by_default_and_needs_a_strong_secret(self) -> None:
+        with patch.dict(os.environ, BASE_ENV, clear=True):
+            settings = Settings.from_env()
+        self.assertFalse(settings.console_enabled)
+        self.assertNotIn("console_secret", settings.safe_summary())
+        with patch.dict(os.environ, {**BASE_ENV, "TGVIO_CONSOLE_ENABLED": "true", "TGVIO_CONSOLE_SECRET": "short"}, clear=True):
+            with self.assertRaisesRegex(ConfigError, "CONSOLE_SECRET"):
+                Settings.from_env()
+        with patch.dict(os.environ, {**BASE_ENV, "TGVIO_CONSOLE_ENABLED": "true", "TGVIO_CONSOLE_SECRET": "123456789",
+                                     "TGVIO_CONSOLE_URL": "http://insecure"}, clear=True):
+            with self.assertRaisesRegex(ConfigError, "CONSOLE_URL"):
+                Settings.from_env()
+        with patch.dict(os.environ, {**BASE_ENV, "TGVIO_CONSOLE_ENABLED": "true", "TGVIO_CONSOLE_SECRET": "123456789",
+                                     "TGVIO_CONSOLE_URL": "https://ds.example"}, clear=True):
+            settings = Settings.from_env()
+        self.assertTrue(settings.console_enabled)
+        self.assertEqual(settings.console_url, "https://ds.example")
+        self.assertNotIn("123456789", repr(settings))
+
+
+if __name__ == "__main__":
+    unittest.main()

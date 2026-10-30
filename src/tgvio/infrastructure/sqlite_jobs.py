@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import json
-import time
 
 import aiosqlite
 
@@ -23,7 +22,6 @@ from tgvio.domain.job_query import (
     JobListFilter,
     JobPage,
 )
-from tgvio.domain.maintenance import business_day_bounds
 
 
 class SQLiteJobRepositoryMixin:
@@ -253,27 +251,6 @@ class SQLiteJobRepositoryMixin:
             created_at=row["created_at"],
             updated_at=row["updated_at"],
         )
-
-    async def get_by_accepted_order(
-        self,
-        owner_id: int,
-        accepted_order: int,
-    ) -> Job | None:
-        conn = self._require()
-        cursor = await conn.execute(
-            """
-            SELECT s.job_id
-            FROM job_schedule s
-            JOIN jobs j ON j.id=s.job_id
-            WHERE j.owner_id=? AND s.accepted_order=?
-            """,
-            (int(owner_id), int(accepted_order)),
-        )
-        row = await cursor.fetchone()
-        await cursor.close()
-        if row is None:
-            return None
-        return await self.get(str(row["job_id"]))
 
     async def list_items(self, job_id: str) -> list[MediaItem]:
         conn = self._require()

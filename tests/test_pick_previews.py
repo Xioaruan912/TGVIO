@@ -1,40 +1,13 @@
 from __future__ import annotations
 
+import asyncio
 from pathlib import Path
-import time
 from tempfile import TemporaryDirectory
 import unittest
 
 from tgvio.application.pick_previews import PickPreviewService
 
-
-class FakeGrid:
-    def __init__(self, *, image: bool = True) -> None:
-        self.image = image
-        self.calls: list[tuple[int, tuple]] = []
-
-    async def build(self, slots, output: Path):
-        self.calls.append((len(slots), tuple(slot is not None for slot in slots)))
-        if not self.image:
-            return None
-        output.parent.mkdir(parents=True, exist_ok=True)
-        output.write_bytes(b"grid-bytes")
-        return output
-
-    def grid_shape(self, count: int):
-        return (min(5, max(1, count)), 1)
-
-
-def _fetcher(available: set[int]):
-    async def fetch(source_index: int, message_id: int, target_dir: Path):
-        if message_id not in available:
-            return None
-        path = Path(target_dir) / f"thumb-{message_id}.jpg"
-        path.parent.mkdir(parents=True, exist_ok=True)
-        path.write_bytes(b"x" * 10)
-        return path
-
-    return fetch
+KEY = "-100555"
 
 
 class FakeCandidate:
@@ -56,222 +29,89 @@ class FakeFrames:
         return Path(output)
 
 
-def _candidate_fetcher(tmp: Path, *, needs_frame: bool):
+def recording_fetch(calls: list[int], *, needs_frame: bool = False):
     async def fetch(source_index: int, message_id: int, target_dir: Path):
-        path = Path(target_dir) / f"clip-{message_id}.mp4"
-        path.write_bytes(b"v" * 10)
-        return FakeCandidate(path, needs_frame=needs_frame)
+        calls.append(int(message_id))
+        path = Path(target_dir) / f"thumb-{message_id}.{'mp4' if needs_frame else 'jpg'}"
+        path.write_bytes(b"thumb")
+        return FakeCandidate(path, needs_frame=needs_frame) if needs_frame else path
 
     return fetch
 
 
-class PickPreviewServiceTests(unittest.IsolatedAsyncioTestCase):
-    def _service(self, root: Path, fetch, grid=None, **kwargs) -> PickPreviewService:
-        return PickPreviewService(fetch, grid or FakeGrid(), cache_root=root, **kwargs)
-
-    async def test_page_preview_tiles_only_the_available_thumbnails(self) -> None:
+class ThumbnailTests(unittest.IsolatedAsyncioTestCase):
+    async def test_thumbnail_is_cached_per_source_and_reused(self) -> None:
         with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            grid = FakeGrid()
-            service = self._service(root, _fetcher({10, 12}), grid)
-            progress: list[tuple[int, int]] = []
-
-            async def report(done: int, total: int) -> None:
-                progress.append((done, total))
-
-            preview = await service.build_page(0, [10, 11, 12], progress=report)
-            self.assertEqual(preview.fetched, 2)
-            self.assertEqual(preview.total, 3)
-            self.assertEqual(preview.slots, (True, False, True))
-            self.assertIsNotNone(preview.image)
-            self.assertEqual(grid.calls, [(3, (True, False, True))])
-            self.assertEqual(progress[-1], (2, 3))
-            self.assertTrue(any(done == 1 for done, _ in progress))
-            service.release(preview.token)
-            self.assertFalse((root / f"pickpreview-{preview.token}").exists())
-
-    async def test_no_thumbnails_releases_the_cache_and_reports_nothing(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            service = self._service(root, _fetcher(set()))
-            preview = await service.build_page(0, [10, 11])
-            self.assertIsNone(preview.image)
-            self.assertEqual(preview.fetched, 0)
-            self.assertEqual(preview.slots, (False, False))
-            self.assertEqual(list(root.iterdir()), [])
-
-    async def test_grid_failure_keeps_the_fetch_result_for_warning(self) -> None:
-        with TemporaryDirectory() as tmp:
-            service = self._service(Path(tmp), _fetcher({10}), FakeGrid(image=False))
-            preview = await service.build_single(0, 10)
-            self.assertIsNone(preview.image)
-            self.assertEqual(preview.fetched, 1)
-            self.assertEqual(preview.slots, (True,))
-
-    async def test_deadline_guard_stops_fetching(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            clock = {"value": 1000.0}
-
-            def now() -> float:
-                clock["value"] += 1000.0
-                return clock["value"]
-
-            service = self._service(root, _fetcher({10}), now=now)
-            preview = await service.build_page(0, [10])
-            self.assertEqual(preview.fetched, 0)
-            self.assertIsNone(preview.image)
-
-    async def test_single_preview_downloads_one_thumbnail(self) -> None:
-        with TemporaryDirectory() as tmp:
-            grid = FakeGrid()
-            service = self._service(Path(tmp), _fetcher({30506}), grid)
-            preview = await service.build_single(1, 30506)
-            self.assertEqual(grid.calls, [(1, (True,))])
-            self.assertEqual(preview.fetched, 1)
-            self.assertIsNotNone(preview.image)
-            self.assertEqual(preview.total, 1)
-
-    async def test_sweep_removes_only_stale_preview_dirs(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            stale = root / "pickpreview-old"
-            fresh = root / "pickpreview-new"
-            other = root / "job-1"
-            for directory in (stale, fresh, other):
-                directory.mkdir()
-            old = time.time() - 7200
-            import os
-
-            os.utime(stale, (old, old))
-            service = self._service(root, _fetcher(set()))
-            self.assertEqual(service.sweep(), 1)
-            self.assertFalse(stale.exists())
-            self.assertTrue(fresh.exists())
-            self.assertTrue(other.exists())
-
-    async def test_unsafe_token_is_never_resolved(self) -> None:
-        with TemporaryDirectory() as tmp:
-            service = self._service(Path(tmp), _fetcher(set()))
-            self.assertIsNone(service._safe_dir("../escape"))
-            service.release("../escape")
-
-
-class ImageCacheTests(unittest.IsolatedAsyncioTestCase):
-    def _service(self, root: Path, fetch, grid, **kwargs) -> PickPreviewService:
-        return PickPreviewService(
-            fetch, grid, cache_root=root, key_provider=lambda index: "-100555", **kwargs
-        )
-
-    async def test_thumbnail_is_reused_without_a_second_download(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
             calls: list[int] = []
+            service = PickPreviewService(recording_fetch(calls), cache_root=Path(tmp), key_provider=lambda index: KEY)
+            first = await service.thumbnail(0, 10)
+            second = await service.thumbnail(0, 10)
+            self.assertEqual(calls, [10], "a cached thumbnail must not download again")
+            self.assertEqual(first, second)
+            assert first is not None
+            self.assertEqual(first.parent, Path(tmp) / "pickthumb" / KEY)
+            self.assertEqual(first.read_bytes(), b"thumb")
+            # The per-call working directory is gone; only the cache stays.
+            self.assertEqual([p.name for p in Path(tmp).iterdir()], ["pickthumb"])
 
-            async def fetch(source_index: int, message_id: int, target_dir: Path):
-                calls.append(int(message_id))
-                path = Path(target_dir) / f"thumb-{message_id}.jpg"
-                path.write_bytes(b"thumb")
-                return path
-
-            service = self._service(root, fetch, FakeGrid())
-            first = await service.build_page(0, [10, 11])
-            self.assertEqual(calls, [10, 11])
-            self.assertTrue(first.image)
-
-            second = await service.build_page(0, [10, 11])
-            self.assertEqual(calls, [10, 11], "cached thumbnails must not re-download")
-            self.assertTrue(second.image)
-
-    async def test_expired_cache_entries_are_refetched_and_swept(self) -> None:
+    async def test_expired_entries_are_fetched_again(self) -> None:
         with TemporaryDirectory() as tmp:
-            root = Path(tmp)
             calls: list[int] = []
-
-            async def fetch(source_index: int, message_id: int, target_dir: Path):
-                calls.append(int(message_id))
-                path = Path(target_dir) / f"thumb-{message_id}.jpg"
-                path.write_bytes(b"thumb")
-                return path
-
             clock = {"value": 1_000_000.0}
-            service = self._service(root, fetch, FakeGrid(), now=lambda: clock["value"])
-            await service.build_page(0, [10])
-            cache_dir = root / "pickthumb" / "-100555"
-            self.assertTrue(list(cache_dir.iterdir()))
-
+            service = PickPreviewService(recording_fetch(calls), cache_root=Path(tmp),
+                                         key_provider=lambda index: KEY, now=lambda: clock["value"])
+            await service.thumbnail(0, 10)
             clock["value"] += 49 * 3600
-            await service.build_page(0, [10])
-            self.assertEqual(calls, [10, 10], "expired entries must be refetched")
-            self.assertEqual(service.sweep(), 0)
-
-            clock["value"] += 49 * 3600
-            self.assertGreaterEqual(service.sweep(), 0)
-
-    async def test_cache_can_be_disabled_without_a_key_provider(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            calls: list[int] = []
-
-            async def fetch(source_index: int, message_id: int, target_dir: Path):
-                calls.append(int(message_id))
-                path = Path(target_dir) / f"thumb-{message_id}.jpg"
-                path.write_bytes(b"thumb")
-                return path
-
-            service = PickPreviewService(fetch, FakeGrid(), cache_root=root)
-            await service.build_page(0, [10])
-            await service.build_page(0, [10])
+            await service.thumbnail(0, 10)
             self.assertEqual(calls, [10, 10])
-            self.assertFalse((root / "pickthumb").exists())
+
+    async def test_without_a_cache_key_there_is_no_image_to_serve(self) -> None:
+        with TemporaryDirectory() as tmp:
+            calls: list[int] = []
+            service = PickPreviewService(recording_fetch(calls), cache_root=Path(tmp))
+            self.assertIsNone(await service.thumbnail(0, 10))
+            self.assertFalse((Path(tmp) / "pickthumb").exists())
+
+    async def test_unsafe_cache_keys_are_refused(self) -> None:
+        with TemporaryDirectory() as tmp:
+            service = PickPreviewService(recording_fetch([]), cache_root=Path(tmp), key_provider=lambda index: "../x")
+            self.assertIsNone(await service.thumbnail(0, 10))
+
+    async def test_a_message_without_preview_yields_none(self) -> None:
+        async def fetch(source_index, message_id, target_dir):
+            return None
+
+        with TemporaryDirectory() as tmp:
+            service = PickPreviewService(fetch, cache_root=Path(tmp), key_provider=lambda index: KEY)
+            self.assertIsNone(await service.thumbnail(0, 10))
+
+    async def test_a_hanging_fetch_is_bounded(self) -> None:
+        async def fetch(source_index, message_id, target_dir):
+            await asyncio.Event().wait()
+
+        with TemporaryDirectory() as tmp:
+            service = PickPreviewService(fetch, cache_root=Path(tmp), key_provider=lambda index: KEY, timeout_seconds=5)
+            service._timeout = 0.05
+            self.assertIsNone(await service.thumbnail(0, 10))
 
 
 class FrameFallbackTests(unittest.IsolatedAsyncioTestCase):
     async def test_video_fragment_is_turned_into_a_frame(self) -> None:
         with TemporaryDirectory() as tmp:
-            root = Path(tmp)
             frames = FakeFrames()
-            grid = FakeGrid()
-            service = PickPreviewService(
-                _candidate_fetcher(root, needs_frame=True),
-                grid,
-                cache_root=root,
-                frame_extractor=frames,
-            )
-            preview = await service.build_single(0, 8381)
+            service = PickPreviewService(recording_fetch([], needs_frame=True), cache_root=Path(tmp),
+                                         key_provider=lambda index: KEY, frame_extractor=frames)
+            image = await service.thumbnail(0, 8381)
             self.assertEqual(len(frames.calls), 1)
-            self.assertIsNotNone(preview.image)
-            self.assertEqual(preview.fetched, 1)
-            self.assertEqual(grid.calls, [(1, (True,))])
+            assert image is not None
+            self.assertEqual(image.read_bytes(), b"frame")
 
-    async def test_undecodable_fragment_yields_no_image(self) -> None:
+    async def test_undecodable_fragment_or_missing_extractor_yields_none(self) -> None:
         with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            service = PickPreviewService(
-                _candidate_fetcher(root, needs_frame=True),
-                FakeGrid(),
-                cache_root=root,
-                frame_extractor=FakeFrames(ok=False),
-            )
-            with self.assertLogs("tgvio.telegram.preview", level="INFO") as captured:
-                preview = await service.build_single(0, 8381)
-            self.assertIsNone(preview.image)
-            self.assertEqual(preview.fetched, 0)
-            self.assertTrue(
-                any("No preview image could be resolved" in line for line in captured.output),
-                captured.output,
-            )
-
-    async def test_missing_frame_extractor_is_tolerated(self) -> None:
-        with TemporaryDirectory() as tmp:
-            root = Path(tmp)
-            service = PickPreviewService(
-                _candidate_fetcher(root, needs_frame=True),
-                FakeGrid(),
-                cache_root=root,
-            )
-            preview = await service.build_single(0, 8381)
-            self.assertIsNone(preview.image)
+            for frames in (FakeFrames(ok=False), None):
+                service = PickPreviewService(recording_fetch([], needs_frame=True), cache_root=Path(tmp),
+                                             key_provider=lambda index: KEY, frame_extractor=frames)
+                self.assertIsNone(await service.thumbnail(0, 8381))
 
 
 if __name__ == "__main__":

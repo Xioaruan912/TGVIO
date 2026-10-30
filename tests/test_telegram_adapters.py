@@ -9,9 +9,7 @@ import unittest
 
 from tgvio.adapters.telegram.intake_runtime import TelethonIntakeRuntime
 from tgvio.adapters.telegram.media_downloader import TelethonMediaDownloader
-from tgvio.application.auto_recovery import AutoRecoveryPolicy
-from tgvio.domain.archive import ArchivePackage, ArchivePackageState
-from tgvio.domain.job import Job, JobState, MediaItem, MediaKind
+from tgvio.domain.job import MediaItem, MediaKind
 
 
 class TelegramIntakeMappingTests(unittest.TestCase):
@@ -73,115 +71,6 @@ class TelegramIntakeMappingTests(unittest.TestCase):
         )
         with self.assertRaisesRegex(ValueError, "credential-like"):
             TelethonIntakeRuntime._from_url_message(message, 42)
-
-    def test_failed_live_status_uses_plain_language_and_direct_retry_button(self) -> None:
-        runtime = object.__new__(TelethonIntakeRuntime)
-        runtime._settings = SimpleNamespace(publish_enabled=True)
-        failed = Job(
-            id="d" * 32,
-            owner_id=42,
-            destination="@channel",
-            state=JobState.FAILED,
-            error_code="download_failed",
-            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture", size_bytes=7)],
-        )
-
-        text = runtime._render_live_status(failed, None, None, accepted_order=24)
-        buttons = runtime._status_buttons(failed, None)
-
-        self.assertIn("任务 #24", text)
-        self.assertNotIn(failed.id[:10], text)
-        self.assertIn("没能下载原文件", text)
-        self.assertIn("频道还没有发任何内容", text)
-        self.assertNotIn("download_failed", text)
-        payloads = [button.data for row in buttons for button in row]
-        self.assertIn(f"ui:retry:{failed.id}".encode(), payloads)
-
-    def test_archive_failure_status_does_not_describe_telegram_publish_as_failed(self) -> None:
-        runtime = object.__new__(TelethonIntakeRuntime)
-        runtime._settings = SimpleNamespace(publish_enabled=True)
-        completed = Job(
-            id="e" * 32,
-            owner_id=42,
-            destination="@channel",
-            state=JobState.SUCCEEDED,
-            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture", size_bytes=7)],
-        )
-        archive = ArchivePackage(
-            id=f"arc_{completed.id}",
-            job_id=completed.id,
-            layout_version="v1",
-            remote_path="archive/x",
-            staging_path=".staging/x",
-            state=ArchivePackageState.FAILED,
-            manifest={},
-            objects=(),
-            error_code="archive_execution_failed",
-        )
-
-        text = runtime._render_live_status(completed, None, archive)
-        buttons = runtime._status_buttons(completed, archive)
-
-        self.assertIn("已发到频道", text)
-        self.assertIn("频道里的内容不受影响", text)
-        self.assertNotIn("archive_execution_failed", text)
-        payloads = [button.data for row in buttons for button in row]
-        self.assertIn(f"ui:archive-retry:{completed.id}".encode(), payloads)
-
-    def test_auto_retry_status_needs_no_retry_button_and_tracker_stays_alive(self) -> None:
-        runtime = object.__new__(TelethonIntakeRuntime)
-        runtime._settings = SimpleNamespace(publish_enabled=True)
-        failed = Job(
-            id="f" * 32,
-            owner_id=42,
-            destination="@channel",
-            state=JobState.FAILED,
-            error_code="download_failed",
-            policy={
-                "auto_recovery": AutoRecoveryPolicy().frozen(),
-                "auto_recovery_job": {
-                    "status": "scheduled",
-                    "next_attempt": 1,
-                    "max_attempts": 3,
-                },
-            },
-            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
-        )
-
-        text = runtime._render_live_status(failed, None, None)
-        buttons = runtime._status_buttons(failed, None)
-
-        self.assertIn("正在自动重试", text)
-        self.assertIn("不用管", text)
-        payloads = [button.data for row in buttons for button in row]
-        self.assertNotIn(f"ui:retry:{failed.id}".encode(), payloads)
-        self.assertFalse(runtime._status_is_terminal(failed, None))
-
-    def test_uncertain_publish_quarantine_is_terminal_but_never_retryable(self) -> None:
-        runtime = object.__new__(TelethonIntakeRuntime)
-        runtime._settings = SimpleNamespace(publish_enabled=True)
-        failed = Job(
-            id="a" * 32,
-            owner_id=42,
-            destination="@channel",
-            state=JobState.FAILED,
-            error_code="publish_uncertain",
-            policy={
-                "auto_recovery": AutoRecoveryPolicy().frozen(),
-                "auto_recovery_job": {"status": "quarantined"},
-            },
-            items=[MediaItem(index=0, kind=MediaKind.VIDEO, source="fixture")],
-        )
-
-        text = runtime._render_live_status(failed, None, None)
-        buttons = runtime._status_buttons(failed, None)
-
-        self.assertIn("为防重复没有重发", text)
-        self.assertIn("其他任务不受影响", text)
-        payloads = [button.data for row in buttons for button in row]
-        self.assertNotIn(f"ui:retry:{failed.id}".encode(), payloads)
-        self.assertTrue(runtime._status_is_terminal(failed, None))
-
 
 @dataclass
 class FakeTelegramFile:

@@ -7,7 +7,6 @@ from tgvio.application.ports import JobRepository
 
 DEFAULT_FLAGS: dict[str, str] = {
     "alerts_enabled": "true",
-    "collection_preview_enabled": "true",
     "daily_cleanup_enabled": "true",
     "daily_cleanup_time": "06:00",
 }

@@ -264,40 +264,6 @@ class SQLiteArchiveRepositoryMixin:
             for row in rows
         }
 
-    async def list_recent_archive_packages(
-        self,
-        *,
-        owner_id: int | None = None,
-        limit: int = 5,
-    ) -> list[ArchivePackage]:
-        conn = self._require()
-        bounded = max(1, min(50, int(limit)))
-        if owner_id is None:
-            cursor = await conn.execute(
-                "SELECT id FROM archive_packages ORDER BY created_at DESC, id DESC LIMIT ?",
-                (bounded,),
-            )
-        else:
-            cursor = await conn.execute(
-                """
-                SELECT a.id
-                FROM archive_packages a
-                JOIN jobs j ON j.id=a.job_id
-                WHERE j.owner_id=?
-                ORDER BY a.created_at DESC, a.id DESC
-                LIMIT ?
-                """,
-                (owner_id, bounded),
-            )
-        rows = await cursor.fetchall()
-        await cursor.close()
-        packages: list[ArchivePackage] = []
-        for row in rows:
-            package = await self.get_archive_package(str(row["id"]))
-            if package is not None:
-                packages.append(package)
-        return packages
-
     async def list_archive_events(self, package_id: str) -> list[ArchiveEvent]:
         conn = self._require()
         cursor = await conn.execute(

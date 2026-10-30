@@ -64,6 +64,12 @@ class MaintenanceRepositoryTests(unittest.IsolatedAsyncioTestCase):
 
 
 class HistoryMaintenanceServiceTests(unittest.IsolatedAsyncioTestCase):
+    async def _hidden(self, job_id: str) -> bool:
+        cursor = await self.repo._require().execute("SELECT 1 FROM job_visibility WHERE job_id=?", (job_id,))
+        row = await cursor.fetchone()
+        await cursor.close()
+        return row is not None
+
     async def asyncSetUp(self) -> None:
         self.tmp = tempfile.TemporaryDirectory()
         self.repo = SQLiteJobRepository(Path(self.tmp.name) / "state.sqlite3")
@@ -112,11 +118,12 @@ class HistoryMaintenanceServiceTests(unittest.IsolatedAsyncioTestCase):
                 ),
             )
         if with_status:
-            await self.repo.save_job_display_message(
-                SimpleNamespace(
-                    job_id=job_id, chat_id=555, message_id=999, replacement_count=0
+            # Status cards from before the web console; maintenance still clears them.
+            async with self.repo._write_transaction() as conn:
+                await conn.execute(
+                    "INSERT INTO job_display_messages(job_id, chat_id, message_id) VALUES(?,?,?)",
+                    (job_id, 555, 999),
                 )
-            )
 
     async def test_safe_hide_preserves_history_and_clears_owned_artifacts(self) -> None:
         await self._seed_job("done", with_status=True)
@@ -125,7 +132,7 @@ class HistoryMaintenanceServiceTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.cache.calls, 1)
         self.assertEqual(self.cache.seen, ("done",))
         self.assertEqual(self.cleaner.deleted, [(555, 999)])
-        self.assertTrue(await self.repo.is_job_hidden("done"))
+        self.assertTrue(await self._hidden("done"))
         # The Job row and its history are preserved, only default visibility changes.
         self.assertIsNotNone(await self.repo.get("done"))
 
@@ -134,8 +141,8 @@ class HistoryMaintenanceServiceTests(unittest.IsolatedAsyncioTestCase):
         await self._seed_job("uncertain", state="failed", error_code="publish_uncertain")
         result = await self.service.run()
         self.assertEqual(result["hidden"], 0)
-        self.assertFalse(await self.repo.is_job_hidden("partial"))
-        self.assertFalse(await self.repo.is_job_hidden("uncertain"))
+        self.assertFalse(await self._hidden("partial"))
+        self.assertFalse(await self._hidden("uncertain"))
 
     async def test_active_claim_blocks_hiding(self) -> None:
         await self._seed_job("claimed")
@@ -152,13 +159,13 @@ class HistoryMaintenanceServiceTests(unittest.IsolatedAsyncioTestCase):
             )
         result = await self.service.run()
         self.assertEqual(result["hidden"], 0)
-        self.assertFalse(await self.repo.is_job_hidden("claimed"))
+        self.assertFalse(await self._hidden("claimed"))
 
     async def test_non_terminal_jobs_are_not_hidden(self) -> None:
         await self._seed_job("running", state="publishing")
         result = await self.service.run()
         self.assertEqual(result["hidden"], 0)
-        self.assertFalse(await self.repo.is_job_hidden("running"))
+        self.assertFalse(await self._hidden("running"))
 
     async def test_run_is_idempotent_per_business_day(self) -> None:
         await self._seed_job("done")

@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import logging
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -8,9 +7,7 @@ from tempfile import TemporaryDirectory
 from types import SimpleNamespace
 import unittest
 
-from tgvio.adapters.telegram.intake_source import IntakeSourceMixin
 from tgvio.adapters.telegram.user_source import UserSourceReader
-from tgvio.application.intake import IncomingMedia
 from tgvio.application.media_router import RoutedMediaDownloader
 from tgvio.domain.job import MediaKind
 
@@ -545,58 +542,6 @@ class ThumbnailFetchTests(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(streams, [256 * 1024])
 
 
-class FakeReader:
-    def __init__(self, media: list[IncomingMedia] | None = None) -> None:
-        self.media = media or []
-        self.captured: list[tuple[int, int]] = []
-        self.resolved_links: list[str] = []
-
-    async def capture_at(self, chat_id: int, message_id: int):
-        self.captured.append((int(chat_id), int(message_id)))
-        return list(self.media)
-
-    async def resolve_link(self, url: str):
-        self.resolved_links.append(url)
-        return list(self.media)
-
-
-class SourceMixinHost(IntakeSourceMixin):
-    def __init__(self) -> None:
-        self._settings = SimpleNamespace(allowed_users=(7,))
-        self._source_owner_id = 7
-        self._source_reader = None
-        self._log = logging.getLogger("test.source")
-        self.accepted: list[tuple[int, int, list]] = []
-        self.sent: list[tuple[int, str]] = []
-
-    async def _accept_and_schedule(self, chat_id, sender_id, media):
-        self.accepted.append((int(chat_id), int(sender_id), list(media)))
-
-    async def _safe_send(self, chat_id, text, **_kwargs):
-        self.sent.append((int(chat_id), str(text)))
-
-
-class SourceMixinTests(unittest.IsolatedAsyncioTestCase):
-    async def test_grab_handler_is_gone(self) -> None:
-        host = SourceMixinHost()
-        self.assertFalse(hasattr(host, "handle_grab"))
-
-    async def test_link_branch_only_handles_telegram_links(self) -> None:
-        media = [IncomingMedia(kind=MediaKind.PHOTO, source="telegram:-100:1")]
-        host = SourceMixinHost()
-        reader = FakeReader(media)
-        host._source_reader = reader
-        self.assertFalse(await host.handle_source_link("hello", 7, 7))
-        self.assertTrue(await host.handle_source_link("https://t.me/foo/1", 7, 7))
-        self.assertEqual(host.accepted, [(7, 7, media)])
-        self.assertEqual(reader.resolved_links, ["https://t.me/foo/1"])
-
-    async def test_link_without_reader_is_a_noop(self) -> None:
-        host = SourceMixinHost()
-        self.assertFalse(await host.handle_source_link("https://t.me/foo/1", 7, 7))
-        self.assertEqual(host.accepted, [])
-
-
 class _BoundedDownloader:
     def __init__(self) -> None:
         self.bounded: list[object] = []
@@ -637,86 +582,6 @@ class RouterBoundedRoutingTests(unittest.IsolatedAsyncioTestCase):
         item = MediaItem(index=0, kind=MediaKind.VIDEO, source="u")
         with self.assertRaises(ValueError):
             await router.download_bounded(item, Path("."), max_bytes=10)
-
-
-class FakeCoordinator:
-    def __init__(self, phase: str | None) -> None:
-        self.awaiting = phase
-        self.calls: list[tuple[str, str]] = []
-
-    def set_awaiting(self, phase):
-        self.awaiting = phase
-
-    async def request_code(self, value):
-        self.calls.append(("phone", value))
-        self.awaiting = "code"
-        return "code sent"
-
-    async def submit_code(self, value):
-        self.calls.append(("code", value))
-        self.awaiting = None
-        return "logged in"
-
-    async def submit_password(self, value):
-        self.calls.append(("password", value))
-        self.awaiting = None
-        return "logged in"
-
-    async def add_chat(self, value):
-        self.calls.append(("add_chat", value))
-        self.awaiting = None
-        return "added"
-
-
-class SourceInputTests(unittest.IsolatedAsyncioTestCase):
-    def _host(self, coordinator: FakeCoordinator) -> SourceMixinHost:
-        host = SourceMixinHost()
-        host._source = coordinator
-        return host
-
-    async def test_login_phases_are_dispatched_and_confirmed(self) -> None:
-        coordinator = FakeCoordinator("phone")
-        host = self._host(coordinator)
-        self.assertTrue(await host.handle_source_input("+8613800138000", 7, 7))
-        self.assertEqual(coordinator.calls, [("phone", "+8613800138000")])
-        self.assertEqual(coordinator.awaiting, "code")
-        self.assertTrue(any("code sent" in text for _chat, text in host.sent))
-
-        self.assertTrue(await host.handle_source_input("12345", 7, 7))
-        self.assertEqual(coordinator.calls[-1], ("code", "12345"))
-
-    async def test_add_chat_phase(self) -> None:
-        coordinator = FakeCoordinator("add_chat")
-        host = self._host(coordinator)
-        self.assertTrue(await host.handle_source_input("-100123", 7, 7))
-        self.assertEqual(coordinator.calls, [("add_chat", "-100123")])
-
-    async def test_cancel_clears_phase(self) -> None:
-        coordinator = FakeCoordinator("phone")
-        host = self._host(coordinator)
-        self.assertTrue(await host.handle_source_input("取消", 7, 7))
-        self.assertIsNone(coordinator.awaiting)
-        self.assertEqual(coordinator.calls, [])
-
-    async def test_no_phase_or_command_is_ignored(self) -> None:
-        host = self._host(FakeCoordinator(None))
-        self.assertFalse(await host.handle_source_input("hello", 7, 7))
-        command_host = self._host(FakeCoordinator("phone"))
-        self.assertFalse(await command_host.handle_source_input("/start", 7, 7))
-
-    async def test_login_error_keeps_the_phase_for_retry(self) -> None:
-        from tgvio.adapters.telegram.source_runtime import SourceLoginError
-
-        class _Failing(FakeCoordinator):
-            async def submit_code(self, value):
-                self.calls.append(("code", value))
-                raise SourceLoginError("验证码不正确，请重新输入")
-
-        coordinator = _Failing("code")
-        host = self._host(coordinator)
-        await host.handle_source_input("0000", 7, 7)
-        self.assertEqual(coordinator.awaiting, "code")
-        self.assertTrue(any("验证码不正确" in text for _chat, text in host.sent))
 
 
 if __name__ == "__main__":
