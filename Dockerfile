@@ -3,7 +3,7 @@
 # Pin the complete multi-platform index. HostDZire selects the linux/amd64
 # manifest from this immutable digest (Python 3.11.16, Debian trixie-slim).
 ARG PYTHON_IMAGE=python:3.11-slim@sha256:9534e5a8e315485d4061ed659af0fd78a284c015f9b73661b41d6bab25604534
-ARG NODE_IMAGE=node:20-bookworm-slim
+ARG NODE_IMAGE=node:24-bookworm-slim
 
 # The web console in console/ (React + Vite), served by the bot at /.
 FROM ${NODE_IMAGE} AS console-build
