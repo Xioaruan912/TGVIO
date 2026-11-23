@@ -25,18 +25,19 @@ const FILTERS: { key: Filter; label: string }[] = [
 
 const PRIVACY_MODES: { key: PrivacyMode; label: string }[] = [
   { key: "meta", label: "纯元数据" },
-  { key: "blur", label: "模糊遮罩" },
+  { key: "blur", label: "模糊" },
   { key: "thumb", label: "静态图" },
 ];
 
-export function Pick({ onError, onGoSources, onGoJobs }: {
+export function Pick({ activeSource, onSelectSource, onError, onGoSources, onGoJobs }: {
+  activeSource: number;
+  onSelectSource: (index: number) => void;
   onError: (error: unknown) => void;
   onGoSources: () => void;
   onGoJobs: () => void;
 }) {
   const { shield } = usePrivacy();
   const [sources, setSources] = useState<SourceEntry[] | null>(null);
-  const [active, setActive] = useState(0);
   const [urlEnabled, setUrlEnabled] = useState(false);
   const [archiveEnabled, setArchiveEnabled] = useState(false);
 
@@ -51,72 +52,87 @@ export function Pick({ onError, onGoSources, onGoJobs }: {
     });
   }, [onError]);
 
+  const currentSource = sources?.find(s => s.index === activeSource) ?? sources?.[0] ?? null;
+
   if (sources === null) {
     return (
-      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        {Array.from({ length: 10 }, (_, i) => (
-          <div key={i} className="aspect-[3/4] animate-pulse rounded-[18px] bg-surface" />
-        ))}
+      <div className="flex-1 overflow-y-auto p-5 lg:p-8">
+        <div className="grid grid-cols-2 gap-3.5 sm:grid-cols-3 lg:grid-cols-5">
+          {Array.from({ length: 10 }, (_, i) => (
+            <div key={i} className="aspect-[3/4] animate-pulse rounded-[16px] bg-grouped" />
+          ))}
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="space-y-5">
-      <div className="flex flex-col gap-3 sm:flex-row sm:items-end sm:justify-between">
-        <div>
-          <h1 className="text-[26px] font-semibold leading-tight tracking-[-0.025em] text-ink">挑选采集</h1>
-          <p className="mt-1 text-[13.5px] text-muted">
-            勾选条目后直接入队发布或归档；所有视频仅展示静态元信息，严禁播放。
-          </p>
+    <div className="flex min-h-0 flex-1 flex-col">
+      {/* Unified macOS Toolbar */}
+      <div className="apple-toolbar sticky top-[52px] z-20 flex flex-wrap items-center gap-3 border-b px-4 py-3 lg:static lg:px-7 lg:py-3.5">
+        <div className="min-w-0">
+          <h1 className="truncate text-[20px] font-semibold leading-tight tracking-[-0.025em] text-ink lg:text-[18px]">
+            {currentSource ? (shield ? `来源 #${currentSource.index + 1}` : currentSource.label) : "挑选采集"}
+          </h1>
         </div>
-        <span className="inline-flex w-fit items-center gap-1.5 rounded-full border border-line bg-surface px-3 py-1.5 text-[12px] text-muted">
-          <ProhibitIcon size={14} className="text-accent" weight="bold" />
-          点击卡片仅勾选 · 不支持任何视频播放
+        <span className="hidden items-center gap-1 rounded-full bg-subtle px-2.5 py-1 text-[11.5px] font-medium text-muted sm:inline-flex">
+          <ProhibitIcon size={12} className="text-danger" weight="bold" />
+          点击仅勾选 · 严禁播放
         </span>
+        {urlEnabled && (
+          <div className="w-full lg:ml-auto lg:w-[440px]">
+            <UrlBox archiveEnabled={archiveEnabled} onError={onError} onDone={onGoJobs} />
+          </div>
+        )}
       </div>
 
-      {urlEnabled && <UrlBox archiveEnabled={archiveEnabled} onError={onError} onDone={onGoJobs} />}
+      {/* Mobile Source Switcher */}
+      {sources.length > 0 && (
+        <div className="flex gap-2 overflow-x-auto border-b border-line px-4 py-2.5 [scrollbar-width:none] lg:hidden" role="tablist" aria-label="来源频道">
+          {sources.map(source => {
+            const isActive = (currentSource?.index ?? 0) === source.index;
+            return (
+              <button
+                key={source.index}
+                type="button"
+                role="tab"
+                aria-selected={isActive}
+                onClick={() => onSelectSource(source.index)}
+                className={`tactile h-8 shrink-0 rounded-full px-3.5 text-[13px] font-medium ${
+                  isActive ? "bg-ink text-canvas" : "bg-grouped text-muted"
+                }`}
+              >
+                {shield ? `来源 #${source.index + 1}` : source.label}
+              </button>
+            );
+          })}
+        </div>
+      )}
 
       {sources.length === 0 ? (
-        <div className="apple-card p-6 sm:p-8">
-          <h2 className="text-[16px] font-semibold tracking-[-0.01em] text-ink">尚未配置可浏览的频道来源</h2>
-          <p className="mt-1.5 max-w-xl text-[14px] leading-relaxed text-muted">
-            请先前往来源页登录你的 Telegram 个人账号，并将需要采集的频道或群组加入白名单。
-          </p>
-          <button
-            type="button"
-            onClick={onGoSources}
-            className="tactile mt-4 h-10 rounded-full bg-ink px-5 text-[13.5px] font-semibold text-bg hover:bg-white"
-          >
-            前往配置来源
-          </button>
+        <div className="flex flex-1 items-center justify-center p-6">
+          <div className="apple-inset-group max-w-md p-8 text-center">
+            <h2 className="text-[18px] font-semibold tracking-[-0.02em] text-ink">还没有可浏览的频道</h2>
+            <p className="mt-2 text-[14px] leading-relaxed text-muted">
+              前往「频道来源」登录你的 Telegram 个人账号，并将要采集的频道加入白名单即可在这里挑选。
+            </p>
+            <button
+              type="button"
+              onClick={onGoSources}
+              className="tactile mt-5 h-10 rounded-full bg-apple px-6 text-[14px] font-medium text-white hover:brightness-105"
+            >
+              前往配置来源
+            </button>
+          </div>
         </div>
       ) : (
-        <>
-          <div className="-mx-4 flex gap-2 overflow-x-auto px-4 pb-1 [scrollbar-width:none] sm:mx-0 sm:px-0" role="tablist" aria-label="来源频道">
-            {sources.map(source => {
-              const isActive = active === source.index;
-              return (
-                <button
-                  key={source.index}
-                  type="button"
-                  role="tab"
-                  aria-selected={isActive}
-                  onClick={() => setActive(source.index)}
-                  className={`tactile h-9 shrink-0 rounded-full border px-4 text-[13.5px] font-medium ${
-                    isActive
-                      ? "border-white/18 bg-ink text-bg"
-                      : "border-line bg-surface text-muted hover:border-line-strong hover:text-ink"
-                  }`}
-                >
-                  {shield ? `来源 #${source.index + 1}` : source.label}
-                </button>
-              );
-            })}
-          </div>
-          <SourceGrid key={active} source={active} archiveEnabled={archiveEnabled} onError={onError} onDone={onGoJobs} />
-        </>
+        <SourceGrid
+          key={currentSource?.index ?? 0}
+          source={currentSource?.index ?? 0}
+          archiveEnabled={archiveEnabled}
+          onError={onError}
+          onDone={onGoJobs}
+        />
       )}
     </div>
   );
@@ -188,9 +204,9 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
       const what = mode === "archive" ? "只归档" : "发布";
       toast(
         result.jobs
-          ? `已建 ${result.jobs} 个${what}任务${result.failed ? `，${result.failed} 条读取失败` : ""}`
-          : "没有新内容（可能已经发过）",
-        result.jobs ? { label: "看任务", run: onDone } : undefined,
+          ? `已创建 ${result.jobs} 个${what}任务${result.failed ? `，${result.failed} 条读取失败` : ""}`
+          : "没有新内容（可能已提交过）",
+        result.jobs ? { label: "查看任务", run: onDone } : undefined,
       );
     } catch (error) {
       onError(error);
@@ -207,7 +223,7 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
       const ids = new Set(chosen.map(item => item.message_id));
       setItems(current => current.map(item => ids.has(item.message_id) ? { ...item, ad: true } : item));
       setSelected(new Map());
-      toast(`已把 ${chosen.length} 条标为广告`);
+      toast(`已将 ${chosen.length} 条标为广告`);
     } catch (error) {
       onError(error);
       toast(errorText(error));
@@ -215,18 +231,19 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
   };
 
   return (
-    <div className="space-y-4">
-      <div className="apple-card flex flex-wrap items-center gap-2 p-2.5 sm:gap-2.5 sm:px-3.5">
+    <div className="flex-1 overflow-y-auto px-4 pb-24 pt-4 lg:px-7 lg:pb-24 lg:pt-5">
+      {/* Compact Apple Segmented Filter Bar */}
+      <div className="mb-5 flex flex-wrap items-center gap-2.5">
         <div className="flex w-full items-center justify-between gap-2 sm:w-auto">
-          <div className="flex items-center gap-1 rounded-full bg-bg/70 p-1">
+          <div className="inline-flex items-center rounded-[10px] bg-grouped p-0.5">
             {FILTERS.map(option => (
               <button
                 key={option.key}
                 type="button"
                 onClick={() => setFilter(option.key)}
                 aria-pressed={filter === option.key}
-                className={`tactile h-7 rounded-full px-3 text-[12.5px] font-medium ${
-                  filter === option.key ? "bg-white/14 text-ink" : "text-muted hover:text-ink"
+                className={`tactile h-7 rounded-[8px] px-3 text-[12.5px] font-medium ${
+                  filter === option.key ? "bg-elevated text-ink shadow-xs" : "text-muted hover:text-ink"
                 }`}
               >
                 {option.label}
@@ -237,22 +254,22 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
             type="button"
             onClick={() => { setSelected(new Map()); void load(0, true); }}
             aria-label="刷新列表"
-            className="tactile grid size-8 shrink-0 place-items-center rounded-full border border-line bg-bg/70 text-muted hover:border-line-strong hover:text-ink sm:hidden"
+            className="tactile grid size-8 place-items-center rounded-[9px] bg-grouped text-muted hover:text-ink sm:hidden"
           >
             <ArrowClockwiseIcon size={15} className={loading ? "animate-spin" : ""} />
           </button>
         </div>
 
-        <div className="flex items-center gap-1 rounded-full bg-bg/70 p-1" role="group" aria-label="隐私遮罩模式">
-          <EyeSlashIcon size={14} className="ml-2 mr-0.5 text-faint" />
+        <div className="inline-flex items-center rounded-[10px] bg-grouped p-0.5" role="group" aria-label="遮罩样式">
+          <EyeSlashIcon size={13} className="ml-2 mr-1 text-faint" />
           {PRIVACY_MODES.map(option => (
             <button
               key={option.key}
               type="button"
               onClick={() => setPrivacy(option.key)}
               aria-pressed={privacy === option.key}
-              className={`tactile h-7 rounded-full px-2.5 text-[12px] font-medium ${
-                privacy === option.key ? "bg-white/14 text-ink" : "text-muted hover:text-ink"
+              className={`tactile h-7 rounded-[8px] px-2.5 text-[12px] font-medium ${
+                privacy === option.key ? "bg-elevated text-ink shadow-xs" : "text-muted hover:text-ink"
               }`}
             >
               {option.label}
@@ -265,28 +282,32 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
             type="checkbox"
             checked={hideAds}
             onChange={event => setHideAds(event.target.checked)}
-            className="accent-[var(--color-accent)]"
+            className="accent-[var(--accent-blue)]"
           />
           隐藏广告
         </label>
+
+        <span className="tabular hidden text-[12px] text-faint sm:ml-auto sm:inline">
+          {visible.length} 项
+        </span>
 
         <button
           type="button"
           onClick={() => { setSelected(new Map()); void load(0, true); }}
           aria-label="刷新列表"
-          className="tactile ml-auto hidden size-8 place-items-center rounded-full border border-line bg-bg/70 text-muted hover:border-line-strong hover:text-ink sm:grid"
+          className="tactile hidden size-8 place-items-center rounded-[9px] bg-grouped text-muted hover:bg-subtle-hover hover:text-ink sm:grid"
         >
           <ArrowClockwiseIcon size={15} className={loading ? "animate-spin" : ""} />
         </button>
       </div>
 
       {!loading && visible.length === 0 && (
-        <div className="apple-card py-14 text-center text-[14px] text-muted">
+        <div className="apple-inset-group py-16 text-center text-[14px] text-muted">
           {items.length ? "当前筛选条件下没有内容。" : "这个来源最近没有可采集的媒体。"}
         </div>
       )}
 
-      <div className="grid grid-cols-2 gap-2.5 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5">
+      <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
         {visible.map(item => (
           <Tile
             key={item.message_id}
@@ -298,7 +319,7 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
           />
         ))}
         {loading && Array.from({ length: items.length ? 5 : 10 }, (_, i) => (
-          <div key={`skeleton-${i}`} className="aspect-[3/4] animate-pulse rounded-[18px] bg-surface" />
+          <div key={`skeleton-${i}`} className="aspect-[3/4] animate-pulse rounded-[16px] bg-grouped" />
         ))}
       </div>
 
@@ -306,32 +327,33 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
         <button
           type="button"
           onClick={() => void load(page + 1)}
-          className="tactile mx-auto mt-2 block h-10 rounded-full border border-line bg-surface px-6 text-[13.5px] font-medium text-ink hover:border-line-strong hover:bg-raised"
+          className="tactile mx-auto mt-6 block h-9 rounded-full bg-grouped px-6 text-[13.5px] font-medium text-ink hover:bg-subtle-hover"
         >
           加载更多
         </button>
       )}
 
+      {/* Floating Apple Action Dock */}
       <AnimatePresence>
         {selected.size > 0 && (
           <motion.div
-            initial={{ opacity: 0, y: 24, scale: 0.97 }}
+            initial={{ opacity: 0, y: 20, scale: 0.98 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
-            exit={{ opacity: 0, y: 20, scale: 0.97 }}
-            transition={{ type: "spring", bounce: 0, duration: 0.32 }}
-            className="fixed inset-x-0 bottom-[calc(5.1rem+env(safe-area-inset-bottom))] z-40 px-3 sm:bottom-6"
+            exit={{ opacity: 0, y: 16, scale: 0.98 }}
+            transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+            className="fixed inset-x-0 bottom-[calc(4.8rem+env(safe-area-inset-bottom))] z-40 px-4 lg:bottom-6 lg:left-[252px]"
           >
-            <div className="glass-panel mx-auto flex max-w-3xl flex-wrap items-center gap-2 rounded-[22px] p-2.5 sm:px-3.5">
-              <span className="tabular px-2 text-[13.5px] font-medium text-ink">
-                已选 <b className="text-accent">{selected.size}</b> 项
+            <div className="apple-float mx-auto flex max-w-3xl flex-wrap items-center gap-2 rounded-[20px] p-2.5 sm:px-3.5">
+              <span className="tabular px-2 text-[13.5px] font-semibold text-ink">
+                已选 <span className="text-apple">{selected.size}</span> 项
               </span>
               {selected.size > 1 && (
-                <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-white/[0.06] px-3 py-1.5 text-[12.5px] text-muted hover:text-ink">
+                <label className="flex cursor-pointer items-center gap-1.5 rounded-full bg-subtle px-3 py-1.5 text-[12.5px] text-muted hover:text-ink">
                   <input
                     type="checkbox"
                     checked={merge}
                     onChange={event => setMerge(event.target.checked)}
-                    className="accent-[var(--color-accent)]"
+                    className="accent-[var(--accent-blue)]"
                   />
                   <StackIcon size={14} />
                   合成一条帖子
@@ -340,14 +362,14 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
               <button
                 type="button"
                 onClick={() => void markAds()}
-                className="tactile h-8 rounded-full px-3 text-[12.5px] text-muted hover:bg-white/8 hover:text-ink"
+                className="tactile h-8 rounded-full px-3 text-[12.5px] font-medium text-muted hover:bg-subtle hover:text-ink"
               >
                 标为广告
               </button>
               <button
                 type="button"
                 onClick={() => setSelected(new Map())}
-                className="tactile h-8 rounded-full px-3 text-[12.5px] text-muted hover:bg-white/8 hover:text-ink"
+                className="tactile h-8 rounded-full px-3 text-[12.5px] font-medium text-muted hover:bg-subtle hover:text-ink"
               >
                 清空
               </button>
@@ -357,7 +379,7 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
                     type="button"
                     disabled={busy}
                     onClick={() => void submit("archive")}
-                    className="tactile h-9 rounded-full border border-line bg-white/8 px-4 text-[13px] font-semibold text-ink hover:bg-white/14 disabled:opacity-45"
+                    className="tactile h-9 rounded-full bg-subtle px-4 text-[13px] font-medium text-ink hover:bg-subtle-hover disabled:opacity-45"
                   >
                     只存网盘
                   </button>
@@ -366,7 +388,7 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
                   type="button"
                   disabled={busy}
                   onClick={() => void submit("publish")}
-                  className="tactile h-9 rounded-full bg-accent px-5 text-[13px] font-semibold text-white shadow-sm shadow-accent/30 hover:brightness-110 disabled:opacity-45"
+                  className="tactile h-9 rounded-full bg-apple px-5 text-[13px] font-medium text-white hover:brightness-105 disabled:opacity-45"
                 >
                   {busy ? "提交中…" : archiveEnabled ? "发布并存网盘" : "发布"}
                 </button>
@@ -379,7 +401,7 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
   );
 }
 
-/** Non-playable media selection card. Never mounts <video> or opens a media player. */
+/** Non-playable selection tile. Strictly never mounts <video> or opens a media player. */
 function Tile({ source, item, privacy, selected, onToggle }: {
   source: number;
   item: SourceItem;
@@ -401,26 +423,26 @@ function Tile({ source, item, privacy, selected, onToggle }: {
       onClick={onToggle}
       aria-pressed={selected}
       title={shield ? `条目 #${item.message_id}（防窥已开启，点击勾选，不支持播放）` : (item.caption || `消息 #${item.message_id}（点击勾选，不支持播放）`)}
-      className={`tactile group relative aspect-[3/4] overflow-hidden rounded-[18px] border bg-surface text-left outline-none ${
+      className={`tactile group relative aspect-[3/4] overflow-hidden rounded-[16px] bg-grouped text-left outline-none ${
         selected
-          ? "border-info ring-2 ring-info/80 ring-offset-2 ring-offset-bg"
-          : "border-line hover:border-line-strong"
+          ? "ring-[2.5px] ring-apple ring-offset-2 ring-offset-canvas"
+          : "ring-1 ring-line hover:ring-line-strong"
       }`}
     >
       {effectivePrivacy === "meta" || broken ? (
         <div className="flex size-full flex-col justify-between p-3.5">
-          <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted">
-            {isVideo ? <FilmStripIcon size={14} className="text-accent" /> : <ImageIcon size={14} className="text-info" />}
+          <div className="flex items-center gap-1.5 text-[11.5px] font-medium text-muted">
+            {isVideo ? <FilmStripIcon size={14} className="text-danger" /> : <ImageIcon size={14} className="text-apple" />}
             <span>{isVideo ? "视频 · 禁播" : "图片"}</span>
           </div>
-          <p className="line-clamp-4 text-[12.5px] leading-relaxed text-ink/90">
+          <p className="line-clamp-4 text-[13px] leading-relaxed text-ink">
             {displayCaption}
           </p>
-          <div className="tabular space-y-0.5 text-[11px] text-faint">
+          <div className="tabular space-y-0.5 text-[11.5px] text-faint">
             {resLabel && <div>{resLabel}</div>}
             <div className="flex items-center justify-between text-muted">
               <span>{formatBytes(item.size_bytes)}</span>
-              {durationLabel && <span className="font-medium text-ink">{durationLabel}</span>}
+              {durationLabel && <span className="font-semibold text-ink">{durationLabel}</span>}
             </div>
           </div>
         </div>
@@ -434,24 +456,22 @@ function Tile({ source, item, privacy, selected, onToggle }: {
             draggable={false}
             onError={() => setBroken(true)}
             className={`size-full object-cover transition duration-300 ${
-              effectivePrivacy === "blur" ? "scale-110 blur-xl brightness-[0.62]" : ""
+              effectivePrivacy === "blur" ? "scale-110 blur-2xl brightness-75" : ""
             } ${item.done ? "opacity-45" : ""}`}
           />
           {effectivePrivacy === "blur" && (
-            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-3 text-center">
-              <span className="inline-flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-ink backdrop-blur-md">
-                {isVideo ? <FilmStripIcon size={13} className="text-accent" /> : <ImageIcon size={13} className="text-info" />}
-                {isVideo ? "视频 · 禁止播放" : "图片 · 已遮罩"}
+            <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 bg-black/15 px-3 text-center">
+              <span className="inline-flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-white backdrop-blur-md">
+                {isVideo ? <FilmStripIcon size={12} /> : <ImageIcon size={12} />}
+                {isVideo ? "视频 · 禁播" : "图片 · 遮罩"}
               </span>
-              {(shield || item.caption) && (
-                <p className="line-clamp-2 max-w-full text-[11.5px] leading-snug text-white/85 drop-shadow">
-                  {displayCaption}
-                </p>
-              )}
+              <p className="line-clamp-2 max-w-full text-[11.5px] font-medium leading-snug text-white/95 drop-shadow">
+                {displayCaption}
+              </p>
             </div>
           )}
-          <div className="tabular pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-1 bg-gradient-to-t from-black/85 via-black/40 to-transparent px-2.5 pb-2 pt-7 text-[11px] text-white">
-            <span className="truncate text-white/85">{formatBytes(item.size_bytes)}</span>
+          <div className="tabular pointer-events-none absolute inset-x-0 bottom-0 flex items-end justify-between gap-1 bg-gradient-to-t from-black/75 via-black/30 to-transparent px-2.5 pb-2 pt-7 text-[11px] text-white">
+            <span className="truncate text-white/90">{formatBytes(item.size_bytes)}</span>
             {durationLabel && <span className="shrink-0 font-semibold">{durationLabel}</span>}
           </div>
         </>
@@ -459,15 +479,17 @@ function Tile({ source, item, privacy, selected, onToggle }: {
 
       <div className="pointer-events-none absolute left-2 top-2 flex gap-1">
         {item.done && (
-          <span className="rounded-full bg-black/70 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">已发</span>
+          <span className="rounded-full bg-black/65 px-2 py-0.5 text-[10px] font-medium text-white backdrop-blur-sm">已发</span>
         )}
         {item.ad && (
-          <span className="rounded-full bg-accent-soft px-2 py-0.5 text-[10px] font-semibold text-accent backdrop-blur-sm">广告</span>
+          <span className="rounded-full bg-danger px-2 py-0.5 text-[10px] font-semibold text-white">广告</span>
         )}
       </div>
 
       {selected && (
-        <CheckCircleIcon size={24} weight="fill" className="absolute right-2 top-2 text-info drop-shadow-md" />
+        <span className="absolute right-2 top-2 grid size-6 place-items-center rounded-full bg-white text-apple shadow-md">
+          <CheckCircleIcon size={24} weight="fill" />
+        </span>
       )}
     </button>
   );
@@ -488,7 +510,7 @@ function UrlBox({ archiveEnabled, onError, onDone }: {
       setUrl("");
       toast(
         result.accepted ? "链接已加入采集队列" : "这个链接已经提交过",
-        result.accepted ? { label: "看任务", run: onDone } : undefined,
+        result.accepted ? { label: "查看任务", run: onDone } : undefined,
       );
     } catch (error) {
       onError(error);
@@ -500,38 +522,36 @@ function UrlBox({ archiveEnabled, onError, onDone }: {
 
   return (
     <form
-      className="apple-card flex flex-wrap items-center gap-2 p-2 sm:flex-nowrap"
+      className="flex items-center gap-1.5"
       onSubmit={event => { event.preventDefault(); void send("publish"); }}
     >
       <div className="relative min-w-0 flex-1">
-        <LinkSimpleIcon size={16} className="pointer-events-none absolute left-3.5 top-1/2 -translate-y-1/2 text-faint" />
+        <LinkSimpleIcon size={15} className="pointer-events-none absolute left-3 top-1/2 -translate-y-1/2 text-faint" />
         <input
           value={url}
           onChange={event => setUrl(event.target.value)}
           inputMode="url"
-          placeholder="粘贴视频网页链接直接采集（不播放）"
-          className="h-10 w-full rounded-[13px] bg-bg/75 pl-10 pr-3 text-[13.5px] text-ink placeholder:text-faint outline-none ring-1 ring-transparent transition focus:ring-info"
+          placeholder="粘贴网页链接直接采集…"
+          className="h-9 w-full rounded-[10px] bg-grouped pl-8 pr-3 text-[13px] text-ink placeholder:text-faint outline-none ring-1 ring-transparent transition focus:bg-canvas focus:ring-apple"
         />
       </div>
-      <div className="flex w-full gap-2 sm:w-auto">
-        {archiveEnabled && (
-          <button
-            type="button"
-            disabled={busy || !url.trim()}
-            onClick={() => void send("archive")}
-            className="tactile h-10 flex-1 rounded-[13px] border border-line bg-raised px-3.5 text-[13px] font-medium text-ink hover:border-line-strong disabled:opacity-40 sm:flex-none"
-          >
-            只存网盘
-          </button>
-        )}
+      {archiveEnabled && (
         <button
-          type="submit"
+          type="button"
           disabled={busy || !url.trim()}
-          className="tactile h-10 flex-1 rounded-[13px] bg-accent px-5 text-[13px] font-semibold text-white hover:brightness-110 disabled:opacity-40 sm:flex-none"
+          onClick={() => void send("archive")}
+          className="tactile h-9 shrink-0 rounded-[10px] bg-grouped px-3 text-[12.5px] font-medium text-ink hover:bg-subtle-hover disabled:opacity-40"
         >
-          采集下载
+          存网盘
         </button>
-      </div>
+      )}
+      <button
+        type="submit"
+        disabled={busy || !url.trim()}
+        className="tactile h-9 shrink-0 rounded-[10px] bg-apple px-3.5 text-[12.5px] font-medium text-white hover:brightness-105 disabled:opacity-40"
+      >
+        采集
+      </button>
     </form>
   );
 }

@@ -23,17 +23,17 @@ export function Toasts() {
           <motion.div
             key={t.id}
             layout
-            initial={{ opacity: 0, y: 14, scale: 0.96 }}
+            initial={{ opacity: 0, y: 12, scale: 0.96 }}
             animate={{ opacity: 1, y: 0, scale: 1 }}
             exit={{ opacity: 0, y: 8, scale: 0.97 }}
-            transition={{ type: "spring", bounce: 0, duration: 0.32 }}
-            className="glass-panel pointer-events-auto flex items-center gap-3.5 rounded-full px-4 py-2.5 text-[13.5px] font-medium text-ink"
+            transition={{ type: "spring", bounce: 0, duration: 0.3 }}
+            className="apple-float pointer-events-auto flex items-center gap-3.5 rounded-full px-4 py-2.5 text-[13.5px] font-medium text-ink"
           >
             <span>{t.text}</span>
             {t.action && (
               <button
                 type="button"
-                className="tactile rounded-full bg-accent-soft px-2.5 py-1 text-[12.5px] font-semibold text-accent hover:bg-accent/25"
+                className="tactile rounded-full bg-apple-soft px-3 py-1 text-[12.5px] font-semibold text-apple hover:opacity-85"
                 onClick={() => {
                   t.action!.run();
                   toasts = toasts.filter(x => x.id !== t.id);
