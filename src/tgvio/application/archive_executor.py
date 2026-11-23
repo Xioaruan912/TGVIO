@@ -310,14 +310,18 @@ class ArchiveExecutor(ArchiveCommitMixin, ArchiveProbeMixin):
                 obj.size_bytes,
             )
         except Exception as exc:
+            detail_msg = str(exc).strip()[:180] or "archive object transfer failed"
             await self._repository.update_archive_object_state(
                 current.id or obj.id,
                 ArchiveObjectState.FAILED,
                 event_type="archive_object_failed",
                 retry_count=obj.retry_count + 1,
                 error_code="archive_object_transfer_failed",
-                error_message=f"{type(exc).__name__}: archive object transfer failed",
-                detail={"object_index": obj.object_index},
+                error_message=f"{type(exc).__name__}: {detail_msg}",
+                detail={
+                    "object_index": obj.object_index,
+                    "http_status": getattr(exc, "status", None),
+                },
             )
             log_event(
                 self._log,
@@ -367,13 +371,17 @@ class ArchiveExecutor(ArchiveCommitMixin, ArchiveProbeMixin):
         code: str,
         exc: Exception,
     ) -> ArchivePackage:
+        detail_msg = str(exc).strip()[:180] or "archive execution failed"
         return await self._repository.update_archive_package_state(
             package.id,
             ArchivePackageState.FAILED,
             event_type="archive_failed",
             error_code=code,
-            error_message=f"{type(exc).__name__}: archive execution failed",
-            detail={"error_code": code},
+            error_message=f"{type(exc).__name__}: {detail_msg}",
+            detail={
+                "error_code": code,
+                "http_status": getattr(exc, "status", None),
+            },
         )
 
     @staticmethod

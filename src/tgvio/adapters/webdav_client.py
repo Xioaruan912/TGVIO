@@ -58,6 +58,8 @@ class WebDavClientMixin:
         finally:
             conn.close()
 
+    _RETRYABLE_STATUSES = frozenset({408, 429, 500, 502, 503, 504})
+
     def _request_sync(
         self,
         method: str,
@@ -68,23 +70,43 @@ class WebDavClientMixin:
     ) -> tuple[int, dict[str, str], bytes]:
         payload = body.encode("utf-8") if isinstance(body, str) else body
         request_headers = {"Authorization": self._authorization, **(headers or {})}
-        conn = self._connect()
-        try:
-            conn.request(
-                method,
-                self._quote_path(absolute_path),
-                body=payload,
-                headers=request_headers,
-            )
-            response = conn.getresponse()
-            data = response.read()
-            return (
-                int(response.status),
-                {key.lower(): value for key, value in response.getheaders()},
-                data,
-            )
-        finally:
-            conn.close()
+        attempts = max(1, int(getattr(self, "_request_attempts", 3)))
+        base_delay = max(0.0, float(getattr(self, "_retry_delay_seconds", 0.5)))
+        last_exc: Exception | None = None
+        last_result: tuple[int, dict[str, str], bytes] | None = None
+        for attempt in range(attempts):
+            conn = self._connect()
+            try:
+                conn.request(
+                    method,
+                    self._quote_path(absolute_path),
+                    body=payload,
+                    headers=request_headers,
+                )
+                response = conn.getresponse()
+                data = response.read()
+                result = (
+                    int(response.status),
+                    {key.lower(): value for key, value in response.getheaders()},
+                    data,
+                )
+            except (OSError, http.client.HTTPException) as exc:
+                last_exc = exc
+                if attempt + 1 >= attempts:
+                    raise
+            else:
+                if result[0] not in self._RETRYABLE_STATUSES or attempt + 1 >= attempts:
+                    return result
+                last_result = result
+            finally:
+                conn.close()
+            if base_delay > 0:
+                time.sleep(base_delay * (2**attempt))
+        if last_result is not None:
+            return last_result
+        if last_exc is not None:
+            raise last_exc
+        raise WebDavArchiveError("WebDAV request failed without response")
 
     def _ensure_parent_sync(self, remote_path: str) -> None:
         parts = self._relative_parts(remote_path)

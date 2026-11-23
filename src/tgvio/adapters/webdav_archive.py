@@ -19,6 +19,8 @@ class WebDavArchiveTransport(WebDavClientMixin):
         chunk_bytes: int = 1024 * 1024,
         verify_attempts: int = 36,
         verify_interval_seconds: float = 10.0,
+        request_attempts: int = 3,
+        retry_delay_seconds: float = 0.5,
     ) -> None:
         parsed = urllib.parse.urlsplit(base_url)
         if parsed.scheme not in {"http", "https"} or not parsed.hostname:
@@ -37,6 +39,8 @@ class WebDavArchiveTransport(WebDavClientMixin):
         self._chunk_bytes = max(64 * 1024, int(chunk_bytes))
         self._verify_attempts = max(1, int(verify_attempts))
         self._verify_interval_seconds = max(0.0, float(verify_interval_seconds))
+        self._request_attempts = max(1, int(request_attempts))
+        self._retry_delay_seconds = max(0.0, float(retry_delay_seconds))
         self._capabilities: ArchiveCapabilities | None = None
 
     async def probe(self) -> ArchiveCapabilities:
@@ -255,14 +259,45 @@ class WebDavArchiveTransport(WebDavClientMixin):
         self._ensure_parent_sync(remote_path)
         absolute = self._absolute_path(remote_path)
         status: int | None = None
-        try:
-            status = self._stream_put_sync(local, absolute, actual_size)
-        except Exception as exc:
-            verified = self._wait_for_expected_size_sync(remote_path, actual_size)
-            if not (verified.exists and verified.size_bytes == actual_size):
+        attempts = max(1, int(self._request_attempts))
+        for attempt in range(attempts):
+            try:
+                status = self._stream_put_sync(local, absolute, actual_size)
+            except Exception as exc:
+                verified = self._wait_for_expected_size_sync(remote_path, actual_size)
+                if verified.exists and verified.size_bytes == actual_size:
+                    return ArchiveStoreReceipt(
+                        remote_path=remote_path,
+                        size_bytes=actual_size,
+                        verification_method="size",
+                        etag=verified.etag,
+                        reused_remote=False,
+                    )
+                if attempt + 1 < attempts and isinstance(exc, (OSError, http.client.HTTPException)):
+                    if self._retry_delay_seconds > 0:
+                        time.sleep(self._retry_delay_seconds * (2**attempt))
+                    continue
                 if isinstance(exc, WebDavArchiveError):
                     raise
                 raise WebDavArchiveError("WebDAV archive PUT result was not verifiable") from exc
+            if status in {200, 201, 204}:
+                break
+            if status in self._RETRYABLE_STATUSES and attempt + 1 < attempts:
+                verified = self._stat_sync(remote_path)
+                if verified.exists and verified.size_bytes == actual_size:
+                    return ArchiveStoreReceipt(
+                        remote_path=remote_path,
+                        size_bytes=actual_size,
+                        verification_method="size",
+                        etag=verified.etag,
+                        reused_remote=False,
+                    )
+                if self._retry_delay_seconds > 0:
+                    time.sleep(self._retry_delay_seconds * (2**attempt))
+                continue
+            verified = self._wait_for_expected_size_sync(remote_path, actual_size)
+            if not (verified.exists and verified.size_bytes == actual_size):
+                raise WebDavArchiveError("WebDAV archive PUT failed", status=status)
             return ArchiveStoreReceipt(
                 remote_path=remote_path,
                 size_bytes=actual_size,
@@ -270,10 +305,6 @@ class WebDavArchiveTransport(WebDavClientMixin):
                 etag=verified.etag,
                 reused_remote=False,
             )
-        if status not in {200, 201, 204}:
-            verified = self._wait_for_expected_size_sync(remote_path, actual_size)
-            if not (verified.exists and verified.size_bytes == actual_size):
-                raise WebDavArchiveError("WebDAV archive PUT failed", status=status)
         verified = self._wait_for_expected_size_sync(remote_path, actual_size)
         if not (verified.exists and verified.size_bytes == actual_size):
             raise WebDavArchiveError("WebDAV archive PUT failed size verification", status=status)
@@ -333,7 +364,7 @@ class WebDavArchiveTransport(WebDavClientMixin):
                 etag=verified.etag,
                 reused_remote=False,
             )
-        verified = self._stat_sync(remote_path)
+        verified = self._wait_for_expected_size_sync(remote_path, len(payload))
         if not (verified.exists and verified.size_bytes == len(payload)):
             raise WebDavArchiveError("WebDAV metadata PUT failed size verification", status=status)
         current = self._get_bytes_sync(remote_path, max(len(payload), 1))
@@ -349,6 +380,13 @@ class WebDavArchiveTransport(WebDavClientMixin):
 
     def _get_bytes_sync(self, remote_path: str, max_bytes: int) -> bytes | None:
         status, headers, body = self._request_sync("GET", self._absolute_path(remote_path))
+        redirects = 0
+        while status in {301, 302, 303, 307, 308} and redirects < 2:
+            location = headers.get("location", "").strip()
+            if not location:
+                break
+            redirects += 1
+            status, headers, body = self._follow_redirect_sync(location, max_bytes)
         if status == 404:
             return None
         if status not in {200, 206}:
@@ -360,6 +398,47 @@ class WebDavArchiveTransport(WebDavClientMixin):
         if len(body) > limit:
             raise WebDavArchiveError("WebDAV metadata object exceeds read limit")
         return body
+
+    def _follow_redirect_sync(self, location: str, max_bytes: int) -> tuple[int, dict[str, str], bytes]:
+        parsed = urllib.parse.urlsplit(location)
+        if parsed.scheme not in {"http", "https"} or not parsed.hostname:
+            return 400, {}, b""
+        same_origin = (
+            parsed.scheme == self._parsed.scheme
+            and parsed.hostname == self._parsed.hostname
+            and (parsed.port or (443 if parsed.scheme == "https" else 80))
+            == (self._parsed.port or (443 if self._parsed.scheme == "https" else 80))
+        )
+        conn: http.client.HTTPConnection
+        if parsed.scheme == "https":
+            conn = http.client.HTTPSConnection(
+                parsed.hostname,
+                parsed.port or 443,
+                timeout=self._timeout,
+                context=ssl.create_default_context(),
+            )
+        else:
+            conn = http.client.HTTPConnection(
+                parsed.hostname,
+                parsed.port or 80,
+                timeout=self._timeout,
+            )
+        target = parsed.path or "/"
+        if parsed.query:
+            target = f"{target}?{parsed.query}"
+        req_headers = {"Authorization": self._authorization} if same_origin else {}
+        try:
+            conn.request("GET", target, headers=req_headers)
+            response = conn.getresponse()
+            limit = max(1, int(max_bytes))
+            data = response.read(limit + 1)
+            return (
+                int(response.status),
+                {key.lower(): value for key, value in response.getheaders()},
+                data,
+            )
+        finally:
+            conn.close()
 
     def _move_collection_sync(self, source_path: str, destination_path: str) -> None:
         self._ensure_parent_sync(destination_path)

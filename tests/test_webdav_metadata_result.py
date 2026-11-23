@@ -93,5 +93,42 @@ class MetadataPutResultTests(unittest.TestCase):
         with self.assertRaises(WebDavArchiveError) as caught:
             port._put_bytes_sync(payload, "fixture/renditions.json", "application/json")
         self.assertEqual(caught.exception.status, 405)
+        self.assertIn("HTTP 405", str(caught.exception))
         self.assertEqual(port.reads, [])
         self.assertEqual(port.puts, 1)
+
+    def test_metadata_put_waits_for_eventual_consistency_stat(self):
+        payload = b'{"manifest":1}'
+
+        class DelayedStatTransport(WebDavArchiveTransport):
+            def __init__(self):
+                super().__init__(
+                    "https://fixture.invalid",
+                    "fixture",
+                    "fixture",
+                    verify_attempts=3,
+                    verify_interval_seconds=0.0,
+                )
+                self.stat_calls = 0
+
+            def _ensure_parent_sync(self, remote_path):
+                pass
+
+            def _request_sync(self, method, absolute_path, *, body=None, headers=None):
+                if method == "PUT":
+                    return 201, {}, b""
+                if method == "GET":
+                    return 200, {}, payload
+                raise AssertionError(method)
+
+            def _stat_sync(self, remote_path):
+                self.stat_calls += 1
+                if self.stat_calls <= 2:
+                    return ArchiveRemoteStat(exists=False)
+                return ArchiveRemoteStat(exists=True, size_bytes=len(payload), etag='"ok"')
+
+        port = DelayedStatTransport()
+        receipt = port._put_bytes_sync(payload, "fixture/manifest.json", "application/json")
+        self.assertEqual(receipt.size_bytes, len(payload))
+        self.assertEqual(receipt.verification_method, "content")
+        self.assertEqual(port.stat_calls, 3)

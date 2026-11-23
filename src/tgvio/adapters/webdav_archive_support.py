@@ -22,7 +22,8 @@ from tgvio.domain.archive import (
 
 class WebDavArchiveError(RuntimeError):
     def __init__(self, message: str, *, status: int | None = None) -> None:
-        super().__init__(message)
+        formatted = f"{message} (HTTP {status})" if status is not None else message
+        super().__init__(formatted)
         self.status = status
 
 
