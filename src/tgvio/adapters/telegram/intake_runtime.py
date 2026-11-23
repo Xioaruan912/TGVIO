@@ -11,7 +11,7 @@ the console; failures reach the owner through the notification runtime.
 from __future__ import annotations
 
 import asyncio
-from dataclasses import dataclass, field
+from dataclasses import dataclass, field, replace
 import logging
 from typing import Iterable
 
@@ -40,6 +40,18 @@ class _PendingBatch:
     flush_task: asyncio.Task | None = None
 
 
+@dataclass(slots=True)
+class _ManualCollection:
+    chat_id: int
+    sender_id: int
+    media: list[IncomingMedia] = field(default_factory=list)
+    captions: list[str] = field(default_factory=list)
+    seen_keys: set[tuple[int | None, int | None, str]] = field(default_factory=set)
+    started_at: float = 0.0
+    ack_task: asyncio.Task | None = None
+    ack_message_id: int | None = None
+
+
 class TelethonIntakeRuntime(IntakeMediaMixin):
     def __init__(
         self,
@@ -61,6 +73,9 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
         self._tasks: set[asyncio.Task] = set()
         self._pending_batches: dict[tuple[int, int], _PendingBatch] = {}
         self._flush_tasks: set[asyncio.Task] = set()
+        self._manual_collections: dict[tuple[int, int], _ManualCollection] = {}
+        self._manual_ack_tasks: set[asyncio.Task] = set()
+        self._unbegun_notice_at: dict[tuple[int, int], float] = {}
         self._semaphore = asyncio.Semaphore(settings.worker_concurrency)
         self._repository = getattr(processor, "repository", None)
         self._dispatcher = (
@@ -82,12 +97,17 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
         )
 
     async def configure_menu(self) -> None:
-        """One command, /start, which answers with the console address."""
+        """Register minimal manual collection commands and console entry."""
 
         try:
             await self._client(functions.bots.SetBotCommandsRequest(
                 scope=types.BotCommandScopeDefault(), lang_code="",
-                commands=[types.BotCommand(command="start", description="打开网页控制台")],
+                commands=[
+                    types.BotCommand(command="begin", description="开始手动收集媒体与链接"),
+                    types.BotCommand(command="end", description="结束收集并合并为一个任务"),
+                    types.BotCommand(command="cancel", description="取消当前收集并清空暂存"),
+                    types.BotCommand(command="start", description="打开网页控制台与使用说明"),
+                ],
             ))
             await self._client(functions.bots.SetBotMenuButtonRequest(
                 user_id=types.InputUserEmpty(), button=types.BotMenuButtonCommands(),
@@ -96,6 +116,11 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
             log_event(self._log, logging.WARNING, "telegram.menu.failed", exception_type=type(exc).__name__)
 
     async def stop(self) -> None:
+        for collection in self._manual_collections.values():
+            if collection.ack_task is not None:
+                collection.ack_task.cancel()
+        if self._manual_ack_tasks:
+            await asyncio.gather(*tuple(self._manual_ack_tasks), return_exceptions=True)
         await self._flush_all_pending()
         pending = tuple(self._tasks)
         if pending:
@@ -150,44 +175,190 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
     async def _on_message(self, event) -> None:
         if not self._authorized(event.sender_id):
             return
+        chat_id = int(event.chat_id)
+        sender_id = int(event.sender_id)
         raw_text = (event.raw_text or "").strip()
         if raw_text.startswith("/"):
-            if raw_text.split()[0].split("@", 1)[0].lower() == "/start":
-                await self._safe_send(event.chat_id, self._console_text("把视频、图片或链接转发给我就会开始下载。"))
+            cmd = raw_text.split()[0].split("@", 1)[0].lower()
+            if cmd == "/start":
+                await self._safe_send(
+                    chat_id,
+                    self._console_text(
+                        "手动收集模式：发送 /begin 开始收集，依次转发视频/图片/链接，全部发完后发送 /end 合并为一个任务（/cancel 取消）。"
+                    ),
+                )
+            elif cmd == "/begin":
+                await self._begin_collection(chat_id, sender_id)
+            elif cmd == "/end":
+                await self._end_collection(chat_id, sender_id)
+            elif cmd == "/cancel":
+                await self._cancel_collection(chat_id, sender_id)
             raise events.StopPropagation
-        incoming = self._from_message(event.message, event.chat_id)
+
+        key = (chat_id, sender_id)
+        collection = self._manual_collections.get(key)
+        incoming = self._from_message(event.message, chat_id)
         if incoming is not None:
-            await self._queue_batch(event.chat_id, event.sender_id, [incoming])
+            if collection is None:
+                await self._notify_unbegun(chat_id, sender_id)
+                return
+            await self._collect_manual(collection, [incoming])
             return
         if self._source_reader is not None and raw_text and is_telegram_link(raw_text):
+            if collection is None:
+                await self._notify_unbegun(chat_id, sender_id)
+                return
             media = await self._source_reader.resolve_link(raw_text)
             if media:
-                await self._accept_and_schedule(int(event.chat_id), int(event.sender_id), media)
+                await self._collect_manual(collection, media)
             else:
-                await self._safe_send(event.chat_id, "⚠️ 读不到这个 Telegram 链接：可能你的账号不在那个频道，或消息已删除。")
+                await self._safe_send(chat_id, "⚠️ 读不到这个 Telegram 链接：可能你的账号不在那个频道，或消息已删除。")
             return
         if self._settings.url_enabled:
             try:
-                incoming = self._from_url_message(event.message, event.chat_id)
+                incoming = self._from_url_message(event.message, chat_id)
             except ValueError:
-                await self._safe_send(event.chat_id, "🛡️ 这个链接不符合安全策略，已拒绝。")
+                await self._safe_send(chat_id, "🛡️ 这个链接不符合安全策略，已拒绝。")
                 return
             if incoming is not None:
-                await self._queue_batch(event.chat_id, event.sender_id, [incoming])
+                if collection is None:
+                    await self._notify_unbegun(chat_id, sender_id)
+                    return
+                await self._collect_manual(collection, [incoming])
                 return
         if raw_text:
-            await self._safe_send(event.chat_id, self._console_text("这里只收视频、图片和链接。"))
+            if collection is not None:
+                collection.captions.append(raw_text)
+                self._schedule_collection_ack(key, collection)
+                return
+            await self._safe_send(
+                chat_id,
+                self._console_text("请先发送 /begin 开始手动收集，再转发视频、图片或链接，完成后发送 /end 提交。"),
+            )
 
     async def _on_album(self, event) -> None:
         if not event.messages or not self._authorized(event.messages[0].sender_id):
             return
+        chat_id = int(event.chat_id)
+        sender_id = int(event.messages[0].sender_id)
         media = [
             incoming
-            for incoming in (self._from_message(message, event.chat_id) for message in event.messages)
+            for incoming in (self._from_message(message, chat_id) for message in event.messages)
             if incoming is not None
         ]
-        if media:
-            await self._queue_batch(event.chat_id, event.messages[0].sender_id, media)
+        if not media:
+            return
+        collection = self._manual_collections.get((chat_id, sender_id))
+        if collection is None:
+            await self._notify_unbegun(chat_id, sender_id)
+            return
+        await self._collect_manual(collection, media)
+
+    async def _begin_collection(self, chat_id: int, sender_id: int) -> None:
+        key = (int(chat_id), int(sender_id))
+        existing = self._manual_collections.get(key)
+        if existing is not None:
+            await self._safe_send(
+                chat_id,
+                f"已在手动收集模式中（当前已暂存 {len(existing.media)} 个媒体）。继续转发内容，完成后发送 /end 提交，或 /cancel 取消。",
+            )
+            return
+        loop = asyncio.get_running_loop()
+        self._manual_collections[key] = _ManualCollection(
+            chat_id=int(chat_id),
+            sender_id=int(sender_id),
+            started_at=loop.time(),
+        )
+        self._unbegun_notice_at.pop(key, None)
+        await self._safe_send(
+            chat_id,
+            "🟢 已开始手动收集。请依次转发视频、图片或链接（附带文字也会保留为说明），全部发完后发送 /end 合并为一个任务，发送 /cancel 取消。",
+        )
+
+    async def _end_collection(self, chat_id: int, sender_id: int) -> None:
+        key = (int(chat_id), int(sender_id))
+        collection = self._manual_collections.pop(key, None)
+        if collection is None:
+            await self._safe_send(chat_id, "当前没有进行中的收集，请先发送 /begin 开始。")
+            return
+        if collection.ack_task is not None:
+            collection.ack_task.cancel()
+        if not collection.media:
+            await self._safe_send(chat_id, "已结束本次收集，但没有收到任何媒体，未创建任务。")
+            return
+        items = list(collection.media)
+        if collection.captions:
+            merged_caption = "\n".join(text for text in collection.captions if text).strip()
+            if merged_caption:
+                first = items[0]
+                combined = f"{merged_caption}\n{first.caption}".strip() if first.caption else merged_caption
+                items[0] = replace(first, caption=combined)
+        max_items = max(1, int(getattr(self._settings, "batch_max_items", 100)))
+        for start in range(0, len(items), max_items):
+            await self._accept_and_schedule(chat_id, sender_id, items[start : start + max_items])
+
+    async def _cancel_collection(self, chat_id: int, sender_id: int) -> None:
+        key = (int(chat_id), int(sender_id))
+        collection = self._manual_collections.pop(key, None)
+        if collection is None:
+            await self._safe_send(chat_id, "当前没有进行中的收集。")
+            return
+        if collection.ack_task is not None:
+            collection.ack_task.cancel()
+        await self._safe_send(chat_id, f"已取消本次收集（清空了 {len(collection.media)} 个暂存媒体）。")
+
+    async def _collect_manual(self, collection: _ManualCollection, media: Iterable[IncomingMedia]) -> None:
+        added = 0
+        for item in media:
+            dedupe_key = (item.source_chat_id, item.source_message_id, item.source)
+            if dedupe_key in collection.seen_keys:
+                continue
+            collection.seen_keys.add(dedupe_key)
+            collection.media.append(item)
+            added += 1
+        if added:
+            self._schedule_collection_ack((collection.chat_id, collection.sender_id), collection)
+
+    def _schedule_collection_ack(self, key: tuple[int, int], collection: _ManualCollection) -> None:
+        if collection.ack_task is not None:
+            collection.ack_task.cancel()
+        delay_ms = int(getattr(self._settings, "batch_window_ms", 1200))
+        delay = max(0.0, min(delay_ms / 1000.0, 1.5))
+        task = asyncio.create_task(self._send_collection_ack(key, delay), name=f"tgvio-manual-ack-{key[0]}-{key[1]}")
+        collection.ack_task = task
+        self._manual_ack_tasks.add(task)
+        task.add_done_callback(self._manual_ack_tasks.discard)
+
+    async def _send_collection_ack(self, key: tuple[int, int], delay: float) -> None:
+        if delay > 0:
+            await asyncio.sleep(delay)
+        collection = self._manual_collections.get(key)
+        if collection is None:
+            return
+        text_part = f" · {len(collection.captions)} 条文字" if collection.captions else ""
+        text = f"📥 已暂存 {len(collection.media)} 个媒体{text_part}。继续转发或发送 /end 提交，/cancel 取消。"
+        if collection.ack_message_id is not None and hasattr(self._client, "edit_message"):
+            try:
+                await self._client.edit_message(collection.chat_id, collection.ack_message_id, text)
+                return
+            except Exception:  # noqa: BLE001 - fall back to posting a fresh status line
+                pass
+        message = await self._safe_send(collection.chat_id, text)
+        message_id = getattr(message, "id", None)
+        if message_id is not None:
+            collection.ack_message_id = int(message_id)
+
+    async def _notify_unbegun(self, chat_id: int, sender_id: int) -> None:
+        key = (int(chat_id), int(sender_id))
+        now = asyncio.get_running_loop().time()
+        last = self._unbegun_notice_at.get(key, -1e9)
+        if now - last < 5.0:
+            return
+        self._unbegun_notice_at[key] = now
+        await self._safe_send(
+            chat_id,
+            "当前为手动收集模式，不会按单条消息直接创建任务。\n请先发送 /begin 开始收集，全部转发后再发送 /end 合并提交。",
+        )
 
     def _console_text(self, lead: str) -> str:
         if not self._console_url:

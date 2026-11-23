@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 import unittest
 
+from telethon import events
+
 from tgvio.adapters.telegram.intake_runtime import TelethonIntakeRuntime
 from tgvio.application.intake import IncomingMedia, IntakeAcceptResult
 from tgvio.domain.intake import SpoilerMode
@@ -160,6 +162,97 @@ class IntakeBatchingTests(unittest.IsolatedAsyncioTestCase):
         await runtime.stop()
         self.assertNotIn("publish_style", intake.policies[0])
         self.assertEqual(intake.spoiler_modes, [SpoilerMode.SOURCE])
+
+    async def test_manual_begin_end_collects_multiple_messages_and_captions_into_one_job(self) -> None:
+        runtime, intake, client = self._runtime(window_ms=0)
+
+        def cmd_event(text: str):
+            return SimpleNamespace(
+                chat_id=42,
+                sender_id=42,
+                raw_text=text,
+                message=SimpleNamespace(id=1, raw_text=text, media=None, photo=None, video=None, document=None),
+            )
+
+        def media_event(msg_id: int, caption: str = ""):
+            return SimpleNamespace(
+                chat_id=42,
+                sender_id=42,
+                raw_text=caption,
+                message=SimpleNamespace(
+                    id=msg_id,
+                    message=caption,
+                    raw_text=caption,
+                    grouped_id=None,
+                    photo=SimpleNamespace(sizes=[]),
+                    video=None,
+                    document=None,
+                    media=SimpleNamespace(spoiler=False),
+                    file=SimpleNamespace(size=1024, name=f"p{msg_id}.jpg", mime_type="image/jpeg", ext=".jpg"),
+                ),
+            )
+
+        # Before /begin, forwarding does NOT create a job
+        await runtime._on_message(media_event(100))
+        self.assertEqual(intake.batches, [])
+        self.assertEqual(len(client.messages), 1)
+        self.assertIn("/begin", client.messages[0][1])
+
+        # /begin starts manual collection
+        with self.assertRaises(events.StopPropagation):
+            await runtime._on_message(cmd_event("/begin"))
+
+        # Forward two separate messages + one text caption -> still no job created yet
+        await runtime._on_message(media_event(101))
+        await runtime._on_message(media_event(102))
+        await runtime._on_message(cmd_event("合集标题"))
+        self.assertEqual(intake.batches, [])
+
+        # /end commits all collected items into ONE job with caption attached
+        with self.assertRaises(events.StopPropagation):
+            await runtime._on_message(cmd_event("/end"))
+        self.assertEqual(len(intake.batches), 1)
+        self.assertEqual([item.source_message_id for item in intake.batches[0]], [101, 102])
+        self.assertEqual(intake.batches[0][0].caption, "合集标题")
+        await runtime.stop()
+
+    async def test_manual_cancel_discards_buffered_items(self) -> None:
+        runtime, intake, client = self._runtime(window_ms=0)
+
+        def cmd_event(text: str):
+            return SimpleNamespace(
+                chat_id=42,
+                sender_id=42,
+                raw_text=text,
+                message=SimpleNamespace(id=1, raw_text=text, media=None, photo=None, video=None, document=None),
+            )
+
+        def media_event(msg_id: int):
+            return SimpleNamespace(
+                chat_id=42,
+                sender_id=42,
+                raw_text="",
+                message=SimpleNamespace(
+                    id=msg_id,
+                    message="",
+                    raw_text="",
+                    grouped_id=None,
+                    photo=SimpleNamespace(sizes=[]),
+                    video=None,
+                    document=None,
+                    media=SimpleNamespace(spoiler=False),
+                    file=SimpleNamespace(size=512, name=f"p{msg_id}.jpg", mime_type="image/jpeg", ext=".jpg"),
+                ),
+            )
+
+        with self.assertRaises(events.StopPropagation):
+            await runtime._on_message(cmd_event("/begin"))
+        await runtime._on_message(media_event(201))
+        with self.assertRaises(events.StopPropagation):
+            await runtime._on_message(cmd_event("/cancel"))
+        self.assertEqual(intake.batches, [])
+        self.assertIn("已取消本次收集", client.messages[-1][1])
+        await runtime.stop()
 
 
 if __name__ == "__main__":
