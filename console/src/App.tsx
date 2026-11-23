@@ -1,4 +1,11 @@
-import { DownloadSimpleIcon, GearSixIcon, ListChecksIcon, TelevisionSimpleIcon } from "@phosphor-icons/react";
+import {
+  DownloadSimpleIcon,
+  GearSixIcon,
+  ListChecksIcon,
+  ProhibitIcon,
+  TelevisionSimpleIcon,
+} from "@phosphor-icons/react";
+import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useState } from "react";
 import { api, Unauthorized } from "./api";
 import { Login } from "./Login";
@@ -19,6 +26,7 @@ const TABS: { key: Tab; label: string; icon: typeof DownloadSimpleIcon }[] = [
 export function App() {
   const [authed, setAuthed] = useState<boolean | null>(null);
   const [tab, setTab] = useState<Tab>("pick");
+
   const onUnauthorized = useCallback((error: unknown) => {
     if (error instanceof Unauthorized) setAuthed(false);
   }, []);
@@ -27,33 +35,128 @@ export function App() {
     api.session().then(({ authenticated }) => setAuthed(authenticated)).catch(() => setAuthed(false));
   }, []);
 
-  if (authed === null) return <div className="grid min-h-dvh place-items-center text-muted">正在连接…</div>;
+  if (authed === null) {
+    return (
+      <div className="grid min-h-dvh place-items-center bg-bg">
+        <div className="flex items-center gap-3 text-[14px] text-muted">
+          <span className="size-2 animate-pulse rounded-full bg-accent" />
+          正在连接控制台…
+        </div>
+      </div>
+    );
+  }
+
   if (!authed) return <Login onDone={() => setAuthed(true)} />;
+
   return (
-    <div className="mx-auto flex min-h-dvh max-w-6xl flex-col">
-      <header className="sticky top-0 z-20 flex items-center gap-6 border-b border-line bg-bg/90 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] backdrop-blur-md">
-        <span className="text-[17px] font-semibold tracking-tight">TGVIO</span>
-        <nav className="hidden gap-1 sm:flex" aria-label="导航">
-          {TABS.map(item => (
-            <button key={item.key} type="button" onClick={() => setTab(item.key)} aria-current={tab === item.key ? "page" : undefined}
-              className={`h-9 rounded-full px-4 text-[14px] ${tab === item.key ? "bg-raised text-ink" : "text-muted"}`}>{item.label}</button>
-          ))}
-        </nav>
+    <div className="min-h-dvh bg-bg text-ink">
+      <header className="glass-bar sticky top-0 z-30 border-b">
+        <div className="mx-auto flex max-w-6xl items-center justify-between gap-4 px-4 pb-3 pt-[max(0.75rem,env(safe-area-inset-top))] sm:px-6">
+          <div className="flex items-center gap-2.5">
+            <div className="grid size-8 place-items-center rounded-[10px] bg-accent text-[12px] font-bold tracking-tight text-white shadow-sm shadow-accent/30">
+              TG
+            </div>
+            <div className="leading-none">
+              <span className="block text-[15px] font-semibold tracking-[-0.02em] text-ink">TGVIO</span>
+              <span className="mt-0.5 hidden text-[11px] text-faint sm:block">采集控制台</span>
+            </div>
+          </div>
+
+          <nav
+            className="hidden items-center gap-1 rounded-full border border-line bg-white/[0.04] p-1 sm:flex"
+            aria-label="主导航"
+          >
+            {TABS.map(({ key, label, icon: Icon }) => {
+              const active = tab === key;
+              return (
+                <button
+                  key={key}
+                  type="button"
+                  onClick={() => setTab(key)}
+                  aria-current={active ? "page" : undefined}
+                  className={`tactile relative flex h-8 items-center gap-1.5 rounded-full px-4 text-[13.5px] font-medium ${
+                    active ? "text-ink" : "text-muted hover:text-ink"
+                  }`}
+                >
+                  {active && (
+                    <motion.span
+                      layoutId="desktop-nav-pill"
+                      transition={{ type: "spring", bounce: 0, duration: 0.34 }}
+                      className="absolute inset-0 rounded-full bg-white/[0.12] shadow-[inset_0_1px_0_0_rgba(255,255,255,0.14)]"
+                    />
+                  )}
+                  <Icon size={15} weight={active ? "fill" : "regular"} className="relative z-10" />
+                  <span className="relative z-10">{label}</span>
+                </button>
+              );
+            })}
+          </nav>
+
+          <div
+            className="inline-flex items-center gap-1.5 rounded-full border border-line bg-white/[0.04] px-2.5 py-1 text-[11.5px] font-medium text-muted"
+            title="本控制台仅用于挑选和采集元数据，禁止播放任何视频"
+          >
+            <ProhibitIcon size={13} className="text-accent" weight="bold" />
+            <span>禁播保护</span>
+          </div>
+        </div>
       </header>
-      <main className="flex-1 px-4 pb-[calc(5.5rem+env(safe-area-inset-bottom))] pt-4 sm:pb-10">
-        {tab === "pick" && <Pick onError={onUnauthorized} onGoSources={() => setTab("sources")} onGoJobs={() => setTab("jobs")} />}
-        {tab === "jobs" && <Jobs onError={onUnauthorized} />}
-        {tab === "sources" && <Sources onError={onUnauthorized} />}
-        {tab === "settings" && <SettingsPage onError={onUnauthorized} onLoggedOut={() => setAuthed(false)} />}
+
+      <main className="mx-auto max-w-6xl px-4 pb-[calc(6.2rem+env(safe-area-inset-bottom))] pt-5 sm:px-6 sm:pb-14 sm:pt-7">
+        <AnimatePresence mode="wait" initial={false}>
+          <motion.div
+            key={tab}
+            initial={{ opacity: 0, y: 6 }}
+            animate={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -4 }}
+            transition={{ duration: 0.18, ease: [0.22, 1, 0.36, 1] }}
+          >
+            {tab === "pick" && (
+              <Pick
+                onError={onUnauthorized}
+                onGoSources={() => setTab("sources")}
+                onGoJobs={() => setTab("jobs")}
+              />
+            )}
+            {tab === "jobs" && <Jobs onError={onUnauthorized} />}
+            {tab === "sources" && <Sources onError={onUnauthorized} />}
+            {tab === "settings" && <SettingsPage onError={onUnauthorized} onLoggedOut={() => setAuthed(false)} />}
+          </motion.div>
+        </AnimatePresence>
       </main>
-      <nav className="fixed inset-x-0 bottom-0 z-20 flex justify-around border-t border-line bg-bg/95 px-2 pb-[max(0.6rem,env(safe-area-inset-bottom))] pt-2 backdrop-blur-md sm:hidden" aria-label="导航">
-        {TABS.map(({ key, label, icon: Icon }) => (
-          <button key={key} type="button" onClick={() => setTab(key)} aria-current={tab === key ? "page" : undefined}
-            className={`flex w-16 flex-col items-center gap-0.5 text-[11px] ${tab === key ? "text-ink" : "text-faint"}`}>
-            <Icon size={22} weight={tab === key ? "fill" : "regular"} />{label}
-          </button>
-        ))}
+
+      <nav
+        className="glass-bar fixed inset-x-0 bottom-0 z-30 border-t px-3 pb-[max(0.65rem,env(safe-area-inset-bottom))] pt-2 sm:hidden"
+        aria-label="底部导航"
+      >
+        <div className="mx-auto grid max-w-md grid-cols-4 gap-1">
+          {TABS.map(({ key, label, icon: Icon }) => {
+            const active = tab === key;
+            return (
+              <button
+                key={key}
+                type="button"
+                onClick={() => setTab(key)}
+                aria-current={active ? "page" : undefined}
+                className={`tactile relative flex h-12 flex-col items-center justify-center gap-0.5 rounded-[14px] text-[11px] font-medium ${
+                  active ? "text-ink" : "text-faint"
+                }`}
+              >
+                {active && (
+                  <motion.span
+                    layoutId="mobile-nav-pill"
+                    transition={{ type: "spring", bounce: 0, duration: 0.32 }}
+                    className="absolute inset-0 rounded-[14px] bg-white/[0.1]"
+                  />
+                )}
+                <Icon size={20} weight={active ? "fill" : "regular"} className="relative z-10" />
+                <span className="relative z-10">{label}</span>
+              </button>
+            );
+          })}
+        </div>
       </nav>
+
       <Toasts />
     </div>
   );
