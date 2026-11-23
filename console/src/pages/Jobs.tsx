@@ -8,7 +8,8 @@ import {
   ImageIcon,
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
-import { api, errorText, formatBytes, formatDuration, type JobDetail, type JobFilter, type JobPage, type JobSummary } from "../api";
+import { api, errorText, formatBytes, formatDuration, type DraftSession, type JobDetail, type JobFilter, type JobPage, type JobSummary } from "../api";
+import { DraftsPanel } from "../ui/DraftsPanel";
 import { usePrivacy } from "../ui/privacy";
 import { Sheet } from "../ui/Sheet";
 import { toast } from "../ui/toast";
@@ -25,13 +26,18 @@ export function Jobs({ onError }: { onError: (error: unknown) => void }) {
   const [filter, setFilter] = useState<JobFilter>("running");
   const [page, setPage] = useState(0);
   const [data, setData] = useState<JobPage | null>(null);
+  const [drafts, setDrafts] = useState<DraftSession[]>([]);
   const [selectedId, setSelectedId] = useState<string | null>(null);
   const [mobileSheetId, setMobileSheetId] = useState<string | null>(null);
 
   const load = useCallback(async () => {
     try {
-      const next = await api.jobs(filter, page);
+      const [next, draftRes] = await Promise.all([
+        api.jobs(filter, page),
+        api.drafts().catch(() => ({ drafts: [] as DraftSession[] })),
+      ]);
       setData(next);
+      setDrafts(draftRes.drafts);
       setSelectedId(prev => {
         if (prev && next.items.some(j => j.id === prev)) return prev;
         return next.items[0]?.id ?? null;
@@ -91,6 +97,12 @@ export function Jobs({ onError }: { onError: (error: unknown) => void }) {
       {/* macOS Master-Detail Split View */}
       <div className="flex min-h-0 flex-1">
         <div className="flex-1 overflow-y-auto px-4 py-4 lg:px-6 lg:py-5">
+          <DraftsPanel
+            drafts={drafts}
+            onChange={setDrafts}
+            onSubmitted={() => void load()}
+            onError={onError}
+          />
           {data === null ? (
             <div className="space-y-2.5">
               {Array.from({ length: 4 }, (_, i) => (

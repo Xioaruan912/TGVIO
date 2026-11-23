@@ -439,6 +439,7 @@ async def run(*, check_only: bool = False) -> None:
                 static_dir=Path("/app/console-web"),
                 source=source_coordinator,
                 previews=pick_previews,
+                drafts=intake_runtime,
                 submit_media=lambda media, options: intake_runtime.accept_source_media(
                     owner_id, media, "网页链接", False, options
                 ),

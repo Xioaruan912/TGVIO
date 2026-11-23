@@ -328,6 +328,54 @@ class IntakeBatchingTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(intake.policies[0].get("archive_only"))
         await rt2.stop()
 
+    async def test_manual_collection_console_api(self) -> None:
+        runtime, intake, _client = self._runtime(window_ms=0)
+
+        def cmd_event(text: str):
+            return SimpleNamespace(
+                chat_id=42, sender_id=42, raw_text=text,
+                message=SimpleNamespace(id=1, message=text, raw_text=text, media=None, photo=None, video=None, document=None),
+            )
+
+        def media_event(msg_id: int):
+            return SimpleNamespace(
+                chat_id=42, sender_id=42, raw_text="",
+                message=SimpleNamespace(
+                    id=msg_id, message="", raw_text="", grouped_id=None,
+                    photo=SimpleNamespace(sizes=[]), video=None, document=None,
+                    media=SimpleNamespace(spoiler=False),
+                    file=SimpleNamespace(size=1024, name=f"clip_{msg_id}.jpg", mime_type="image/jpeg", ext=".jpg"),
+                ),
+            )
+
+        self.assertEqual(runtime.list_manual_collections(), [])
+        with self.assertRaises(events.StopPropagation):
+            await runtime._on_message(cmd_event("/begin"))
+        await runtime._on_message(media_event(401))
+        await runtime._on_message(media_event(402))
+        drafts = runtime.list_manual_collections()
+        self.assertEqual(len(drafts), 1)
+        self.assertEqual(drafts[0]["count"], 2)
+        self.assertEqual([item["name"] for item in drafts[0]["items"]], ["clip_401.jpg", "clip_402.jpg"])
+
+        after_remove = await runtime.remove_manual_item(42, 42, 0)
+        self.assertEqual(after_remove[0]["count"], 1)
+        self.assertEqual(after_remove[0]["items"][0]["name"], "clip_402.jpg")
+
+        after_submit = await runtime.submit_manual_collection(42, 42, archive_only=True)
+        self.assertEqual(after_submit, [])
+        self.assertEqual(len(intake.batches), 1)
+        self.assertEqual([i.source_message_id for i in intake.batches[0]], [402])
+        self.assertTrue(intake.policies[0].get("archive_only"))
+
+        with self.assertRaises(events.StopPropagation):
+            await runtime._on_message(cmd_event("/begin"))
+        await runtime._on_message(media_event(403))
+        after_discard = await runtime.discard_manual_collection(42, 42)
+        self.assertEqual(after_discard, [])
+        self.assertEqual(len(intake.batches), 1)
+        await runtime.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

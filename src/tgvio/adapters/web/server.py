@@ -50,6 +50,7 @@ class ConsoleServer(ConsoleSourceRoutes):
         static_dir: Path | None = None,
         source: Any | None = None,
         previews: Any | None = None,
+        drafts: Any | None = None,
         submit_media: Callable[..., Awaitable[tuple[int, int]]] | None = None,
         url_enabled: bool = False,
         archive_enabled: bool = False,
@@ -61,6 +62,7 @@ class ConsoleServer(ConsoleSourceRoutes):
         self._static_dir = static_dir
         self._source = source
         self._previews = previews
+        self._drafts = drafts
         self._submit_media = submit_media
         self._url_enabled = bool(url_enabled)
         self._archive_enabled = bool(archive_enabled)
@@ -86,6 +88,10 @@ class ConsoleServer(ConsoleSourceRoutes):
         app.router.add_post("/api/jobs/{job_id}/{action}", self._job_action)
         app.router.add_get("/api/settings", self._settings_get)
         app.router.add_put("/api/settings", self._settings_put)
+        app.router.add_get("/api/drafts", self._drafts_list)
+        app.router.add_delete("/api/drafts/{chat_id}/{sender_id}/items/{index}", self._draft_remove_item)
+        app.router.add_post("/api/drafts/{chat_id}/{sender_id}/submit", self._draft_submit)
+        app.router.add_post("/api/drafts/{chat_id}/{sender_id}/discard", self._draft_discard)
         self._register_source_routes(app)
         if self._static_dir is not None:
             app.router.add_get("/", self._index)
@@ -235,6 +241,59 @@ class ConsoleServer(ConsoleSourceRoutes):
 
     async def _settings_put(self, request: web.Request) -> web.Response:
         return web.json_response(await self._console.update_settings(await self._json(request)))
+
+    # ---------------------------------------------------- /begin draft inbox
+    async def _drafts_list(self, request: web.Request) -> web.Response:
+        del request
+        items = self._drafts.list_manual_collections() if self._drafts is not None else []
+        return web.json_response({"drafts": items})
+
+    async def _draft_remove_item(self, request: web.Request) -> web.Response:
+        if self._drafts is None:
+            raise web.HTTPNotFound(text="drafts unavailable")
+        try:
+            chat_id = int(request.match_info["chat_id"])
+            sender_id = int(request.match_info["sender_id"])
+            index = int(request.match_info["index"])
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid draft identifier") from None
+        try:
+            drafts = await self._drafts.remove_manual_item(chat_id, sender_id, index)
+        except (KeyError, IndexError) as exc:
+            raise web.HTTPNotFound(text=str(exc)) from None
+        return web.json_response({"drafts": drafts})
+
+    async def _draft_submit(self, request: web.Request) -> web.Response:
+        if self._drafts is None:
+            raise web.HTTPNotFound(text="drafts unavailable")
+        try:
+            chat_id = int(request.match_info["chat_id"])
+            sender_id = int(request.match_info["sender_id"])
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid draft identifier") from None
+        payload = await self._json(request) if request.can_read_body else {}
+        archive_only = bool(payload.get("archive_only", False))
+        try:
+            drafts = await self._drafts.submit_manual_collection(
+                chat_id, sender_id, archive_only=archive_only
+            )
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=str(exc)) from None
+        return web.json_response({"drafts": drafts})
+
+    async def _draft_discard(self, request: web.Request) -> web.Response:
+        if self._drafts is None:
+            raise web.HTTPNotFound(text="drafts unavailable")
+        try:
+            chat_id = int(request.match_info["chat_id"])
+            sender_id = int(request.match_info["sender_id"])
+        except ValueError:
+            raise web.HTTPBadRequest(text="invalid draft identifier") from None
+        try:
+            drafts = await self._drafts.discard_manual_collection(chat_id, sender_id)
+        except KeyError as exc:
+            raise web.HTTPNotFound(text=str(exc)) from None
+        return web.json_response({"drafts": drafts})
 
     # -------------------------------------------------------------- frontend
     async def _index(self, request: web.Request) -> web.FileResponse:

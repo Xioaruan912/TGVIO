@@ -112,6 +112,22 @@ export interface Settings {
 export interface SubmitOptions { mode: "publish" | "archive"; merge: boolean; spoiler?: SpoilerMode }
 export interface SubmitResult { jobs: number; items: number; accepted: number; skipped: number; failed: number }
 
+export interface DraftItem {
+  index: number;
+  kind: string;
+  name: string;
+  caption: string;
+  size_bytes: number;
+}
+
+export interface DraftSession {
+  chat_id: number;
+  sender_id: number;
+  count: number;
+  captions: string[];
+  items: DraftItem[];
+}
+
 export const api = {
   session: () => request<{ authenticated: boolean }>("/api/session"),
   login: (secret: string) => post<{ authenticated: boolean }>("/api/login", { secret }),
@@ -128,6 +144,14 @@ export const api = {
   jobAction: (id: string, action: "retry" | "cancel" | "hold" | "resume" | "retry-archive") =>
     post<JobDetail>(`/api/jobs/${encodeURIComponent(id)}/${action}`),
   retryAll: () => post<{ retried: number; archives: number; recovered: number; unchanged: number }>("/api/jobs/retry-all"),
+
+  drafts: () => request<{ drafts: DraftSession[] }>("/api/drafts"),
+  removeDraftItem: (chatId: number, senderId: number, index: number) =>
+    request<{ drafts: DraftSession[] }>(`/api/drafts/${chatId}/${senderId}/items/${index}`, { method: "DELETE" }),
+  submitDraft: (chatId: number, senderId: number, archiveOnly: boolean) =>
+    post<{ drafts: DraftSession[] }>(`/api/drafts/${chatId}/${senderId}/submit`, { archive_only: archiveOnly }),
+  discardDraft: (chatId: number, senderId: number) =>
+    post<{ drafts: DraftSession[] }>(`/api/drafts/${chatId}/${senderId}/discard`),
 
   settings: () => request<Settings>("/api/settings"),
   saveSettings: (patch: Partial<{ style: string; spoiler_mode: SpoilerMode; flags: Partial<Settings["flags"]> }>) =>

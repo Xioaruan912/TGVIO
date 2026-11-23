@@ -523,6 +523,71 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
             "当前为手动收集模式，不会按单条消息直接创建任务。\n请先发送 /begin 开始收集，全部转发后再发送 /end 合并提交。",
         )
 
+    # ---------------------------------------------- manual collection console
+    def list_manual_collections(self) -> list[dict[str, object]]:
+        result: list[dict[str, object]] = []
+        for (_chat_id, _sender_id), collection in sorted(self._manual_collections.items()):
+            result.append(
+                {
+                    "chat_id": collection.chat_id,
+                    "sender_id": collection.sender_id,
+                    "count": len(collection.media),
+                    "captions": list(collection.captions),
+                    "items": [
+                        {
+                            "index": idx,
+                            "kind": item.kind.value,
+                            "name": item.name or "",
+                            "caption": item.caption or "",
+                            "size_bytes": int(item.size_bytes or 0),
+                        }
+                        for idx, item in enumerate(collection.media)
+                    ],
+                }
+            )
+        return result
+
+    async def remove_manual_item(
+        self,
+        chat_id: int,
+        sender_id: int,
+        index: int,
+    ) -> list[dict[str, object]]:
+        key = (int(chat_id), int(sender_id))
+        collection = self._manual_collections.get(key)
+        if collection is None:
+            raise KeyError("draft not found")
+        if index < 0 or index >= len(collection.media):
+            raise IndexError("item index out of range")
+        removed = collection.media.pop(index)
+        collection.seen_keys.discard((removed.source_chat_id, removed.source_message_id, removed.source))
+        await self._persist_manual_collection(key)
+        return self.list_manual_collections()
+
+    async def submit_manual_collection(
+        self,
+        chat_id: int,
+        sender_id: int,
+        *,
+        archive_only: bool = False,
+    ) -> list[dict[str, object]]:
+        key = (int(chat_id), int(sender_id))
+        if key not in self._manual_collections:
+            raise KeyError("draft not found")
+        await self._end_collection(int(chat_id), int(sender_id), archive_only=bool(archive_only))
+        return self.list_manual_collections()
+
+    async def discard_manual_collection(
+        self,
+        chat_id: int,
+        sender_id: int,
+    ) -> list[dict[str, object]]:
+        key = (int(chat_id), int(sender_id))
+        if key not in self._manual_collections:
+            raise KeyError("draft not found")
+        await self._cancel_collection(int(chat_id), int(sender_id))
+        return self.list_manual_collections()
+
     def _console_text(self, lead: str) -> str:
         if not self._console_url:
             return lead
