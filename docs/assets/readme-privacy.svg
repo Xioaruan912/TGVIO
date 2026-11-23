@@ -1,0 +1,68 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 220" width="1200" height="220" role="img" aria-label="全局隐私防窥与传完即清缓存">
+  <defs>
+    <linearGradient id="privBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0E1118"/>
+      <stop offset="100%" stop-color="#141923"/>
+    </linearGradient>
+    <linearGradient id="veilSweep" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0A84FF" stop-opacity="0"/>
+      <stop offset="50%" stop-color="#0A84FF" stop-opacity="0.35"/>
+      <stop offset="100%" stop-color="#0A84FF" stop-opacity="0"/>
+    </linearGradient>
+    <style>
+      .font { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+      .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, monospace; }
+      @keyframes sweep {
+        0% { transform: translateX(-160px); }
+        100% { transform: translateX(480px); }
+      }
+      @keyframes diskDrop {
+        0%, 15% { width: 240px; fill: #0A84FF; }
+        50%, 75% { width: 14px; fill: #30D158; }
+        100% { width: 240px; fill: #0A84FF; }
+      }
+      .sweep-bar { animation: sweep 3.8s ease-in-out infinite; }
+      .disk-bar { animation: diskDrop 5.5s cubic-bezier(0.22, 1, 0.36, 1) infinite; }
+      @media (prefers-reduced-motion: reduce) {
+        .sweep-bar, .disk-bar { animation: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="220" rx="24" fill="url(#privBg)"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="218.5" rx="23.25" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1.5"/>
+
+  <!-- Left Card: Privacy Anti-Peep -->
+  <g transform="translate(36, 28)">
+    <rect width="548" height="164" rx="18" fill="#FFFFFF" fill-opacity="0.04" stroke="#FFFFFF" stroke-opacity="0.1"/>
+    <text x="26" y="40" class="font" font-size="18" font-weight="700" fill="#F8FAFC">全局隐私防窥 · 公共场合安心用</text>
+    <text x="26" y="66" class="font" font-size="13.5" fill="#94A3B8">默认自动打码缩略图与标题，网页严禁播放视频；切走标签页自动遮屏。</text>
+
+    <!-- Animated Shield Preview Strip -->
+    <clipPath id="stripClip"><rect x="26" y="88" width="496" height="52" rx="12"/></clipPath>
+    <rect x="26" y="88" width="496" height="52" rx="12" fill="#0B0F17" stroke="#FFFFFF" stroke-opacity="0.08"/>
+    <g clip-path="url(#stripClip)">
+      <rect x="26" y="88" width="140" height="52" fill="url(#veilSweep)" class="sweep-bar"/>
+    </g>
+    <rect x="42" y="101" width="76" height="26" rx="8" fill="#FFFFFF" fill-opacity="0.09"/>
+    <text x="80" y="118.5" text-anchor="middle" class="mono" font-size="12" font-weight="600" fill="#E2E8F0">Shift + P</text>
+    <text x="130" y="118.5" class="font" font-size="13" fill="#CBD5E1">开关防窥脱敏</text>
+
+    <rect x="272" y="101" width="76" height="26" rx="8" fill="#0A84FF" fill-opacity="0.22" stroke="#0A84FF" stroke-opacity="0.4"/>
+    <text x="310" y="118.5" text-anchor="middle" class="mono" font-size="12" font-weight="600" fill="#8CC8FF">Shift + H</text>
+    <text x="360" y="118.5" class="font" font-size="13" fill="#CBD5E1">一键待机时钟遮屏</text>
+  </g>
+
+  <!-- Right Card: Zero Disk Bloat -->
+  <g transform="translate(616, 28)">
+    <rect width="548" height="164" rx="18" fill="#FFFFFF" fill-opacity="0.04" stroke="#FFFFFF" stroke-opacity="0.1"/>
+    <text x="26" y="40" class="font" font-size="18" font-weight="700" fill="#F8FAFC">传完即清缓存 · 小硬盘也能放心跑</text>
+    <text x="26" y="66" class="font" font-size="13.5" fill="#94A3B8">确认网盘归档成功后，自动秒删服务器本地缓存，不再担心硬盘爆满。</text>
+
+    <rect x="26" y="88" width="496" height="52" rx="12" fill="#0B0F17" stroke="#FFFFFF" stroke-opacity="0.08"/>
+    <text x="44" y="118.5" class="font" font-size="13" font-weight="600" fill="#CBD5E1">服务器临时缓存</text>
+    <rect x="160" y="109" width="240" height="10" rx="5" fill="#FFFFFF" fill-opacity="0.1"/>
+    <rect x="160" y="109" width="14" height="10" rx="5" fill="#30D158" class="disk-bar"/>
+    <text x="416" y="118.5" class="font" font-size="12.5" font-weight="600" fill="#63E686">确认后自动归零</text>
+  </g>
+</svg>

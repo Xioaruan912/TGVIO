@@ -1,0 +1,71 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1200 260" width="1200" height="260" role="img" aria-label="TGVIO 三步工作流：收集、整理、落袋">
+  <defs>
+    <linearGradient id="flowBg" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#0D1017"/>
+      <stop offset="100%" stop-color="#131926"/>
+    </linearGradient>
+    <linearGradient id="lineGrad" x1="0%" y1="0%" x2="100%" y2="0%">
+      <stop offset="0%" stop-color="#0A84FF" stop-opacity="0.75"/>
+      <stop offset="50%" stop-color="#64D2FF" stop-opacity="1"/>
+      <stop offset="100%" stop-color="#30D158" stop-opacity="0.85"/>
+    </linearGradient>
+    <style>
+      .font { font-family: -apple-system, BlinkMacSystemFont, "SF Pro Display", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", sans-serif; }
+      @keyframes dashMove {
+        from { stroke-dashoffset: 36; }
+        to { stroke-dashoffset: 0; }
+      }
+      @keyframes pulseNode {
+        0%, 100% { opacity: 0.55; transform: scale(0.95); }
+        50% { opacity: 1; transform: scale(1.15); }
+      }
+      .dash { stroke-dasharray: 6 6; animation: dashMove 1.4s linear infinite; }
+      .node-pulse { transform-box: fill-box; transform-origin: center; animation: pulseNode 2.6s ease-in-out infinite; }
+      @media (prefers-reduced-motion: reduce) {
+        .dash, .node-pulse { animation: none; }
+      }
+    </style>
+  </defs>
+
+  <rect width="1200" height="260" rx="24" fill="url(#flowBg)"/>
+  <rect x="0.75" y="0.75" width="1198.5" height="258.5" rx="23.25" fill="none" stroke="#FFFFFF" stroke-opacity="0.08" stroke-width="1.5"/>
+
+  <!-- Connectors -->
+  <line x1="364" y1="130" x2="436" y2="130" stroke="url(#lineGrad)" stroke-width="2.5" class="dash"/>
+  <circle cx="400" cy="130" r="4.5" fill="#64D2FF" class="node-pulse"/>
+  <line x1="764" y1="130" x2="836" y2="130" stroke="url(#lineGrad)" stroke-width="2.5" class="dash"/>
+  <circle cx="800" cy="130" r="4.5" fill="#30D158" class="node-pulse"/>
+
+  <!-- Step 1 -->
+  <g transform="translate(44, 34)">
+    <rect width="320" height="192" rx="18" fill="#FFFFFF" fill-opacity="0.045" stroke="#FFFFFF" stroke-opacity="0.1"/>
+    <rect x="24" y="24" width="64" height="26" rx="13" fill="#0A84FF" fill-opacity="0.2"/>
+    <text x="56" y="41" text-anchor="middle" class="font" font-size="12" font-weight="700" fill="#70B8FF">STEP 01</text>
+    <text x="24" y="84" class="font" font-size="21" font-weight="700" fill="#F8FAFC">轻松收集内容</text>
+    <text x="24" y="114" class="font" font-size="14" fill="#94A3B8">• 在网页控制台直接勾选频道视频</text>
+    <text x="24" y="138" class="font" font-size="14" fill="#94A3B8">• 手机发 /begin 批量转发后 /end</text>
+    <text x="24" y="162" class="font" font-size="14" fill="#94A3B8">• 支持受限频道、图片与网页链接</text>
+  </g>
+
+  <!-- Step 2 -->
+  <g transform="translate(440, 34)">
+    <rect width="320" height="192" rx="18" fill="#FFFFFF" fill-opacity="0.045" stroke="#0A84FF" stroke-opacity="0.32"/>
+    <rect x="24" y="24" width="64" height="26" rx="13" fill="#64D2FF" fill-opacity="0.18"/>
+    <text x="56" y="41" text-anchor="middle" class="font" font-size="12" font-weight="700" fill="#7DD3FC">STEP 02</text>
+    <text x="24" y="84" class="font" font-size="21" font-weight="700" fill="#F8FAFC">全自动后台整理</text>
+    <text x="24" y="114" class="font" font-size="14" fill="#94A3B8">• 自动合并为整洁合集，支持防剧透</text>
+    <text x="24" y="138" class="font" font-size="14" fill="#94A3B8">• 网络或网盘抖动自动排队重试</text>
+    <text x="24" y="162" class="font" font-size="14" fill="#94A3B8">• 网页端实时看进度，可随时调整</text>
+  </g>
+
+  <!-- Step 3 -->
+  <g transform="translate(836, 34)">
+    <rect width="320" height="192" rx="18" fill="#FFFFFF" fill-opacity="0.045" stroke="#30D158" stroke-opacity="0.3"/>
+    <rect x="24" y="24" width="64" height="26" rx="13" fill="#30D158" fill-opacity="0.2"/>
+    <text x="56" y="41" text-anchor="middle" class="font" font-size="12" font-weight="700" fill="#63E686">STEP 03</text>
+    <text x="24" y="84" class="font" font-size="21" font-weight="700" fill="#F8FAFC">落袋网盘并清缓存</text>
+    <text x="24" y="114" class="font" font-size="14" fill="#94A3B8">• 同步发布到频道，或只存私人网盘</text>
+    <text x="24" y="138" class="font" font-size="14" fill="#94A3B8">• 确认上传成功后立刻清空服务器缓存</text>
+    <text x="24" y="162" class="font" font-size="14" fill="#94A3B8">• 无缝对接 PPVIO 播放器随时流畅看</text>
+  </g>
+</svg>
