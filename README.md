@@ -95,7 +95,6 @@ bash install.sh
 | :--- | :--- |
 | **[TGVIO](https://github.com/Xioaruan912/TGVIO)**（本仓库） | 负责收集、整理、发布到频道，并把原片稳定备份进网盘 |
 | **[PPVIO](https://github.com/Xioaruan912/PPVIO)** | 独立的个人视频播放器，直接读取网盘原片，支持封面、收藏、去重与流畅播放 |
-| **[115List](https://github.com/Xioaruan912/115List)**（`tgvio` 分支） | 适配优化的网盘挂载服务，提供更稳的 115 链接获取与缓存体验 |
 
 ---
 
