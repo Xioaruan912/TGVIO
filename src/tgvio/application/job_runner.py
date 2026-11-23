@@ -93,7 +93,7 @@ class JobRunner:
         result = await self._execution.execute(job, plan)
         if result.state == JobState.SUCCEEDED and self._cache is not None:
             try:
-                await self._cache.cleanup(job_ids=(job.id,))
+                await self._cache.cleanup(force=True, job_ids=(job.id,))
                 result = await self._repository.get(job.id) or result
             except Exception as exc:
                 # Local cleanup is retried by the periodic worker; it must not

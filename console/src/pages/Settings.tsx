@@ -18,6 +18,8 @@ export function SettingsPage({ onError, onLoggedOut }: {
   const { shield, setShield, autoVeil, setAutoVeil, setVeil, theme, setTheme } = usePrivacy();
   const [status, setStatus] = useState<Status | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
+  const [probing, setProbing] = useState(false);
+  const [probeResult, setProbeResult] = useState<{ ok: boolean; latency_ms: number; error: string | null } | null>(null);
 
   const load = useCallback(async () => {
     try {
@@ -156,6 +158,33 @@ export function SettingsPage({ onError, onLoggedOut }: {
                           失败 {archiveFailed}
                         </span>
                       )}
+                      <button
+                        type="button"
+                        disabled={probing}
+                        onClick={async () => {
+                          setProbing(true);
+                          try {
+                            const res = await api.probeArchive();
+                            setProbeResult(res);
+                            toast(res.ok ? `WebDAV 正常（${res.latency_ms} ms）` : `WebDAV 异常：${res.error || "连接失败"}`);
+                          } catch (error) {
+                            onError(error);
+                            toast(errorText(error));
+                          } finally {
+                            setProbing(false);
+                          }
+                        }}
+                        className="tactile h-7 rounded-full bg-subtle px-3 text-[12px] font-medium text-ink hover:bg-subtle-hover disabled:opacity-45"
+                      >
+                        {probing ? "测速中…" : "测速自检"}
+                      </button>
+                      {probeResult && (
+                        <span className={`rounded-full px-2 py-0.5 text-[11px] font-medium ${
+                          probeResult.ok ? "bg-ok-soft text-ok" : "bg-danger-soft text-danger"
+                        }`}>
+                          {probeResult.ok ? `连通 ${probeResult.latency_ms} ms` : (probeResult.error || "不可达")}
+                        </span>
+                      )}
                     </div>
                   ) : <span className="text-faint">未开启</span>}
                 </Row>
@@ -188,7 +217,7 @@ export function SettingsPage({ onError, onLoggedOut }: {
             {/* Bot Manual Mode Guide */}
             <Group title="Telegram Bot 手动收集">
               <div className="p-4 text-[13px] leading-relaxed text-muted">
-                机器人已启用手动收集会话：发送 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/begin</code> 开始连续转发视频、图片、链接或附带文字，全部发完后发送 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/end</code> 合并提交为一个任务；发送 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/cancel</code> 清空取消。
+                会话已持久化到数据库，重启不丢：发 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/begin</code> 开始连续转发；发 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/end</code> 合并发布并存网盘；发 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/end_archive</code> 仅存网盘不发频道；发 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/undo</code> 撤回上一条；发 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/status</code> 查看暂存与队列；发 <code className="rounded bg-subtle px-1.5 py-0.5 text-ink">/cancel</code> 清空取消。归档确认后自动立即清理本地缓存。
               </div>
             </Group>
 

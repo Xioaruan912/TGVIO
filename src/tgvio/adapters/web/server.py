@@ -79,6 +79,7 @@ class ConsoleServer(ConsoleSourceRoutes):
         app.router.add_post("/api/queue/pause", self._queue_pause)
         app.router.add_post("/api/queue/resume", self._queue_resume)
         app.router.add_post("/api/cache/clean", self._cache_clean)
+        app.router.add_post("/api/archive/probe", self._archive_probe)
         app.router.add_get("/api/jobs", self._jobs)
         app.router.add_post("/api/jobs/retry-all", self._retry_all)
         app.router.add_get("/api/jobs/{job_id}", self._job)
@@ -196,6 +197,10 @@ class ConsoleServer(ConsoleSourceRoutes):
     async def _cache_clean(self, request: web.Request) -> web.Response:
         del request
         return web.json_response(await self._console.clean_cache())
+
+    async def _archive_probe(self, request: web.Request) -> web.Response:
+        del request
+        return web.json_response(await self._console.probe_archive())
 
     async def _jobs(self, request: web.Request) -> web.Response:
         try:

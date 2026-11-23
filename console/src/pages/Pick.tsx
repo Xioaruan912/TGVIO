@@ -152,6 +152,7 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
   const [privacy, setPrivacy] = useState<PrivacyMode>("blur");
   const [hideAds, setHideAds] = useState(true);
   const [selected, setSelected] = useState<Map<number, SourceItem>>(new Map());
+  const [lastIdx, setLastIdx] = useState<number | null>(null);
   const [merge, setMerge] = useState(false);
   const [busy, setBusy] = useState(false);
 
@@ -182,12 +183,37 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
     && (filter !== "new" || !item.done)
   ), [items, filter, hideAds]);
 
-  const toggle = (item: SourceItem) => setSelected(current => {
-    const next = new Map(current);
-    if (next.has(item.message_id)) next.delete(item.message_id);
-    else next.set(item.message_id, item);
-    return next;
-  });
+  const toggle = (item: SourceItem, index: number, shiftKey: boolean) => {
+    setSelected(current => {
+      const next = new Map(current);
+      if (shiftKey && lastIdx !== null && lastIdx !== index) {
+        const start = Math.min(lastIdx, index);
+        const end = Math.max(lastIdx, index);
+        for (let i = start; i <= end; i += 1) {
+          const target = visible[i];
+          if (target) next.set(target.message_id, target);
+        }
+        return next;
+      }
+      if (next.has(item.message_id)) next.delete(item.message_id);
+      else next.set(item.message_id, item);
+      return next;
+    });
+    setLastIdx(index);
+  };
+
+  const allVisibleSelected = visible.length > 0 && visible.every(item => selected.has(item.message_id));
+  const toggleSelectAll = () => {
+    setSelected(current => {
+      const next = new Map(current);
+      if (allVisibleSelected) {
+        for (const item of visible) next.delete(item.message_id);
+      } else {
+        for (const item of visible) next.set(item.message_id, item);
+      }
+      return next;
+    });
+  };
 
   const submit = async (mode: "publish" | "archive") => {
     const rows = [...selected.values()].map(item => ({
@@ -288,8 +314,18 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
         </label>
 
         <span className="tabular hidden text-[12px] text-faint sm:ml-auto sm:inline">
-          {visible.length} 项
+          {visible.length} 项 · Shift+点可连选
         </span>
+
+        {visible.length > 0 && (
+          <button
+            type="button"
+            onClick={toggleSelectAll}
+            className="tactile h-8 rounded-[9px] bg-grouped px-3 text-[12px] font-medium text-ink hover:bg-subtle-hover"
+          >
+            {allVisibleSelected ? "取消全选" : "全选当前页"}
+          </button>
+        )}
 
         <button
           type="button"
@@ -308,14 +344,14 @@ function SourceGrid({ source, archiveEnabled, onError, onDone }: {
       )}
 
       <div className="grid grid-cols-2 gap-3 sm:grid-cols-3 md:grid-cols-4 xl:grid-cols-5">
-        {visible.map(item => (
+        {visible.map((item, idx) => (
           <Tile
             key={item.message_id}
             source={source}
             item={item}
             privacy={privacy}
             selected={selected.has(item.message_id)}
-            onToggle={() => toggle(item)}
+            onToggle={shiftKey => toggle(item, idx, shiftKey)}
           />
         ))}
         {loading && Array.from({ length: items.length ? 5 : 10 }, (_, i) => (
@@ -407,7 +443,7 @@ function Tile({ source, item, privacy, selected, onToggle }: {
   item: SourceItem;
   privacy: PrivacyMode;
   selected: boolean;
-  onToggle: () => void;
+  onToggle: (shiftKey: boolean) => void;
 }) {
   const { shield } = usePrivacy();
   const [broken, setBroken] = useState(false);
@@ -420,7 +456,7 @@ function Tile({ source, item, privacy, selected, onToggle }: {
   return (
     <button
       type="button"
-      onClick={onToggle}
+      onClick={event => onToggle(event.shiftKey)}
       aria-pressed={selected}
       title={shield ? `条目 #${item.message_id}（防窥已开启，点击勾选，不支持播放）` : (item.caption || `消息 #${item.message_id}（点击勾选，不支持播放）`)}
       className={`tactile group relative aspect-[3/4] overflow-hidden rounded-[16px] bg-grouped text-left outline-none ${

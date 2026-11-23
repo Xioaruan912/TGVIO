@@ -254,6 +254,80 @@ class IntakeBatchingTests(unittest.IsolatedAsyncioTestCase):
         self.assertIn("已取消本次收集", client.messages[-1][1])
         await runtime.stop()
 
+    async def test_manual_undo_end_archive_and_persistence_across_restart(self) -> None:
+        flags_store: dict[str, str] = {}
+
+        class PersistRepo:
+            async def get_runtime_flags(self):
+                return dict(flags_store)
+
+            async def set_runtime_flag(self, key: str, value: str):
+                flags_store[key] = value
+
+            async def job_state_counts(self):
+                return {"downloading": 1, "failed": 0}
+
+            async def archive_state_counts(self):
+                return {"committed": 95, "failed": 0}
+
+            async def get_accepted_order(self, job_id: str):
+                return 1
+
+        class RepoRunner(PassThroughRunner):
+            repository = PersistRepo()
+
+        client = FakeClient()
+        intake = RecordingIntake()
+        settings = SimpleNamespace(
+            worker_concurrency=2,
+            batch_window_ms=0,
+            batch_max_wait_ms=1,
+            batch_max_items=100,
+            destination="@channel",
+            allowed_users=(42,),
+            url_enabled=False,
+        )
+        rt1 = TelethonIntakeRuntime(client, settings, intake, RepoRunner(), console_url="https://ds.example")
+
+        def cmd_event(text: str):
+            return SimpleNamespace(
+                chat_id=42, sender_id=42, raw_text=text,
+                message=SimpleNamespace(id=1, message=text, raw_text=text, media=None, photo=None, video=None, document=None),
+            )
+
+        def media_event(msg_id: int):
+            return SimpleNamespace(
+                chat_id=42, sender_id=42, raw_text="",
+                message=SimpleNamespace(
+                    id=msg_id, message="", raw_text="", grouped_id=None,
+                    photo=SimpleNamespace(sizes=[]), video=None, document=None,
+                    media=SimpleNamespace(spoiler=False),
+                    file=SimpleNamespace(size=512, name=f"p{msg_id}.jpg", mime_type="image/jpeg", ext=".jpg"),
+                ),
+            )
+
+        with self.assertRaises(events.StopPropagation):
+            await rt1._on_message(cmd_event("/begin"))
+        await rt1._on_message(media_event(301))
+        await rt1._on_message(media_event(302))
+        with self.assertRaises(events.StopPropagation):
+            await rt1._on_message(cmd_event("/undo"))
+        self.assertIn("已撤回最后 1 个媒体", client.messages[-1][1])
+        await rt1.stop()
+
+        # Simulate container restart: new runtime restores persisted /begin session!
+        rt2 = TelethonIntakeRuntime(client, settings, intake, RepoRunner(), console_url="https://ds.example")
+        await rt2.start()
+        with self.assertRaises(events.StopPropagation):
+            await rt2._on_message(cmd_event("/status"))
+        self.assertIn("已暂存 1 个媒体", client.messages[-1][1])
+        with self.assertRaises(events.StopPropagation):
+            await rt2._on_message(cmd_event("/end_archive"))
+        self.assertEqual(len(intake.batches), 1)
+        self.assertEqual([i.source_message_id for i in intake.batches[0]], [301])
+        self.assertTrue(intake.policies[0].get("archive_only"))
+        await rt2.stop()
+
 
 if __name__ == "__main__":
     unittest.main()

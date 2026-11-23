@@ -153,7 +153,7 @@ async def run(*, check_only: bool = False) -> None:
                 "Telegram runtime disabled; foundation check complete",
             )
             return
-        runtime_lease = RuntimeLeaseGuard(repository)
+        runtime_lease = RuntimeLeaseGuard(repository, ttl_seconds=120)
         await runtime_lease.start()
         gateway = TelethonGateway(settings, Path("/app/session"))
         await gateway.start()

@@ -4,6 +4,7 @@ import asyncio
 from datetime import datetime, timezone
 import logging
 from pathlib import Path
+import time
 from zoneinfo import ZoneInfo
 
 from tgvio.application.archive_capabilities import (
@@ -137,7 +138,16 @@ class ArchiveService:
                 try:
                     stored = await self._repository.get_archive_package(package.id)
                     if stored is not None and stored.state == ArchivePackageState.COMMITTED:
-                        await self._cache.cleanup(job_ids=(package.job_id,))
+                        cleaned = await self._cache.cleanup(force=True, job_ids=(package.job_id,))
+                        if cleaned.removed_bytes > 0:
+                            log_event(
+                                self._log,
+                                logging.INFO,
+                                "archive.cache.purged",
+                                "Local cache purged immediately after confirmed WebDAV commit",
+                                job_id=package.job_id,
+                                removed_bytes=cleaned.removed_bytes,
+                            )
                 except Exception as exc:
                     log_event(
                         self._log, logging.WARNING, "archive.cache_cleanup.failed",
@@ -242,6 +252,26 @@ class ArchiveService:
             )
         return capabilities
 
+    async def probe_health(self, remote_root: str = "") -> dict[str, object]:
+        started = time.monotonic()
+        try:
+            stat = await self._transport.stat(remote_root)
+            return {
+                "ok": bool(stat.exists),
+                "latency_ms": int((time.monotonic() - started) * 1000),
+                "exists": bool(stat.exists),
+                "is_collection": bool(stat.is_collection),
+                "error": None if stat.exists else "归档根目录不存在",
+            }
+        except Exception as exc:  # noqa: BLE001
+            return {
+                "ok": False,
+                "latency_ms": int((time.monotonic() - started) * 1000),
+                "exists": False,
+                "is_collection": False,
+                "error": str(exc).strip()[:180] or type(exc).__name__,
+            }
+
 
 class ArchiveRuntime:
     """Wakeable durable worker; retries are explicitly policy-controlled."""
@@ -289,6 +319,9 @@ class ArchiveRuntime:
 
     async def probe(self) -> ArchiveCapabilities:
         return await self._service.probe()
+
+    async def probe_health(self, remote_root: str = "") -> dict[str, object]:
+        return await self._service.probe_health(remote_root)
 
     async def _run(self) -> None:
         while True:

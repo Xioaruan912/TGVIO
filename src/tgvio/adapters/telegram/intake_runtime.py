@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass, field, replace
+import json
 import logging
 from typing import Iterable
 
@@ -26,7 +27,7 @@ from tgvio.application.publish_styles import resolve_style
 from tgvio.application.scheduler import OrderedPublishDispatcher, PhaseClaimGuard, PhaseClaimLostError
 from tgvio.config import Settings
 from tgvio.domain.intake import SpoilerMode
-from tgvio.domain.job import Job
+from tgvio.domain.job import Job, MediaKind
 from tgvio.domain.telegram_links import is_telegram_link
 from tgvio.observability import log_event
 
@@ -86,6 +87,7 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
 
     # -------------------------------------------------------------- lifecycle
     async def start(self) -> None:
+        await self._restore_manual_collections()
         if self._dispatcher is not None:
             await self._dispatcher.start()
 
@@ -103,9 +105,12 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
             await self._client(functions.bots.SetBotCommandsRequest(
                 scope=types.BotCommandScopeDefault(), lang_code="",
                 commands=[
-                    types.BotCommand(command="begin", description="开始手动收集媒体与链接"),
-                    types.BotCommand(command="end", description="结束收集并合并为一个任务"),
+                    types.BotCommand(command="begin", description="开始手动收集媒体与链接（重启不丢）"),
+                    types.BotCommand(command="end", description="结束收集并合并发布（加 archive 仅存网盘）"),
+                    types.BotCommand(command="end_archive", description="结束收集并仅归档到网盘（不发频道）"),
+                    types.BotCommand(command="undo", description="撤回上一条暂存的媒体或文字"),
                     types.BotCommand(command="cancel", description="取消当前收集并清空暂存"),
+                    types.BotCommand(command="status", description="查看当前收集与队列状态"),
                     types.BotCommand(command="start", description="打开网页控制台与使用说明"),
                 ],
             ))
@@ -179,20 +184,29 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
         sender_id = int(event.sender_id)
         raw_text = (event.raw_text or "").strip()
         if raw_text.startswith("/"):
-            cmd = raw_text.split()[0].split("@", 1)[0].lower()
+            parts = raw_text.split()
+            cmd = parts[0].split("@", 1)[0].lower()
+            arg = parts[1].lower() if len(parts) > 1 else ""
             if cmd == "/start":
                 await self._safe_send(
                     chat_id,
                     self._console_text(
-                        "手动收集模式：发送 /begin 开始收集，依次转发视频/图片/链接，全部发完后发送 /end 合并为一个任务（/cancel 取消）。"
+                        "手动收集模式：/begin 开始收集 → 转发视频/图片/链接 → /end 合并发布（/end archive 或 /end_archive 仅存网盘，/undo 撤回上一条，/cancel 取消，/status 查看状态）。"
                     ),
                 )
             elif cmd == "/begin":
                 await self._begin_collection(chat_id, sender_id)
             elif cmd == "/end":
-                await self._end_collection(chat_id, sender_id)
+                archive_only = arg in {"archive", "only", "webdav", "网盘"}
+                await self._end_collection(chat_id, sender_id, archive_only=archive_only)
+            elif cmd == "/end_archive":
+                await self._end_collection(chat_id, sender_id, archive_only=True)
+            elif cmd == "/undo":
+                await self._undo_collection(chat_id, sender_id)
             elif cmd == "/cancel":
                 await self._cancel_collection(chat_id, sender_id)
+            elif cmd == "/status":
+                await self._status_report(chat_id, sender_id)
             raise events.StopPropagation
 
         key = (chat_id, sender_id)
@@ -229,6 +243,7 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
         if raw_text:
             if collection is not None:
                 collection.captions.append(raw_text)
+                await self._persist_manual_collection(key)
                 self._schedule_collection_ack(key, collection)
                 return
             await self._safe_send(
@@ -270,12 +285,13 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
             started_at=loop.time(),
         )
         self._unbegun_notice_at.pop(key, None)
+        await self._persist_manual_collection(key)
         await self._safe_send(
             chat_id,
-            "🟢 已开始手动收集。请依次转发视频、图片或链接（附带文字也会保留为说明），全部发完后发送 /end 合并为一个任务，发送 /cancel 取消。",
+            "🟢 已开始手动收集（会话已持久化，重启不丢）。\n请依次转发视频、图片、链接或附带文字；发完后发 /end 合并发布，/end_archive 仅存网盘，/undo 撤回上一条，/cancel 取消。",
         )
 
-    async def _end_collection(self, chat_id: int, sender_id: int) -> None:
+    async def _end_collection(self, chat_id: int, sender_id: int, *, archive_only: bool = False) -> None:
         key = (int(chat_id), int(sender_id))
         collection = self._manual_collections.pop(key, None)
         if collection is None:
@@ -283,6 +299,7 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
             return
         if collection.ack_task is not None:
             collection.ack_task.cancel()
+        await self._persist_manual_collection(key)
         if not collection.media:
             await self._safe_send(chat_id, "已结束本次收集，但没有收到任何媒体，未创建任务。")
             return
@@ -293,9 +310,40 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
                 first = items[0]
                 combined = f"{merged_caption}\n{first.caption}".strip() if first.caption else merged_caption
                 items[0] = replace(first, caption=combined)
+        policy_extra = {"archive_only": True} if archive_only else None
         max_items = max(1, int(getattr(self._settings, "batch_max_items", 100)))
         for start in range(0, len(items), max_items):
-            await self._accept_and_schedule(chat_id, sender_id, items[start : start + max_items])
+            await self._accept_and_schedule(
+                chat_id,
+                sender_id,
+                items[start : start + max_items],
+                policy_extra=policy_extra,
+            )
+
+    async def _undo_collection(self, chat_id: int, sender_id: int) -> None:
+        key = (int(chat_id), int(sender_id))
+        collection = self._manual_collections.get(key)
+        if collection is None:
+            await self._safe_send(chat_id, "当前没有进行中的收集。")
+            return
+        if collection.media:
+            removed = collection.media.pop()
+            collection.seen_keys.discard((removed.source_chat_id, removed.source_message_id, removed.source))
+            await self._persist_manual_collection(key)
+            await self._safe_send(
+                chat_id,
+                f"↩️ 已撤回最后 1 个媒体（当前剩余 {len(collection.media)} 个媒体，{len(collection.captions)} 条文字）。",
+            )
+            return
+        if collection.captions:
+            collection.captions.pop()
+            await self._persist_manual_collection(key)
+            await self._safe_send(
+                chat_id,
+                f"↩️ 已撤回最后 1 条文字（当前剩余 {len(collection.media)} 个媒体，{len(collection.captions)} 条文字）。",
+            )
+            return
+        await self._safe_send(chat_id, "当前暂存为空，没有可撤回的内容。")
 
     async def _cancel_collection(self, chat_id: int, sender_id: int) -> None:
         key = (int(chat_id), int(sender_id))
@@ -305,7 +353,41 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
             return
         if collection.ack_task is not None:
             collection.ack_task.cancel()
+        await self._persist_manual_collection(key)
         await self._safe_send(chat_id, f"已取消本次收集（清空了 {len(collection.media)} 个暂存媒体）。")
+
+    async def _status_report(self, chat_id: int, sender_id: int) -> None:
+        key = (int(chat_id), int(sender_id))
+        collection = self._manual_collections.get(key)
+        lines: list[str] = []
+        if collection is not None:
+            lines.append(
+                f"📥 手动收集进行中：已暂存 {len(collection.media)} 个媒体、{len(collection.captions)} 条文字。"
+            )
+        else:
+            lines.append("⏸️ 当前未在收集模式（发送 /begin 开始收集）。")
+        repo = self._repository
+        if repo is not None and hasattr(repo, "job_state_counts"):
+            try:
+                job_counts = await repo.job_state_counts()
+                active = sum(
+                    int(job_counts.get(s, 0))
+                    for s in ("received", "downloading", "downloaded", "analyzing", "analyzed", "planned", "publishing")
+                )
+                failed = int(job_counts.get("failed", 0))
+                lines.append(f"📋 任务队列：{active} 个进行中，{failed} 个失败。")
+            except Exception:  # noqa: BLE001
+                pass
+        if repo is not None and hasattr(repo, "archive_state_counts"):
+            try:
+                arc = await repo.archive_state_counts()
+                uploading = sum(int(arc.get(s, 0)) for s in ("planned", "staging", "uploading", "verifying"))
+                lines.append(
+                    f"☁️ 网盘归档：{uploading} 个进行中，已备份 {int(arc.get('committed', 0))}，失败 {int(arc.get('failed', 0))}。"
+                )
+            except Exception:  # noqa: BLE001
+                pass
+        await self._safe_send(chat_id, self._console_text("\n".join(lines)))
 
     async def _collect_manual(self, collection: _ManualCollection, media: Iterable[IncomingMedia]) -> None:
         added = 0
@@ -317,7 +399,88 @@ class TelethonIntakeRuntime(IntakeMediaMixin):
             collection.media.append(item)
             added += 1
         if added:
-            self._schedule_collection_ack((collection.chat_id, collection.sender_id), collection)
+            key = (collection.chat_id, collection.sender_id)
+            await self._persist_manual_collection(key)
+            self._schedule_collection_ack(key, collection)
+
+    @staticmethod
+    def _collection_flag_key(key: tuple[int, int]) -> str:
+        return f"manual_collection:{key[0]}:{key[1]}"
+
+    async def _persist_manual_collection(self, key: tuple[int, int]) -> None:
+        repo = self._repository
+        if repo is None or not hasattr(repo, "set_runtime_flag"):
+            return
+        collection = self._manual_collections.get(key)
+        flag_key = self._collection_flag_key(key)
+        try:
+            if collection is None:
+                await repo.set_runtime_flag(flag_key, "")
+                return
+            payload = {
+                "chat_id": collection.chat_id,
+                "sender_id": collection.sender_id,
+                "captions": list(collection.captions),
+                "media": [
+                    {
+                        "kind": item.kind.value,
+                        "source": item.source,
+                        "caption": item.caption,
+                        "size_bytes": item.size_bytes,
+                        "name": item.name,
+                        "spoiler": item.spoiler,
+                        "grouped_id": item.grouped_id,
+                        "source_chat_id": item.source_chat_id,
+                        "source_message_id": item.source_message_id,
+                        "metadata": dict(item.metadata),
+                    }
+                    for item in collection.media
+                ],
+            }
+            await repo.set_runtime_flag(flag_key, json.dumps(payload, ensure_ascii=False))
+        except Exception as exc:  # noqa: BLE001 - best-effort persistence
+            log_event(self._log, logging.WARNING, "intake.manual.persist_failed", exception_type=type(exc).__name__)
+
+    async def _restore_manual_collections(self) -> None:
+        repo = self._repository
+        if repo is None or not hasattr(repo, "get_runtime_flags"):
+            return
+        try:
+            flags = await repo.get_runtime_flags()
+        except Exception:  # noqa: BLE001
+            return
+        loop = asyncio.get_running_loop()
+        for flag_key, raw in flags.items():
+            if not flag_key.startswith("manual_collection:") or not raw:
+                continue
+            try:
+                data = json.loads(raw)
+                chat_id = int(data["chat_id"])
+                sender_id = int(data["sender_id"])
+                collection = _ManualCollection(
+                    chat_id=chat_id,
+                    sender_id=sender_id,
+                    captions=[str(c) for c in data.get("captions", [])],
+                    started_at=loop.time(),
+                )
+                for row in data.get("media", []):
+                    item = IncomingMedia(
+                        kind=MediaKind(str(row["kind"])),
+                        source=str(row["source"]),
+                        caption=str(row.get("caption") or ""),
+                        size_bytes=int(row.get("size_bytes") or 0),
+                        name=row.get("name"),
+                        spoiler=bool(row.get("spoiler", False)),
+                        grouped_id=row.get("grouped_id"),
+                        source_chat_id=row.get("source_chat_id"),
+                        source_message_id=row.get("source_message_id"),
+                        metadata=dict(row.get("metadata") or {}),
+                    )
+                    collection.seen_keys.add((item.source_chat_id, item.source_message_id, item.source))
+                    collection.media.append(item)
+                self._manual_collections[(chat_id, sender_id)] = collection
+            except Exception:  # noqa: BLE001
+                continue
 
     def _schedule_collection_ack(self, key: tuple[int, int], collection: _ManualCollection) -> None:
         if collection.ack_task is not None:

@@ -38,8 +38,9 @@ class SQLiteRepositoryBase:
         self._conn = await aiosqlite.connect(self._path)
         self._conn.row_factory = aiosqlite.Row
         await self._conn.execute("PRAGMA foreign_keys=ON")
-        await self._conn.execute("PRAGMA busy_timeout=5000")
-        await self._conn.execute("PRAGMA synchronous=FULL")
+        await self._conn.execute("PRAGMA journal_mode=WAL")
+        await self._conn.execute("PRAGMA busy_timeout=15000")
+        await self._conn.execute("PRAGMA synchronous=NORMAL")
 
     def schema_status(self) -> dict[str, object]:
         if self._migration_report is None:

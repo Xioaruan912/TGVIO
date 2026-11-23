@@ -213,6 +213,14 @@ class ConsoleService:
         self._schedule(job)
         return await self.job(job_id)
 
+    async def probe_archive(self) -> dict[str, Any]:
+        if not self._archive_enabled or self._archive is None:
+            raise ConsoleError("未开启 WebDAV 归档。", status=400)
+        probe_fn = getattr(self._archive, "probe_health", None)
+        if probe_fn is None:
+            raise ConsoleError("当前归档服务不支持连通性自检。", status=501)
+        return dict(await probe_fn(self._archive_root))
+
     async def retry_archive(self, job_id: str) -> dict[str, Any]:
         job = await self._owned(job_id)
         package = await self._repository.get_archive_package_for_job(job.id)

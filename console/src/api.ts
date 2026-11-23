@@ -121,6 +121,7 @@ export const api = {
   pauseQueue: () => post<Status>("/api/queue/pause"),
   resumeQueue: () => post<Status>("/api/queue/resume"),
   cleanCache: () => post<{ removed_jobs: number; removed_bytes: number; blocked_by_archive: number }>("/api/cache/clean"),
+  probeArchive: () => post<{ ok: boolean; latency_ms: number; exists: boolean; is_collection: boolean; error: string | null }>("/api/archive/probe"),
 
   jobs: (filter: JobFilter, page = 0) => request<JobPage>(`/api/jobs?filter=${filter}&page=${page}`),
   job: (id: string) => request<JobDetail>(`/api/jobs/${encodeURIComponent(id)}`),
