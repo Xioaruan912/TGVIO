@@ -101,7 +101,7 @@ class WebDavClientMixin:
             finally:
                 conn.close()
             if base_delay > 0:
-                time.sleep(base_delay * (2**attempt))
+                time.sleep(min(30.0, base_delay * (2**attempt)))
         if last_result is not None:
             return last_result
         if last_exc is not None:

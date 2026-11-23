@@ -172,9 +172,9 @@ class Settings:
         telegram_shard_retries = _int("TGVIO_TELEGRAM_SHARD_RETRIES", 3)
         if not 0 <= telegram_shard_retries <= 10:
             raise ConfigError("TGVIO_TELEGRAM_SHARD_RETRIES out of range")
-        download_item_attempts = _int("TGVIO_DOWNLOAD_ITEM_ATTEMPTS", 2)
-        if not 1 <= download_item_attempts <= 5:
-            raise ConfigError("TGVIO_DOWNLOAD_ITEM_ATTEMPTS must be in range 1..5")
+        download_item_attempts = _int("TGVIO_DOWNLOAD_ITEM_ATTEMPTS", 5)
+        if not 1 <= download_item_attempts <= 10:
+            raise ConfigError("TGVIO_DOWNLOAD_ITEM_ATTEMPTS must be in range 1..10")
         batch_window_ms = _int("TGVIO_BATCH_WINDOW_MS", 1500)
         if not 0 <= batch_window_ms <= 10_000:
             raise ConfigError("TGVIO_BATCH_WINDOW_MS out of range")
@@ -196,13 +196,13 @@ class Settings:
         cache_cleanup_interval_minutes = _int("TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES", 30)
         if not 1 <= cache_cleanup_interval_minutes <= 24 * 60:
             raise ConfigError("TGVIO_CACHE_CLEANUP_INTERVAL_MINUTES out of range")
-        auto_retry_max_attempts = _int("TGVIO_AUTO_RETRY_MAX_ATTEMPTS", 3)
+        auto_retry_max_attempts = _int("TGVIO_AUTO_RETRY_MAX_ATTEMPTS", 8)
         if not 0 <= auto_retry_max_attempts <= 10:
             raise ConfigError("TGVIO_AUTO_RETRY_MAX_ATTEMPTS out of range")
-        auto_retry_base_seconds = _int("TGVIO_AUTO_RETRY_BASE_SECONDS", 15)
+        auto_retry_base_seconds = _int("TGVIO_AUTO_RETRY_BASE_SECONDS", 30)
         if not 1 <= auto_retry_base_seconds <= 3600:
             raise ConfigError("TGVIO_AUTO_RETRY_BASE_SECONDS out of range")
-        auto_retry_max_seconds = _int("TGVIO_AUTO_RETRY_MAX_SECONDS", 300)
+        auto_retry_max_seconds = _int("TGVIO_AUTO_RETRY_MAX_SECONDS", 1800)
         if not auto_retry_base_seconds <= auto_retry_max_seconds <= 86400:
             raise ConfigError(
                 "TGVIO_AUTO_RETRY_MAX_SECONDS must be >= base delay and <= 86400"

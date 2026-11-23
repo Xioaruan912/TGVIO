@@ -182,6 +182,8 @@ async def run(*, check_only: bool = False) -> None:
                 capability_root=settings.archive_remote_root,
                 response_timeout=float(settings.archive_response_timeout_seconds),
                 verify_attempts=settings.archive_verify_attempts,
+                request_attempts=6,
+                retry_delay_seconds=2.0,
                 verify_interval_seconds=float(settings.archive_verify_interval_seconds),
             )
             archive_service = ArchiveService(

@@ -275,7 +275,7 @@ class WebDavArchiveTransport(WebDavClientMixin):
                     )
                 if attempt + 1 < attempts and isinstance(exc, (OSError, http.client.HTTPException)):
                     if self._retry_delay_seconds > 0:
-                        time.sleep(self._retry_delay_seconds * (2**attempt))
+                        time.sleep(min(30.0, self._retry_delay_seconds * (2**attempt)))
                     continue
                 if isinstance(exc, WebDavArchiveError):
                     raise
@@ -293,7 +293,7 @@ class WebDavArchiveTransport(WebDavClientMixin):
                         reused_remote=False,
                     )
                 if self._retry_delay_seconds > 0:
-                    time.sleep(self._retry_delay_seconds * (2**attempt))
+                    time.sleep(min(30.0, self._retry_delay_seconds * (2**attempt)))
                 continue
             verified = self._wait_for_expected_size_sync(remote_path, actual_size)
             if not (verified.exists and verified.size_bytes == actual_size):

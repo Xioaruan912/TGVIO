@@ -112,13 +112,19 @@ class JobDownloader:
                 raise
             except Exception as exc:  # noqa: BLE001 - retried or reported below
                 last_error = exc
-                if self._flood_gate is not None and parse_flood_wait_seconds(exc) is not None:
+                flood_seconds = parse_flood_wait_seconds(exc)
+                if self._flood_gate is not None and flood_seconds is not None:
                     # Telegram is asking for a pause: remember it for the publish
                     # side too, so a download flood wait cannot be followed by an
                     # upload burst a second later.
                     await self._flood_gate.arm(exc)
                 if attempt >= self._item_attempts:
                     break
+                delay = 0.0
+                if self._item_retry_delay > 0:
+                    delay = min(60.0, self._item_retry_delay * (2 ** (attempt - 1)))
+                    if flood_seconds is not None:
+                        delay = max(delay, min(float(flood_seconds) + 1.0, 120.0))
                 log_event(
                     self._log,
                     logging.WARNING,
@@ -127,10 +133,11 @@ class JobDownloader:
                     job_id=job.id,
                     item_index=item.index,
                     attempt=attempt,
+                    retry_delay_seconds=round(delay, 2),
                     exception_type=type(exc).__name__,
                 )
-                if self._item_retry_delay:
-                    await asyncio.sleep(self._item_retry_delay)
+                if delay > 0:
+                    await asyncio.sleep(delay)
         assert last_error is not None
         raise last_error
 

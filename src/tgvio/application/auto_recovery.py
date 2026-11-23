@@ -23,9 +23,9 @@ _PUBLISH_QUARANTINE_CODES = {"publish_partial", "publish_uncertain"}
 _JOB_RETRY_LIMITS: dict[str, int | None] = {
     "download_failed": None,
     "disk_low": None,
-    "media_analysis_failed": 1,
-    "publish_failed": 2,
-    "telegram_file_timeout": 2,
+    "media_analysis_failed": 2,
+    "publish_failed": 5,
+    "telegram_file_timeout": 5,
     # Media deleted at its source never comes back; say so instead of retrying.
     "source_missing": 0,
 }
@@ -56,9 +56,9 @@ class AutoRecoveryPolicy:
     """Bounded retry parameters frozen into every newly accepted Job."""
 
     enabled: bool = True
-    max_attempts: int = 3
-    base_delay_seconds: int = 15
-    max_delay_seconds: int = 300
+    max_attempts: int = 8
+    base_delay_seconds: int = 30
+    max_delay_seconds: int = 1800
     version: int = 1
 
     def __post_init__(self) -> None:

@@ -40,9 +40,9 @@ class SettingsTests(unittest.TestCase):
         self.assertEqual(settings.cache_retention_hours, 24)
         self.assertEqual(settings.cache_cleanup_interval_minutes, 30)
         self.assertTrue(settings.auto_retry_enabled)
-        self.assertEqual(settings.auto_retry_max_attempts, 3)
-        self.assertEqual(settings.auto_retry_base_seconds, 15)
-        self.assertEqual(settings.auto_retry_max_seconds, 300)
+        self.assertEqual(settings.auto_retry_max_attempts, 8)
+        self.assertEqual(settings.auto_retry_base_seconds, 30)
+        self.assertEqual(settings.auto_retry_max_seconds, 1800)
         self.assertEqual(settings.auto_retry_poll_seconds, 2)
         self.assertEqual(settings.log_level, "INFO")
         self.assertTrue(settings.log_file_enabled)
@@ -62,7 +62,7 @@ class SettingsTests(unittest.TestCase):
         self.assertNotIn("hash-value", repr(summary))
         self.assertTrue(summary["log_file_enabled"])
         self.assertTrue(summary["auto_retry_enabled"])
-        self.assertEqual(summary["auto_retry_max_attempts"], 3)
+        self.assertEqual(summary["auto_retry_max_attempts"], 8)
         self.assertFalse(summary["static_proxy_configured"])
 
     def test_static_proxy_is_deployment_only_and_never_exposed_in_summary(self) -> None:
