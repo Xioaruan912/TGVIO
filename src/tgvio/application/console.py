@@ -13,6 +13,7 @@ import shutil
 from pathlib import Path
 from typing import Any
 
+from tgvio.application.archive_runtime import ArchiveCanonicalCacheUnavailable
 from tgvio.application.auto_recovery import (
     archive_failure_waits_for_recovery,
     job_failure_waits_for_recovery,
@@ -219,6 +220,11 @@ class ConsoleService:
             raise ConsoleError("这个任务没有网盘备份。")
         try:
             await self._archive.retry_package(package.id)
+        except ArchiveCanonicalCacheUnavailable:
+            raise ConsoleError(
+                "本地缓存文件已被清理，无法重传尚未上传到网盘的媒体。",
+                status=409,
+            ) from None
         except (KeyError, ValueError):
             raise ConsoleError("备份状态已变化，请刷新后再试。") from None
         return await self.job(job_id)

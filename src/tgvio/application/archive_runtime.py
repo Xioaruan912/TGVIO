@@ -159,6 +159,8 @@ class ArchiveService:
                 f"archive package must be failed before retry: {package.state.value}"
             )
         for obj in package.objects:
+            if obj.state.value == "stored":
+                continue
             local = Path(obj.local_path)
             if not local.is_file() or local.stat().st_size != obj.size_bytes:
                 raise ArchiveCanonicalCacheUnavailable(
