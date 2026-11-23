@@ -9,6 +9,7 @@ import {
 } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText, formatBytes, formatDuration, type JobDetail, type JobFilter, type JobPage, type JobSummary } from "../api";
+import { usePrivacy } from "../ui/privacy";
 import { Sheet } from "../ui/Sheet";
 import { toast } from "../ui/toast";
 
@@ -150,9 +151,11 @@ function statusDot(job: JobSummary): string {
 }
 
 function JobRow({ job, onOpen }: { job: JobSummary; onOpen: () => void }) {
+  const { shield } = usePrivacy();
   const progress = job.progress && job.progress.total > 0
     ? Math.min(100, Math.round((job.progress.current / job.progress.total) * 100))
     : null;
+  const rowTitle = shield ? (job.title ? "任务标题已防窥隐藏" : "") : job.title;
 
   return (
     <li>
@@ -179,7 +182,7 @@ function JobRow({ job, onOpen }: { job: JobSummary; onOpen: () => void }) {
         </div>
 
         <div className="tabular mt-1.5 truncate text-[13px] text-muted">
-          {[job.title, mediaLine(job)].filter(Boolean).join(" — ")}
+          {[rowTitle, mediaLine(job)].filter(Boolean).join(" — ")}
         </div>
 
         {job.error && (
@@ -224,6 +227,7 @@ function ArchiveBadge({ job }: { job: JobSummary }) {
 }
 
 function JobSheet({ id, onClose, onError }: { id: string | null; onClose: () => void; onError: (error: unknown) => void }) {
+  const { shield } = usePrivacy();
   const [job, setJob] = useState<JobDetail | null>(null);
   const [busy, setBusy] = useState(false);
 
@@ -254,7 +258,11 @@ function JobSheet({ id, onClose, onError }: { id: string | null; onClose: () => 
         <p className="py-8 text-center text-[13.5px] text-muted">正在加载任务详情…</p>
       ) : (
         <div className="space-y-4 pb-2 text-[13.5px]">
-          {job.title && <p className="whitespace-pre-wrap leading-relaxed text-muted">{job.title}</p>}
+          {job.title && (
+            <p className="whitespace-pre-wrap leading-relaxed text-muted">
+              {shield ? "任务标题已防窥隐藏（关闭顶栏「防窥开」可查看）" : job.title}
+            </p>
+          )}
 
           {job.error && (
             <div className="rounded-[15px] border border-accent/25 bg-accent-soft p-3.5">
@@ -279,7 +287,7 @@ function JobSheet({ id, onClose, onError }: { id: string | null; onClose: () => 
             {job.archive && (
               <>
                 <dt className="text-faint">归档路径</dt>
-                <dd className="break-all text-muted">{job.archive.path}</dd>
+                <dd className="break-all text-muted">{shield ? "••• / 已防窥隐藏" : job.archive.path}</dd>
               </>
             )}
             {job.skipped_items > 0 && (
@@ -308,7 +316,9 @@ function JobSheet({ id, onClose, onError }: { id: string | null; onClose: () => 
                   <span className="text-faint">
                     {item.kind === "video" ? <FilmStripIcon size={14} className="text-accent" /> : item.kind === "photo" ? <ImageIcon size={14} className="text-info" /> : <FileIcon size={14} />}
                   </span>
-                  <span className="min-w-0 flex-1 truncate text-ink/90">{item.name || `第 ${item.index + 1} 个`}</span>
+                  <span className="min-w-0 flex-1 truncate text-ink/90">
+                    {shield ? `媒体项 #${item.index + 1}` : (item.name || `第 ${item.index + 1} 个`)}
+                  </span>
                   <span className="shrink-0 text-faint">
                     {[formatDuration(item.duration_seconds), formatBytes(item.size_bytes)].filter(Boolean).join(" · ")}
                   </span>

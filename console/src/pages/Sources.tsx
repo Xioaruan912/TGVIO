@@ -1,6 +1,7 @@
 import { LockSimpleIcon, MagnifyingGlassIcon, PlusIcon, TrashIcon } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText, type Dialog, type SourceState } from "../api";
+import { usePrivacy } from "../ui/privacy";
 import { Sheet } from "../ui/Sheet";
 import { toast } from "../ui/toast";
 
@@ -12,6 +13,7 @@ const STEPS = {
 type Step = keyof typeof STEPS;
 
 export function Sources({ onError }: { onError: (error: unknown) => void }) {
+  const { shield } = usePrivacy();
   const [state, setState] = useState<SourceState | null>(null);
   const [dialogsOpen, setDialogsOpen] = useState(false);
 
@@ -96,8 +98,12 @@ export function Sources({ onError }: { onError: (error: unknown) => void }) {
                 return (
                   <li key={entry} className="flex items-center gap-3 py-3 text-[14px]">
                     <div className="min-w-0 flex-1">
-                      <div className="truncate font-medium text-ink">{resolved?.label ?? entry}</div>
-                      <div className="tabular truncate text-[12px] text-faint">{entry}</div>
+                      <div className="truncate font-medium text-ink">
+                        {shield ? `来源 #${index + 1}` : (resolved?.label ?? entry)}
+                      </div>
+                      <div className="tabular truncate text-[12px] text-faint">
+                        {shield ? "已防窥脱敏" : entry}
+                      </div>
                     </div>
                     <button
                       type="button"

@@ -11,6 +11,7 @@ import {
 import { AnimatePresence, motion } from "motion/react";
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, errorText, formatBytes, formatDuration, type SourceEntry, type SourceItem } from "../api";
+import { usePrivacy } from "../ui/privacy";
 import { toast } from "../ui/toast";
 
 type Filter = "all" | "video" | "new";
@@ -33,6 +34,7 @@ export function Pick({ onError, onGoSources, onGoJobs }: {
   onGoSources: () => void;
   onGoJobs: () => void;
 }) {
+  const { shield } = usePrivacy();
   const [sources, setSources] = useState<SourceEntry[] | null>(null);
   const [active, setActive] = useState(0);
   const [urlEnabled, setUrlEnabled] = useState(false);
@@ -108,7 +110,7 @@ export function Pick({ onError, onGoSources, onGoJobs }: {
                       : "border-line bg-surface text-muted hover:border-line-strong hover:text-ink"
                   }`}
                 >
-                  {source.label}
+                  {shield ? `来源 #${source.index + 1}` : source.label}
                 </button>
               );
             })}
@@ -385,7 +387,10 @@ function Tile({ source, item, privacy, selected, onToggle }: {
   selected: boolean;
   onToggle: () => void;
 }) {
+  const { shield } = usePrivacy();
   const [broken, setBroken] = useState(false);
+  const effectivePrivacy: PrivacyMode = shield && privacy === "thumb" ? "blur" : privacy;
+  const displayCaption = shield ? `条目 #${item.message_id} · 已防窥脱敏` : (item.caption || `消息 #${item.message_id}`);
   const durationLabel = item.item_count > 1 ? `${item.item_count} 个媒体` : formatDuration(item.duration_seconds);
   const resLabel = item.width && item.height ? `${item.width}×${item.height}` : "";
   const isVideo = item.kind === "video" || item.video_count > 0;
@@ -395,21 +400,21 @@ function Tile({ source, item, privacy, selected, onToggle }: {
       type="button"
       onClick={onToggle}
       aria-pressed={selected}
-      title={item.caption || `消息 #${item.message_id}（点击勾选，不支持播放）`}
+      title={shield ? `条目 #${item.message_id}（防窥已开启，点击勾选，不支持播放）` : (item.caption || `消息 #${item.message_id}（点击勾选，不支持播放）`)}
       className={`tactile group relative aspect-[3/4] overflow-hidden rounded-[18px] border bg-surface text-left outline-none ${
         selected
           ? "border-info ring-2 ring-info/80 ring-offset-2 ring-offset-bg"
           : "border-line hover:border-line-strong"
       }`}
     >
-      {privacy === "meta" || broken ? (
+      {effectivePrivacy === "meta" || broken ? (
         <div className="flex size-full flex-col justify-between p-3.5">
           <div className="flex items-center gap-1.5 text-[11px] font-medium text-muted">
             {isVideo ? <FilmStripIcon size={14} className="text-accent" /> : <ImageIcon size={14} className="text-info" />}
             <span>{isVideo ? "视频 · 禁播" : "图片"}</span>
           </div>
           <p className="line-clamp-4 text-[12.5px] leading-relaxed text-ink/90">
-            {item.caption || `消息 #${item.message_id}`}
+            {displayCaption}
           </p>
           <div className="tabular space-y-0.5 text-[11px] text-faint">
             {resLabel && <div>{resLabel}</div>}
@@ -429,18 +434,18 @@ function Tile({ source, item, privacy, selected, onToggle }: {
             draggable={false}
             onError={() => setBroken(true)}
             className={`size-full object-cover transition duration-300 ${
-              privacy === "blur" ? "scale-110 blur-xl brightness-[0.62]" : ""
+              effectivePrivacy === "blur" ? "scale-110 blur-xl brightness-[0.62]" : ""
             } ${item.done ? "opacity-45" : ""}`}
           />
-          {privacy === "blur" && (
+          {effectivePrivacy === "blur" && (
             <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1.5 px-3 text-center">
               <span className="inline-flex items-center gap-1 rounded-full bg-black/55 px-2.5 py-1 text-[11px] font-medium text-ink backdrop-blur-md">
                 {isVideo ? <FilmStripIcon size={13} className="text-accent" /> : <ImageIcon size={13} className="text-info" />}
                 {isVideo ? "视频 · 禁止播放" : "图片 · 已遮罩"}
               </span>
-              {item.caption && (
+              {(shield || item.caption) && (
                 <p className="line-clamp-2 max-w-full text-[11.5px] leading-snug text-white/85 drop-shadow">
-                  {item.caption}
+                  {displayCaption}
                 </p>
               )}
             </div>

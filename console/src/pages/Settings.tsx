@@ -1,6 +1,7 @@
-import { TerminalWindowIcon } from "@phosphor-icons/react";
+import { ShieldCheckIcon, TerminalWindowIcon } from "@phosphor-icons/react";
 import { useCallback, useEffect, useState } from "react";
 import { api, errorText, formatBytes, type Settings, type SpoilerMode, type Status } from "../api";
+import { usePrivacy } from "../ui/privacy";
 import { toast } from "../ui/toast";
 
 const SPOILER_LABELS: Record<SpoilerMode, string> = {
@@ -14,6 +15,7 @@ export function SettingsPage({ onError, onLoggedOut }: {
   onError: (error: unknown) => void;
   onLoggedOut: () => void;
 }) {
+  const { shield, setShield, autoVeil, setAutoVeil, setVeil } = usePrivacy();
   const [status, setStatus] = useState<Status | null>(null);
   const [settings, setSettings] = useState<Settings | null>(null);
 
@@ -78,13 +80,13 @@ export function SettingsPage({ onError, onLoggedOut }: {
             <dd className={status.jobs.failed ? "font-medium text-accent" : "text-ink"}>{status.jobs.failed ?? 0} 个</dd>
 
             <dt className="text-faint">目标频道</dt>
-            <dd className="text-ink">{status.destination}</dd>
+            <dd className="text-ink">{shield ? "•••（防窥已隐藏）" : status.destination}</dd>
 
             <dt className="text-faint">WebDAV 归档</dt>
             <dd className="text-ink">
               {status.archive.enabled ? (
                 <span className="flex flex-wrap items-center gap-1.5">
-                  <span className="break-all text-muted">{status.archive.root}</span>
+                  <span className="break-all text-muted">{shield ? "••• / 已防窥隐藏" : status.archive.root}</span>
                   <span className="rounded-full bg-ok-soft px-2 py-0.5 text-[11px] font-medium text-ok">
                     已备份 {status.archive.states.committed ?? 0}
                   </span>
@@ -168,6 +170,32 @@ export function SettingsPage({ onError, onLoggedOut }: {
         </Section>
 
         <div className="space-y-4">
+          <Section title="隐私防窥保护">
+            <div className="divide-y divide-line">
+              <Toggle
+                label="全局隐私脱敏（遮罩缩略图、标题、频道名与网盘路径）"
+                checked={shield}
+                onChange={setShield}
+              />
+              <Toggle
+                label="切出浏览器标签页时自动进入全屏遮屏"
+                checked={autoVeil}
+                onChange={setAutoVeil}
+              />
+            </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2 border-t border-line pt-3">
+              <button
+                type="button"
+                onClick={() => setVeil(true)}
+                className="tactile inline-flex h-9 items-center gap-1.5 rounded-full border border-line bg-raised px-4 text-[13px] font-medium text-ink hover:border-line-strong"
+              >
+                <ShieldCheckIcon size={15} className="text-ok" />
+                立即全屏遮屏（Shift+H）
+              </button>
+              <span className="text-[12px] text-faint">快捷键：Shift+P 切换脱敏 · Shift+H 切换遮屏</span>
+            </div>
+          </Section>
+
           <Section title="自动化与通知">
             <div className="divide-y divide-line">
               <Toggle
